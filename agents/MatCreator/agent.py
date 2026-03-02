@@ -7,7 +7,6 @@ from google.genai.types import Content,Part
 from pydantic import PrivateAttr
 import os
 import logging
-from enum import Enum
 from typing import Optional, Any
 from .thinking_agent import thinking_agent
 from .execution_agent import build_execution_agent
@@ -61,11 +60,6 @@ You DO NOT execute tasks directly. You route work using the session phase:
 3. Keep your messages minimal - let the specialized agents communicate with users
 4. If phase is invalid or missing, normalize to thinking
 """
-class WorkflowStep(int,Enum):
-    THINKING_PHASE=1
-    APPROVAL_PAHSE=2
-    EXECUTION_PAHSE=3
-    SUMMARIZING_PHASE=4
 
 class MatCreatorFlowAgent(BaseAgent):
     """Root agent with enforced phase-based routing."""
@@ -132,7 +126,7 @@ class MatCreatorFlowAgent(BaseAgent):
                     actions=event_action
                     )
                 yield event
-                return
+        return
             
     async def _run_async_execution(self, ctx: InvocationContext):
         """Override to prevent automatic phase changes after each tool call."""
@@ -149,7 +143,8 @@ class MatCreatorFlowAgent(BaseAgent):
             async for event in self._run_async_impl_cycle(ctx):
                 yield event
             if not ctx.session.state.get("approval",False):
-                break        
+                break   
+        return     
             
 
 def before_agent_callback_root(callback_context: CallbackContext):
@@ -204,9 +199,6 @@ def before_agent_callback_root(callback_context: CallbackContext):
     
     if 'needs_replanning' not in state:
         callback_context.state['needs_replanning'] = False
-
-    if 'workflow_step' not in state:
-        callback_context.state['workflow_step'] = WorkflowStep.THINKING_PHASE
     
     # Initialize session metadata in database if not already exists
     try:
@@ -244,7 +236,6 @@ _root_agent = MatCreatorFlowAgent(
         thinking_agent
     ]
     )
-
 
 app = App(
     name="MatCreator",
