@@ -124,7 +124,7 @@ plan_builder_agent = LlmAgent(
         api_key=_model_api_key
     ),
     description=(
-        "Produces a detailed ExecutionPlan JSON. Used as a tool by the ThinkingAgent."
+        "Produces a detailed ExecutionPlan JSON. ALWAYS call it when creating/updating plans."
     ),
     instruction=_PLAN_BUILDER_INSTRUCTION,
     input_schema=PlanBuilderInput,

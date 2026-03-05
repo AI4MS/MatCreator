@@ -24,27 +24,36 @@ chemical composition or node metadata, inspecting and querying structures within
 structures, and saving new calculation data to an appropriate node.
 """
 
-instruction = """
-Be concise, safe, and tool-driven.
+instruction_tmp = """
+You are an agent responsible for querying, export and update of materials dataset.
 
 Use this flow for dataset search:
 1) `database_sql_agent` to generate one safe SELECT.
 2) `validate_sql_code_query`.
 3) `query_information_database`.
 
+Datasets are elements-centric, i.e., a dataset SELECT by `Si-O` have all the compositions (SiO2, SiO4) that have Si and O elements.
+
 Rules:
-- INFO_DB_PATH must be available (ask once if missing).
 - For composition queries, use exact formula only: `datasets.elements = 'A-B'` (sorted, hyphen-joined).
 - If user provides structure files, call `read_user_structure` first, then query by exact formula.
 - Keep ASE frame lookups concise with `query_compounds` (selection + limit).
 - Default export format: extxyz.
 - After `save_extxyz_to_db`, stop (no extra actions).
+"""
+instruction="""
+You are an agent responsible for querying, export and update of materials dataset.
 
-Response format:
-- Plan: 1–3 short bullets.
-- Action: tool called.
-- Result: key output (include absolute paths).
-- Next: immediate follow-up.
+Use this flow for dataset search:
+1) `database_sql_agent` to generate one safe SELECT.
+2) `validate_sql_code_query`.
+3) `query_information_database`.
+
+Datasets are elements-centric, i.e., a dataset SELECT by `Si-O` have all the compositions (SiO2, SiO4) that have Si and O elements.
+Use `query_compounds` to identify the exact composition in a dataset
+
+When preparing training/validation dataset for machine learning force fields,
+always export to extxyz format.
 """
 
 
@@ -65,6 +74,8 @@ database_agent = LlmAgent(
     after_tool_callback=after_tool_callback,
     description=description,
     instruction=instruction,
+    disallow_transfer_to_parent=True,
+    disallow_transfer_to_peers=True,
     tools=[
         AgentTool(sql_agent),
         toolset,

@@ -103,7 +103,7 @@ You are the central brain for planning and supervising the computational materia
 
 You orchestrate planning through tool sub-agents:
 - intent_tool_agent              : determine user's goal
-- plan_builder_agent             : drafts a detailed ExecutionPlan
+- plan_builder_agent             : drafts and update ExecutionPlan
 - approval_execution             : ask user permission to proceed to Execution
 - update_memory(new_entries)     : appends new knowledge to MEMORY.md
 
