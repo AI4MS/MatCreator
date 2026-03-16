@@ -184,7 +184,6 @@ def before_tool_callback(
 ) -> Optional[dict]:
     """Inject state variables before specific agent tools are called."""
     if tool.name == "plan_builder_agent":
-        #tool_context.state["agents"] = format_subagent_descriptions()
         tool_context.state["memory"] = load_memory()
         skill_summaries = list_skill_name_descriptions()
         tool_context.state["skills"] = "\n".join(

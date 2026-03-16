@@ -1,9 +1,7 @@
 
-# FFPilot
+# MatCreator
 
-FFPilot is an intelligent platform for Machine Learning Force Field (MLFF) generation and application, combining AI-driven materials databases with expert computational tools. It automates end-to-end MLFF training, fine-tuning, and deployment for complex materials tasks. For example, users can request, "Can you train a small DPA model for crystalline Si by distillation using the PFD workflow?" and FFPilot will generate a detailed plan and execute the workflow with user guidance.
-
-
+MatCreator is a **skill-based, agentic platform** for computational material science tasks, with a focus on Machine Learning Force Field (MLFF) generation and application. It would evolve with users by experience accumulation and creation of new skills. 
 
 ## Quick start
 ### Installation
@@ -17,8 +15,11 @@ pip install -U pip
 pip install -e .
 ```
 
-### Set up MCP servers
-FFPilot follows a modular design principle: tools are standalone mini-packages that can be instantiated in isolated environments. For example, to set up a `mcp` server for `ABACUS` DFT software, `uv run` the script: 
+### Set up MCP servers for tools
+MatCreator follows a modular design principle: skills are text files that define metadata, procedures and workflows. Some skills may require specialized tools (configured by `$PROJECT/agents/MatCreator/tools.py`), and some of them, e.g. tools for DFT calculations, may be hosted on MCP servers. 
+
+#### Manual server setup
+For example, to set up a `mcp` server for `ABACUS` DFT software, `uv run` the script: 
 
 ```bash
 cd tools/abacus
@@ -27,8 +28,6 @@ uv sync
 uv run server.py --port 50001
 ```
 If you prefer `bohr-agent-sdk` wrapper which supports submitting tool job to `Bohrium` platform, set `--model dp`; otherwise you get standard `FastMCP` experience. You may need to set environment variables specific to the mcp server at `tools/$TOOLNAME/.env`, which can be referenced in `tools/$TOOLNAME/README.md`
-
-To associate with `Bohrium` platform, you can also run `python server.py --port 50001 --model dp`. The tools would then be directly available to artefacts in `uri` format and executed on remote platforms.   
 
 #### Automated Server Management
 
@@ -58,14 +57,12 @@ The script automatically handles port assignments and logging for each server, m
 
 ### Running agent networks
 #### Setting constants
-Populate `agents/MatCreator/.env` with your model and Bohrium credentials (if using `dp` model).
+Populate `agents/MatCreator/.env` with your model API credentials.
 
 ```env
+LLM_MODEL= "MODEL_TYPE"
 LLM_API_KEY="API_KEYS",
-LLM_BASE_URL="API_KEYS",
-BOHRIUM_USERNAME="",
-BOHRIUM_PASSWORD="",
-BOHRIUM_PROJECT_ID=11111
+LLM_BASE_URL="BASE_URL",
 ```
 
 If you prefer different LLM models for sub-agents, you can override the default setting at the `.env` file with sub-agents directories. 
@@ -76,99 +73,22 @@ If you prefer different LLM models for sub-agents, you can override the default 
 cd agents
 adk web
 ```
-This sets up the FFPilot agent network. You can tune the LLM model and communication settings for the agents.
+This sets up the MatCreator agent network. You can tune the LLM model and communication settings for the agents.
 
-### Web UI
+#### Web UI
 A simple web UI that supports artifact upload/download, structure visualization and scientific plotting. The web UI server can be started with the following command:
 ```bash
 cd web && python streamlit_app.py 
 ```
-![The web UI for FFPilot](docs/images/agent_plot.png)
+![The web UI for MatCreator](docs/images/agent_plot.png)
 
-## Custom agent configuration
-### Connecting a client agent (SSE)
+### Customize skills
 
-Point your client’s MCP toolset at the server’s SSE endpoint:
-```python
-## standard FastMCP server
-from google.adk.tools.mcp_tool.mcp_session_manager import SseServerParams
-from google.adk.tools.mcp_tool import McpToolset
-from ..constants import LLM_MODEL, LLM_API_KEY, LLM_BASE_URL, 
-model_name = os.environ.get("LLM_MODEL", LLM_MODEL)
-model_api_key = os.environ.get("LLM_API_KEY", LLM_API_KEY)
-model_base_url = os.environ.get("LLM_BASE_URL", LLM_BASE_URL)
+Skills are Markdown files with a YAML frontmatter block (declaring `name`, `description`, `tools`, and `dependent_skills`) followed by a plain-text instruction body. MatCreator loads skills from two locations in order:
 
-toolset = McpToolset(
-    connection_params=SseServerParams(
-        url="$HOST:$PORT/$TRANSPORT" # example:"http://127.0.0.1:50001/sse"
-    )
-)
-```
+1. **Built-in skills** — shipped with the package under `agents/MatCreator/knowledge/skills/`. Skills can be placed as flat `<name>.md` files or in a subdirectory `<name>/<name>.md`; the subdirectory form takes precedence.
+2. **Workspace overlay** — your personal skills under `$MATCLAW_WORKSPACE/skills/` (defaults to `.workspace/` in the project root). Any skill here with the same name overrides the built-in version.
 
-```python
-## bohr-compatible, recommended for heavy calculation tasks
-from google.adk.tools.mcp_tool.mcp_session_manager import SseServerParams
-from dp.agent.adapter.adk import CalculationMCPToolset
-from ..constants import LLM_MODEL, LLM_API_KEY, LLM_BASE_URL, BOHRIUM_USERNAME, BOHRIUM_PASSWORD, BOHRIUM_PROJECT_ID
+To customize a skill manually, copy its `.md` file into your workspace `skills/` directory and edit it. To add a new skill, create a new `skills/<name>/<name>.md` file following the same frontmatter format.
 
-# Set the secret key in ~/.abacusagent/env.json or as an environment variable, or modify the code t
-model_name = os.environ.get("LLM_MODEL", LLM_MODEL)
-model_api_key = os.environ.get("LLM_API_KEY", LLM_API_KEY)
-model_base_url = os.environ.get("LLM_BASE_URL", LLM_BASE_URL)
-bohrium_username = os.environ.get("BOHRIUM_USERNAME", BOHRIUM_USERNAME)
-bohrium_password = os.environ.get("BOHRIUM_PASSWORD", BOHRIUM_PASSWORD)
-bohrium_project_id = int(os.environ.get("BOHRIUM_PROJECT_ID", BOHRIUM_PROJECT_ID))
-
-executor = {
-    "bohr": {
-        "type": "dispatcher",
-        "machine": {
-            "batch_type": "Bohrium",
-            "context_type": "Bohrium",
-            "remote_profile": {
-                "email": bohrium_username,
-                "password": bohrium_password,
-                "program_id": bohrium_project_id,
-                "input_data": {
-                    "image_name": "registry.dp.tech/dptech/dp/native/prod-26745/matcreator:0.0.1",
-                    "job_type": "container",
-                    "platform": "ali",
-                    "scass_type": "1 * NVIDIA V100_16g",
-                },
-            },
-        }
-    },
-    "local": {"type": "local",}
-}
-
-
-EXECUTOR_MAP = {
-    "run_molecular_dynamics": executor["bohr"],
-    "optimize_structure": executor["bohr"],
-    "training": executor["bohr"],
-    "ase_calculation": executor["bohr"],
-}
-
-STORAGE = {
-    "type": "https",
-    "plugin":{
-        "type": "bohrium",
-        "username": bohrium_username,
-        "password": bohrium_password,
-        "project_id": bohrium_project_id,
-    }
-}
-
-toolset = CalculationMCPToolset(
-    connection_params=SseServerParams(
-        url="$HOST:$PORT/$TRANSPORT"
-    ),
-    executor=executor["local"], # default executor type
-    executor_map = EXECUTOR_MAP, # executor type override, these tools would be submitted to bohrium
-    storage=STORAGE, # access artifact stored in bohrium storage.
-)
-
-```
-
-
-
+The agent can also create and update skills on its own. During a session, the thinking agent can call built-in tools to scaffold a new skill file, write updated content to an existing one, or list what skills are currently available — letting the system accumulate knowledge automatically over time.

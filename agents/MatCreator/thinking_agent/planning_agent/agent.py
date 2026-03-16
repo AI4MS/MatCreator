@@ -19,7 +19,7 @@ from google.adk.models.lite_llm import LiteLlm
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from ...constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
-from ..skill import SKILL_LIBRARY
+from ..skill import _load_skill_registry
 
 _model_name = os.environ.get("LLM_MODEL", LLM_MODEL)
 _model_api_key = os.environ.get("LLM_API_KEY", LLM_API_KEY)
@@ -27,7 +27,6 @@ _model_base_url = os.environ.get("LLM_BASE_URL", LLM_BASE_URL)
 _plan_builder_max_attempts = int(os.environ.get("PLAN_BUILDER_MAX_ATTEMPTS", "10"))
 
 logger = logging.getLogger()
-_ALLOWED_SKILL_NAMES = set(SKILL_LIBRARY.keys())
 
 
 # ---------------------------------------------------------------------------
@@ -53,8 +52,9 @@ class PlanStep(BaseModel):
     @field_validator("skill")
     @classmethod
     def _validate_skill_name(cls, value: str) -> str:
-        if value not in _ALLOWED_SKILL_NAMES:
-            allowed = ", ".join(sorted(_ALLOWED_SKILL_NAMES)) or "<none loaded>"
+        allowed_names = set(_load_skill_registry().keys())
+        if value not in allowed_names:
+            allowed = ", ".join(sorted(allowed_names)) or "<none loaded>"
             raise ValueError(
                 f"Invalid skill '{value}'. Allowed skills are: {allowed}"
             )
