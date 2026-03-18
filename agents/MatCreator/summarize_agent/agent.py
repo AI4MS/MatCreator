@@ -162,6 +162,20 @@ class SummarizeAgent(LlmAgent):
             f"Concise summary: {summary.concise_summary}"
         )
 
+    @staticmethod
+    def _make_fallback_state_event(author: str, message: str) -> Event:
+        """Yield a state-delta event that terminates the execution loop for replan."""
+        state_update = {
+            "execution_complete": True,
+            "recommended_next_action": "replan",
+            "completion_status": "blocked",
+        }
+        return Event(
+            content=Content(parts=[Part(text=message)]),
+            author=author,
+            actions=EventActions(state_delta=state_update),
+        )
+
     async def _run_async_impl(self, ctx: InvocationContext):
         """Run summarization, then post-process final event into proper text."""
         final_event: Event | None = None
@@ -175,9 +189,9 @@ class SummarizeAgent(LlmAgent):
 
             if final_event is None:
                 logger.warning("SummarizeAgent: no final response event found")
-                yield Event(
-                    content=Content(parts=[Part(text="⚠️ Unable to generate execution summary.")]),
-                    author=self.name,
+                yield self._make_fallback_state_event(
+                    self.name,
+                    "⚠️ Unable to generate execution summary. Routing back for replanning.",
                 )
                 return
 
@@ -195,7 +209,11 @@ class SummarizeAgent(LlmAgent):
                     logger.warning(f"SummarizeAgent: failed to parse final summary: {parse_error}")
 
             if summary_data is None:
-                yield final_event
+                logger.warning("SummarizeAgent: could not parse summary; emitting fallback replan state.")
+                yield self._make_fallback_state_event(
+                    self.name,
+                    "⚠️ Could not parse execution summary. Routing back for replanning.",
+                )
                 return
 
             rendered_text = self._render_summary_text(summary_data)
@@ -235,9 +253,9 @@ class SummarizeAgent(LlmAgent):
 
         except Exception as exc:
             logger.error(f"SummarizeAgent runtime error: {exc}")
-            yield Event(
-                content=Content(parts=[Part(text=f"❌ Summarization error: {str(exc)}")]),
-                author=self.name,
+            yield self._make_fallback_state_event(
+                self.name,
+                f"❌ Summarization error: {str(exc)}. Routing back for replanning.",
             )
 
 

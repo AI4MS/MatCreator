@@ -103,8 +103,19 @@ class MatCreatorFlowAgent(BaseAgent):
             
         if ctx.session.state["phase"]=="execution":
             logger.info(f"[{self.name}]: Starting execution loop")
-            #if self.execution_agent == None:
+            _max_execution_iterations = int(os.environ.get("MAX_EXECUTION_ITERATIONS", "20"))
+            _execution_iteration = 0
             while True:
+                _execution_iteration += 1
+                if _execution_iteration > _max_execution_iterations:
+                    logger.warning(
+                        f"[{self.name}]: Execution circuit-breaker triggered after "
+                        f"{_max_execution_iterations} iterations. Forcing replan."
+                    )
+                    ctx.session.state["execution_complete"] = True
+                    ctx.session.state["recommended_next_action"] = "replan"
+                    ctx.session.state["completion_status"] = "blocked"
+                    break
                 async for event in self._run_async_execution(ctx):
                     yield event
                 if ctx.session.state.get("execution_complete", False):
