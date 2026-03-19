@@ -13,6 +13,8 @@ from ase import Atoms
 import numpy as np
 import json
 
+import os
+
 from .submission import dflow_remote_execution
 from .utils import prepare_train_command, dict_to_fire_args
 
@@ -350,13 +352,14 @@ def mattergen_train(
         )
         # Isolate mattergen within a venv. Recommended way.
         logging.info("========Running mattergen training=======")
+        merged_env = {**os.environ, **env_vars}
         if venv_root:
             # Activate and deactivate the venv within the same command
             # to avoid issues with subprocess and environment variable persistence.
             full_cmd = f"source {venv_root}/bin/activate && {cmd} && deactivate"
-            subprocess.run(full_cmd, check=True, shell=True, env=env_vars, executable="/bin/bash")
+            subprocess.run(full_cmd, check=True, shell=True, env=merged_env, executable="/bin/bash")
         else:
-            subprocess.run(cmd, check=True, shell=False, env=env_vars)
+            subprocess.run(cmd, check=True, shell=False, env=merged_env)
 
     outputs_path = Path("outputs")
     latest_dir = max(
@@ -491,15 +494,16 @@ def mattergen_generate(
             "properties_to_condition_on": conditioned_property_values,
         }
         args.update(additional_args or {})
-        cmd = f"mattergen-generate {str(results_dir)}" + " ".join(dict_to_fire_args(args))
+        cmd = f"mattergen-generate {str(results_dir)} " + " ".join(dict_to_fire_args(args))
         logging.info("========Running mattergen generation=======")
+        merged_env = {**os.environ, **env_vars}
         if venv_root:
             # Activate and deactivate the venv within the same command
             # to avoid issues with subprocess and environment variable persistence.
             full_cmd = f"source {venv_root}/bin/activate && {cmd} && deactivate"
-            subprocess.run(full_cmd, check=True, shell=True, env=env_vars, executable="/bin/bash")
+            subprocess.run(full_cmd, check=True, shell=True, env=merged_env, executable="/bin/bash")
         else:
-            subprocess.run(cmd, check=True, shell=False, env=env_vars)
+            subprocess.run(cmd, check=True, shell=True, env=merged_env)
 
     generated_crystals = results_dir / "generated_crystals.extxyz"
     if not generated_crystals.exists():
