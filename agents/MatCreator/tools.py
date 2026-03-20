@@ -4,7 +4,10 @@ import logging
 from urllib.parse import urlparse
 from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.mcp_tool import McpToolset
-from .sub_agents.sql_agent.agent import sql_agent
+from .sub_agents import (
+    sql_agent,
+    plot_agent
+)
 from google.adk.tools.mcp_tool.mcp_session_manager import SseServerParams
 
 
@@ -26,6 +29,8 @@ TOOLSETS = []
 
 # Database toolset (in-process sub-agent, always included)
 TOOLSETS.append(AgentTool(sql_agent))
+TOOLSETS.append(AgentTool(plot_agent))
+
 
 # Database toolset
 _url = "http://localhost:50001/sse"
