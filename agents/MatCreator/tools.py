@@ -16,6 +16,18 @@ from .sub_agents import (
     sql_agent,
     plot_agent
 )
+
+from .thinking_agent.workspace_tools import (
+    write_workspace_file,
+    read_workspace_file,
+    list_workspace_skills,
+    create_skill,
+    run_python,
+    run_bash,
+    run_python_file,
+    init_workspace_tool,
+)
+
 from google.adk.tools.mcp_tool.mcp_session_manager import SseServerParams
 
 
@@ -39,6 +51,16 @@ TOOLSETS = []
 TOOLSETS.append(AgentTool(sql_agent))
 TOOLSETS.append(AgentTool(plot_agent))
 
+TOOLSETS.extend(
+    [write_workspace_file,
+    read_workspace_file,
+    list_workspace_skills,
+    create_skill,
+    run_python,
+    run_bash,
+    run_python_file,
+    init_workspace_tool]
+)
 
 # Database toolset
 _url = "http://localhost:50001/sse"

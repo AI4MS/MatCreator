@@ -69,6 +69,20 @@ def init_workspace(force: bool = False) -> str:
             shutil.copy2(src, dst)
             copied.append(f"skills/{src.name}")
 
+    # Copy built-in subdir skills → workspace subdir skills (do not overwrite)
+    for skill_subdir in sorted(builtin_skills.iterdir()):
+        if not skill_subdir.is_dir():
+            continue
+        for src in sorted(skill_subdir.rglob("*")):
+            if not src.is_file():
+                continue
+            rel = src.relative_to(builtin_skills)
+            dst = skills_dir / rel
+            if not dst.exists() or force:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                copied.append(f"skills/{rel}")
+
     # Copy built-in guides → workspace guides (do not overwrite)
     builtin_guides = _KNOWLEDGE_PATH / "guides"
     for src in sorted(builtin_guides.glob("*.md")):
