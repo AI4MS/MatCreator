@@ -204,8 +204,8 @@ def execution_before_model_callback(
     active_names: list[str] = list(state.get("execution_selected_tool_names") or [])
 
     # No skill loaded yet — allow all tools so the LLM can call load_skill_context.
-    if not active_names:
-        return None
+    #if not active_names:
+    #    return None
 
     allowed = set(active_names) | _ALWAYS_AVAILABLE_EXECUTION_TOOLS
 
