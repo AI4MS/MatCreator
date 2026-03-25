@@ -62,6 +62,7 @@ The script automatically handles port assignments and logging for each server, m
 
 > The default domain-based computational materials datasets is located at `database/domain_datasets.tar.gz`, which should be extracted for database tool usage. (See `tools/database/README.md`)
 
+> Check the `README.md` in `skills/$SKILL` if you really wanna use them. 
 
 ### Running agent networks
 #### Setting constants

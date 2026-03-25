@@ -69,17 +69,6 @@ class WorkflowClassification(BaseModel):
         #max_length=300,
     )
 
-class ApprovalAssessment(BaseModel):
-    """Assessment of user's response to a presented goal/plan/decision."""
-    
-    approved: bool = Field(
-        ...,
-        description=(
-            "True if user explicitly approves (yes, ok, proceed, looks good, etc.). "
-            "False if user rejects, wants changes, or is uncertain."
-        )
-    )
-
 _CLASSIFICATION_INSTRUCTION = f"""
 You are an agent that determine user goal. 
 
@@ -113,7 +102,7 @@ You are the central brain for planning and supervising the computational materia
 You orchestrate planning through tool sub-agents:
 - intent_tool_agent              : determine user's goal
 - plan_builder_agent             : drafts and update ExecutionPlan
-- approval_execution             : ask user permission to proceed to Execution
+- execute_plan                   : ask user permission to proceed to Execution
 - update_memory(new_entries)     : appends new knowledge to MEMORY.md
 - load_guide_content(guide_name) : fetch the full body of a guide by name
 
@@ -135,7 +124,7 @@ You keep track of these state to decide what to do:
 
 Approval gate:
 - Always check with user after running `intent_tool_agent`.
-- Call `approval_execution` before moving to execution.
+- Call `execute_plan` before moving to execution.
 - If the user requests changes or asks questions, remain in thinking phase.
 - NEVER call run_python, run_bash, or run_python_file without first showing the
   code/command to the user and confirming they approve.
@@ -155,20 +144,6 @@ intent_tool_agent = LlmAgent(
     description="Determine user's goal.",
     instruction=_CLASSIFICATION_INSTRUCTION,
     output_schema=WorkflowClassification,
-    disallow_transfer_to_parent=True,
-    disallow_transfer_to_peers=True,
-)
-
-assessment_tool_agent = LlmAgent(
-    name="check_approval",
-    model=LiteLlm(
-        model=_model_name,
-        base_url=_model_base_url,
-        api_key=_model_api_key,
-    ),
-    description="Check user approval for EXECUTION. REQUIRE explicit user approval to use this tool",
-    instruction=_APPROVAL_INSTRUCTIION,
-    output_schema=ApprovalAssessment,
     disallow_transfer_to_parent=True,
     disallow_transfer_to_peers=True,
 )
@@ -243,8 +218,8 @@ def after_model_modifier(
 # ThinkingAgent instance
 # ---------------------------------------------------------------------------
 
-def approval_execution(tool_context: ToolContext) -> dict:
-    """Transition to execution phase. Only call this AFTER the user has explicitly
+def execute_plan(tool_context: ToolContext) -> dict:
+    """Enter EXECUTION MODE. Only call this AFTER the user has explicitly
     approved the plan in natural language (e.g. 'yes', 'ok', 'proceed', 'looks good').
     Do NOT call this if the user is still asking questions or requesting changes.
     An execution agent with clean context would be spawned after this to carry out the plan.
@@ -274,7 +249,7 @@ thinking_agent = LlmAgent(
         AgentTool(intent_tool_agent),
         AgentTool(plan_builder_agent),
         update_memory,
-        FunctionTool(approval_execution),
+        FunctionTool(execute_plan),
         # Workspace / MatClaw skill authoring tools
         FunctionTool(init_workspace_tool),
         FunctionTool(list_workspace_skills),

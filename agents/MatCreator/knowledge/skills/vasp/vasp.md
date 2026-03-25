@@ -3,28 +3,32 @@ name: vasp
 description: Skills for VASP DFT calculations — input preparation, remote submission to Bohrium, and result collection.
 tags: [vasp, dft, relaxation, scf, band-structure, dos, bohrium]
 tools: [run_bash,run_python_file]
-dependent_skills: []
+dependent_skills: [dpdisp]
 ---
 
 # VASP DFT Skill
 
-Two scripts work together to run VASP calculations:
+
+One script handles VASP-specific work; job submission is now delegated to the `dpdisp-submit` skill (DPDispatcher), which supports both Bohrium and standard Slurm/HPC clusters:
 
 | Script | Role |
 |---|---|
 | `vasp_tools.py` | Prepare input files; collect / read results |
-| `bohrium_submit.py` | Submit prepared directories to Bohrium via dpdispatcher |
+| `skills/dpdisp/` | Submit prepared directories as jobs via DPDispatcher (see `dpdisp-submit` skill) |
 
-Both scripts live in the same directory alongside `config.yaml` and `.env`.
+`vasp_tools.py` lives alongside `config.yaml` and `.env`.
 Every command prints JSON to stdout and exits 0 on success, 1 on error.
 
+> **Note:** Submission is now handled by the `dpdisp-submit` skill, which supports both Bohrium and standard Slurm clusters. The previous `bohr` skill and `bohrium_submit.py` are deprecated for new workflows.
+
 ---
+
 
 ## Mandatory workflow sequence
 
 1. **Obtain a structure** — if the user has not supplied one, generate it first.
 2. **Prepare inputs** — run the appropriate `vasp_tools.py prepare_*` command.
-3. **Submit to Bohrium** — pass the returned `calc_dir_list` to `bohrium_submit.py submit`.
+3. **Submit jobs** — pass the returned `calc_dir_list` to the `dpdisp-submit` skill by generating a `submission.json` (see [Submission — dpdisp-submit skill](#submission-dpdisp-skill) below).
 4. **Collect / read results** — after the job finishes, run `collect_results` or `read_results`.
 
 Run exactly **one property step at a time**. Do not chain relaxation + SCF in a single step.
@@ -164,75 +168,120 @@ python vasp_tools.py read_results \
 
 ---
 
-## bohrium_submit.py — Command reference
 
-### Environment variables (`.env` or shell export)
+## Submission — `dpdisp-submit` skill {#submission-dpdisp-skill}
+
+Submission is handled by the `dpdisp-submit` skill (DPDispatcher), which supports both Bohrium and standard Slurm/HPC clusters. See the `dpdisp-submit` skill documentation for full details and schema.
+
+### Required environment variables
+
+Set in your environment or via `.env` as needed for your backend (e.g., Bohrium credentials, Slurm SSH info, etc). For Bohrium, typical variables include:
 
 | Variable | Description |
 |---|---|
-| `BOHRIUM_USERNAME` | Bohrium account email |
+| `BOHRIUM_EMAIL` | Bohrium account e-mail |
 | `BOHRIUM_PASSWORD` | Bohrium account password |
 | `BOHRIUM_PROJECT_ID` | Bohrium project ID (integer) |
-| `BOHRIUM_VASP_MACHINE` | Machine type, e.g. `c32_m128_cpu` |
-| `BOHRIUM_VASP_IMAGE` | Container image for VASP |
+| `BOHRIUM_VASP_MACHINE` | Machine/scass type, e.g. `c32_m128_cpu` |
+| `BOHRIUM_VASP_IMAGE` | Container image URI for VASP |
 
-### submit
+For Slurm or other clusters, set the appropriate SSH and resource variables (see `dpdisp-submit` docs).
 
-```bash
-python bohrium_submit.py submit \
-    --calc_dirs <dir1> [<dir2> ...] \
-    --calc_type <relaxation|scf|nscf> \
-    [--group_size 4] \
-    [--vasp_command "source /opt/intel/oneapi/setvars.sh && mpirun -n 32 vasp_std"]
-```
+### Example submission.json for VASP (Bohrium)
 
-- All `--calc_dirs` **must share the same parent directory** (used as dpdispatcher `local_root`).
-- `--group_size`: jobs per Bohrium submission group (default 4).
-- `--vasp_command`: shell command executed on the remote (default shown above).
+Bohrium uses `remote_profile` with an `input_data` sub-object. The `scass_type`, `image_name`, `platform`, and `job_type` fields go inside `input_data`.
 
-**File transfer per calc type:**
-
-| calc_type | Forward (upload) | Backward (download) |
-|---|---|---|
-| `relaxation` | POSCAR INCAR POTCAR KPOINTS | OSZICAR CONTCAR OUTCAR vasprun.xml |
-| `scf` | POSCAR INCAR POTCAR KPOINTS | OSZICAR CONTCAR OUTCAR vasprun.xml CHGCAR WAVECAR |
-| `nscf` | POSCAR INCAR POTCAR KPOINTS CHGCAR WAVECAR | OSZICAR CONTCAR OUTCAR vasprun.xml |
-
-Returns:
 ```json
-{ "status": "success", "calc_type": "scf", "calc_dir_list": ["<abs_path>", ...] }
+{
+    "work_base": ".",
+    "machine": {
+        "batch_type": "Bohrium",
+        "context_type": "BohriumContext",
+        "local_root": ".",
+        "remote_profile": {
+            "email": "${BOHRIUM_EMAIL}",
+            "password": "${BOHRIUM_PASSWORD}",
+            "program_id": ${BOHRIUM_PROJECT_ID},
+            "input_data": {
+                "job_type": "container",
+                "log_file": "log",
+                "scass_type": "${BOHRIUM_VASP_MACHINE}",
+                "platform": "ali",
+                "image_name": "${BOHRIUM_VASP_IMAGE}"
+            }
+        }
+    },
+    "resources": {
+        "group_size": 4
+    },
+    "task_list": [
+        {
+            "command": "source /opt/intel/oneapi/setvars.sh && mpirun -n 32 vasp_std",
+            "task_work_path": "<calc_dir>",
+            "forward_files": ["POSCAR", "INCAR", "POTCAR", "KPOINTS"],
+            "backward_files": ["OSZICAR", "CONTCAR", "OUTCAR", "vasprun.xml", "log", "err"]
+        }
+    ]
+}
 ```
+
+For Slurm, set `batch_type` to `Slurm`, `context_type` to `SSHContext`, and fill in the SSH and resource fields as needed.
+
+### Submission flow
+
+1. Generate `submission.template.json` as above, using `${VARNAME}` for any environment variables.
+2. Substitute variables:
+     ```bash
+     envsubst '${BOHRIUM_EMAIL} ${BOHRIUM_PASSWORD} ${BOHRIUM_PROJECT_ID} ${BOHRIUM_VASP_MACHINE} ${BOHRIUM_VASP_IMAGE}' < submission.template.json > submission.json
+     ```
+3. Validate and submit:
+     ```bash
+     uv run -m json.tool submission.json >/dev/null
+     uvx --with dpdispatcher dargs check -f dpdispatcher.entrypoints.submit.submission_args submission.json
+     uvx --from dpdispatcher --with oss2 dpdisp submit submission.json
+     ```
+
+> **Note:** Always use `--with oss2` for Bohrium jobs. `oss2` (Aliyun OSS SDK) is required by `BohriumContext` but is not bundled with dpdispatcher in uvx isolated environments. Omitting it causes `NameError: name 'oss2' is not defined`.
+
+Append or adjust fields for SCF/NSCF as needed (e.g., add `CHGCAR`, `WAVECAR` to `forward_files`/`backward_files`).
 
 ---
+
 
 ## End-to-end example: relaxation → SCF → band structure
 
 ```bash
 # 1. Prepare relaxation
 RELAX=$(python vasp_tools.py prepare_relaxation --structure Al.extxyz)
-RELAX_DIRS=$(echo $RELAX | python -c "import sys,json; print(' '.join(json.load(sys.stdin)['calc_dir_list']))")
+RELAX_DIRS=$(echo $RELAX | python -c "import sys,json; print(' '.join(json.load(sys.stdin)['calc_dir_list'])))
 
-# 2. Submit relaxation to Bohrium
-python bohrium_submit.py submit --calc_dirs $RELAX_DIRS --calc_type relaxation
+# 2. Generate submission.template.json for relaxation (see above for schema)
+#    (Repeat for each calc_dir as a task in task_list)
 
-# 3. Read relaxation results
+# 3. Substitute environment variables
+envsubst '${BOHRIUM_USERNAME} ${BOHRIUM_PASSWORD} ${BOHRIUM_PROJECT_ID} ${BOHRIUM_VASP_MACHINE} ${BOHRIUM_VASP_IMAGE}' < submission.template.json > submission.json
+
+# 4. Validate and submit
+uv run -m json.tool submission.json >/dev/null
+uvx --with dpdispatcher dargs check -f dpdispatcher.entrypoints.submit.submission_args submission.json
+uvx --from dpdispatcher --with oss2 dpdisp submit submission.json
+
+# 5. Read relaxation results
 python vasp_tools.py read_results --calc_type relaxation --calc_dir <relax_dir>
 
-# 4. Prepare SCF from relaxed structure (CONTCAR → extxyz conversion needed, or pass CONTCAR directly)
+# 6. Prepare SCF from relaxed structure (CONTCAR → extxyz conversion needed, or pass CONTCAR directly)
 SCF=$(python vasp_tools.py prepare_scf --structure Al_relaxed.extxyz)
-SCF_DIRS=$(echo $SCF | python -c "import sys,json; print(' '.join(json.load(sys.stdin)['calc_dir_list']))")
+SCF_DIRS=$(echo $SCF | python -c "import sys,json; print(' '.join(json.load(sys.stdin)['calc_dir_list'])))
 
-# 5. Submit SCF
-python bohrium_submit.py submit --calc_dirs $SCF_DIRS --calc_type scf
+# 7. Repeat submission steps for SCF (adjust forward/backward files as needed, add CHGCAR/WAVECAR to backward_files for SOC)
 
-# 6. Prepare NSCF k-path from SCF output
+# 8. Prepare NSCF k-path from SCF output
 NSCF=$(python vasp_tools.py prepare_nscf_kpath --scf_dirs $SCF_DIRS)
-NSCF_DIRS=$(echo $NSCF | python -c "import sys,json; print(' '.join(json.load(sys.stdin)['calc_dir_list']))")
+NSCF_DIRS=$(echo $NSCF | python -c "import sys,json; print(' '.join(json.load(sys.stdin)['calc_dir_list'])))
 
-# 7. Submit NSCF
-python bohrium_submit.py submit --calc_dirs $NSCF_DIRS --calc_type nscf
+# 9. Repeat submission steps for NSCF
 
-# 8. Read NSCF results (band gap, CBM/VBM)
+# 10. Read NSCF results (band gap, CBM/VBM)
 python vasp_tools.py read_results --calc_type nscf --calc_dir <nscf_dir>
 ```
 

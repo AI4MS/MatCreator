@@ -18,7 +18,6 @@ from __future__ import annotations
 import subprocess
 import textwrap
 from pathlib import Path
-from google.adk.tools.tool_context import ToolContext
 
 from ..workspace import get_workspace_root, workspace_skills_dir
 

@@ -181,12 +181,51 @@ def execution_after_tool_callback(
     return None
 
 
+def execution_on_tool_error_callback(
+    tool: BaseTool,
+    args: Dict[str, Any],
+    tool_context: ToolContext,
+    error: Exception,
+) -> dict[str, Any]:
+    """Return a graceful error dict instead of re-raising unknown/unavailable tool errors.
+
+    When a tool is not found in tools_dict (e.g. filtered out by the active
+    skill or hallucinated by the LLM), ADK would normally re-raise the
+    ValueError after finding no on_tool_error_callback.  That leaves the
+    session history with an orphaned function_call event (no matching
+    function_response), which causes subsequent LLM calls — including the
+    summarize agent — to fail with API errors.
+
+    Returning a dict here produces a proper function_response event, keeps the
+    conversation history well-formed, and gives the LLM a clear message so it
+    can call break_execution or correct its next step.
+    """
+    tool_name = getattr(tool, "name", "unknown")
+    logger.warning(
+        "execution_on_tool_error_callback: tool='%s' error=%s",
+        tool_name,
+        error,
+    )
+    return {
+        "status": "error",
+        "tool_name": tool_name,
+        "message": str(error),
+        "suggestion": (
+            "This tool is not available in the current skill context or does not exist. "
+            "Call `break_execution` to stop execution and trigger replanning, "
+            "or load the correct skill first with `load_skill_context`."
+        ),
+    }
+
+
 # Tools that must always remain available regardless of active skill
 _ALWAYS_AVAILABLE_EXECUTION_TOOLS: set[str] = {
     "load_skill_context",
     "break_execution",
     "summarize_agent",
     "plot_agent",
+    "run_bash",
+    "run_python"
 }
 
 
@@ -504,10 +543,12 @@ class ExecutionAgent(LlmAgent):
             logger.info("Plan execution completed")
             
         except Exception as e:
-            logger.error(f"Execution failed: {e}")
+            logger.error(f"Execution failed: {e}",exc_info=True)
+            #ctx.session.state.update(state_delta)
             error_event = Event(
                 content=Content(parts=[Part(text=f"❌ Execution error: {str(e)}")]),
-                author=self.name
+                author=self.name,
+            #    actions=EventActions(state_delta=state_delta),
             )
             self._save_key_execution_event(ctx.session.state, error_event)
             yield error_event
@@ -529,23 +570,6 @@ Output ONLY a JSON object — no markdown fences, no extra text:
   "concise_summary": "<user-facing one-paragraph execution summary>"
 }}
 """
-
-class ExecutionSummary(BaseModel):
-    """Structured summary of execution outcomes for decision making."""
-    key_results: str = Field(
-        ...,
-        description="Concise summary of what was produced or learned during execution.",
-        max_length=1200,
-    )
-    artifacts: List[str] = Field(
-        default_factory=list,
-        description="Important generated files/paths/IDs observed in execution outputs.",
-    )
-    concise_summary: str = Field(
-        ...,
-        description="User-facing one-paragraph execution summary.",
-        max_length=800,
-    )
 
 summarize_agent = LlmAgent(
     name="summarize_agent",
@@ -574,6 +598,7 @@ execution_agent = ExecutionAgent(
         instruction=_EXECUTION_INSTRUCTION,
         before_model_callback=execution_before_model_callback,
         after_tool_callback=execution_after_tool_callback,
+        on_tool_error_callback=execution_on_tool_error_callback,
         disallow_transfer_to_parent=True,
         disallow_transfer_to_peers=True,
         tools=[

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 import numpy as np
 import pandas as pd
@@ -18,12 +18,12 @@ class DataInspectionResult(BaseModel):
     file_path: str = Field(..., description="Absolute path to the inspected file")
     file_format: str = Field(..., description="Detected file format (csv, json, npy, txt, etc.)")
     shape: tuple = Field(..., description="Shape of the data array/dataframe")
-    columns: Optional[List[str]] = Field(None, description="Column names if applicable")
-    dtypes: Optional[Dict[str, str]] = Field(None, description="Data types for each column")
-    sample_data: Optional[str] = Field(None, description="First few rows/entries as string")
-    statistics: Optional[Dict[str, Any]] = Field(None, description="Basic statistics (min, max, mean)")
-    missing_values: Optional[Dict[str, int]] = Field(None, description="Count of NaN/None per column")
-    recommendations: List[str] = Field(default_factory=list, description="Suggestions for plotting")
+    columns: list[str] = Field(default_factory=list, description="Column names if applicable")
+    dtypes: Dict[str, str] = Field(default_factory=dict, description="Data types for each column")
+    sample_data: str = Field(default="", description="First few rows/entries as string")
+    statistics: Dict[str, Any] = Field(default_factory=dict, description="Basic statistics (min, max, mean)")
+    missing_values: Dict[str, int] = Field(default_factory=dict, description="Count of NaN/None per column")
+    recommendations: list[str] = Field(default_factory=list, description="Suggestions for plotting")
 
 
 def inspect_data(file_path: str) -> DataInspectionResult:

@@ -17,7 +17,7 @@ from google.adk.tools.function_tool import FunctionTool
 from pydantic import BaseModel, Field, field_validator
 
 from ...constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
-from ..skill import _load_skill_registry, load_guide_content
+from ..skill import _load_skill_registry, load_guide_content, load_skill_content
 
 _model_name = os.environ.get("LLM_MODEL", LLM_MODEL)
 _model_api_key = os.environ.get("LLM_API_KEY", LLM_API_KEY)
@@ -174,6 +174,7 @@ plan_builder_agent = LlmAgent(
     instruction=_PLAN_BUILDER_INSTRUCTION,
     tools=[
         FunctionTool(load_guide_content),
+        FunctionTool(load_skill_content),
     ],
     before_tool_callback=_plan_builder_before_tool,
     after_tool_callback=_plan_builder_after_tool,

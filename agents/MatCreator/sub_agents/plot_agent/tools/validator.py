@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ast
-from typing import Dict, List
+from typing import Dict
 
 from pydantic import BaseModel, Field
 
@@ -12,10 +12,10 @@ class CodeValidationResult(BaseModel):
     """Result of code validation."""
     
     is_valid: bool = Field(..., description="Whether the code passes all checks")
-    errors: List[str] = Field(default_factory=list, description="Critical errors that prevent execution")
-    warnings: List[str] = Field(default_factory=list, description="Non-critical issues or suggestions")
-    allowed_imports: List[str] = Field(default_factory=list, description="Detected safe imports")
-    forbidden_patterns: List[str] = Field(default_factory=list, description="Dangerous patterns detected")
+    errors: list[str] = Field(default_factory=list, description="Critical errors that prevent execution")
+    warnings: list[str] = Field(default_factory=list, description="Non-critical issues or suggestions")
+    allowed_imports: list[str] = Field(default_factory=list, description="Detected safe imports")
+    forbidden_patterns: list[str] = Field(default_factory=list, description="Dangerous patterns detected")
 
 
 # Whitelist of allowed imports for plotting

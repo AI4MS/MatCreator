@@ -7,7 +7,6 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Dict, Optional
 
 from pydantic import BaseModel, Field
 
@@ -16,7 +15,7 @@ class ExecutionResult(BaseModel):
     """Result of code execution."""
     
     success: bool = Field(..., description="Whether execution completed without errors")
-    output_path: Optional[str] = Field(None, description="Path to generated plot file if successful")
+    output_path: str = Field(default="", description="Path to generated plot file if successful")
     stdout: str = Field(default="", description="Standard output from execution")
     stderr: str = Field(default="", description="Standard error from execution")
     exit_code: int = Field(default=0, description="Process exit code")
@@ -25,9 +24,9 @@ class ExecutionResult(BaseModel):
 
 def execute_plot_code(
     code: str,
-    output_dir: Optional[str] = None,
+    output_dir: str = "",
     timeout: int = 30,
-    python_executable: Optional[str] = None,
+    python_executable: str = "",
 ) -> ExecutionResult:
     """
     Execute matplotlib plotting code in an isolated subprocess.
@@ -49,10 +48,10 @@ def execute_plot_code(
     """
     import time
     
-    if python_executable is None:
+    if not python_executable:
         python_executable = sys.executable
     
-    if output_dir is None:
+    if not output_dir:
         output_dir = tempfile.mkdtemp(prefix="plot_output_")
     else:
         output_dir = os.path.abspath(output_dir)

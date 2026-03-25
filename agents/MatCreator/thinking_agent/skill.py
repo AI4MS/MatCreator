@@ -234,10 +234,38 @@ def list_skill_name_descriptions() -> List[Dict[str, str]]:
         for skill in SKILL_LIBRARY.values()
     ]
 
+
+def load_skill_content(skill_name: str) -> dict:
+    """Fetch the full instruction body of a skill by name.
+    Call this when a skill's description is not sufficient to inform planning
+    and the full instruction text is needed.
+
+    Args:
+        skill_name: Exact skill name as listed by list_skill_name_descriptions.
+
+    Returns:
+        Dict with ``name``, ``description``, ``needed_tools``, ``dependent_skills``,
+        and ``instruction`` (the full markdown content), or an ``error`` key if not found.
+    """
+    registry = _load_skill_registry()
+    skill = registry.get(skill_name)
+    if skill is None:
+        available = ", ".join(sorted(registry.keys())) or "<none>"
+        return {"error": f"Skill '{skill_name}' not found. Available skills: {available}"}
+    return {
+        "name": skill.name,
+        "description": skill.description,
+        "needed_tools": skill.needed_tools,
+        "dependent_skills": skill.dependent_skills,
+        "instruction": skill.instruction,
+    }
+
+
 __all__ = [
     "Skill",
     "Guide",
     "list_skill_name_descriptions",
+    "load_skill_content",
     "list_guide_metadata",
     "load_guide_content",
     "SKILL_LIBRARY",

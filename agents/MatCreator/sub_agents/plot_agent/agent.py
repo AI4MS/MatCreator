@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import json
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
@@ -30,16 +30,16 @@ class PlotAgentInput(BaseModel):
         ...,
         description="Natural language description of what plot to create"
     )
-    data_paths: List[str] = Field(
+    data_paths: list[str] = Field(
         ...,
         description="Paths to data files (CSV, NPY, JSON, TXT, etc.)"
     )
-    plot_type: Optional[str] = Field(
-        None,
+    plot_type: str = Field(
+        default="",
         description="Specific plot type if known: scatter, line, bar, histogram, heatmap, contour, band_structure, dos, etc."
     )
-    output_dir: Optional[str] = Field(
-        None,
+    output_dir: str = Field(
+        default="",
         description="Base directory to save plots (default: /tmp/plots). A unique timestamped subdirectory will be created."
     )
 
@@ -63,7 +63,7 @@ class PlotAgentOutput(BaseModel):
         ...,
         description="Summary of the input data characteristics"
     )
-    warnings: List[str] = Field(
+    warnings: list[str] = Field(
         default_factory=list,
         description="Any warnings or assumptions made during plotting (empty list if none)"
     )
