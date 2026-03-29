@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.0.13 (2026-03-29)
+
+### Bug Fixes
+
+- Remove subagents
+  ([`c976184`](https://github.com/nlz25/PFD_Agent/commit/c97618430917251bb5df3c1eff9974ffc50147f5))
+
+
 ## v1.0.12 (2026-03-27)
 
 ### Bug Fixes
