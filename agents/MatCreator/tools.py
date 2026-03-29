@@ -12,10 +12,6 @@ import logging
 from urllib.parse import urlparse
 from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.mcp_tool import McpToolset
-from .sub_agents import (
-    sql_agent,
-    plot_agent
-)
 
 from .thinking_agent.workspace_tools import (
     write_workspace_file,
@@ -27,6 +23,8 @@ from .thinking_agent.workspace_tools import (
     run_python_file,
     init_workspace_tool,
 )
+
+from .util_tools import show_plot
 
 from google.adk.tools.mcp_tool.mcp_session_manager import SseServerParams
 
@@ -47,10 +45,6 @@ def _is_sse_server_active(url: str, timeout: float = 2.0) -> bool:
 ## All tool sets
 TOOLSETS = []
 
-# Database toolset (in-process sub-agent, always included)
-TOOLSETS.append(AgentTool(sql_agent))
-TOOLSETS.append(AgentTool(plot_agent))
-
 TOOLSETS.extend(
     [write_workspace_file,
     read_workspace_file,
@@ -59,7 +53,8 @@ TOOLSETS.extend(
     run_python,
     run_bash,
     run_python_file,
-    init_workspace_tool]
+    init_workspace_tool,
+    show_plot]
 )
 
 # Database toolset

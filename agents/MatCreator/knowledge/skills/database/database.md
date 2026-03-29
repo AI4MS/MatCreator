@@ -1,7 +1,7 @@
 ---
 name: database
-description: Skills for materials dataset operations using CLI tools. Query and manage ASE databases and a normalized SQLite information database (nodes/datasets/dataset_elements schema).
-tools: [database_sql_agent,run_bash,run_python_file]
+description: Skills for materials dataset operations using CLI tools. Query and manage ASE databases and a normalized SQLite information database (nodes/datasets/dataset_elements schema). Includes SQL composition guidance for query-info.
+tools: [run_bash,run_python_file]
 tags: [general, sequential, simple]
 ---
 
@@ -11,7 +11,7 @@ All tools are in `db_tools.py` (same directory as this file).
 Run as: `python /path/to/db_tools.py <command> [options]`  
 Every command prints a **JSON object** to stdout and exits 0 on success, 1 on error.
 
-Set `INFO_DB_PATH` (env var) to the SQLite info database path, or pass `--info-db` explicitly.
+Check `INFO_DB_PATH` (env var) for SQLite info database path, or pass `--info-db` explicitly. 
 ---
 
 ## Commands
@@ -38,7 +38,7 @@ python db_tools.py query-info \
 Returns `{"query": "...", "count": N, "datasets": [...]}`.  
 The `path` field is automatically resolved to an absolute path.
 
-**Schema reference:**
+**Schema reference:** (see [SQL Composition Guide](#sql-composition-guide-for-query-info) below for full details and examples)
 - `nodes(node_id, name, description, functional, code, cutoff_eV, pseudopot, kspacing, spin_pol, vdw, extra_params, created_at)`
 - `datasets(dataset_id, node_id, elements, n_elements, system_type, field, entries, source, path, has_forces, has_stress, has_energy, energy_min, energy_max, created_at)`
 - `dataset_elements(dataset_id, element)`
@@ -163,4 +163,127 @@ Use this flow for dataset search:
    python db_tools.py export-entries \
      --db-path <path> --mode selection --selection "Si,O" --fmt extxyz
    ```
+
+---
+
+## SQL Composition Guide for `query-info`
+
+Compose SELECT statements yourself and pass them to `query-info`. Follow the rules and examples below.
+
+### Full Schema
+
+**`nodes`** — one row per DFT computation node (settings)
+
+| Column | Type | Description |
+|---|---|---|
+| `node_id` | INTEGER PK | Unique identifier |
+| `name` | TEXT | Node label (e.g. `PBE`, `PBEsol_Bulk`) |
+| `description` | TEXT | Human-readable description |
+| `functional` | TEXT | DFT functional: `PBE`, `PBEsol`, `LDA`, `SCAN`, `HSE06` … |
+| `code` | TEXT | DFT code: `VASP`, `ABACUS`, `QE`, `CP2K` … |
+| `cutoff_eV` | REAL | Plane-wave energy cutoff |
+| `pseudopot` | TEXT | Pseudopotential / PAW label |
+| `kspacing` | REAL | k-point spacing |
+| `spin_pol` | INTEGER | Spin-polarised calculation (0/1) |
+| `vdw` | TEXT | van der Waals correction |
+| `extra_params` | TEXT | JSON blob with additional settings |
+| `created_at` | TEXT | ISO timestamp |
+
+**`datasets`** — one row per ASE `.db` file
+
+| Column | Type | Description |
+|---|---|---|
+| `dataset_id` | INTEGER PK | Unique identifier |
+| `node_id` | INTEGER FK | Links to `nodes` |
+| `elements` | TEXT | Comma-separated element list |
+| `n_elements` | INTEGER | Number of distinct elements |
+| `system_type` | TEXT | `Bulk`, `Cluster`, `Surface`, `Interface` … |
+| `field` | TEXT | Application field (e.g. `Catalysis`, `Semiconductor`) |
+| `entries` | INTEGER | Frame count |
+| `source` | TEXT | URL / DOI / provenance |
+| `path` | TEXT | Relative path to the ASE `.db` file (resolved by `query-info`) |
+| `has_forces` | INTEGER | Forces available (0/1) |
+| `has_stress` | INTEGER | Stress available (0/1) |
+| `has_energy` | INTEGER | Energy available (0/1) |
+| `energy_min` | REAL | Minimum per-atom energy |
+| `energy_max` | REAL | Maximum per-atom energy |
+| `created_at` | TEXT | ISO timestamp |
+
+**`dataset_elements`** — many-to-many element membership
+
+| Column | Type | Description |
+|---|---|---|
+| `dataset_id` | INTEGER FK | Links to `datasets` |
+| `element` | TEXT | Element symbol (e.g. `Si`, `O`) |
+
+---
+
+### SQL Rules
+
+1. Write only `SELECT` statements — no `UPDATE`, `INSERT`, `DELETE`, `DROP`, `ALTER`, `PRAGMA`, or `ATTACH`.
+2. Always `SELECT` the `path` column from `datasets` so the caller can open the `.db` file.
+3. Use `LIKE` for fuzzy text matching on `name`, `system_type`, `field`, `source`, `description`.
+4. Use `LIMIT` only when the user specifies a cap (infer 20 for "a few" / "top N").
+5. Parenthesise `OR` groups; use explicit `AND` / `OR`.
+6. Validate every SELECT with `validate-sql` before running `query-info`.
+
+---
+
+### SQL Examples
+
+**List all available nodes:**
+```sql
+SELECT node_id, name, functional, code FROM nodes ORDER BY name
+```
+
+**Find datasets by field:**
+```sql
+SELECT d.dataset_id, d.elements, d.entries, d.path
+FROM datasets d
+JOIN nodes n ON d.node_id = n.node_id
+WHERE d.field = 'Catalysis'
+```
+
+**Find datasets computed with a specific functional:**
+```sql
+SELECT d.dataset_id, d.elements, d.system_type, d.entries, d.path
+FROM datasets d
+JOIN nodes n ON d.node_id = n.node_id
+WHERE n.functional = 'PBE'
+```
+
+**Find datasets containing a specific element:**
+```sql
+SELECT d.dataset_id, d.elements, d.entries, d.path
+FROM datasets d
+JOIN dataset_elements de ON d.dataset_id = de.dataset_id
+WHERE de.element = 'Si'
+```
+
+**Find bulk datasets with forces, computed with VASP:**
+```sql
+SELECT d.dataset_id, d.elements, d.entries, d.path
+FROM datasets d
+JOIN nodes n ON d.node_id = n.node_id
+WHERE d.system_type LIKE '%Bulk%'
+  AND d.has_forces = 1
+  AND n.code = 'VASP'
+```
+
+**Find datasets containing both Si and O:**
+```sql
+SELECT d.dataset_id, d.elements, d.entries, d.path
+FROM datasets d
+JOIN dataset_elements de1 ON d.dataset_id = de1.dataset_id
+JOIN dataset_elements de2 ON d.dataset_id = de2.dataset_id
+WHERE de1.element = 'Si' AND de2.element = 'O'
+```
+
+**A few surface datasets (top 20):**
+```sql
+SELECT d.dataset_id, d.elements, d.field, d.entries, d.path
+FROM datasets d
+WHERE d.system_type LIKE '%Surface%'
+LIMIT 20
+```
 

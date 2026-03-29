@@ -34,6 +34,8 @@ skills/deepmd/deepmd_prepare.py
 `input.json` ready for `dp train`. It always runs locally and requires `ase`, `dpdata`,
 and `numpy`.
 
+Check env variable `DEEPMD_MODEL_PATH` for default pre-trained model, or submit explicit model path.
+
 Each sub-command prints a JSON summary to stdout that includes the exact `dp` execution
 command to use in Phase 2.
 
@@ -179,14 +181,17 @@ printed `dp test` commands; they do not affect the data conversion.
 
 ### 3b. Run dp test
 
-Copy the commands from the JSON output, substituting the actual model path:
+> **Tip:** Run `dp --pt test --help` to see the full list of available flags and options.
+
+Copy the commands from the JSON output, substituting the actual model path.
+Always add `-d` to write per-frame detailed output files (DFT vs DP energies, forces, virials, pairs, etc.):
 
 ```bash
 # Single-task model
-dp --pt test -m model.ckpt.pt -s ./test_data/<system_dir> [-n <nframes>]
+dp --pt test -m model.ckpt.pt -s ./test_data/<system_dir> [-n <nframes>] -d
 
 # Multi-task model — specify the head to evaluate
-dp --pt test -m model.ckpt.pt -s ./test_data/<system_dir> --head <head_name> [-n <nframes>]
+dp --pt test -m model.ckpt.pt -s ./test_data/<system_dir> --head <head_name> [-n <nframes>] -d
 ```
 
 **Output files** (written to the current directory):
@@ -196,6 +201,8 @@ dp --pt test -m model.ckpt.pt -s ./test_data/<system_dir> --head <head_name> [-n
 | `e_peratom.out` | Per-frame: DFT energy/atom vs predicted energy/atom (eV/atom) |
 | `f.out` | Per-component: DFT force vs predicted force (eV/Å) |
 | stdout | Summary MAE / RMSE for energy and forces |
+
+> The `-d` flag enables detailed output: per-frame DFT and DP energies, forces, virials, and pair information are written to separate files for further analysis.
 
 ---
 
