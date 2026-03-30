@@ -134,6 +134,10 @@ if "configured_metrics" not in st.session_state:
 if "selected_plot_path" not in st.session_state:
     st.session_state.selected_plot_path = None
 
+# Track the structure currently shown in the right panel
+if "selected_structure_path" not in st.session_state:
+    st.session_state.selected_structure_path = None
+
 def create_metric_config(metric_name, threshold, judge_model="gemini-2.5-flash", num_samples=5, **kwargs):
     """Create a metric configuration dict for the API."""
     metric_config = {
@@ -234,7 +238,7 @@ def render_invocation(invocation_data):
 
 
 def visualize_structure(structure_path, height=400, width=600):
-    """Visualize atomic structure using ASE and py3Dmol."""
+    """Visualize atomic structure using ASE and py3Dmol, with unit cell box."""
     try:
         # Read structure with ASE
         atoms = read(structure_path)
@@ -250,6 +254,41 @@ def visualize_structure(structure_path, height=400, width=600):
         view = py3Dmol.view(width=width, height=height)
         view.addModel(xyz_data, 'xyz')
         view.setStyle({'sphere': {'scale': 0.3}, 'stick': {'radius': 0.15}})
+
+        # Draw unit cell lattice box if a periodic cell is defined
+        if atoms.pbc.any():
+            a, b, c = atoms.cell[0], atoms.cell[1], atoms.cell[2]
+            # 8 corners of the parallelepiped
+            corners = [
+                a * 0,          # 0: origin
+                a,              # 1
+                b,              # 2
+                c,              # 3
+                a + b,          # 4
+                a + c,          # 5
+                b + c,          # 6
+                a + b + c,      # 7
+            ]
+
+            def _pt(v):
+                return {'x': float(v[0]), 'y': float(v[1]), 'z': float(v[2])}
+
+            # 12 edges connecting the corners
+            edges = [
+                (0, 1), (0, 2), (0, 3),
+                (1, 4), (1, 5),
+                (2, 4), (2, 6),
+                (3, 5), (3, 6),
+                (4, 7), (5, 7), (6, 7),
+            ]
+            for i, j in edges:
+                view.addLine({
+                    'start': _pt(corners[i]),
+                    'end':   _pt(corners[j]),
+                    'color': 'black',
+                    'linewidth': 4,
+                })
+
         view.zoomTo()
         
         # Render in Streamlit
@@ -519,7 +558,7 @@ def load_session(session_id):
                 # Initialize paths
                 structure_path = None
                 plot_path = None
-                model_path = None
+                artifact_path = None
                 text = ""
                 thought_text = ""
 
@@ -543,26 +582,18 @@ def load_session(session_id):
                         if p_path:
                             plot_path = p_path
                             artifacts.append({"name": os.path.basename(p_path), "url": p_path})
-
-                        # Check for structure/model paths in content
-                        contents = resp.get("content", [])
-                        for c in contents:
-                            if c.get("type") == "text" and "text" in c:
-                                try:
-                                    payload = json.loads(c["text"])
-                                    # Get structure path
-                                    struct_path = payload.get("structure_path") or payload.get("path")
-                                    if struct_path:
-                                        structure_path = struct_path
-                                        artifacts.append({"name": os.path.basename(struct_path), "url": struct_path})
-                                    # Get model path
-                                    model_p = payload.get("model")
-                                    if isinstance(model_p, list) and len(model_p) > 0:
-                                        model_path = model_p[0]
-                                        artifacts.append({"name": os.path.basename(model_p[0]), "url": model_p[0]})
-                                except json.JSONDecodeError:
-                                    continue
-
+                            
+                        # Check for structure path
+                        s_path = resp.get("structure_path")
+                        if s_path:
+                            structure_path = s_path
+                            artifacts.append({"name": os.path.basename(s_path), "url": s_path})
+                            
+                        a_path = resp.get("artifact_path")
+                        if a_path:
+                            artifact_path=a_path
+                            artifacts.append({"name": os.path.basename(a_path), "url": a_path})
+                            
                 if thought_text:
                     msg_entry["thought"] = thought_text
                 if text:
@@ -574,8 +605,9 @@ def load_session(session_id):
                 if plot_path:
                     msg_entry["plot_path"] = plot_path
                     msg_entry["content"] = "**Plot**"
-                if model_path:
-                    msg_entry["model_path"] = model_path
+                if artifact_path:
+                    msg_entry["artifact_path"] = artifact_path
+                    msg_entry["content"] = "**Artifact**"
                 messages.append(msg_entry)
             
             st.session_state.messages = messages
@@ -625,27 +657,18 @@ def create_session():
         return False
 
 def send_message_sse(message, attachments=None):
-    """Stream agent response incrementally via /run_sse."""
+    """Stream agent response token-by-token via /run_sse, then refresh via load_session."""
     if not st.session_state.session_id:
         st.error("No active session. Please create a session first.")
         return False
 
-    # Backend only needs file paths; send as a list of strings
     attachments_payload = attachments if attachments else []
 
-    # Store message with its attachments for display
-    msg_data = {"role": "user", "content": message}
-    if attachments_payload:
-        msg_data["attachments"] = attachments_payload
-    
-    st.session_state.messages.append(msg_data)
-
-    # Display user message immediately
+    # Show user message immediately (temporary display until rerun)
     with st.chat_message("user"):
         st.write(message)
-        if attachments_payload:
-            for att_path in attachments_payload:
-                st.caption(f"📎 {os.path.basename(att_path)}")
+        for att_path in attachments_payload:
+            st.caption(f"📎 {os.path.basename(att_path)}")
 
     # Build message text with attachment paths included
     message_with_attachments = message
@@ -668,9 +691,7 @@ def send_message_sse(message, attachments=None):
                 "session_id": st.session_state.session_id,
                 "new_message": {
                     "role": "user",
-                    "parts": [{
-                        "text": message_with_attachments
-                        }],
+                    "parts": [{"text": message_with_attachments}],
                 }
             }),
             stream=True,
@@ -679,150 +700,41 @@ def send_message_sse(message, attachments=None):
                 st.error(f"Error: {response.text}")
                 return False
 
-            # Accumulate thought text across events; shown in a collapsed
-            # expander the first time a non-thought response event appears.
-            pending_thought_text = ""
+            accumulated_thought = ""
+            accumulated_content = ""
 
-            for line in response.iter_lines(decode_unicode=True, chunk_size=1):
-                if not line or not line.startswith("data: "):
-                    continue
-                data_str = line[len("data: "):]
-                if data_str == "[DONE]":
-                    break
-                try:
-                    event = json.loads(data_str)
-                    role = event.get("author", "agent")
-                    parts = event.get("content", {}).get("parts", [{}])
-                    if not parts:
-                        parts = [{}]
+            with st.chat_message("agent"):
+                # Mirror load_session display order: thought expander first, then content
+                thought_expander = st.expander("🤔 Thinking...", expanded=False)
+                thought_area = thought_expander.empty()
+                content_area = st.empty()
 
-                    # Separate thought parts (internal reasoning) from
-                    # actual response parts.  Parts with thought=True are
-                    # emitted by thinking models (e.g. Gemini 2.5 Flash
-                    # Thinking) and should NOT be surfaced as the main reply.
-                    thought_text_chunk = ""
-                    content = ""
-                    for p in parts:
-                        if p.get("thought", False):
-                            thought_text_chunk += p.get("text", "")
-                        elif "text" in p:
-                            content += p["text"]
+                for line in response.iter_lines(decode_unicode=True):
+                    if not line or not line.startswith("data: "):
+                        continue
+                    data_str = line[len("data: "):]
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        event = json.loads(data_str)
+                        for p in event.get("content", {}).get("parts", []):
+                            if p.get("thought", False):
+                                accumulated_thought += p.get("text", "")
+                                thought_area.markdown(accumulated_thought)
+                            elif "text" in p:
+                                accumulated_content += p["text"]
+                                content_area.markdown(accumulated_content)
+                    except json.JSONDecodeError:
+                        continue
 
-                    # Accumulate thoughts until a real response arrives.
-                    if thought_text_chunk:
-                        pending_thought_text += thought_text_chunk
-
-                    # Use the first part for functionResponse processing
-                    # (unchanged from original logic).
-                    part = parts[0]
-
-                    structure_path = None
-                    plot_path = None
-                    model_path = None
-
-                    # Extract function response content
-                    if "functionResponse" in part:
-                        fr = part["functionResponse"]
-                        resp = fr.get("response", {})
-                        
-                        # Check for plot path
-                        p_path = resp.get("plot_path")
-                        if p_path:
-                            st.session_state.artifacts.append({"name": os.path.basename(p_path), "url": p_path})
-                            content += f"\n\nplot: [{os.path.basename(p_path)}]({p_path})\n\n"
-                            plot_path = p_path
-                        
-                            
-                        # Check for structure path in content
-                        contents = resp.get("content", [])
-                        for c in contents:
-                            if c.get("type") == "text" and "text" in c:
-                                try:
-                                    payload = json.loads(c["text"])
-                                    # get structure path
-                                    struct_path = payload.get("structure_path") or payload.get("path")
-                                    if struct_path:
-                                        st.session_state.artifacts.append({"name": os.path.basename(struct_path), "url": struct_path})
-                                        content += f"\n\nstructure path: [{os.path.basename(struct_path)}]({struct_path})\n\n"
-                                        structure_path = struct_path
-                                    # get model path
-                                    model_p = payload.get("model")
-                                    if isinstance(model_p,list) and len(model_p) > 0:
-                                        st.session_state.artifacts.append({"name": os.path.basename(model_p[0]), "url": model_p[0]})
-                                        content += f"\n\nmodel: [{os.path.basename(model_p[0])}]({model_p[0]})\n\n"
-                                        model_path = model_p[0]
-                                        
-                                except json.JSONDecodeError:
-                                    continue
-                    
-                    # Only render a chat bubble when there is real (non-thought)
-                    # content.  Thought-only events are silently accumulated and
-                    # revealed in a collapsed expander together with the first
-                    # substantive response.
-                    if content or structure_path or plot_path or model_path:
-                        with st.chat_message(role):
-                            # Surface any accumulated thinking before the reply.
-                            if pending_thought_text:
-                                escaped = pending_thought_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                                st.markdown(
-                                    f'<details style="background:#f0f4f8;border-left:4px solid #7c8fac;'
-                                    f'padding:0.5rem 1rem;border-radius:0 4px 4px 0;margin:0.25rem 0">'
-                                    f'<summary style="color:#4a6fa5;font-weight:600;cursor:pointer">🤔 Thinking...</summary>'
-                                    f'<pre style="margin-top:0.5rem;color:#444;font-size:0.85em;white-space:pre-wrap;word-break:break-word">'
-                                    f'{escaped}</pre></details>',
-                                    unsafe_allow_html=True
-                                )
-                                pending_thought_text = ""
-
-                            if content:
-                                st.markdown(content)
-                            
-                            # Visualize structure if present
-                            if structure_path and os.path.exists(resolve_path(structure_path)):
-                                st.divider()
-                                st.markdown("**Structure Visualization:**")
-                                visualize_structure(resolve_path(structure_path))
-                            
-                            # Display plot if present — show inline and also send to right panel
-                            if plot_path and os.path.exists(resolve_path(plot_path)):
-                                st.session_state.selected_plot_path = plot_path
-                                st.image(resolve_path(plot_path), use_container_width=True)
-                                if st.button(f"📊 View Plot: {os.path.basename(plot_path)}", key=f"view_plot_stream_{plot_path}"):
-                                    pass  # already set above
-                            
-                            # Display model if present
-                            if model_path and os.path.exists(resolve_path(model_path)):
-                                st.divider()
-                                st.markdown("**Model File:**")
-                                st.info(f"📦 {os.path.basename(model_path)}")
-                                # Add download button for model
-                                with open(resolve_path(model_path), "rb") as f:
-                                    st.download_button(
-                                        label=f"⬇️ Download {os.path.basename(model_path)}",
-                                        data=f.read(),
-                                        file_name=os.path.basename(model_path),
-                                        key=f"download_model_stream_{model_path}"
-                                    )
-                        
-                        # Store message in session state
-                        msg_to_store = {"role": role, "content": content}
-                        if structure_path:
-                            msg_to_store["structure_path"] = structure_path
-                        if plot_path:
-                            msg_to_store["plot_path"] = plot_path
-                        if model_path:
-                            msg_to_store["model_path"] = model_path
-                        st.session_state.messages.append(msg_to_store)
-                        
-                except json.JSONDecodeError:
-                    continue
-            
-            # Clear file uploader by incrementing key
-            st.session_state.uploader_key += 1
-            return True
     except requests.RequestException as exc:
         st.error(f"Streaming error: {exc}")
         return False
+
+    # Refresh all session state from the server for consistent rendering on rerun
+    load_session(st.session_state.session_id)
+    st.session_state.uploader_key += 1
+    return True
 
 # UI Components
 st.title("MatCreator")
@@ -963,12 +875,13 @@ if st.session_state.view_mode == "session":
                     if "content" in msg:
                         st.write(msg["content"])
 
-                    # Show structure visualization if present
+                    # Show structure button — opens in right panel
                     if "structure_path" in msg and os.path.exists(resolve_path(msg["structure_path"])):
-                        #st.divider()
-                        #st.markdown("**Structure Visualization:**")
-                        visualize_structure(resolve_path(msg["structure_path"]))
-                        # Add download button for structure
+                        if st.button(f"🔬 View Structure: {os.path.basename(msg['structure_path'])}", key=f"view_struct_{msg_idx}"):
+                            st.session_state.selected_structure_path = msg["structure_path"]
+                            st.session_state.selected_plot_path = None
+                            st.rerun()
+                        # Download button for structure
                         with open(resolve_path(msg["structure_path"]), "rb") as f:
                             st.download_button(
                                 label=f"⬇️ Download {os.path.basename(msg['structure_path'])}",
@@ -991,17 +904,17 @@ if st.session_state.view_mode == "session":
                                 key=f"download_plot_{msg_idx}_{os.path.basename(msg['plot_path'])}"
                             )
                     # Show model if present
-                    if "model_path" in msg and os.path.exists(resolve_path(msg["model_path"])):
+                    if "artifact_path" in msg and os.path.exists(resolve_path(msg["artifact_path"])):
                         st.divider()
                         st.markdown("**Model File:**")
-                        st.info(f"📦 {os.path.basename(msg['model_path'])}")
+                        st.info(f"📦 {os.path.basename(msg['artifact_path'])}")
                         # Add download button for model
-                        with open(resolve_path(msg["model_path"]), "rb") as f:
+                        with open(resolve_path(msg["artifact_path"]), "rb") as f:
                             st.download_button(
-                                label=f"⬇️ Download {os.path.basename(msg['model_path'])}",
+                                label=f"⬇️ Download {os.path.basename(msg['artifact_path'])}",
                                 data=f.read(),
-                                file_name=os.path.basename(msg["model_path"]),
-                                key=f"download_model_{msg_idx}_{os.path.basename(msg['model_path'])}"
+                                file_name=os.path.basename(msg["artifact_path"]),
+                                key=f"download_model_{msg_idx}_{os.path.basename(msg['artifact_path'])}"
                             )
 
         # Input for new messages
@@ -1033,15 +946,21 @@ if st.session_state.view_mode == "session":
 
     with plot_col:
         float_parent()
-        st.subheader("Plot Viewer")
-        if st.session_state.selected_plot_path and os.path.exists(resolve_path(st.session_state.selected_plot_path)):
+        st.subheader("Viewer")
+        if st.session_state.selected_structure_path and os.path.exists(resolve_path(st.session_state.selected_structure_path)):
+            st.caption(f"🔬 {os.path.basename(st.session_state.selected_structure_path)}")
+            visualize_structure(resolve_path(st.session_state.selected_structure_path))
+            if st.button("✖ Clear", key="clear_structure"):
+                st.session_state.selected_structure_path = None
+                st.rerun()
+        elif st.session_state.selected_plot_path and os.path.exists(resolve_path(st.session_state.selected_plot_path)):
             st.caption(f"📊 {os.path.basename(st.session_state.selected_plot_path)}")
             st.image(resolve_path(st.session_state.selected_plot_path), use_container_width=True)
-            if st.button("✖ Clear Plot", key="clear_plot"):
+            if st.button("✖ Clear", key="clear_plot"):
                 st.session_state.selected_plot_path = None
                 st.rerun()
         else:
-            st.info("Click **📊 View Plot** in a message to display a plot here.")
+            st.info("Click **🔬 View Structure** or **📊 View Plot** in a message to display it here.")
 
 # ==================== EVALUATION MODE: Sidebar & Main Content ====================
 elif st.session_state.view_mode == "evaluation":
