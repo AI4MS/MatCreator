@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.0.16 (2026-03-31)
+
+### Bug Fixes
+
+- Add atomic_structure skill
+  ([`ac855d0`](https://github.com/nlz25/PFD_Agent/commit/ac855d0468537fb82f4ec6a0c46f7e2454ecddfc))
+
+
 ## v1.0.15 (2026-03-30)
 
 ### Bug Fixes
