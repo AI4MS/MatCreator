@@ -187,6 +187,23 @@ Set in your environment or via `.env` as needed for your backend (e.g., Bohrium 
 
 For Slurm or other clusters, set the appropriate SSH and resource variables (see `dpdisp-submit` docs).
 
+### ⚠️ IMPORTANT: Add Descriptive Job Names for Bohrium
+
+When submitting to Bohrium, **always add a descriptive `job_name`** in the `input_data` section. This makes jobs easy to identify on the Bohrium platform.
+
+**Job name format:** `<system>_<calc_type>_<key_params>`
+
+Examples:
+- `H3O_Pt-TiO2_interface_z+0.2A_relax` — H3O+ on Pt/TiO2 interface, z-shifted, relaxation
+- `LiCoO2_surface_O2_adsorption_scf` — LiCoO2 surface with O2 adsorption, SCF
+- `Fe_bulk_band_structure_nscf` — Fe bulk, band structure calculation
+- `Cu_surface_defect_DOS_nscf` — Cu surface defect, DOS calculation
+
+If the user doesn't specify a job name, **construct one automatically** based on:
+- Material/system name
+- Calculation type (relax, scf, nscf, etc.)
+- Key distinguishing parameters (adsorbates, defects, structure modifications, etc.)
+
 ### Example submission.json for VASP (Bohrium)
 
 Bohrium uses `remote_profile` with an `input_data` sub-object. The `scass_type`, `image_name`, `platform`, and `job_type` fields go inside `input_data`.
@@ -203,6 +220,7 @@ Bohrium uses `remote_profile` with an `input_data` sub-object. The `scass_type`,
             "password": "${BOHRIUM_PASSWORD}",
             "program_id": ${BOHRIUM_PROJECT_ID},
             "input_data": {
+                "job_name": "<system>_<calc_type>_<key_params>",
                 "job_type": "container",
                 "log_file": "log",
                 "scass_type": "${BOHRIUM_VASP_MACHINE}",
@@ -256,6 +274,7 @@ RELAX=$(python vasp_tools.py prepare_relaxation --structure Al.extxyz)
 RELAX_DIRS=$(echo $RELAX | python -c "import sys,json; print(' '.join(json.load(sys.stdin)['calc_dir_list'])))
 
 # 2. Generate submission.template.json for relaxation (see above for schema)
+#    Include descriptive job_name like: "Al_bulk_relax"
 #    (Repeat for each calc_dir as a task in task_list)
 
 # 3. Substitute environment variables
@@ -273,13 +292,15 @@ python vasp_tools.py read_results --calc_type relaxation --calc_dir <relax_dir>
 SCF=$(python vasp_tools.py prepare_scf --structure Al_relaxed.extxyz)
 SCF_DIRS=$(echo $SCF | python -c "import sys,json; print(' '.join(json.load(sys.stdin)['calc_dir_list'])))
 
-# 7. Repeat submission steps for SCF (adjust forward/backward files as needed, add CHGCAR/WAVECAR to backward_files for SOC)
+# 7. Repeat submission steps for SCF
+#    Use job_name like: "Al_bulk_scf"
 
 # 8. Prepare NSCF k-path from SCF output
 NSCF=$(python vasp_tools.py prepare_nscf_kpath --scf_dirs $SCF_DIRS)
 NSCF_DIRS=$(echo $NSCF | python -c "import sys,json; print(' '.join(json.load(sys.stdin)['calc_dir_list'])))
 
 # 9. Repeat submission steps for NSCF
+#    Use job_name like: "Al_bulk_band_structure_nscf"
 
 # 10. Read NSCF results (band gap, CBM/VBM)
 python vasp_tools.py read_results --calc_type nscf --calc_dir <nscf_dir>

@@ -19,11 +19,52 @@ Training and evaluation are split into two decoupled phases:
 | Phase | Tool | Where |
 |---|---|---|
 | **Prepare** | `deepmd_prepare.py` | always local |
-| **Execute** | `dp` CLI | local **or** remote via bohr skill |
+| **Execute** | `dp` CLI | local **or** remote via dpdisp skill |
 
 Script location:
 ```
 skills/deepmd/deepmd_prepare.py
+```
+
+---
+
+## ⚠️ Critical: No Symlinks for Remote Submission
+
+**Problem**: dpdispatcher **cannot upload symlinks**. If `train_data/`, `valid_data/`, or model files are symlinks, they will appear empty on the remote server, causing `FileNotFoundError`.
+
+**Solution**: Always use **actual file copies** (not symlinks) for all files in `forward_files`.
+
+### How to verify and fix symlinks
+
+```bash
+# Check if files are symlinks
+ls -la train_data/ | head -5
+# If you see "lrwxrwxrwx" → these are symlinks (BAD for dpdispatcher)
+
+# Fix: Copy actual files instead of symlinks
+python << 'EOF'
+import os, shutil
+src_dir = "/path/to/original/deepmd_npy"
+dst_dir = "./train_data"
+os.makedirs(dst_dir, exist_ok=True)
+for sys in os.listdir(src_dir):
+    shutil.copytree(os.path.join(src_dir, sys), os.path.join(dst_dir, sys))
+print(f"Copied {len(os.listdir(dst_dir))} systems (actual files, not symlinks)")
+EOF
+
+# Verify no symlinks remain
+find train_data valid_data -type l  # Should return nothing
+```
+
+### When symlinks are created
+
+The `deepmd_prepare.py` script may create symlinks when:
+- Reusing existing `deepmd/npy` datasets from another directory
+- Copying base model files without `--copy_model` flag
+
+**Always verify** before submitting to Bohrium:
+```bash
+ls -la train_data/ valid_data/ *.pt  # Check for "l" at start of permissions
 ```
 
 ---
@@ -235,6 +276,23 @@ Submission uses the `dpdisp` skill (DPDispatcher) with `BohriumContext`. The `bo
 | `BOHRIUM_DEEPMD_MACHINE` | Machine/scass type for training, e.g. `gpu_8_v100_32g` |
 | `BOHRIUM_DEEPMD_IMAGE` | Container image URI with deepmd-kit installed |
 
+### ⚠️ IMPORTANT: Add Descriptive Job Names for Bohrium
+
+When submitting to Bohrium, **always add a descriptive `job_name`** in the `input_data` section. This makes jobs easy to identify on the Bohrium platform.
+
+**Job name format:** `<system>_<calc_type>_<key_params>`
+
+Examples:
+- `Fe32_bulk_DPA2_finetune_2000steps` — Fe bulk, DPA-2 finetuning, 2000 steps
+- `LiCoO2_surface_dp_train_5000steps` — LiCoO2 surface, training from scratch, 5000 steps
+- `Cu_Au_multitask_finetune_v2` — Cu-Au multi-task finetuning, version 2
+- `TiO2_Pt_cluster_dp_test` — TiO2-Pt cluster, model testing
+
+If the user doesn't specify a job name, **construct one automatically** based on:
+- Material/system name
+- Calculation type (train, finetune, test, etc.)
+- Key parameters (steps, model version, data descriptor, etc.)
+
 ### Step 1 — Prepare locally
 
 Always use `--copy_model` for finetune jobs so the model file is a regular file inside `<workdir>` (dpdispatcher cannot upload symlinks).
@@ -250,7 +308,7 @@ python skills/deepmd/deepmd_prepare.py prepare-finetune \
 
 ### Step 2 — Generate submission.template.json
 
-Use `remote_profile` with an `input_data` sub-object for Bohrium. Adjust `forward_files` to match the job type (see variants below).
+Use `remote_profile` with an `input_data` sub-object for Bohrium. **Always include `job_name`.** Adjust `forward_files` to match the job type (see variants below).
 
 **Training from scratch:**
 
@@ -266,6 +324,7 @@ Use `remote_profile` with an `input_data` sub-object for Bohrium. Adjust `forwar
       "password": "${BOHRIUM_PASSWORD}",
       "program_id": ${BOHRIUM_PROJECT_ID},
       "input_data": {
+        "job_name": "<system>_train_<steps>steps",
         "job_type": "container",
         "log_file": "log",
         "scass_type": "${BOHRIUM_DEEPMD_MACHINE}",
@@ -348,3 +407,29 @@ tmux ls
   variable composition within a single directory.
 - All `task_work_path` entries in `submission.json` must share the same `work_base` directory
   (dpdispatcher requirement — see `dpdisp` skill documentation).
+- **CRITICAL**: All files in `forward_files` must be **actual files**, not symlinks. dpdispatcher silently skips symlinks, causing `FileNotFoundError` on remote.
+
+---
+
+## Troubleshooting
+
+### FileNotFoundError for train_data/valid_data on remote
+
+**Symptom**: Job fails with error like:
+```
+FileNotFoundError: train_data/Li12O24Co11... not found
+```
+
+**Cause**: `train_data/` or `valid_data/` contains symlinks instead of actual files.
+
+**Diagnosis**:
+```bash
+ls -la train_data/ | head -5
+# If first character is "l" (lrwxrwxrwx), these are symlinks
+```
+
+**Fix**:
+1. Delete symlink directories: `rm -rf train_data valid_data`
+2. Copy actual files using `shutil.copytree()` (see "Critical: No Symlinks" section above)
+3. Verify: `find train_data valid_data -type l` should return nothing
+4. Resubmit task

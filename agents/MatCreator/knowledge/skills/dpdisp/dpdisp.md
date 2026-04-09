@@ -46,6 +46,37 @@ According the result of `uvx --with dpdispatcher dargs doc dpdispatcher.entrypoi
 If the user indicates that a specific value (like a username, token, or remote path) should be read from a local environment variable, format that value in the JSON template as `${ENV_VAR_NAME}`.
 *Example:* `"remote_root": "${USER_HPC_WORKSPACE}"`
 
+### ⚠️ IMPORTANT: Add Descriptive Job Names for Bohrium
+
+When submitting to Bohrium (`context_type: "BohriumContext"`), **always add a descriptive `job_name`** in the `input_data` section. This makes jobs easy to identify on the Bohrium platform.
+
+**Job name format:** `<system>_<calc_type>_<key_params>`
+
+Examples:
+- `H3O_Pt-TiO2_interface_z+0.2A_relax` — H3O+ on Pt/TiO2 interface, z-shifted, relaxation
+- `LiCoO2_surface_O2_adsorption_scf` — LiCoO2 surface with O2 adsorption, SCF
+- `Fe32_bulk_DPA2_finetune_2000steps` — Fe bulk, DPA-2 finetuning, 2000 steps
+- `Cu_surface_defect_band_structure` — Cu surface defect, band structure calculation
+
+```json
+{
+  "machine": {
+    "remote_profile": {
+      "input_data": {
+        "job_name": "<descriptive_name>",
+        "job_type": "container",
+        ...
+      }
+    }
+  }
+}
+```
+
+If the user doesn't specify a job name, **construct one automatically** based on:
+- Material/system name
+- Calculation type (relax, scf, nscf, train, finetune, test, etc.)
+- Key distinguishing parameters (structure modifications, steps, etc.)
+
 ### Handling Environment Variables
 
 If the user specifies values that must be loaded from local environment variables (e.g., sensitive tokens, dynamic paths), do **not** write them directly into the final JSON. Instead:
@@ -194,6 +225,8 @@ tmux ls
 
 When `context_type` is `BohriumContext`, the machine block uses `remote_profile` with an `input_data` sub-object that specifies the container image, machine type, and platform. Use `email`/`password`/`program_id` for authentication (these should come from environment variables).
 
+**⚠️ Always include a descriptive `job_name` in `input_data` for easy identification on Bohrium.**
+
 `submission.template.json`:
 
 ```json
@@ -208,6 +241,7 @@ When `context_type` is `BohriumContext`, the machine block uses `remote_profile`
       "password": "${BOHRIUM_PASSWORD}",
       "program_id": ${BOHRIUM_PROJECT_ID},
       "input_data": {
+        "job_name": "<system>_<calc_type>_<key_params>",
         "job_type": "container",
         "log_file": "log",
         "scass_type": "${BOHRIUM_MACHINE_TYPE}",
@@ -234,6 +268,7 @@ Key `input_data` fields:
 
 | Field | Description | Example |
 |---|---|---|
+| `job_name` | **REQUIRED** Descriptive name for job identification | `"LiCoO2_surface_relax"` |
 | `job_type` | Must be `"container"` for image-based jobs | `"container"` |
 | `scass_type` | Machine spec (CPU/GPU/memory) | `"c16_m32_cpu"`, `"c32_m128_cpu"`, `"gpu_4_v100_32g"` |
 | `image_name` | Full container image URI | `"registry.dp.tech/dptech/prod-15454/vasp:5.4.4"` |

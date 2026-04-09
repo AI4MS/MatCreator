@@ -19,5 +19,22 @@ Rules
 - If inputs are missing or invalid, stop and request the minimal fix.
 - Never invent tools; only call from the allowlist.
 
+## ⚠️ IMPORTANT: Add Descriptive Job Names for Bohrium
+
+When submitting ABACUS jobs to Bohrium via dpdisp, **always add a descriptive `job_name`** in the `input_data` section of the submission JSON. This makes jobs easy to identify on the Bohrium platform.
+
+**Job name format:** `<system>_<calc_type>_<key_params>`
+
+Examples:
+- `Si_bulk_relax_PBE` — Si bulk, relaxation, PBE functional
+- `LiCoO2_surface_scf_HSE06` — LiCoO2 surface, SCF, HSE06 functional
+- `Fe2O3_defect_band_structure` — Fe2O3 with defect, band structure
+- `Cu_bulk_DOS_kpath` — Cu bulk, DOS along k-path
+
+If the user doesn't specify a job name, **construct one automatically** based on:
+- Material/system name
+- Calculation type (relax, scf, nscf, band, dos, etc.)
+- Key parameters (functional, k-mesh, etc.)
+
 Outputs
 - Report absolute paths and essential metrics (e.g., final energy). Keep summaries tight and actionable.
