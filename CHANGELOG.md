@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.0.21 (2026-04-13)
+
+### Bug Fixes
+
+- Skills update
+  ([`5316dbf`](https://github.com/nlz25/PFD_Agent/commit/5316dbf6aa493a825111caece6fdf087728ea83f))
+
+
 ## v1.0.20 (2026-04-09)
 
 ### Bug Fixes
