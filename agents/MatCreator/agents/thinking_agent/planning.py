@@ -13,7 +13,7 @@ from typing import List
 from google.adk.tools.tool_context import ToolContext
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from ..skill import _load_skill_registry
+from ...skill import ALL_SKILLS
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class PlanStep(BaseModel):
     @field_validator("skill")
     @classmethod
     def _validate_skill_name(cls, value: str) -> str:
-        allowed_names = set(_load_skill_registry().keys())
+        allowed_names = set([s.name for s in ALL_SKILLS])
         if value not in allowed_names:
             allowed = ", ".join(sorted(allowed_names)) or "<none loaded>"
             raise ValueError(

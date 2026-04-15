@@ -21,8 +21,8 @@ EXECUTION_COMPACT_KEEP_TAIL: int = int(os.environ.get("EXECUTION_COMPACT_KEEP_TA
 EXECUTION_COMPACT_EVERY_EVENTS: int = int(os.environ.get("EXECUTION_COMPACT_EVERY_EVENTS", "5"))
 
 _KNOWLEDGE_PATH= _script_dir / "knowledge"
-_SKILLS_DIR = _KNOWLEDGE_PATH / "skills"
-_GUIDES_DIR = _KNOWLEDGE_PATH / "guides"
+_SKILLS_DIR = _script_dir / "skills"
+_GUIDES_DIR = _script_dir/ "guides"
 _MEMORY_PATH = _KNOWLEDGE_PATH /"MEMORY.md"
 
 # Workspace paths — resolved lazily at runtime via workspace.get_workspace_root()

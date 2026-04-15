@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.mcp_tool import McpToolset
 
-from .thinking_agent.workspace_tools import (
+from .agents.thinking_agent.workspace_tools import (
     write_workspace_file,
     read_workspace_file,
     list_workspace_skills,

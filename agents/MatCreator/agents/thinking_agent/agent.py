@@ -20,16 +20,17 @@ from google.adk.tools.tool_context import ToolContext
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.tools.base_tool import BaseTool
 
-from ..constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+from ...constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from .trajectory import append_trajectory_entry
-from .planning_agent.agent import validate_plan
-from .skill import (
-    list_skill_name_descriptions,
-    list_guide_metadata,
-    load_guide_content,
-    load_skill_content,
-)
-from ..skill import ALL_SKILLS
+from .planning import validate_plan
+#from .skill import (
+#    list_skill_name_descriptions,
+#    list_guide_metadata,
+#    load_guide_content,
+#    load_skill_content,
+#)
+from ...skill import ALL_SKILLS, ALL_SKILLS_TOOLSET
+from ...guide import ALL_GUIDES
 from .memory import update_memory, read_memory
 from .workspace_tools import (
     write_workspace_file,
@@ -41,7 +42,7 @@ from .workspace_tools import (
     run_python_file,
     init_workspace_tool,
 )
-from ..tools import TOOLSETS
+#from ...tools import TOOLSETS
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,41 @@ def clear_current_skill(tool_context: ToolContext) -> dict:
     tool_context.state["active_skill"] = None
     tool_context.state["skill_instruction"] = None
     return {"status": "ok", "message": "Active skill context cleared."}
+
+
+def load_guide(guide_name: str) -> dict:
+    """Return the full instruction content for a guide.
+
+    Call this before planning when the user's goal matches a known guide.
+
+    Args:
+        guide_name: Exact guide name as listed in Available guides.
+    """
+    normalized = (guide_name or "").strip()
+    if not normalized:
+        return {
+            "status": "error",
+            "message": "guide_name is required.",
+            "available_guides": sorted(g.name for g in ALL_GUIDES),
+        }
+
+    selected = next((g for g in ALL_GUIDES if g.name == normalized), None)
+    if selected is None:
+        lowered = normalized.lower()
+        selected = next((g for g in ALL_GUIDES if g.name.lower() == lowered), None)
+
+    if selected is None:
+        return {
+            "status": "error",
+            "message": f"Guide '{guide_name}' not found.",
+            "available_guides": sorted(g.name for g in ALL_GUIDES),
+        }
+
+    return {
+        "status": "ok",
+        "guide": selected.name,
+        "instruction": selected.instructions,
+    }
 
 
 def confirm_plan_and_start_execution(tool_context: ToolContext) -> dict:
@@ -231,16 +267,15 @@ Your role here is **planning only** — a dedicated execution agent handles the 
 - Available guides: {guides}
 - Goal: {goal}
 - Plan: {plan}
-- Active skill: {active_skill}
-- Skill instruction: {skill_instruction}
 - Summarize: {summarize}
 
 ## Default workflow
 1. Understand the user's goal with `user_intent`. Call `read_memory` to recall past context.
-2. Draft a clear execution plan yourself, then call `validate_plan` to validate and commit it. Show the plan to the user.
-3. **Wait for explicit user confirmation** (e.g. "yes", "ok", "proceed") before proceeding.
+2. If the user's goal matches one of the Available guides, call `load_guide` to inject its workflow instructions before planning.
+3. Draft a clear execution plan yourself, then call `validate_plan` to validate and commit it. Show the plan to the user.
+4. **Wait for explicit user confirmation** (e.g. "yes", "ok", "proceed") before proceeding.
    When the user confirms, call `confirm_plan_and_start_execution` — do NOT execute steps yourself.
-4. If the user asks to create or test a skill, call `request_skill_testing(description)`.
+5. If the user asks to create or test a skill, call `request_skill_testing(description)`.
 
 ## Rules
 - NEVER load skill context or run tools to execute plan steps — that is the execution agent's job.
@@ -270,17 +305,13 @@ def before_agent_callback(callback_context: CallbackContext) -> None:
         if key not in state:
             callback_context.state[key] = default
     
-    skill_summaries = list_skill_name_descriptions()
-    logger.info("Loaded skill summaries: %s", skill_summaries)
     callback_context.state["skills"] = "\n".join(
-        f"- {item['name']}: {item['description']}" for item in skill_summaries
-    ) if skill_summaries else "No skills available."
+        f"- {s.name}: {s.description}" for s in ALL_SKILLS
+    ) if ALL_SKILLS else "No skills available."
 
-    guide_meta = list_guide_metadata()
     callback_context.state["guides"] = "\n".join(
-        f"- {g['name']}: {g['description']} (tags: {g['tags']})"
-        for g in guide_meta
-    ) if guide_meta else "No guides available."
+        f"- {g.name}: {g.description}" for g in ALL_GUIDES
+    ) if ALL_GUIDES else "No guides available."
 
     return None
 
@@ -350,23 +381,21 @@ thinking_agent = LlmAgent(
         FunctionTool(validate_plan),
         AgentTool(_summarize_tool_agent),
         AgentTool(intent_tool_agent),
-        FunctionTool(load_skill_context),
-        FunctionTool(clear_current_skill),
+        #FunctionTool(load_skill_context),
+        #FunctionTool(clear_current_skill),
         FunctionTool(confirm_plan_and_start_execution),
         FunctionTool(request_skill_testing),
-        FunctionTool(load_guide_content),
-        FunctionTool(load_skill_content),
+        FunctionTool(load_guide),
+        #FunctionTool(load_guide_content),
+        #FunctionTool(load_skill_content),
         FunctionTool(read_memory),
         update_memory,
-        FunctionTool(init_workspace_tool),
-        FunctionTool(list_workspace_skills),
+        #FunctionTool(init_workspace_tool),
+        #FunctionTool(list_workspace_skills),
         #FunctionTool(create_skill),
         #FunctionTool(write_workspace_file),
-        FunctionTool(read_workspace_file),
-        #FunctionTool(run_python),
-        #FunctionTool(run_bash),
-        #FunctionTool(run_python_file),
-        #*TOOLSETS,
+        #FunctionTool(read_workspace_file),
+        ALL_SKILLS_TOOLSET
     ],
     before_agent_callback=before_agent_callback,
     after_tool_callback=after_tool_callback,

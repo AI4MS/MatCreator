@@ -17,8 +17,7 @@ from google.adk.agents.callback_context import CallbackContext
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.function_tool import FunctionTool
 
-from ..constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
-from ..thinking_agent.skill import list_skill_name_descriptions, load_skill_content
+from ...constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from ..thinking_agent.workspace_tools import (
     create_skill,
     list_workspace_skills,
@@ -109,8 +108,8 @@ tester_agent = LlmAgent(
     ),
     instruction=_TESTER_AGENT_INSTRUCTION,
     tools=[
-        FunctionTool(list_skill_name_descriptions),
-        FunctionTool(load_skill_content),
+        #FunctionTool(list_skill_name_descriptions),
+        #FunctionTool(load_skill_content),
         FunctionTool(create_skill),
         FunctionTool(write_workspace_file),
         FunctionTool(read_workspace_file),

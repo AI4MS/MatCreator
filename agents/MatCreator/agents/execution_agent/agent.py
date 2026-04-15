@@ -21,9 +21,8 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 
-from ..constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+from ...constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from ..thinking_agent.agent import load_skill_context, clear_current_skill
-from ..thinking_agent.skill import load_guide_content, load_skill_content
 from ..thinking_agent.trajectory import append_trajectory_entry
 from ..thinking_agent.workspace_tools import (
     read_workspace_file,
@@ -31,7 +30,7 @@ from ..thinking_agent.workspace_tools import (
     run_python,
     write_workspace_file,
 )
-from ..tools import TOOLSETS
+from ...tools import TOOLSETS
 
 logger = logging.getLogger(__name__)
 

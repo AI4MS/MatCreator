@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from ..workspace import get_workspace_root
+from ...workspace import get_workspace_root
 
 
 def append_trajectory_entry(

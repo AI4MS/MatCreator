@@ -19,7 +19,7 @@ import subprocess
 import textwrap
 from pathlib import Path
 
-from ..workspace import get_workspace_root, workspace_skills_dir
+from ...workspace import get_workspace_root, workspace_skills_dir
 
 
 # ---------------------------------------------------------------------------
@@ -251,5 +251,5 @@ def init_workspace_tool() -> str:
     Returns:
         Status message describing what was created.
     """
-    from ..workspace import init_workspace
+    from ...workspace import init_workspace
     return init_workspace()

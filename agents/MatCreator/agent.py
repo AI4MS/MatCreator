@@ -17,10 +17,10 @@ from google.adk.apps.app import App, EventsCompactionConfig
 from google.adk.apps import ResumabilityConfig
 from google.adk.models.lite_llm import LiteLlm
 
-from .thinking_agent import thinking_agent
-from .execution_agent import execution_agent
-from .tester_agent import tester_agent
-from .orchestrator.agent import PlanningExecutionOrchestrator
+from .agents.thinking_agent import thinking_agent
+from .agents.execution_agent import execution_agent
+from .agents.tester_agent import tester_agent
+from .agents.orchestrator.agent import PlanningExecutionOrchestrator
 from .constants import LLM_MODEL, LLM_API_KEY, LLM_BASE_URL
 
 model_name = os.environ.get("LLM_MODEL", LLM_MODEL)
