@@ -35,6 +35,11 @@ from .memory import update_memory, read_memory
 from ...tools.workspace_tools import (
     init_workspace_tool,
 )
+from ...tools.util_tools import (
+    show_artifact,
+    show_plot,
+    show_structure
+)
 
 
 logger = logging.getLogger(__name__)
@@ -381,10 +386,9 @@ thinking_agent = LlmAgent(
         FunctionTool(update_memory),
         FunctionTool(init_workspace_tool),
         FunctionTool(refresh_skills),
-        #FunctionTool(list_workspace_skills),
-        #FunctionTool(create_skill),
-        #FunctionTool(write_workspace_file),
-        #FunctionTool(read_workspace_file),
+        show_artifact,
+        show_plot,
+        show_structure,
         ALL_SKILLS_TOOLSET
     ],
     before_agent_callback=before_agent_callback,

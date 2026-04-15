@@ -30,7 +30,7 @@ from ...tools.workspace_tools import (
     run_python,
     write_workspace_file,
 )
-#from ...tools import TOOLSETS
+from ...tools.util_tools import show_plot, show_structure, show_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +195,9 @@ execution_agent = LlmAgent(
         AgentTool(_summarize_tool_agent),
         FunctionTool(run_python),
         FunctionTool(run_bash),
+        FunctionTool(show_plot),
+        FunctionTool(show_structure),
+        FunctionTool(show_artifact),
         #*TOOLSETS,
     ],
     before_agent_callback=_exec_before_agent_callback,

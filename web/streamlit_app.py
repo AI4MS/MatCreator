@@ -130,13 +130,10 @@ if "view_mode" not in st.session_state:
 if "configured_metrics" not in st.session_state:
     st.session_state.configured_metrics = []
 
-# Track the plot currently shown in the right panel
-if "selected_plot_path" not in st.session_state:
-    st.session_state.selected_plot_path = None
-
 # Track the structure currently shown in the right panel
 if "selected_structure_path" not in st.session_state:
     st.session_state.selected_structure_path = None
+
 
 def create_metric_config(metric_name, threshold, judge_model="gemini-2.5-flash", num_samples=5, **kwargs):
     """Create a metric configuration dict for the API."""
@@ -960,9 +957,7 @@ if st.session_state.view_mode == "session":
                     if "structure_path" in msg and os.path.exists(resolve_path(msg["structure_path"])):
                         if st.button(f"🔬 View Structure: {os.path.basename(msg['structure_path'])}", key=f"view_struct_{msg_idx}"):
                             st.session_state.selected_structure_path = msg["structure_path"]
-                            st.session_state.selected_plot_path = None
                             st.rerun()
-                        # Download button for structure
                         with open(resolve_path(msg["structure_path"]), "rb") as f:
                             st.download_button(
                                 label=f"⬇️ Download {os.path.basename(msg['structure_path'])}",
@@ -970,12 +965,9 @@ if st.session_state.view_mode == "session":
                                 file_name=os.path.basename(msg["structure_path"]),
                                 key=f"download_struct_{msg_idx}_{os.path.basename(msg['structure_path'])}"
                             )
-                    # Show plot inline and also allow opening in right panel
+                    # Show plot inline
                     if "plot_path" in msg and os.path.exists(resolve_path(msg["plot_path"])):
                         st.image(resolve_path(msg["plot_path"]), use_container_width=True)
-                        if st.button(f"📊 View Plot: {os.path.basename(msg['plot_path'])}", key=f"view_plot_{msg_idx}"):
-                            st.session_state.selected_plot_path = msg["plot_path"]
-                            st.rerun()
                         # Download button for plot
                         with open(resolve_path(msg["plot_path"]), "rb") as f:
                             st.download_button(
@@ -1027,21 +1019,51 @@ if st.session_state.view_mode == "session":
 
     with plot_col:
         float_parent()
-        st.subheader("Viewer")
+        st.subheader("Session Files")
+        if st.session_state.session_id:
+            session_workdir = WORKSPACE_ROOT / "sessions" / st.session_state.session_id
+            if st.button("🔄 Refresh", key="refresh_session_files"):
+                st.rerun()
+            if session_workdir.exists():
+                all_files = sorted(session_workdir.rglob("*"))
+                files_only = [f for f in all_files if f.is_file()]
+                if files_only:
+                    for idx, file_path in enumerate(files_only):
+                        rel = file_path.relative_to(session_workdir)
+                        depth = len(rel.parts) - 1
+                        indent = "\u00a0" * (depth * 4)
+                        size = file_path.stat().st_size
+                        size_str = f"{size} B" if size < 1024 else f"{size // 1024} KB"
+                        col1, col2 = st.columns([4, 1])
+                        with col1:
+                            st.markdown(
+                                f"{indent}📄 `{rel}` "
+                                f"<span style='color:gray;font-size:0.8em'>{size_str}</span>",
+                                unsafe_allow_html=True,
+                            )
+                        with col2:
+                            with open(file_path, "rb") as f:
+                                st.download_button(
+                                    "⬇️",
+                                    data=f.read(),
+                                    file_name=file_path.name,
+                                    key=f"dl_session_{idx}_{file_path.name}",
+                                )
+                else:
+                    st.info("No files yet in this session's working directory.")
+            else:
+                st.info("Session working directory not created yet.")
+        else:
+            st.info("No active session.")
+
         if st.session_state.selected_structure_path and os.path.exists(resolve_path(st.session_state.selected_structure_path)):
+            st.divider()
+            st.subheader("Structure Viewer")
             st.caption(f"🔬 {os.path.basename(st.session_state.selected_structure_path)}")
             visualize_structure(resolve_path(st.session_state.selected_structure_path))
             if st.button("✖ Clear", key="clear_structure"):
                 st.session_state.selected_structure_path = None
                 st.rerun()
-        elif st.session_state.selected_plot_path and os.path.exists(resolve_path(st.session_state.selected_plot_path)):
-            st.caption(f"📊 {os.path.basename(st.session_state.selected_plot_path)}")
-            st.image(resolve_path(st.session_state.selected_plot_path), use_container_width=True)
-            if st.button("✖ Clear", key="clear_plot"):
-                st.session_state.selected_plot_path = None
-                st.rerun()
-        else:
-            st.info("Click **🔬 View Structure** or **📊 View Plot** in a message to display it here.")
 
 # ==================== EVALUATION MODE: Sidebar & Main Content ====================
 elif st.session_state.view_mode == "evaluation":
