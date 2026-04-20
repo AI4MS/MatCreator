@@ -176,6 +176,8 @@ def _exec_after_tool_callback(
 # ---------------------------------------------------------------------------
 # Agent instance
 # ---------------------------------------------------------------------------
+from ...tools.remoteagent_tool import load_remote_a2a_agents
+
 
 execution_agent = LlmAgent(
     name="execution_agent",
@@ -204,4 +206,5 @@ execution_agent = LlmAgent(
     ],
     before_agent_callback=_exec_before_agent_callback,
     after_tool_callback=_exec_after_tool_callback,
+    sub_agents=load_remote_a2a_agents()
 )

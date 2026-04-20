@@ -18,25 +18,20 @@ Use this guide when the goal is to discover or optimize crystal materials by rep
 3. Relax generated structures
 - Before screening, use `mattersim` to relax generated structures.
 - Save relaxed structures to a dedicated output path or directory and report the absolute paths.
-- If relaxation fails for some candidates, report which ones failed and continue with the valid relaxed structures when appropriate.
 
-4. Convert relaxed structures for downstream property prediction
+4. Predict properties and rank candidates
 - Convert or reorganize generated structures into the format required by the downstream predictor or validation workflow.
-- Report the converted output path or directory, the number of structures prepared, and the final structure format used.
-
-5. Predict properties and rank candidates
 - Use an available property-prediction workflow on the screened candidate set, such as `cgcnn_predictor` or another model/tool appropriate for the target property.
-- Always report the exact model, checkpoint, or tool used, the property values returned, and the structure paths associated with each result.
 - Rank or filter candidates according to the user-defined objective.
 
-6. Select the next round
+5. Select the next round
 - Keep the top candidates and summarize why they were selected.
 - If the predicted structures and properties do not satisfy the target requirements, you may need to improve the workflow iteratively, for example by fine-tuning the model or using other approaches.
 
-7. Evaluation
+6. Evaluation
 - Evaluate the screened structures with the S.U.N criteria, which can be carried out using the `mattergen-evaluation` skill.
 
-8. Optionally validate the final shortlist with DFT
+7. Optionally validate the final shortlist with DFT
 - After screening, optionally run DFT on a few top shortlisted candidates.
 - If DFT strongly disagrees with the screening model, summarize the mismatch and decide whether another iteration is needed.
 
