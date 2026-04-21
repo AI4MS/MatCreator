@@ -1,6 +1,6 @@
 agents:
-  - name: example_agent
-    description: example agent for demonstration purposes
-    agent_card_url: http://example/.well-known/agent-card.json
+  - name: atom_sculptor
+    description: atom_sculptor
+    agent_card_url: http://172.16.61.111:9001/.well-known/agent-card.json
     enabled: true
     use_legacy: false
