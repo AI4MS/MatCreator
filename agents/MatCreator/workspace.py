@@ -44,6 +44,9 @@ def workspace_memory_path() -> Path:
 
 
 def get_session_workdir(session_id: str) -> Path:
+    env_val = os.environ.get("MATCLAW_SESSION_DIR", "")
+    if env_val:
+        return Path(env_val).expanduser().resolve()
     return WORKSPACE_ROOT / "sessions" / session_id
 
 

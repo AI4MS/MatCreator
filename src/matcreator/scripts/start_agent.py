@@ -242,6 +242,7 @@ async def run_agent_async(
     workspace_dir: str,
     prompt: str,
     max_turns: int = 50,
+    session_dir: str | None = None,
 ) -> dict:
     """Run the agent non-interactively on a single prompt.
 
@@ -249,6 +250,8 @@ async def run_agent_async(
     duration_ms, num_events.
     """
     os.environ["MATCLAW_WORKSPACE"] = str(Path(workspace_dir).resolve())
+    if session_dir:
+        os.environ["MATCLAW_SESSION_DIR"] = str(Path(session_dir).resolve())
 
     from google.adk.runners import InMemoryRunner
     from google.genai import types
@@ -339,7 +342,9 @@ async def run_agent_async(
               help="Write output to a file instead of stdout.")
 @click.option("--max-turns", default=50, show_default=True, type=int,
               help="Maximum agent turns before stopping.")
-def run_cmd(workspace, prompt_text, prompt_file, output_format, output_file, max_turns):
+@click.option("--session-dir", default=None, metavar="DIR",
+              help="Override session directory (also settable via MATCLAW_SESSION_DIR).")
+def run_cmd(workspace, prompt_text, prompt_file, output_format, output_file, max_turns, session_dir):
     """Run the agent non-interactively on a single prompt."""
     _warn_if_unconfigured()
     if prompt_text and prompt_file:
@@ -353,7 +358,7 @@ def run_cmd(workspace, prompt_text, prompt_file, output_format, output_file, max
     ws_root = Path(workspace).expanduser().resolve() if workspace else _resolve_workspace()
     ws_root.mkdir(parents=True, exist_ok=True)
 
-    result = asyncio.run(run_agent_async(str(ws_root), prompt_text, max_turns))
+    result = asyncio.run(run_agent_async(str(ws_root), prompt_text, max_turns, session_dir=session_dir))
 
     if output_format == "json":
         content = json.dumps(result, ensure_ascii=False, indent=2)
