@@ -15,6 +15,7 @@ Security contract
 
 from __future__ import annotations
 
+import os
 import subprocess
 import textwrap
 from pathlib import Path
@@ -310,9 +311,13 @@ def run_skill_script(
         )
 
     cwd = None
+    env = None
     session_id = tool_context.state.get("session_id")
     if session_id:
-        cwd = str(get_session_workdir(session_id))
+        session_workdir = get_session_workdir(session_id)
+        cwd = str(session_workdir)
+        env = dict(os.environ)
+        env["MATCLAW_SESSION_DIR"] = str(session_workdir)
 
     cmd = f"python {script_path} {args}"
     try:
@@ -322,6 +327,7 @@ def run_skill_script(
             text=True,
             timeout=_EXEC_TIMEOUT,
             cwd=cwd,
+            env=env,
         )
         output = result.stdout + result.stderr
     except subprocess.TimeoutExpired as exc:

@@ -40,7 +40,7 @@ Parameter rule:
 
 ```bash
 ts=$(date +"%Y%m%d%H%M%S")
-outdir="/tmp/mattergen/${ts}.mattergen_generate"
+outdir="mattergen/${ts}.mattergen_generate"
 "${MATTERGEN_ENV}/bin/mattergen-generate" "$outdir" \
   --pretrained-name mattergen_base \
   --batch_size=16 \
