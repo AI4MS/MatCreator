@@ -160,6 +160,19 @@ def _load_env(config_path: Path) -> None:
         load_dotenv(env_file, override=True)
 
 
+def _resolve_work_dir(work_dir_value: str) -> Path:
+    """Resolve the configured work directory, preferring the session workspace."""
+    work_dir = Path(work_dir_value).expanduser()
+    if work_dir.is_absolute():
+        return work_dir
+
+    session_dir = os.environ.get("MATCLAW_SESSION_DIR", "")
+    if session_dir:
+        return Path(session_dir).expanduser().resolve() / work_dir
+
+    return Path.cwd() / work_dir
+
+
 # ── shared helpers ────────────────────────────────────────────────────────────
 
 def _calc_id() -> str:
@@ -240,7 +253,7 @@ def _parse_structures(structure_path: str, frames: Optional[List[int]]) -> List[
 
 def cmd_prepare_relaxation(args) -> dict:
     config = _load_config(args.config)
-    work_dir = Path(config["work_dir"])
+    work_dir = _resolve_work_dir(config["work_dir"])
     work_dir.mkdir(parents=True, exist_ok=True)
 
     incar_tags = json.loads(args.incar_tags) if args.incar_tags else {}
@@ -263,7 +276,7 @@ def cmd_prepare_relaxation(args) -> dict:
 
 def cmd_prepare_scf(args) -> dict:
     config = _load_config(args.config)
-    work_dir = Path(config["work_dir"])
+    work_dir = _resolve_work_dir(config["work_dir"])
     work_dir.mkdir(parents=True, exist_ok=True)
 
     incar_tags = json.loads(args.incar_tags) if args.incar_tags else {}
@@ -289,7 +302,7 @@ def cmd_prepare_nscf_kpath(args) -> dict:
     from pymatgen.symmetry.bandstructure import HighSymmKpath
 
     config = _load_config(args.config)
-    work_dir = Path(config["work_dir"])
+    work_dir = _resolve_work_dir(config["work_dir"])
     work_dir.mkdir(parents=True, exist_ok=True)
 
     incar_tags = json.loads(args.incar_tags) if args.incar_tags else {}
@@ -349,7 +362,7 @@ def cmd_prepare_nscf_kpath(args) -> dict:
 
 def cmd_prepare_nscf_uniform(args) -> dict:
     config = _load_config(args.config)
-    work_dir = Path(config["work_dir"])
+    work_dir = _resolve_work_dir(config["work_dir"])
     work_dir.mkdir(parents=True, exist_ok=True)
 
     incar_tags = json.loads(args.incar_tags) if args.incar_tags else {}

@@ -65,6 +65,16 @@ def resolve_path(path: str) -> str:
         return str(p)
     return str(WORKSPACE_ROOT / p)
 
+
+def is_structure_file(path: str | Path) -> bool:
+    """Return True for structure files that can be previewed in the UI."""
+    p = Path(path)
+    suffix = p.suffix.lower()
+    return suffix in {".cif", ".xyz", ".extxyz", ".vasp"} or p.name.upper() in {
+        "POSCAR",
+        "CONTCAR",
+    }
+
 # Set page config
 st.set_page_config(
     page_title="MatCreator",
@@ -78,8 +88,10 @@ APP_NAME = "MatCreator"
 
 # Initialize session state variables
 if "user_id" not in st.session_state:
-    # using default user name "user"
-    st.session_state.user_id = f"user"
+    st.session_state.user_id = None
+
+if "login_username" not in st.session_state:
+    st.session_state.login_username = ""
     
 if "session_id" not in st.session_state:
     st.session_state.session_id = None
@@ -133,6 +145,41 @@ if "configured_metrics" not in st.session_state:
 # Track the structure currently shown in the right panel
 if "selected_structure_path" not in st.session_state:
     st.session_state.selected_structure_path = None
+
+
+def _reset_user_session_state() -> None:
+    """Clear user-scoped UI state when switching identities."""
+    st.session_state.session_id = None
+    st.session_state.messages = []
+    st.session_state.audio_files = []
+    st.session_state.artifacts = []
+    st.session_state.structure_paths = []
+    st.session_state.available_sessions = []
+    st.session_state.selected_structure_path = None
+    st.session_state.eval_sets = []
+    st.session_state.eval_results = []
+    st.session_state.selected_eval_set = None
+    st.session_state.selected_eval_cases = []
+
+
+def _login_user(username: str) -> bool:
+    """Set the active user if the provided username is valid."""
+    normalized = username.strip()
+    if not normalized:
+        st.warning("Please enter a username.")
+        return False
+
+    if normalized != st.session_state.user_id:
+        _reset_user_session_state()
+    st.session_state.user_id = normalized
+    return True
+
+
+def _logout_user() -> None:
+    """Clear the active user and all user-scoped UI state."""
+    _reset_user_session_state()
+    st.session_state.user_id = None
+    st.session_state.login_username = ""
 
 
 def create_metric_config(metric_name, threshold, judge_model="gemini-2.5-flash", num_samples=5, **kwargs):
@@ -802,6 +849,30 @@ def send_message_sse(message, attachments=None):
 # UI Components
 st.title("MatCreator")
 
+with st.sidebar:
+    st.header("User")
+    if st.session_state.user_id:
+        st.success(f"Signed in as `{st.session_state.user_id}`")
+        if st.button("Switch User", width='stretch', key="switch_user"):
+            _logout_user()
+            st.rerun()
+    else:
+        st.text_input(
+            "Username",
+            key="login_username",
+            placeholder="Enter your username",
+        )
+        if st.button("Enter System", width='stretch', key="login_user"):
+            if _login_user(st.session_state.login_username):
+                list_sessions()
+                st.rerun()
+
+    st.divider()
+
+if not st.session_state.user_id:
+    st.info("Enter your username in the sidebar to access your own conversation history.")
+    st.stop()
+
 # Sidebar - Mode selector at the top
 with st.sidebar:
     st.header("Navigation")
@@ -811,13 +882,13 @@ with st.sidebar:
         index=0 if st.session_state.view_mode == "session" else 1,
         key="mode_selector"
     )
-    
+
     # Update session state based on selection
     if view_mode == "💬 Session & Conversation":
         st.session_state.view_mode = "session"
     else:
         st.session_state.view_mode = "evaluation"
-    
+
     st.divider()
 
 # ==================== SESSION MODE: Sidebar & Main Content ====================
@@ -1019,7 +1090,12 @@ if st.session_state.view_mode == "session":
 
         if st.session_state.selected_structure_path and os.path.exists(resolve_path(st.session_state.selected_structure_path)):
             st.subheader("Structure Viewer")
-            st.caption(f"🔬 {os.path.basename(st.session_state.selected_structure_path)}")
+            selected_path = Path(resolve_path(st.session_state.selected_structure_path))
+            try:
+                selected_label = selected_path.relative_to(WORKSPACE_ROOT)
+            except ValueError:
+                selected_label = selected_path
+            st.caption(f"🔬 `{selected_label}`")
             visualize_structure(resolve_path(st.session_state.selected_structure_path), height=280, width=400)
             if st.button("✖ Clear", key="clear_structure"):
                 st.session_state.selected_structure_path = None
@@ -1046,7 +1122,11 @@ if st.session_state.view_mode == "session":
                         indent = "\u00a0" * (depth * 4)
                         size = file_path.stat().st_size
                         size_str = f"{size} B" if size < 1024 else f"{size // 1024} KB"
-                        col1, col2 = st.columns([4, 1])
+                        if is_structure_file(file_path):
+                            col1, col2, col3 = st.columns([4, 1, 1])
+                        else:
+                            col1, col2 = st.columns([4, 1])
+                            col3 = None
                         with col1:
                             st.markdown(
                                 f"{indent}📄 `{rel}` "
@@ -1061,6 +1141,15 @@ if st.session_state.view_mode == "session":
                                     file_name=file_path.name,
                                     key=f"dl_session_{idx}_{file_path.name}",
                                 )
+                        if col3 is not None:
+                            with col3:
+                                if st.button(
+                                    "🔬",
+                                    key=f"preview_session_{idx}_{file_path.name}",
+                                    help=f"Preview structure: {rel}",
+                                ):
+                                    st.session_state.selected_structure_path = str(file_path)
+                                    st.rerun()
                 else:
                     st.info("No files yet in this session's working directory.")
             else:
