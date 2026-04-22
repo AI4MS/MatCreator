@@ -40,6 +40,7 @@ import json
 import os
 import uuid
 import time
+import threading
 from pathlib import Path
 import streamlit.components.v1 as components
 from streamlit_float import *
@@ -85,6 +86,185 @@ st.set_page_config(
 # Constants
 API_BASE_URL = "http://localhost:8000"
 APP_NAME = "MatCreator"
+
+
+class StreamJobManager:
+    """Keep SSE jobs alive across Streamlit reruns."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._jobs = {}
+
+    def start(self, user_id: str, session_id: str, message: str, attachments=None) -> bool:
+        key = (user_id, session_id)
+        attachments_payload = list(attachments or [])
+        with self._lock:
+            existing = self._jobs.get(key)
+            if existing and existing.get("running"):
+                return False
+            self._jobs[key] = {
+                "running": True,
+                "error": None,
+                "message": message,
+                "attachments": attachments_payload,
+                "assistant": {
+                    "role": "agent",
+                    "thought": "",
+                    "content": "",
+                    "function_calls": [],
+                    "function_responses": [],
+                },
+                "needs_refresh": False,
+            }
+
+        worker = threading.Thread(
+            target=self._run_stream,
+            args=(key, user_id, session_id, message, attachments_payload),
+            daemon=True,
+        )
+        worker.start()
+        return True
+
+    def get(self, user_id: str | None, session_id: str | None):
+        if not user_id or not session_id:
+            return None
+        with self._lock:
+            job = self._jobs.get((user_id, session_id))
+            if not job:
+                return None
+            return {
+                "running": job["running"],
+                "error": job["error"],
+                "message": job["message"],
+                "attachments": list(job["attachments"]),
+                "assistant": {
+                    "role": "agent",
+                    "thought": job["assistant"]["thought"],
+                    "content": job["assistant"]["content"],
+                    "function_calls": [
+                        {
+                            "id": fc.get("id"),
+                            "name": fc.get("name"),
+                            "args": dict(fc.get("args", {})),
+                            **({"response": dict(fc["response"])} if "response" in fc else {}),
+                        }
+                        for fc in job["assistant"]["function_calls"]
+                    ],
+                    "function_responses": [
+                        {
+                            "id": fr.get("id"),
+                            "name": fr.get("name"),
+                            "response": dict(fr.get("response", {})),
+                        }
+                        for fr in job["assistant"]["function_responses"]
+                    ],
+                },
+                "needs_refresh": job["needs_refresh"],
+            }
+
+    def mark_synced(self, user_id: str | None, session_id: str | None) -> None:
+        if not user_id or not session_id:
+            return
+        with self._lock:
+            self._jobs.pop((user_id, session_id), None)
+
+    def _run_stream(self, key, user_id: str, session_id: str, message: str, attachments) -> None:
+        message_with_attachments = message
+        if attachments:
+            attachment_paths = "\n".join(attachments)
+            message_with_attachments = f"{message}\n\nAttached files:\n{attachment_paths}"
+
+        try:
+            with requests.post(
+                f"{API_BASE_URL}/run_sse",
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "text/event-stream",
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+                data=json.dumps({
+                    "app_name": APP_NAME,
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "new_message": {
+                        "role": "user",
+                        "parts": [{"text": message_with_attachments}],
+                    }
+                }),
+                stream=True,
+                timeout=(10, None),
+            ) as response:
+                if response.status_code != 200:
+                    self._set_error(key, f"Error: {response.text}")
+                    return
+
+                for line in response.iter_lines(decode_unicode=True):
+                    if not line or not line.startswith("data: "):
+                        continue
+                    data_str = line[len("data: "):]
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        event = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    self._apply_event(key, event)
+        except requests.RequestException as exc:
+            self._set_error(key, f"Streaming error: {exc}")
+        finally:
+            with self._lock:
+                job = self._jobs.get(key)
+                if job:
+                    job["running"] = False
+                    job["needs_refresh"] = True
+
+    def _set_error(self, key, error: str) -> None:
+        with self._lock:
+            job = self._jobs.get(key)
+            if job:
+                job["error"] = error
+
+    def _apply_event(self, key, event: dict) -> None:
+        with self._lock:
+            job = self._jobs.get(key)
+            if not job:
+                return
+            assistant = job["assistant"]
+            for part in event.get("content", {}).get("parts", []):
+                if part.get("thought"):
+                    assistant["thought"] += part.get("text", "")
+                elif "functionCall" in part:
+                    fc = part["functionCall"]
+                    assistant["function_calls"].append({
+                        "id": fc.get("id"),
+                        "name": fc.get("name", "Unknown"),
+                        "args": fc.get("args", {}),
+                    })
+                elif "functionResponse" in part:
+                    fr = part["functionResponse"]
+                    fr_id = fr.get("id")
+                    response_payload = fr.get("response", {})
+                    matched = False
+                    if fr_id:
+                        for fc in assistant["function_calls"]:
+                            if fc.get("id") == fr_id:
+                                fc["response"] = response_payload
+                                matched = True
+                                break
+                    if not matched:
+                        assistant["function_responses"].append({
+                            "id": fr_id,
+                            "name": fr.get("name", "Unknown"),
+                            "response": response_payload,
+                        })
+                elif "text" in part:
+                    assistant["content"] += part["text"]
+
+
+@st.cache_resource
+def get_stream_job_manager():
+    return StreamJobManager()
 
 # Initialize session state variables
 if "user_id" not in st.session_state:
@@ -741,110 +921,99 @@ def create_session():
         return False
 
 def send_message_sse(message, attachments=None):
-    """Stream agent response token-by-token via /run_sse, then refresh via load_session."""
+    """Start background streaming so reruns do not interrupt the conversation."""
     if not st.session_state.session_id:
         st.error("No active session. Please create a session first.")
         return False
+    return get_stream_job_manager().start(
+        st.session_state.user_id,
+        st.session_state.session_id,
+        message,
+        attachments,
+    )
 
-    attachments_payload = attachments if attachments else []
 
-    # Show user message immediately (temporary display until rerun)
-    with st.chat_message("user"):
-        st.write(message)
-        for att_path in attachments_payload:
-            st.caption(f"📎 {os.path.basename(att_path)}")
+def get_active_stream_job():
+    return get_stream_job_manager().get(
+        st.session_state.user_id,
+        st.session_state.session_id,
+    )
 
-    # Build message text with attachment paths included
-    message_with_attachments = message
-    if attachments_payload:
-        attachment_paths = "\n".join(attachments_payload)
-        message_with_attachments = f"{message}\n\nAttached files:\n{attachment_paths}"
 
-    try:
-        with requests.post(
-            f"{API_BASE_URL}/run_sse",
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "text/event-stream",
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-            },
-            data=json.dumps({
-                "app_name": APP_NAME,
-                "user_id": st.session_state.user_id,
-                "session_id": st.session_state.session_id,
-                "new_message": {
-                    "role": "user",
-                    "parts": [{"text": message_with_attachments}],
-                }
-            }),
-            stream=True,
-        ) as response:
-            if response.status_code != 200:
-                st.error(f"Error: {response.text}")
-                return False
+def sync_completed_stream() -> None:
+    job = get_active_stream_job()
+    if not job or job.get("running") or not job.get("needs_refresh"):
+        return
+    if load_session(st.session_state.session_id):
+        st.session_state.uploader_key += 1
+        get_stream_job_manager().mark_synced(
+            st.session_state.user_id,
+            st.session_state.session_id,
+        )
 
-            accumulated_thought = ""
-            accumulated_content = ""
-            # {id: {name, args, response}} — built up as function call/response parts arrive
-            streaming_function_calls = {}
 
-            with st.chat_message("agent"):
-                # Placeholders created lazily so nothing is rendered until data arrives
-                thought_expander_holder = st.empty()
-                fc_area = st.container()
-                content_area = st.empty()
+def render_message(msg, msg_idx, is_preview: bool = False) -> None:
+    if not msg or (len(msg) == 1 and "role" in msg):
+        return
 
-                thought_area = None  # created on first thought chunk
+    if msg["role"] == "user":
+        with st.chat_message("user"):
+            if "content" in msg:
+                st.markdown(msg["content"])
+            if "attachments" in msg and msg["attachments"]:
+                for att_path in msg["attachments"]:
+                    st.caption(f"📎 {os.path.basename(att_path)}")
+        return
 
-                for line in response.iter_lines(decode_unicode=True):
-                    if not line or not line.startswith("data: "):
-                        continue
-                    data_str = line[len("data: "):]
-                    if data_str == "[DONE]":
-                        break
-                    try:
-                        event = json.loads(data_str)
-                        for p in event.get("content", {}).get("parts", []):
-                            if p.get("thought", False):
-                                # Lazily create the thought expander on first thought chunk
-                                if thought_area is None:
-                                    thought_area = thought_expander_holder.expander("🤔 Thinking...", expanded=False).empty()
-                                accumulated_thought += p.get("text", "")
-                                thought_area.markdown(accumulated_thought)
+    with st.chat_message("agent"):
+        if msg.get("thought"):
+            with st.expander("🤔 Thinking...", expanded=False):
+                st.markdown(msg["thought"])
+        for fc in msg.get("function_calls", []):
+            with st.expander(fc["name"], expanded=False, icon="🔧"):
+                st.json(fc["args"])
+            if "response" in fc:
+                with st.expander(fc["name"], expanded=False, icon="📥"):
+                    st.json(fc["response"])
+        for fr in msg.get("function_responses", []):
+            with st.expander(fr["name"], expanded=False, icon="📥"):
+                st.json(fr["response"])
+        if msg.get("content"):
+            st.markdown(msg["content"])
+        elif is_preview and not msg.get("thought") and not msg.get("function_calls"):
+            st.caption("Running...")
 
-                            elif "functionCall" in p:
-                                fc = p["functionCall"]
-                                fc_id = fc.get("id") or fc.get("name", "")
-                                streaming_function_calls.setdefault(fc_id, {"name": fc.get("name", "Unknown"), "args": fc.get("args", {})})
-                                with fc_area:
-                                    with st.expander(fc.get("name", "Unknown"), expanded=False, icon="🔧"):
-                                        st.json(fc.get("args", {}))
-
-                            elif "functionResponse" in p:
-                                fr = p["functionResponse"]
-                                fr_id = fr.get("id") or fr.get("name", "")
-                                resp = fr.get("response", {})
-                                fc_entry = streaming_function_calls.get(fr_id)
-                                fc_name = fc_entry["name"] if fc_entry else fr.get("name", "Unknown")
-                                with fc_area:
-                                    with st.expander(fc_name, expanded=False, icon="📥"):
-                                        st.json(resp)
-
-                            elif "text" in p:
-                                accumulated_content += p["text"]
-                                content_area.markdown(accumulated_content)
-                    except json.JSONDecodeError:
-                        continue
-
-    except requests.RequestException as exc:
-        st.error(f"Streaming error: {exc}")
-        return False
-
-    # Refresh all session state from the server for consistent rendering on rerun
-    load_session(st.session_state.session_id)
-    st.session_state.uploader_key += 1
-    return True
+        if not is_preview and "structure_path" in msg and os.path.exists(resolve_path(msg["structure_path"])):
+            if st.button(f"🔬 View Structure: {os.path.basename(msg['structure_path'])}", key=f"view_struct_{msg_idx}"):
+                st.session_state.selected_structure_path = msg["structure_path"]
+                st.rerun()
+            with open(resolve_path(msg["structure_path"]), "rb") as f:
+                st.download_button(
+                    label=f"⬇️ Download {os.path.basename(msg['structure_path'])}",
+                    data=f.read(),
+                    file_name=os.path.basename(msg["structure_path"]),
+                    key=f"download_struct_{msg_idx}_{os.path.basename(msg['structure_path'])}"
+                )
+        if not is_preview and "plot_path" in msg and os.path.exists(resolve_path(msg["plot_path"])):
+            st.image(resolve_path(msg["plot_path"]), use_container_width=True)
+            with open(resolve_path(msg["plot_path"]), "rb") as f:
+                st.download_button(
+                    label=f"⬇️ Download {os.path.basename(msg['plot_path'])}",
+                    data=f.read(),
+                    file_name=os.path.basename(msg["plot_path"]),
+                    key=f"download_plot_{msg_idx}_{os.path.basename(msg['plot_path'])}"
+                )
+        if not is_preview and "artifact_path" in msg and os.path.exists(resolve_path(msg["artifact_path"])):
+            st.divider()
+            st.markdown("**Model File:**")
+            st.info(f"📦 {os.path.basename(msg['artifact_path'])}")
+            with open(resolve_path(msg["artifact_path"]), "rb") as f:
+                st.download_button(
+                    label=f"⬇️ Download {os.path.basename(msg['artifact_path'])}",
+                    data=f.read(),
+                    file_name=os.path.basename(msg["artifact_path"]),
+                    key=f"download_model_{msg_idx}_{os.path.basename(msg['artifact_path'])}"
+                )
 
 # UI Components
 st.title("MatCreator")
@@ -872,6 +1041,8 @@ with st.sidebar:
 if not st.session_state.user_id:
     st.info("Enter your username in the sidebar to access your own conversation history.")
     st.stop()
+
+sync_completed_stream()
 
 # Sidebar - Mode selector at the top
 with st.sidebar:
@@ -986,77 +1157,27 @@ if st.session_state.view_mode == "session":
 
     with chat_col:
         st.subheader("Conversation")
+        active_stream_job = get_active_stream_job()
 
         # Display messages
         for msg_idx, msg in enumerate(st.session_state.messages):
-            # Skip messages that only have "role" key
-            if len(msg) == 1 and "role" in msg:
-                continue
-            
-            if msg["role"] == "user":
-                with st.chat_message("user"):
-                    if "content" in msg:
-                        st.markdown(msg["content"])
-                    # Show attachments if present
-                    if "attachments" in msg and msg["attachments"]:
-                        for att_path in msg["attachments"]:
-                            st.caption(f"📎 {os.path.basename(att_path)}")
-            else:
-                with st.chat_message("agent"):
-                    if "thought" in msg:
-                        with st.expander("🤔 Thinking...", expanded=False):
-                            st.markdown(msg["thought"])
-                    if "function_calls" in msg:
-                        for fc in msg["function_calls"]:
-                            with st.expander(fc["name"], expanded=False, icon="🔧"):
-                                st.json(fc["args"])
-                            if "response" in fc:
-                                with st.expander(fc["name"], expanded=False, icon="📥"):
-                                    st.json(fc["response"])
-                    if "function_responses" in msg:
-                        # Unmatched responses (no paired call in this message)
-                        for fr in msg["function_responses"]:
-                            with st.expander(fr["name"], expanded=False, icon="📥"):
-                                st.json(fr["response"])
-                    if "content" in msg:
-                        st.markdown(msg["content"])
+            render_message(msg, msg_idx)
 
-                    # Show structure button — opens in right panel
-                    if "structure_path" in msg and os.path.exists(resolve_path(msg["structure_path"])):
-                        if st.button(f"🔬 View Structure: {os.path.basename(msg['structure_path'])}", key=f"view_struct_{msg_idx}"):
-                            st.session_state.selected_structure_path = msg["structure_path"]
-                            st.rerun()
-                        with open(resolve_path(msg["structure_path"]), "rb") as f:
-                            st.download_button(
-                                label=f"⬇️ Download {os.path.basename(msg['structure_path'])}",
-                                data=f.read(),
-                                file_name=os.path.basename(msg["structure_path"]),
-                                key=f"download_struct_{msg_idx}_{os.path.basename(msg['structure_path'])}"
-                            )
-                    # Show plot inline
-                    if "plot_path" in msg and os.path.exists(resolve_path(msg["plot_path"])):
-                        st.image(resolve_path(msg["plot_path"]), use_container_width=True)
-                        # Download button for plot
-                        with open(resolve_path(msg["plot_path"]), "rb") as f:
-                            st.download_button(
-                                label=f"⬇️ Download {os.path.basename(msg['plot_path'])}",
-                                data=f.read(),
-                                file_name=os.path.basename(msg["plot_path"]),
-                                key=f"download_plot_{msg_idx}_{os.path.basename(msg['plot_path'])}"
-                            )
-                    # Show model if present
-                    if "artifact_path" in msg and os.path.exists(resolve_path(msg["artifact_path"])):
-                        st.divider()
-                        st.markdown("**Model File:**")
-                        st.info(f"📦 {os.path.basename(msg['artifact_path'])}")
-                        # Add download button for model
-                        with open(resolve_path(msg["artifact_path"]), "rb") as f:
-                            st.download_button(
-                                label=f"⬇️ Download {os.path.basename(msg['artifact_path'])}",
-                                data=f.read(),
-                                file_name=os.path.basename(msg["artifact_path"]),
-                                key=f"download_model_{msg_idx}_{os.path.basename(msg['artifact_path'])}"
-                            )
+        if active_stream_job:
+            render_message(
+                {
+                    "role": "user",
+                    "content": active_stream_job["message"],
+                    "attachments": active_stream_job["attachments"],
+                },
+                "stream_user",
+                is_preview=True,
+            )
+            render_message(active_stream_job["assistant"], "stream_agent", is_preview=True)
+            if active_stream_job.get("error"):
+                st.error(active_stream_job["error"])
+            elif active_stream_job.get("running"):
+                st.caption("Agent is still running. Auto-refresh is on, and manual refresh will not interrupt this response.")
 
         # Input for new messages
         if st.session_state.session_id:  # Only show input if session exists
@@ -1070,6 +1191,9 @@ if st.session_state.view_mode == "session":
             
             user_input = st.chat_input("Type your message...")
             if user_input:
+                if active_stream_job and active_stream_job.get("running"):
+                    st.warning("A response is already in progress for this session. Please wait for it to finish.")
+                    st.stop()
                 # Process attachments if present
                 attachments = []
                 if uploaded_files:
@@ -1084,6 +1208,10 @@ if st.session_state.view_mode == "session":
                 st.rerun()  # Rerun to update the UI with new messages
         else:
             st.info("👈 Create a session to start chatting")
+
+        if active_stream_job and active_stream_job.get("running"):
+            time.sleep(1.0)
+            st.rerun()
 
     with plot_col:
         float_parent(css="top: 3.5rem; overflow-y: auto; max-height: calc(100vh - 4rem);")
