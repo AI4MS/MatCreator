@@ -75,8 +75,8 @@ def load_skill_context(skill_name: str, tool_context: ToolContext) -> dict:
     return {
         "status": "ok",
         "skill": selected.name,
-        "instruction": selected.instructions,
-        "needed_tools": needed_tools,
+        #"instruction": selected.instructions,
+        #"needed_tools": needed_tools,
         "message": f"Loaded skill context for '{selected.name}'.",
     }
 

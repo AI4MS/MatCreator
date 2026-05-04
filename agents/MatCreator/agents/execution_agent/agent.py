@@ -112,6 +112,7 @@ execution_agent = LlmAgent(
         base_url=_model_base_url,
         api_key=_model_api_key,
     ),
+    include_contents="none",
     description=(
         "Executes a single plan step by loading the relevant skill context and running the "
         "appropriate domain tools. Called by the orchestrator once per step in sequence."
