@@ -86,6 +86,7 @@ def validate_plan(plan: dict, tool_context: ToolContext) -> dict:
     try:
         validated = ExecutionPlan(**plan)
         tool_context.state["plan"] = validated.model_dump()
+        tool_context.state["plan_exec_id"] = None  # force new ID on next execution
         return {
             "status": "ok",
             "plan": validated.model_dump(),

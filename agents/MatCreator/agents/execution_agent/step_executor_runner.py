@@ -37,9 +37,14 @@ async def run_step_executor(
     Each invocation gets its own workspace subdirectory under the session workdir,
     overriding the LLM-supplied workspace_dir with a per-step path.
     """
-    # Per-step workspace: {session_workdir}/step_{step_number}/
+    # Per-step workspace: {session_workdir}/{plan_exec_id}/step_{step_number}/
+    # plan_exec_id is generated once per plan execution to avoid collisions across plans.
     session_id = tool_context.state.get("session_id", "default")
-    step_workspace = get_session_workdir(session_id) / f"step_{step_number}"
+    plan_exec_id = tool_context.state.get("plan_exec_id")
+    if not plan_exec_id:
+        plan_exec_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        tool_context.state["plan_exec_id"] = plan_exec_id
+    step_workspace = get_session_workdir(session_id) / plan_exec_id / f"step_{step_number}"
     step_workspace.mkdir(parents=True, exist_ok=True)
     logger.debug("[step_executor_runner] step %d workspace: %s", step_number, step_workspace)
 
