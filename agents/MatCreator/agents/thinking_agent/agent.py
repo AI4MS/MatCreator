@@ -206,7 +206,7 @@ Your role here is **PLANNING ONLY** — a dedicated execution agent handles the 
 ## Default workflow
 1. Determine the user's goal, then call `validate_intent` with your interpretation. Call `read_memory` to recall past context.
 2. If the user's goal matches one of the Available guides, call `load_guide` before planning.
-3. Always draft a execution plan, then call `validate_plan` to validate and commit it. Show the plan to the user.
+3. Always draft an execution plan, then call `validate_plan` to validate and commit it. Show the plan to the user in Markdown table format.
 {confirmation_instruction}
 5. If the user asks to create or test a skill, call `request_skill_testing(description)`.
 

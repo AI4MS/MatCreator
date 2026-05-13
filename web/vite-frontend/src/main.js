@@ -12,6 +12,8 @@ const APP_NAME = "MatCreator";
 const state = {
   sessionId: `session-${Math.floor(Date.now() / 1000)}`,
   userId: localStorage.getItem("mat_userId") || "",
+  activeSessionUserId: localStorage.getItem("mat_userId") || "",
+  isAdmin: false,
   sessionReady: false,
 };
 
@@ -395,10 +397,35 @@ function hideLoginModal() {
   loginModal.classList.add("hidden");
 }
 
-function applyUsername(name) {
+function renderUserDisplay() {
+  userDisplay.textContent = state.isAdmin ? `${state.userId} (admin)` : state.userId;
+}
+
+async function refreshAccess() {
+  state.isAdmin = false;
+  if (!state.userId) return;
+  try {
+    const resp = await fetch(`/api/session-access/${encodeURIComponent(state.userId)}`);
+    if (!resp.ok) return;
+    const access = await resp.json();
+    state.isAdmin = Boolean(access.is_admin);
+  } catch (_) {
+    state.isAdmin = false;
+  }
+}
+
+async function applyUsername(name) {
   state.userId = name;
+  state.activeSessionUserId = name;
+  state.sessionId = `session-${Math.floor(Date.now() / 1000)}`;
+  state.sessionReady = false;
   localStorage.setItem("mat_userId", name);
-  userDisplay.textContent = name;
+  sessionIdEl.textContent = state.sessionId;
+  chatArea.innerHTML = "";
+  renderSessionFilesTree([]);
+  agentGraph.reset();
+  await refreshAccess();
+  renderUserDisplay();
   hideLoginModal();
   loadSessions();
 }
@@ -421,7 +448,10 @@ editUserBtn.addEventListener("click", () => showLoginModal());
 if (!state.userId) {
   showLoginModal();
 } else {
-  loadSessions();
+  refreshAccess().then(() => {
+    renderUserDisplay();
+    loadSessions();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -431,7 +461,9 @@ if (!state.userId) {
 async function loadSessions() {
   if (!state.userId) return;
   try {
-    const resp = await fetch(`/apps/${APP_NAME}/users/${state.userId}/sessions`);
+    const resp = state.isAdmin
+      ? await fetch(`/api/admin/sessions?user_id=${encodeURIComponent(state.userId)}`)
+      : await fetch(`/api/users/${encodeURIComponent(state.userId)}/sessions`);
     if (!resp.ok) return;
     const sessions = await resp.json();
     renderSessionList(sessions);
@@ -451,16 +483,20 @@ function renderSessionList(sessions) {
     .sort((a, b) => (b.lastUpdateTime || 0) - (a.lastUpdateTime || 0))
     .forEach((s) => {
       const li = document.createElement("li");
-      li.className = "session-item" + (s.id === state.sessionId ? " active" : "");
-      li.textContent = s.id;
-      li.title = s.id;
-      li.addEventListener("click", () => switchSession(s.id));
+      const owner = s.userId || state.userId;
+      const isActive = s.id === state.sessionId && owner === state.activeSessionUserId;
+      li.className = "session-item" + (isActive ? " active" : "");
+      li.dataset.owner = owner;
+      li.textContent = state.isAdmin ? `${owner} / ${s.id}` : s.id;
+      li.title = state.isAdmin ? `${owner} / ${s.id}` : s.id;
+      li.addEventListener("click", () => switchSession(s.id, owner));
       sessionListEl.appendChild(li);
     });
 }
 
-async function switchSession(sessionId) {
+async function switchSession(sessionId, owner = state.userId) {
   state.sessionId = sessionId;
+  state.activeSessionUserId = owner;
   state.sessionReady = true;
   sessionIdEl.textContent = sessionId;
   renderSessionFilesTree([]);
@@ -768,6 +804,7 @@ async function refreshSessionFiles() {
 // ---------------------------------------------------------------------------
 
 async function createSession() {
+  state.activeSessionUserId = state.userId;
   const url = `/apps/${APP_NAME}/users/${state.userId}/sessions/${state.sessionId}`;
   try {
     const resp = await fetch(url, {
@@ -790,8 +827,9 @@ async function createSession() {
 // mirroring Streamlit's load_session() called after send_message_sse().
 async function loadSession(sessionId) {
   try {
+    const owner = state.activeSessionUserId || state.userId;
     const resp = await fetch(
-      `/apps/${APP_NAME}/users/${state.userId}/sessions/${sessionId}`,
+      `/api/users/${encodeURIComponent(owner)}/sessions/${encodeURIComponent(sessionId)}`,
       { headers: { "Content-Type": "application/json" } }
     );
     if (!resp.ok) return;
@@ -886,6 +924,10 @@ async function loadSession(sessionId) {
 async function sendMessage(message) {
   if (!message.trim()) return;
   if (!state.userId) { showLoginModal(); return; }
+  if (state.activeSessionUserId && state.activeSessionUserId !== state.userId) {
+    addMessage("agent", `Admin view is read-only for ${state.activeSessionUserId}'s session.`);
+    return;
+  }
 
   addMessage("user", message);
   textInput.value = "";
@@ -1077,6 +1119,7 @@ Array.from(document.querySelectorAll("[data-quick]"))
 
 resetBtn.addEventListener("click", () => {
   state.sessionId = `session-${Math.floor(Date.now() / 1000)}`;
+  state.activeSessionUserId = state.userId;
   state.sessionReady = false;
   sessionIdEl.textContent = state.sessionId;
   chatArea.innerHTML = "";
