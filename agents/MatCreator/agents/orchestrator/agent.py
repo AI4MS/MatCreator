@@ -33,6 +33,7 @@ from pydantic import Field
 
 from ...workspace import init_session_workdir
 from ..graph_logger import AgentGraphLogger
+from ..cancellation import clear_cancellation
 from ...knowledge.extractor import run_knowledge_extractor
 from ...knowledge.synthesizer import run_knowledge_synthesizer
 from ...knowledge.kg_state import increment_exec_count, record_synthesizer_run
@@ -151,6 +152,12 @@ class PlanningExecutionOrchestrator(BaseAgent):
                     graph.log_node_complete(exec_id, "failed", summary=f"Interrupted: {reason}")
                     state["return_to_planner"] = False
                     state["return_to_planner_reason"] = None
+                    clear_cancellation(state.get("session_id", ""))
+                    if "cancel" in reason:
+                        logger.warning(
+                            "[CANCEL COMPLETE] Execution fully stopped for session %s — returning to planner",
+                            state.get("session_id", ""),
+                        )
                     # current_step_index preserved by execution_orchestrator for resumption
                 else:
                     logger.info("[orchestrator] all %d steps complete", total_steps)

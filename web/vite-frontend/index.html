@@ -155,7 +155,10 @@
             </div>
           </div>
           <div class="input-area">
+            <div class="upload-status" id="upload-status" aria-live="polite"></div>
             <div class="input-container">
+              <button class="tool-btn" id="file-upload-btn" title="Upload file">+</button>
+              <input type="file" id="file-upload-input" multiple style="display:none">
               <textarea class="text-input" id="text-input" placeholder="Ask for a plan, run, or assessment…" rows="1"></textarea>
               <button class="send-btn" id="send-btn" title="Send">➜</button>
             </div>

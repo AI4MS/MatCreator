@@ -21,6 +21,7 @@ This skill uses the DPDispatcher tool to run Shell commands as computational job
 1. Generate the submission JSON file based on collected user input.
 1. Validate `submission.json` before submission.
 1. Submit with `uvx --from dpdispatcher dpdisp submit submission.json`.
+1. **Poll until the job fully completes and output files are downloaded locally** — do not report success at submission time.
 1. Automatically manage job interruptions and retries by relying on built-in state tracking (see the "Resuming Jobs" section for details).
 1. **CRITICAL SECURITY CONSTRAINT: DO NOT attempt direct SSH connections.** Never attempt to connect to the remote HPC directly using `ssh`, write custom Paramiko/Fabric Python scripts, or manually execute remote commands. Just generate the `submission.json` and use the `dpdisp submit` tool. DPDispatcher will handle all remote connections, file transfers, and job management safely.
 
@@ -54,12 +55,11 @@ If the user indicates that a specific value (like a username, token, or remote p
 If the user specifies values that must be loaded from local environment variables (e.g., sensitive tokens, dynamic paths), do **not** write them directly into the final JSON. Instead:
 
 1. Generate a `submission.template.json` file using the `${VAR_NAME}` syntax **only for the variables you intend to substitute**.
-   *Example:* `"remote_root": "${USER_HPC_WORKSPACE}"`
-1. Use `envsubst` with an explicit variable list to inject only those variables and create the final file. This avoids accidentally expanding unrelated `$...` tokens in the JSON (such as a `"$ref"` key):
+1. Use `envsubst` with an explicit variable list to inject only those variables and create the final file:
    `envsubst '${USER_HPC_WORKSPACE}' < submission.template.json > submission.json`
-1. **CRITICAL SECURITY CONSTRAINT: DO NOT read or print the contents of the newly generated `submission.json` file.** Once `envsubst` replaces the variables, the file contains raw sensitive data. Reading it will leak these secrets into your context, which is strictly prohibited.
+1. **CRITICAL SECURITY CONSTRAINT: DO NOT read or print the contents of the newly generated `submission.json` file.** Once `envsubst` replaces the variables, the file contains raw sensitive data.
 
-If multiple environment variables are needed, list them all explicitly in the `envsubst` call, for example:
+If multiple environment variables are needed, list them all explicitly:
 `envsubst '${USER_HPC_WORKSPACE} ${USER_OTHER_VAR}' < submission.template.json > submission.json`
 If no environment variables are needed, simply generate `submission.json` directly.
 
@@ -89,42 +89,47 @@ uv run -m json.tool submission.json >/dev/null
 # 4) Validate generated submission.json
 uvx --with dpdispatcher dargs check -f dpdispatcher.entrypoints.submit.submission_args submission.json
 
-# 5) Submit
-uvx --from dpdispatcher dpdisp submit submission.json
+# 5) Submit (wrap in tmux for long-running jobs)
+tmux new-session -d -s dpdisp_job "uvx --from dpdispatcher dpdisp submit submission.json"
 
-# If using Bohrium/DP Cloud (context_type: BohriumContext) and the job fails with:
-#   NameError: name 'oss2' is not defined
-# oss2 is not bundled with dpdispatcher. Inject it with --with oss2:
-uvx --from dpdispatcher --with oss2 dpdisp submit submission.json
+# If using Bohrium/DP Cloud (context_type: BohriumContext), add --with oss2:
+tmux new-session -d -s dpdisp_job "uvx --from dpdispatcher --with oss2 dpdisp submit submission.json"
 ```
 
-### Best Practices for Long-Running Jobs
+### Monitoring a tmux Job
 
-When executing tasks that are expected to take a long time, it is important to avoid losing the monitoring process due to SSH timeouts or closed terminals. Use one of the following approaches:
+After launching the tmux session you **must** poll until it finishes AND verify that output files are present locally before declaring the step complete:
 
-- **Wrap in `tmux`:** Run the `dpdisp submit` command inside a `tmux` session. This keeps the process alive and allows you to detach and reattach safely if your network connection drops.
-- **Use the `--exit-on-submit` flag:** Add this flag if you only need to submit the job and return immediately. This exits as soon as the job has been successfully handed off to the scheduling system (for example, Slurm), without waiting for execution to finish or for outputs to be downloaded. However, a successful return from `dpdisp submit` with `--exit-on-submit` is **not** a signal that the overall job is finished. It only confirms successful submission. A separate follow-up step is still required to monitor job status and verify that results have been downloaded back to the local workspace.
+```bash
+# Poll every 30 s; exit when the session is gone
+while tmux has-session -t dpdisp_job 2>/dev/null; do
+  echo "Still running... $(date)"
+  sleep 30
+done
+echo "tmux session ended"
+
+# Read captured output to check for errors
+tmux capture-pane -t dpdisp_job -p 2>/dev/null || true
+
+# Verify expected backward_files exist locally (adjust paths as needed)
+ls -lh <task_work_path>/log <task_work_path>/err 2>/dev/null && echo "Outputs present" || echo "WARNING: outputs missing"
+```
+
+Only after the session has exited **and** the expected output files exist is the job truly complete. If outputs are missing after the session ends, re-run `dpdisp submit` to resume (see "Resuming Jobs").
 
 ### More Useful Flags
 
-- **`--dry-run`**: Parses the configuration, generates local directories, and validates the schema, but does **not** actually submit the job to the machine or cluster. Useful for a final safety check before real execution.
-- **`--allow-ref`**: Allows nesting and referencing other JSON files using `{"$ref": "other.json"}` for reusable config snippets. The referenced file is loaded first, and then the current file's fields override or extend it. If your configuration uses `$ref`, you should also pass `--allow-ref` to ***all related*** validation and submission commands (for example, `dargs check` and `dpdisp submit`). Otherwise, the config may fail to parse or validate even if the JSON content itself is correct.
+- **`--dry-run`**: Parses the configuration and validates the schema without submitting. Useful for a final safety check.
+- **`--allow-ref`**: Required when `submission.json` uses `{"$ref": "other.json"}` for reusable config snippets. Pass it to **all** related commands (`dargs check` and `dpdisp submit`).
 
-## Submission vs. Completion
+## Completion criteria
 
-It is important to distinguish between **successful submission** and **full completion**:
-
-1. **Successfully Submitted**
-
-- The `dpdisp submit` command exits with a success code (`0`).
-- If `--exit-on-submit` is used, this only means the job was accepted and submitted to the backend scheduler.
-- At this stage, the tasks may still be queued or running, and output files may not yet be available locally.
-
-2. **Fully Completed**
-   A job is considered **fully completed** only when both of the following are true:
+A job is **fully completed** only when **both** of the following are true:
 
 - The backend tasks have finished successfully.
-- All required output files (for example, `log`, `err`, and result files) have been retrieved to the local `task_work_path`.
+- All required output files (e.g., `log`, `err`, result files) have been retrieved to the local `task_work_path`.
+
+Submitting a job is **not** completing it. Never call `submit_step_result` with `status=success` until outputs are present locally.
 
 ## Resuming Jobs (Failure Handling & Recovery)
 
@@ -136,126 +141,18 @@ DPDispatcher is inherently idempotent and features built-in state tracking. It w
 - The user explicitly asks to "resume", "retry", or "recover" a previously interrupted or failed job.
 - The Agent's SSH or network connection drops during job monitoring.
 
-**Action:** Do **NOT** modify `submission.json` or attempt to clean up the remote directories. Simply re-execute the exact same submission command (such as `uvx --from dpdispatcher dpdisp submit submission.json --allow-ref`) in the same directory. The tool will safely skip successful tasks and only resubmit or resume the pending/failed ones.
+**Action:** Do **NOT** modify `submission.json` or attempt to clean up the remote directories. Simply re-execute the exact same submission command in the same directory. The tool will safely skip successful tasks and only resubmit or resume the pending/failed ones.
 
-## Example
+## Examples
 
-User request:
+For full worked examples with complete JSON templates and commands, load the reference files:
 
-- "Please run `run_simulation.sh` on my Slurm cluster. Load my username from `$HPC_USER` and the workspace path from `$HPC_WORKDIR`. We already have a `resource_defaults.json` for the base compute settings, please use it and just add the debug queue."
-
-Assume `resource_defaults.json` already exists in the directory.
-Agent-generated `submission.template.json`:
-
-```json
-{
-  "work_base": ".",
-  "machine": {
-    "batch_type": "Slurm",
-    "context_type": "SSHContext",
-    "remote_profile": {
-      "hostname": "login.cluster.edu",
-      "username": "${HPC_USER}",
-      "port": 22
-    },
-    "remote_root": "${HPC_WORKDIR}/dpdisp_run"
-  },
-  "resources": {
-    "$ref": "resource_defaults.json",
-    "queue_name": "debug",
-    "group_size": 1
-  },
-  "task_list": [
-    {
-      "command": "bash run_simulation.sh",
-      "task_work_path": "task_000",
-      "forward_files": [
-        "run_simulation.sh",
-        "input.dat"
-      ],
-      "backward_files": [
-        "result.out",
-        "log",
-        "err"
-      ]
-    }
-  ]
-}
-```
-
-Then run:
-
-```bash
-envsubst '${HPC_USER} ${HPC_WORKDIR}' < submission.template.json > submission.json
-uv run -m json.tool submission.json >/dev/null
-uvx --with dpdispatcher dargs check --allow-ref -f dpdispatcher.entrypoints.submit.submission_args submission.json
-tmux new-session -d -s dpdisp_job "uvx --from dpdispatcher dpdisp submit --allow-ref submission.json"
-tmux ls
-```
-
-## Bohrium (DP Cloud) Example
-
-When `context_type` is `BohriumContext`, the machine block uses `remote_profile` with an `input_data` sub-object that specifies the container image, machine type, and platform. Use `email`/`password`/`program_id` for authentication (these should come from environment variables).
-
-`submission.template.json`:
-
-```json
-{
-  "work_base": "<work_dir_root>",
-  "machine": {
-    "batch_type": "Bohrium",
-    "context_type": "BohriumContext",
-    "local_root": ".",
-    "remote_profile": {
-      "email": "${BOHRIUM_EMAIL}",
-      "password": "${BOHRIUM_PASSWORD}",
-      "program_id": ${BOHRIUM_PROJECT_ID},
-      "input_data": {
-        "job_type": "container",
-        "log_file": "log",
-        "scass_type": "${BOHRIUM_MACHINE_TYPE}",
-        "platform": "ali",
-        "image_name": "${BOHRIUM_IMAGE}"
-      }
-    }
-  },
-  "resources": {
-    "group_size": 1
-  },
-  "task_list": [
-    {
-      "command": "bash run.sh",
-      "task_work_path": "<task_dir (relative to work_dir_root)>",
-      "forward_files": ["run.sh", "input.dat"],
-      "backward_files": ["result.out", "log", "err"]
-    }
-  ]
-}
-```
-
-Key `input_data` fields:
-
-| Field | Description | Example |
-|---|---|---|
-| `job_type` | Must be `"container"` for image-based jobs | `"container"` |
-| `scass_type` | Machine spec (CPU/GPU/memory) | `"c16_m32_cpu"`, `"c32_m128_cpu"`, `"gpu_4_v100_32g"` |
-| `image_name` | Full container image URI | `"registry.dp.tech/dptech/prod-15454/vasp:5.4.4"` |
-| `platform` | Cloud platform | `"ali"` (Alibaba Cloud) |
-| `log_file` | Path for stdout inside container | `"log"` |
-
-Substitute and submit:
-
-```bash
-envsubst '${BOHRIUM_EMAIL} ${BOHRIUM_PASSWORD} ${BOHRIUM_PROJECT_ID} ${BOHRIUM_MACHINE_TYPE} ${BOHRIUM_IMAGE}' < submission.template.json > submission.json
-uv run -m json.tool submission.json >/dev/null
-uvx --from dpdispatcher --with oss2 dpdisp submit submission.json
-```
-
-> **Note:** Always use `--with oss2` for Bohrium jobs. `oss2` (Aliyun OSS SDK) is required by `BohriumContext` for file upload but is not bundled with dpdispatcher in uvx isolated environments.
+- **Slurm + SSHContext:** `load_skill_resource(skill_name="dpdisp", path="references/slurm-example.md")`
+- **Bohrium (DP Cloud):** `load_skill_resource(skill_name="dpdisp", path="references/bohrium-example.md")`
 
 ## What to report back to the user
 
 - A short summary of what the user asked for (where to run, command, resources).
 - Submission status (started/running/finished/failed).
 - Output locations (for example `log` and `err` when `task_work_path` is `.`).
-- If the job encounters an interruption or partial failure, provide the user with detailed information about this issue and offer to simply re-run the command to resume the unfinished tasks.
+- If the job encounters an interruption or partial failure, provide the user with detailed information and offer to re-run the command to resume the unfinished tasks.

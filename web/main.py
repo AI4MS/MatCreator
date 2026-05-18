@@ -23,7 +23,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -43,7 +43,7 @@ DEFAULT_ADMIN_USERS = {"admin"}
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -119,6 +119,28 @@ def _load_agent_graph_data(session_id: str) -> dict:
         return json.loads(graph_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
+
+
+def _safe_upload_filename(filename: str) -> str:
+    cleaned = Path(filename or "upload").name.strip()
+    if not cleaned or cleaned in {".", ".."}:
+        cleaned = "upload"
+    return "".join(ch if ch.isalnum() or ch in "._- " else "_" for ch in cleaned)
+
+
+def _available_upload_path(upload_dir: Path, filename: str) -> Path:
+    candidate = upload_dir / filename
+    if not candidate.exists():
+        return candidate
+
+    stem = candidate.stem or "upload"
+    suffix = candidate.suffix
+    for i in range(1, 10000):
+        next_candidate = upload_dir / f"{stem}-{i}{suffix}"
+        if not next_candidate.exists():
+            return next_candidate
+
+    raise HTTPException(status_code=409, detail="Too many files with the same name")
 
 
 @app.get("/api/session-access/{user_id}")
@@ -248,6 +270,55 @@ async def list_session_files(session_id: str) -> JSONResponse:
         if f.is_file()
     ]
     return JSONResponse({"files": files})
+
+
+@app.post("/api/sessions/{session_id}/files")
+async def upload_session_file(session_id: str, file: UploadFile = File(...)) -> JSONResponse:
+    session_dir = get_session_workdir(session_id)
+    upload_dir = session_dir / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = _safe_upload_filename(file.filename or "")
+    target = _available_upload_path(upload_dir, filename)
+
+    size = 0
+    try:
+        with target.open("wb") as fh:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                fh.write(chunk)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save upload: {exc}")
+    finally:
+        await file.close()
+
+    return JSONResponse({
+        "name": target.name,
+        "path": str(target),
+        "size": size,
+    })
+
+
+@app.delete("/api/sessions/{session_id}/files")
+async def delete_session_file(
+    session_id: str,
+    path: str = Query(..., description="Absolute or session-relative file path"),
+) -> JSONResponse:
+    session_dir = get_session_workdir(session_id).resolve()
+    p = Path(path)
+    resolved = p.resolve() if p.is_absolute() else (session_dir / p).resolve()
+
+    if not resolved.is_relative_to(session_dir):
+        raise HTTPException(status_code=403, detail="Access denied: path is outside session")
+    if not resolved.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        resolved.unlink()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to delete file: {exc}")
+
+    return JSONResponse({"deleted": True, "path": str(resolved)})
 
 
 # Serve built frontend in production

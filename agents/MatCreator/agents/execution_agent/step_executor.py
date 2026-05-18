@@ -26,7 +26,7 @@ _model_base_url = os.environ.get("LLM_BASE_URL", LLM_BASE_URL)
 class StepExecutorInput(BaseModel):
     step_number: int = Field(description="1-based index of this step in the plan")
     action: str = Field(description="Action description from the plan step")
-    skill_name: str = Field(description="Name of the skill to use for this step")
+    suggested_skills: List[str] = Field(description="Ordered list of skill names suggested by the planner for this step")
     workspace_dir: str = Field(description="Absolute path to the session workspace directory")
     prior_context: Optional[str] = Field(
         default=None,
@@ -67,8 +67,9 @@ _STEP_EXECUTOR_INSTRUCTION = """
 You are a focused step executor. Execute the single plan step provided in your input.
 
 ## Your task
-1. Call `load_skill` with the provided `skill_name` to retrieve the skill instructions.
-2. Execute the `action` following those instructions precisely.
+1. Review `suggested_skills` from your input. Call `load_skill` for each skill you deem
+   relevant to the action. You may also load additional skills.
+2. Execute the `action` following the loaded skill instructions precisely.
 All provided tools are available.
 
 ## Reporting results (REQUIRED)
@@ -87,6 +88,12 @@ Do NOT write JSON text — always use the `submit_step_result` tool.
 - Use `run_python` or `run_bash` for computation. Do not fabricate outputs.
 - Include ALL generated files with their absolute paths in `artifacts`.
 - Do not retry indefinitely on failure — call `submit_step_result` with needs_replanning.
+- **Long-running background jobs (e.g., dpdisp via tmux):** You MUST poll until the
+  background process exits AND the expected output files exist locally before calling
+  `submit_step_result`. Submitting a job is NOT the same as completing it. Poll with
+  `run_bash` every 30–60 seconds (e.g., check `tmux has-session`). Only report success
+  after outputs are downloaded. If the process exits but outputs are missing, attempt
+  recovery before reporting needs_replanning.
 
 ## Prior context
 If `prior_context` is provided, use it to understand what prior steps produced

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import aclosing
 from datetime import datetime, timezone
@@ -15,8 +16,19 @@ from google.genai import types
 from ...workspace import get_session_workdir
 from .step_executor import StepExecutorInput, StepExecutorResult, step_executor_agent
 from ..graph_logger import AgentGraphLogger
+from ..cancellation import (
+    is_cancellation_requested,
+    get_cancellation_reason,
+    is_step_cancellation_requested,
+    clear_step_cancellation,
+)
 
 logger = logging.getLogger(__name__)
+
+# Time between flag-file polls in the watcher task.
+# Event-count polling is unreliable when events are sparse (e.g. mid-LLM-call),
+# so we use a wall-clock interval instead.
+_CANCEL_POLL_INTERVAL = 0.5  # seconds
 
 
 def _now() -> str:
@@ -38,89 +50,49 @@ def _append_unique(values: list[str], value) -> None:
         values.append(value)
 
 
-async def run_step_executor(
+async def _watch_for_cancellation(
+    target: asyncio.Task,
+    session_id: str,
     step_number: int,
-    action: str,
-    skill_name: str,
-    workspace_dir: str,
-    prior_context: Optional[str] = None,
-    *,
-    tool_context: ToolContext,
-) -> dict:
-    """Run step_executor as an isolated sub-agent, following AgentTool logic.
+) -> None:
+    """Poll cancellation flags at fixed intervals; call target.cancel() when flagged.
 
-    Each invocation gets its own workspace subdirectory under the session workdir,
-    overriding the LLM-supplied workspace_dir with a per-step path.
+    Runs concurrently with the step execution task.  Using task.cancel() raises
+    CancelledError at the target's current await point (including in-flight HTTP
+    calls to the LLM), which is the only reliable way to stop a running coroutine.
     """
-    # Per-step workspace: {session_workdir}/{plan_exec_id}/step_{step_number}/
-    # plan_exec_id is generated once per plan execution to avoid collisions across plans.
-    session_id = tool_context.state.get("session_id", "default")
-    plan_exec_id = tool_context.state.get("plan_exec_id")
-    if not plan_exec_id:
-        plan_exec_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-        tool_context.state["plan_exec_id"] = plan_exec_id
-    step_workspace = get_session_workdir(session_id) / plan_exec_id / f"step_{step_number}"
-    step_workspace.mkdir(parents=True, exist_ok=True)
-    logger.debug("[step_executor_runner] step %d workspace: %s", step_number, step_workspace)
+    try:
+        while not target.done():
+            await asyncio.sleep(_CANCEL_POLL_INTERVAL)
+            if (
+                is_cancellation_requested(session_id)
+                or is_step_cancellation_requested(session_id, step_number)
+            ):
+                logger.warning(
+                    "[CANCEL] Step %d watcher triggered task cancellation (session=%s)",
+                    step_number, session_id,
+                )
+                target.cancel()
+                return
+    except asyncio.CancelledError:
+        pass
 
-    graph = AgentGraphLogger(session_id)
-    parent_id = tool_context.state.get("_graph_exec_node_id", "orchestrator")
-    step_id = f"{parent_id}__step_{step_number}"
-    graph.log_node_start(step_id, "step", f"Step {step_number}", parent_id)
 
-    # Serialize input as user message (matches AgentTool input_schema path)
-    step_input = StepExecutorInput(
-        step_number=step_number,
-        action=action,
-        skill_name=skill_name,
-        workspace_dir=str(step_workspace),
-        prior_context=prior_context,
-    )
-    content = types.Content(
-        role="user",
-        parts=[types.Part.from_text(text=step_input.model_dump_json(exclude_none=True))],
-    )
+async def _stream_step_events(
+    runner: Runner,
+    session,
+    content,
+    step_id: str,
+    tool_context: ToolContext,
+    graph: AgentGraphLogger,
+) -> tuple[dict, list[str]]:
+    """Stream events from the step executor sub-agent and collect results.
 
-    # Log input parameters
-    graph.log_node_input(step_id, {
-        "step_number": step_number,
-        "action": action,
-        "workspace_dir": str(step_workspace),
-        "prior_context": prior_context,
-        "skill_name": skill_name,
-    })
-
-    # Create runner with isolated session (mirrors AgentTool)
-    invocation_context = tool_context._invocation_context
-    child_app_name = (
-        invocation_context.app_name if invocation_context else step_executor_agent.name
-    )
-    runner = Runner(
-        app_name=child_app_name,
-        agent=step_executor_agent,
-        artifact_service=ForwardingArtifactService(tool_context),
-        session_service=InMemorySessionService(),
-        memory_service=InMemoryMemoryService(),
-        credential_service=invocation_context.credential_service,
-    )
-
-    # Inherit parent state, override workspace_dir with per-step path
-    state_dict = {
-        k: v
-        for k, v in tool_context.state.to_dict().items()
-        if not k.startswith("_adk")
-    }
-    state_dict["workspace_dir"] = str(step_workspace)
-
-    session = await runner.session_service.create_session(
-        app_name=child_app_name,
-        user_id=invocation_context.user_id,
-        state=state_dict,
-    )
-
-    # Run sub-agent and forward state deltas to parent (mirrors AgentTool loop)
+    Returns (step_state_delta, plot_paths).  Raises CancelledError if the task
+    is cancelled mid-stream.
+    """
     step_state_delta: dict = {}
-    pending_tool_calls: dict[str, dict] = {}  # tool name -> partial record
+    pending_tool_calls: dict[str, dict] = {}
     plot_paths: list[str] = []
 
     async with aclosing(
@@ -181,7 +153,144 @@ async def run_step_executor(
                             "content": f"{fr.name} → {str(fr.response)[:500]}",
                         })
 
-    await runner.close()
+    return step_state_delta, plot_paths
+
+
+async def run_step_executor(
+    step_number: int,
+    action: str,
+    suggested_skills: list[str],
+    workspace_dir: str,
+    prior_context: Optional[str] = None,
+    *,
+    tool_context: ToolContext,
+) -> dict:
+    """Run step_executor as an isolated sub-agent, following AgentTool logic.
+
+    Each invocation gets its own workspace subdirectory under the session workdir,
+    overriding the LLM-supplied workspace_dir with a per-step path.
+    """
+    # Per-step workspace: {session_workdir}/{plan_exec_id}/step_{step_number}/
+    # plan_exec_id is generated once per plan execution to avoid collisions across plans.
+    session_id = tool_context.state.get("session_id", "default")
+    plan_exec_id = tool_context.state.get("plan_exec_id")
+    if not plan_exec_id:
+        plan_exec_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        tool_context.state["plan_exec_id"] = plan_exec_id
+    step_workspace = get_session_workdir(session_id) / plan_exec_id / f"step_{step_number}"
+    step_workspace.mkdir(parents=True, exist_ok=True)
+    logger.debug("[step_executor_runner] step %d workspace: %s", step_number, step_workspace)
+
+    graph = AgentGraphLogger(session_id)
+    parent_id = tool_context.state.get("_graph_exec_node_id", "orchestrator")
+    step_id = f"{parent_id}__step_{step_number}"
+    graph.log_node_start(step_id, "step", f"Step {step_number}", parent_id)
+
+    # Serialize input as user message (matches AgentTool input_schema path)
+    step_input = StepExecutorInput(
+        step_number=step_number,
+        action=action,
+        suggested_skills=suggested_skills,
+        workspace_dir=str(step_workspace),
+        prior_context=prior_context,
+    )
+    content = types.Content(
+        role="user",
+        parts=[types.Part.from_text(text=step_input.model_dump_json(exclude_none=True))],
+    )
+
+    # Log input parameters
+    graph.log_node_input(step_id, {
+        "step_number": step_number,
+        "action": action,
+        "workspace_dir": str(step_workspace),
+        "prior_context": prior_context,
+        "suggested_skills": suggested_skills,
+    })
+
+    # Pre-step cancellation check — abort before creating the runner if flagged
+    if is_cancellation_requested(session_id) or is_step_cancellation_requested(session_id, step_number):
+        reason = get_cancellation_reason(session_id) or "user_requested"
+        logger.warning(
+            "[CANCEL] Step %d aborted before start (session=%s, reason=%s)",
+            step_number, session_id, reason,
+        )
+        graph.log_node_complete(step_id, "failed", summary=f"Cancelled before start: {reason}")
+        clear_step_cancellation(session_id, step_number)
+        return {
+            "status": "cancelled",
+            "message": f"Step {step_number} skipped: execution cancellation was requested ({reason}).",
+        }
+
+    # Create runner with isolated session (mirrors AgentTool)
+    invocation_context = tool_context._invocation_context
+    child_app_name = (
+        invocation_context.app_name if invocation_context else step_executor_agent.name
+    )
+    runner = Runner(
+        app_name=child_app_name,
+        agent=step_executor_agent,
+        artifact_service=ForwardingArtifactService(tool_context),
+        session_service=InMemorySessionService(),
+        memory_service=InMemoryMemoryService(),
+        credential_service=invocation_context.credential_service,
+    )
+
+    # Inherit parent state, override workspace_dir with per-step path
+    state_dict = {
+        k: v
+        for k, v in tool_context.state.to_dict().items()
+        if not k.startswith("_adk")
+    }
+    state_dict["workspace_dir"] = str(step_workspace)
+
+    session = await runner.session_service.create_session(
+        app_name=child_app_name,
+        user_id=invocation_context.user_id,
+        state=state_dict,
+    )
+
+    # Wrap event streaming in a Task so task.cancel() can raise CancelledError at
+    # the current await point (including in-flight LLM HTTP calls).  A sibling
+    # watcher task polls cancellation flags on a wall-clock interval and cancels
+    # the inner task when a flag is detected.
+    inner_task = asyncio.create_task(
+        _stream_step_events(runner, session, content, step_id, tool_context, graph)
+    )
+    watcher = asyncio.create_task(
+        _watch_for_cancellation(inner_task, session_id, step_number)
+    )
+
+    cancelled = False
+    step_state_delta: dict = {}
+    plot_paths: list[str] = []
+    try:
+        step_state_delta, plot_paths = await inner_task
+    except asyncio.CancelledError:
+        cancelled = True
+    finally:
+        if not watcher.done():
+            watcher.cancel()
+        await asyncio.gather(watcher, return_exceptions=True)
+        try:
+            await asyncio.wait_for(runner.close(), timeout=5.0)
+        except Exception:
+            pass
+
+    if cancelled:
+        reason = get_cancellation_reason(session_id) or "user_requested"
+        logger.warning(
+            "[CANCEL] Step %d task cancelled (session=%s, reason=%s)",
+            step_number, session_id, reason,
+        )
+        graph.log_node_complete(
+            step_id, "failed", summary=f"Cancelled mid-step ({reason})"
+        )
+        clear_step_cancellation(session_id, step_number)
+        return {
+            "status": "cancelled",
+            "message": f"Step {step_number} cancelled ({reason}).",
+        }
 
     if step_state_delta:
         graph.log_state_delta(step_id, step_state_delta)
@@ -200,6 +309,7 @@ async def run_step_executor(
         if plot_paths:
             payload["plot_paths"] = plot_paths
             payload["plot_path"] = plot_paths[0]
+        clear_step_cancellation(session_id, step_number)
         return payload
 
     # submit_step_result was never called — surface as replanning signal
@@ -209,4 +319,5 @@ async def run_step_executor(
         replan_reason="step executor did not call submit_step_result — no result captured",
     )
     graph.log_node_complete(step_id, "needs_replanning")
+    clear_step_cancellation(session_id, step_number)
     return result.model_dump()

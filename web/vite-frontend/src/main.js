@@ -16,6 +16,9 @@ const state = {
   isAdmin: false,
   sessionReady: false,
   structure3dViewer: null,
+  currentUploads: [],
+  isSending: false,
+  sendController: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -25,6 +28,9 @@ const state = {
 const chatArea = document.getElementById("chat-area");
 const textInput = document.getElementById("text-input");
 const sendBtn = document.getElementById("send-btn");
+const fileUploadBtn = document.getElementById("file-upload-btn");
+const fileUploadInput = document.getElementById("file-upload-input");
+const uploadStatus = document.getElementById("upload-status");
 const sessionIdEl = document.getElementById("session-id");
 const sessionListEl = document.getElementById("session-list");
 const resetBtn = document.getElementById("reset-session");
@@ -84,9 +90,9 @@ const STATUS_COLORS = {
 
 const MOBILE_LAYOUT_QUERY = window.matchMedia("(max-width: 900px)");
 const PANEL_HEIGHT_DEFAULTS = {
-  "graph-viewport": 660,
-  "graph-detail": 220,
-  "structure-viewer": 320,
+  "graph-viewport": 600,
+  "graph-detail": 500,
+  "structure-viewer": 500,
 };
 const PANEL_HEIGHT_BOUNDS = {
   "graph-viewport": { min: 220, max: 1200 },
@@ -115,7 +121,23 @@ class AgentGraphView {
     this._detailToolcallsCount = document.getElementById("detail-toolcalls-count");
     this._detailConversation = document.getElementById("detail-conversation");
     this._nodeData = {};
+    this._activeDetailNodeId = null;
     this._init();
+  }
+
+  _captureOpenToolCallKeys() {
+    const openKeys = new Set();
+    this._detailToolcalls?.querySelectorAll("details[data-toolcall-key][open]")?.forEach((el) => {
+      openKeys.add(el.getAttribute("data-toolcall-key"));
+    });
+    return openKeys;
+  }
+
+  _restoreOpenToolCallKeys(openKeys) {
+    if (!openKeys?.size) return;
+    this._detailToolcalls?.querySelectorAll("details[data-toolcall-key]")?.forEach((el) => {
+      el.open = openKeys.has(el.getAttribute("data-toolcall-key"));
+    });
   }
 
   _init() {
@@ -312,20 +334,13 @@ class AgentGraphView {
   }
 
   _resizeSurface(levels) {
-    if (!this._surfaceEl) return;
+    if (!this._surfaceEl || !graphViewport) return;
 
-    const nodesPerLevel = new Map();
-    Object.values(levels).forEach((lvl) => {
-      const curr = nodesPerLevel.get(lvl) || 0;
-      nodesPerLevel.set(lvl, curr + 1);
-    });
-
-    const maxLevel = Math.max(0, ...Object.values(levels));
-    const maxBreadth = Math.max(1, ...nodesPerLevel.values());
-
-    const targetWidth = Math.max(620, Math.min(3200, maxBreadth * 160));
-    const targetHeight = Math.max(420, Math.min(4200, (maxLevel + 1) * 125));
-
+    // Keep the graph canvas matched to the visible viewport so vis-network's
+    // fit() shows the whole graph in the default view instead of fitting into
+    // an oversized off-screen surface.
+    const targetWidth = Math.max(620, Math.round(graphViewport.clientWidth || 620));
+    const targetHeight = Math.max(420, Math.round(graphViewport.clientHeight || 420));
     this._surfaceEl.style.width = `${targetWidth}px`;
     this._surfaceEl.style.height = `${targetHeight}px`;
   }
@@ -379,6 +394,14 @@ class AgentGraphView {
     if (rawNodes.length > 0 && (!this._didInitialFit || this._pendingFit)) {
       this._fitGraph();
     }
+
+    if (this._activeDetailNodeId) {
+      if (this._nodeData[this._activeDetailNodeId]) {
+        this._showDetail(this._activeDetailNodeId, { preserveScroll: true });
+      } else {
+        this._hideDetail();
+      }
+    }
   }
 
   startPolling(sessionId) {
@@ -425,9 +448,16 @@ class AgentGraphView {
     }
   }
 
-  _showDetail(nodeId) {
+  _showDetail(nodeId, options = {}) {
     const raw = this._nodeData[nodeId];
     if (!raw) return;
+    this._activeDetailNodeId = nodeId;
+    const preserveScroll = Boolean(options.preserveScroll);
+    const prevScrollTop = preserveScroll ? this._detailEl.scrollTop : 0;
+    const prevOpenToolCallKeys = preserveScroll ? this._captureOpenToolCallKeys() : new Set();
+    structureViewer.classList.add("hidden");
+    state.structure3dViewer = null;
+    svCanvas.innerHTML = "";
     this._detailLabel.textContent = raw.label;
     this._detailStatus.textContent = raw.status;
     this._detailStatus.className = `badge badge-${raw.status}`;
@@ -479,6 +509,7 @@ class AgentGraphView {
       toolCalls.forEach((tc) => {
         const d = document.createElement("details");
         d.className = "timeline-function-call";
+        d.setAttribute("data-toolcall-key", tc.id || `${tc.name}:${tc.start_time || ""}`);
         const dur = tc.start_time && tc.end_time
           ? ` (${((new Date(tc.end_time) - new Date(tc.start_time)) / 1000).toFixed(1)}s)`
           : "";
@@ -529,9 +560,14 @@ class AgentGraphView {
 
     this._detailEl.classList.remove("hidden");
     syncPanelResizerVisibility();
+    if (preserveScroll) {
+      this._restoreOpenToolCallKeys(prevOpenToolCallKeys);
+      this._detailEl.scrollTop = prevScrollTop;
+    }
   }
 
   _hideDetail() {
+    this._activeDetailNodeId = null;
     this._detailEl.classList.add("hidden");
     syncPanelResizerVisibility();
   }
@@ -585,6 +621,7 @@ function applyStoredPanelHeights() {
       el.style.removeProperty("height");
       continue;
     }
+
     const raw = localStorage.getItem(panelStorageKey(targetId));
     const parsed = raw ? Number(raw) : fallback;
     const nextHeight = Number.isFinite(parsed) ? parsed : fallback;
@@ -606,18 +643,18 @@ function refreshGraphAndStructureLayout() {
 
 function syncPanelResizerVisibility() {
   const hideAll = isMobileLayout();
+  const detailHidden = graphDetail.classList.contains("hidden");
+  const structureHidden = structureViewer.classList.contains("hidden");
 
   if (graphResizer) {
     graphResizer.classList.toggle("hidden", hideAll);
   }
 
   if (detailResizer) {
-    const detailHidden = graphDetail.classList.contains("hidden");
     detailResizer.classList.toggle("hidden", hideAll || detailHidden);
   }
 
   if (structureResizer) {
-    const structureHidden = structureViewer.classList.contains("hidden");
     structureResizer.classList.toggle("hidden", hideAll || structureHidden);
   }
 }
@@ -736,6 +773,7 @@ async function applyUsername(name) {
   sessionIdEl.textContent = state.sessionId;
   chatArea.innerHTML = "";
   renderSessionFilesTree([]);
+  clearCurrentUploads();
   agentGraph.reset();
   await refreshAccess();
   renderUserDisplay();
@@ -820,6 +858,7 @@ async function switchSession(sessionId, owner = state.userId) {
   localStorage.setItem("mat_sessionId", sessionId);
   sessionIdEl.textContent = sessionId;
   renderSessionFilesTree([]);
+  clearCurrentUploads();
   agentGraph.reset();
   await loadSession(sessionId);
   await loadSessions();
@@ -1149,6 +1188,171 @@ async function refreshSessionFiles() {
   } catch (_) {}
 }
 
+function setUploadStatus(message, tone = "idle") {
+  if (!uploadStatus) return;
+  uploadStatus.textContent = message || "";
+  uploadStatus.className = `upload-status upload-status-${tone}`;
+}
+
+function renderCurrentUploadChips() {
+  if (!uploadStatus) return;
+  uploadStatus.innerHTML = "";
+  uploadStatus.className = "upload-status upload-file-list";
+  if (!state.currentUploads.length) return;
+
+  state.currentUploads.forEach((file) => {
+    const chip = document.createElement("span");
+    chip.className = "upload-file-chip";
+
+    const name = document.createElement("span");
+    name.className = "upload-file-name";
+    name.textContent = file.name;
+    name.title = file.path;
+    chip.appendChild(name);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "upload-file-remove";
+    removeBtn.type = "button";
+    removeBtn.title = "Delete uploaded file";
+    removeBtn.textContent = "×";
+    removeBtn.addEventListener("click", () => deleteUploadedFile(file));
+    chip.appendChild(removeBtn);
+
+    uploadStatus.appendChild(chip);
+  });
+}
+
+function clearCurrentUploads() {
+  state.currentUploads = [];
+  renderCurrentUploadChips();
+}
+
+function mergeUploadedFiles(existingFiles, newFiles) {
+  const merged = [...existingFiles];
+  const seenPaths = new Set(existingFiles.map((file) => file?.path).filter(Boolean));
+
+  newFiles.forEach((file) => {
+    const path = file?.path;
+    if (path && seenPaths.has(path)) return;
+    if (path) seenPaths.add(path);
+    merged.push(file);
+  });
+
+  return merged;
+}
+
+function sessionRelativeUploadPath(file) {
+  const normalized = String(file?.path || "").replaceAll("\\", "/");
+  const marker = `/${state.sessionId}/`;
+  const markerIdx = normalized.indexOf(marker);
+  if (markerIdx >= 0) return normalized.slice(markerIdx + marker.length);
+  return file?.name ? `uploads/${file.name}` : normalized;
+}
+
+function messageWithUploadContext(message, uploads) {
+  if (!uploads.length) return message;
+  const fileLines = uploads.map((file) => {
+    const relPath = sessionRelativeUploadPath(file);
+    return `- ${file.name}: ${relPath} (absolute path: ${file.path})`;
+  });
+  return [
+    message,
+    "",
+    "The user uploaded the following file(s) for this message. They are saved in the current session workspace. Use these paths when inspecting or processing the files:",
+    ...fileLines,
+  ].join("\n");
+}
+
+function formatUploadNames(uploadNames) {
+  if (!uploadNames.length) return "";
+  return `Attached: ${uploadNames.map((name) => `\`${name}\``).join(", ")}`;
+}
+
+function messageWithUploadNames(message, uploads) {
+  const uploadNames = uploads.map((file) => file.name).filter(Boolean);
+  const suffix = formatUploadNames(uploadNames);
+  return suffix ? `${message}\n\n${suffix}` : message;
+}
+
+function displayMessageFromStoredUserText(message) {
+  const marker = "\n\nThe user uploaded the following file(s) for this message.";
+  const rawMessage = String(message || "");
+  const markerIdx = rawMessage.indexOf(marker);
+  if (markerIdx < 0) return rawMessage;
+
+  const visibleMessage = rawMessage.slice(0, markerIdx);
+  const hiddenContext = rawMessage.slice(markerIdx);
+  const uploadNames = hiddenContext
+    .split("\n")
+    .map((line) => line.match(/^-\s+([^:]+):/)?.[1]?.trim())
+    .filter(Boolean);
+  const suffix = formatUploadNames(uploadNames);
+  return suffix ? `${visibleMessage}\n\n${suffix}` : visibleMessage;
+}
+
+async function deleteUploadedFile(file) {
+  if (!file?.path || !state.sessionId) return;
+  try {
+    const resp = await fetch(
+      `/api/sessions/${encodeURIComponent(state.sessionId)}/files?path=${encodeURIComponent(file.path)}`,
+      { method: "DELETE" }
+    );
+    if (!resp.ok) {
+      const detail = await resp.text();
+      throw new Error(detail || `HTTP ${resp.status}`);
+    }
+    state.currentUploads = state.currentUploads.filter((item) => item.path !== file.path);
+    renderCurrentUploadChips();
+    await refreshSessionFiles();
+  } catch (err) {
+    setUploadStatus(`Delete failed: ${err.message || err}`, "error");
+  }
+}
+
+async function uploadFilesToSession(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  if (!state.userId) { showLoginModal(); return; }
+  if (state.activeSessionUserId && state.activeSessionUserId !== state.userId) {
+    addMessage("agent", `Admin view is read-only for ${state.activeSessionUserId}'s session.`);
+    return;
+  }
+
+  if (!state.sessionReady) await createSession();
+  if (!state.sessionReady) {
+    setUploadStatus("Could not create session.", "error");
+    return;
+  }
+
+  if (fileUploadBtn) fileUploadBtn.disabled = true;
+  const uploaded = [];
+  try {
+    for (const file of files) {
+      setUploadStatus(`Uploading ${file.name}...`, "busy");
+      const formData = new FormData();
+      formData.append("file", file);
+      const resp = await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}/files`, {
+        method: "POST",
+        body: formData,
+      });
+      if (!resp.ok) {
+        const detail = await resp.text();
+        throw new Error(detail || `HTTP ${resp.status}`);
+      }
+      uploaded.push(await resp.json());
+    }
+
+    await refreshSessionFiles();
+    state.currentUploads = mergeUploadedFiles(state.currentUploads, uploaded);
+    renderCurrentUploadChips();
+  } catch (err) {
+    setUploadStatus(`Upload failed: ${err.message || err}`, "error");
+  } finally {
+    if (fileUploadBtn) fileUploadBtn.disabled = false;
+    fileUploadInput.value = "";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Session management
 // ---------------------------------------------------------------------------
@@ -1206,7 +1410,7 @@ async function loadSession(sessionId) {
       const parts = event.content?.parts || [];
 
       if (role === "user") {
-        const text = parts.map((p) => p.text || "").join("");
+        const text = displayMessageFromStoredUserText(parts.map((p) => p.text || "").join(""));
         if (text) addMessage("user", text);
         shownPlotPaths = new Set();
         continue;
@@ -1345,16 +1549,34 @@ function upsertTimelineEvent(timeline, event) {
 // Message sending + SSE streaming
 // ---------------------------------------------------------------------------
 
+function setSendingState(isSending, controller = null) {
+  state.isSending = isSending;
+  state.sendController = controller;
+  if (!sendBtn) return;
+  sendBtn.textContent = isSending ? "■" : "➜";
+  sendBtn.title = isSending ? "Stop" : "Send";
+  sendBtn.classList.toggle("is-stopping", isSending);
+}
+
+function stopCurrentMessage() {
+  if (!state.isSending || !state.sendController) return;
+  state.sendController.abort();
+}
+
 async function sendMessage(message) {
   if (!message.trim()) return;
+  if (state.isSending) return;
   if (!state.userId) { showLoginModal(); return; }
   if (state.activeSessionUserId && state.activeSessionUserId !== state.userId) {
     addMessage("agent", `Admin view is read-only for ${state.activeSessionUserId}'s session.`);
     return;
   }
 
-  addMessage("user", message);
+  const uploadsForMessage = state.currentUploads.slice();
+  addMessage("user", messageWithUploadNames(message, uploadsForMessage));
+  const backendMessage = messageWithUploadContext(message, uploadsForMessage);
   textInput.value = "";
+  clearCurrentUploads();
   autoResizeTextInput();
 
   if (!state.sessionReady) await createSession();
@@ -1362,13 +1584,14 @@ async function sendMessage(message) {
   agentGraph.startPolling(state.sessionId);
 
   const controller = new AbortController();
+  setSendingState(true, controller);
   const payload = {
     app_name: APP_NAME,
     user_id: state.userId,
     session_id: state.sessionId,
     new_message: {
       role: "user",
-      parts: [{ text: message }],
+      parts: [{ text: backendMessage }],
     },
   };
 
@@ -1441,11 +1664,16 @@ async function sendMessage(message) {
       }
     }
   } catch (err) {
-    addMessage("agent", `Backend error: ${err}`);
+    if (err?.name === "AbortError") {
+      addMessage("agent", "已中断当前运行。");
+    } else {
+      addMessage("agent", `Backend error: ${err}`);
+    }
   } finally {
     await agentGraph._poll(state.sessionId);
     agentGraph.stopPolling();
     await refreshSessionFiles();
+    setSendingState(false);
   }
 }
 
@@ -1454,6 +1682,7 @@ async function sendMessage(message) {
 // ---------------------------------------------------------------------------
 
 async function openViewer(item) {
+  graphDetail.classList.add("hidden");
   structureViewer.classList.remove("hidden");
   syncPanelResizerVisibility();
   svCanvas.innerHTML = '<div style="color:var(--muted);padding:16px;font-size:13px">Loading…</div>';
@@ -1514,13 +1743,25 @@ initPanelResizers();
 // Event listeners
 // ---------------------------------------------------------------------------
 
-sendBtn.addEventListener("click", () => sendMessage(textInput.value));
+sendBtn.addEventListener("click", () => {
+  if (state.isSending) {
+    stopCurrentMessage();
+    return;
+  }
+  sendMessage(textInput.value);
+});
 textInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
+    if (state.isSending) return;
     sendMessage(textInput.value);
   }
 });
+
+if (fileUploadBtn && fileUploadInput) {
+  fileUploadBtn.addEventListener("click", () => fileUploadInput.click());
+  fileUploadInput.addEventListener("change", (e) => uploadFilesToSession(e.target.files));
+}
 
 // Avatar upload
 const avatarUploadInput = document.getElementById("avatar-upload-input");
@@ -1552,6 +1793,7 @@ resetBtn.addEventListener("click", () => {
   sessionIdEl.textContent = state.sessionId;
   chatArea.innerHTML = "";
   renderSessionFilesTree([]);
+  clearCurrentUploads();
   agentGraph.reset();
   loadSessions();
 });

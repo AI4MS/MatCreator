@@ -14,7 +14,7 @@ from .planning import validate_plan
 from .intent import validate_intent
 from .summarize import validate_summarize
 from .session_summary import write_session_summary
-from ...skill import ALL_SKILLS, ALL_SKILLS_TOOLSET, refresh_skills
+from ...skill import ALL_SKILLS, refresh_skills, ALL_SKILLS_TOOLSET
 from ...guide import ALL_GUIDES
 from .memory import query_knowledge_graph, save_to_knowledge_graph, update_memory, read_memory, run_synthesizer
 from ...tools.workspace_tools import (
@@ -27,6 +27,7 @@ from ...tools.util_tools import (
     show_plot,
     show_structure
 )
+from .history_tools import read_execution_trajectory, read_agent_graph
 
 
 logger = logging.getLogger(__name__)
@@ -133,6 +134,10 @@ def confirm_plan_and_start_execution(tool_context: ToolContext) -> dict:
     (e.g. "yes", "proceed", "go ahead").  The orchestrator will then delegate each
     plan step to the execution agent — do NOT execute steps yourself after calling this.
     """
+    from ..cancellation import clear_cancellation
+
+    sid = tool_context.state.get("session_id") or tool_context._invocation_context.session.id
+    clear_cancellation(sid)
     tool_context.state["execution_approved"] = True
     tool_context.state["current_step_index"] = 0
     return {
@@ -198,7 +203,6 @@ You are MatCreator, an AI assistant for computational materials science workflow
 Your role here is **PLANNING ONLY**: you are responsible only for planning; all concrete execution steps must be delegated to the execution agent.
 
 ## Context
-- Available skills: {skills}
 - Available guides: {guides}
 - Goal: {goal}
 - Plan: {plan}
@@ -220,10 +224,20 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
 
 ## Rules
 - NEVER execute plan steps.
+- **Keep plans short.** Prefer 2–4 steps for simple tasks, 5–7 for complex ones. Merge
+  sequential operations that belong to the same skill or logical unit into a single step.
+  Only split when steps are genuinely independent or require different skills.
 - For skill creation/testing requests, always call `request_skill_testing` before responding.
 - Keep responses concise; reference absolute file paths where relevant.
 - When you encounter an error, quote the exact message and propose concrete solutions.
 - You may call `run_synthesizer` when the knowledge graph seems stale or after heavy knowledge accumulation.
+
+## Reviewing execution history
+- After execution returns to planning (e.g. after cancellation, step failure, or partial
+  completion), call `read_execution_trajectory` to review completed step outcomes and artifacts.
+- Call `read_agent_graph(node_type_filter="step")` to inspect step statuses and tool calls —
+  especially useful for diagnosing a stuck or failed step.
+- Use this information when replanning: avoid re-running steps that already succeeded.
 """
 
 # ---------------------------------------------------------------------------
@@ -246,9 +260,9 @@ def before_agent_callback(callback_context: CallbackContext) -> None:
         if key not in state:
             callback_context.state[key] = default
     
-    callback_context.state["skills"] = "\n".join(
-        f"- {s.name}: {s.description}" for s in ALL_SKILLS
-    ) if ALL_SKILLS else "No skills available."
+    #callback_context.state["skills"] = "\n".join(
+    #    f"- {s.name}: {s.description}" for s in ALL_SKILLS
+    #) if ALL_SKILLS else "No skills available."
 
     callback_context.state["guides"] = "\n".join(
         f"- {g.name}: {g.description}" for g in ALL_GUIDES
@@ -302,10 +316,12 @@ thinking_agent = LlmAgent(
         FunctionTool(refresh_skills),
         FunctionTool(run_python),
         FunctionTool(run_bash),
+        FunctionTool(read_execution_trajectory),
+        FunctionTool(read_agent_graph),
         show_artifact,
         show_plot,
         show_structure,
-        ALL_SKILLS_TOOLSET
+        ALL_SKILLS_TOOLSET,
     ],
     before_agent_callback=before_agent_callback,
 )

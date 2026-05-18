@@ -152,6 +152,48 @@ class AgentGraphLogger:
         node.setdefault("conversation", []).append(entry)
         self._write(graph)
 
+    def mark_running_nodes_cancelled(
+        self,
+        node_types: Optional[list[NodeType]] = None,
+        summary: str = "Cancelled by user",
+    ) -> None:
+        """Pre-emptively mark running nodes as failed.
+
+        Called eagerly on session cancel so the graph reflects cancellation
+        before the step executor polls its flag.
+        """
+        graph = self._read()
+        now = _now()
+        for node in graph["nodes"].values():
+            if node.get("status") != "running":
+                continue
+            if node_types is not None and node.get("type") not in node_types:
+                continue
+            node["status"] = "failed"
+            node["end_time"] = now
+            node["summary"] = summary
+        self._write(graph)
+
+    def cancel_step_node_by_number(self, step_number: int, summary: str = "Cancelled by user") -> bool:
+        """Find the running step node with input.step_number==step_number and mark it failed.
+
+        Returns True if a node was found and updated.
+        """
+        graph = self._read()
+        now = _now()
+        for node in graph["nodes"].values():
+            if (
+                node.get("type") == "step"
+                and node.get("status") == "running"
+                and (node.get("input") or {}).get("step_number") == step_number
+            ):
+                node["status"] = "failed"
+                node["end_time"] = now
+                node["summary"] = summary
+                self._write(graph)
+                return True
+        return False
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

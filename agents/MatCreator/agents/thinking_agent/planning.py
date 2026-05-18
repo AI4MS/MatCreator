@@ -27,27 +27,28 @@ class PlanStep(BaseModel):
     """Single step in the execution plan."""
 
     step_number: int = Field(..., description="Sequential step number (1, 2, 3, ...)")
-    skill: str = Field(
+    suggested_skills: List[str] = Field(
         ...,
-        description="Skill name used by the executor to load relevant tools and instruction.",
-        min_length=1,
+        description="Ordered list of skill names likely needed for this step. The executor may load additional skills as needed.",
+        min_items=1,
     )
     action: str = Field(
         ...,
-        description="Clear, concise description of what this step does (1-2 sentences)",
+        description="Clear, concise description of what this step does (1-2 sentences). Each step should cover a meaningful chunk of work — avoid splitting a single logical operation into multiple steps.",
         max_length=500,
     )
 
-    @field_validator("skill")
+    @field_validator("suggested_skills")
     @classmethod
-    def _validate_skill_name(cls, value: str) -> str:
-        allowed_names = set([s.name for s in ALL_SKILLS])
-        if value not in allowed_names:
+    def _validate_skill_names(cls, values: List[str]) -> List[str]:
+        allowed_names = {s.name for s in ALL_SKILLS}
+        invalid = [v for v in values if v not in allowed_names]
+        if invalid:
             allowed = ", ".join(sorted(allowed_names)) or "<none loaded>"
             raise ValueError(
-                f"Invalid skill '{value}'. Allowed skills are: {allowed}"
+                f"Invalid skill(s) {invalid}. Allowed skills are: {allowed}"
             )
-        return value
+        return values
 
 
 class ExecutionPlan(BaseModel):
@@ -80,7 +81,7 @@ def validate_plan(plan: dict, tool_context: ToolContext) -> dict:
     you can fix and retry.
 
     Args:
-        plan: Dict with 'steps' (list of {step_number, skill, action}) and
+        plan: Dict with 'steps' (list of {step_number, suggested_skills, action}) and
               'additional_notes' (str).
     """
     try:
