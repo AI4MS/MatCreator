@@ -1560,7 +1560,31 @@ function setSendingState(isSending, controller = null) {
 
 function stopCurrentMessage() {
   if (!state.isSending || !state.sendController) return;
+  fetch(`/api/sessions/${state.sessionId}/cancel`, { method: "POST" }).catch(() => {});
   state.sendController.abort();
+  pollCancellationConfirmed(state.sessionId);
+}
+
+function pollCancellationConfirmed(sessionId, attempts = 0) {
+  const MAX_ATTEMPTS = 20;  // 20 × 2s = 40s timeout
+  const INTERVAL_MS = 2000;
+
+  if (attempts >= MAX_ATTEMPTS) {
+    addMessage("agent", "⚠️ Stop requested but execution may still be running in the background.");
+    return;
+  }
+
+  setTimeout(async () => {
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/cancel`);
+      const data = await res.json();
+      if (!data.cancellation_requested) {
+        addMessage("agent", "✓ Execution stopped.");
+        return;
+      }
+    } catch (_) { /* ignore transient network errors */ }
+    pollCancellationConfirmed(sessionId, attempts + 1);
+  }, INTERVAL_MS);
 }
 
 async function sendMessage(message) {
@@ -1665,7 +1689,7 @@ async function sendMessage(message) {
     }
   } catch (err) {
     if (err?.name === "AbortError") {
-      addMessage("agent", "已中断当前运行。");
+      addMessage("agent", "Stopping execution…");
     } else {
       addMessage("agent", `Backend error: ${err}`);
     }
