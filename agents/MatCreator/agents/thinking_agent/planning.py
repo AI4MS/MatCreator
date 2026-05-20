@@ -96,7 +96,7 @@ def validate_plan(plan: dict, tool_context: ToolContext) -> dict:
     except ValidationError as exc:
         return {
             "status": "error",
-            "errors": exc.errors(),
+            "errors": f"{exc}",
             "message": "Plan validation failed. Fix the errors and re-call validate_plan.",
         }
     except Exception as exc:
