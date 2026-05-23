@@ -2,6 +2,29 @@
 
 <!-- version list -->
 
+## v1.6.1 (2026-05-23)
+
+### Bug Fixes
+
+- Add MP skill
+  ([`c025e4d`](https://github.com/nlz25/PFD_Agent/commit/c025e4d8dcfbc5001f39b34f53e4b10292d4f32b))
+
+- Decode output in run_bash to handle byte strings correctly
+  ([`eb194eb`](https://github.com/nlz25/PFD_Agent/commit/eb194ebbba12c37e9a634ca891601af69b04d0ef))
+
+- Issues with sub-steps within the executor
+  ([`abcd5f6`](https://github.com/nlz25/PFD_Agent/commit/abcd5f6d0b6e188e8273a3299fa9e46c0ec42743))
+
+- Issues with the validate_plan tool
+  ([`4da2fa8`](https://github.com/nlz25/PFD_Agent/commit/4da2fa849f2558e6330b11511d0fea7da3e03383))
+
+- Update run_skill_script tool
+  ([`665a87d`](https://github.com/nlz25/PFD_Agent/commit/665a87d680bca28255edc275e51ecfcfa6f75f1a))
+
+- Update step executor guidelines
+  ([`b57f080`](https://github.com/nlz25/PFD_Agent/commit/b57f0801bcc2c5faa0910e9fc244533ec227d8e1))
+
+
 ## v1.6.0 (2026-05-20)
 
 ### Bug Fixes
