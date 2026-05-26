@@ -25,23 +25,39 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+import yaml
 
 import click
 
-def _resolve_project_root() -> Path:
-    """Resolve the MatCreator project root.
 
-    Checks the MATCREATOR env var first; falls back to __file__-based resolution
-    which is only reliable for editable / source installs.
-    For a proper installation, set MATCREATOR=/path/to/PFD-Agent.
+_CONFIG_PATH = Path("~/.matcreator/config.yaml").expanduser()
+
+
+def _resolve_project_root() -> tuple[Path, bool]:
+    """Resolve the MatCreator project root.
+    Resolution order (first match wins):
+      1. ``MATCREATOR`` environment variable
+      2. ``project_root`` in ``~/.matcreator/config.yaml``
+      3. Fallback: derive from ``__file__`` (works for editable / source installs)
+    Returns (path, explicitly_configured).
     """
+    # 1. Environment variable
     env_val = os.environ.get("MATCREATOR")
     if env_val:
-        return Path(env_val).expanduser().resolve()
-    return Path(__file__).resolve().parent.parent.parent.parent
+        return Path(env_val).expanduser().resolve(), True
 
+    # 2. Config file
+    if _CONFIG_PATH.is_file():
+        with open(_CONFIG_PATH) as fh:
+            cfg = yaml.safe_load(fh) or {}
+        cfg_val = cfg.get("project_root")
+        if cfg_val:
+            return Path(cfg_val).expanduser().resolve(), True
 
-PROJECT_ROOT = _resolve_project_root()
+    # 3. Fallback: __file__-based (src/matcreator/scripts/start_agent.py → repo root)
+    return Path(__file__).resolve().parent.parent.parent.parent, False
+
+PROJECT_ROOT, _project_root_explicit = _resolve_project_root()
 AGENTS_DIR = PROJECT_ROOT / "agents"
 
 # Shared options applied to both subcommands
