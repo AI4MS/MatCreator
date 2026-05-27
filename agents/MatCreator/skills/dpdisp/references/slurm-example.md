@@ -1,12 +1,14 @@
 # Slurm + SSHContext Example
 
-**User request:** Run `run_simulation.sh` on a Slurm cluster. Load username from `$HPC_USER` and workspace path from `$HPC_WORKDIR`. Reuse `resource_defaults.json` for base compute settings; add the `debug` queue.
+**User request:** Run `run_simulation.sh` on a Slurm cluster for LiFePO4 relaxation. Load username from `$HPC_USER` and workspace path from `$HPC_WORKDIR`. Reuse `resource_defaults.json` for base compute settings; add the `debug` queue.
 
 ## `submission.template.json`
 
+> ⚠️ **ALL paths (except `remote_root`) MUST be relative.** The remote Slurm node has NO access to your local `/home/kidd/...` paths.
+
 ```json
 {
-  "work_base": ".",
+  "work_base": "LiFePO4_relax",
   "machine": {
     "batch_type": "Slurm",
     "context_type": "SSHContext",
@@ -20,12 +22,13 @@
   "resources": {
     "$ref": "resource_defaults.json",
     "queue_name": "debug",
-    "group_size": 1
+    "group_size": 1,
+    "custom_flags": ["#SBATCH --job-name=relax-LiFePO4"]
   },
   "task_list": [
     {
       "command": "bash run_simulation.sh",
-      "task_work_path": "task_000",
+      "task_work_path": "relax_POSCAR_01",
       "forward_files": ["run_simulation.sh", "input.dat"],
       "backward_files": ["result.out", "log", "err"]
     }
@@ -43,4 +46,14 @@ tmux new-session -d -s dpdisp_job "uvx --from dpdispatcher dpdisp submit --allow
 tmux ls
 ```
 
-Then poll until the tmux session exits and `task_000/result.out`, `task_000/log`, and `task_000/err` exist locally (see "Monitoring a tmux Job" in SKILL.md).
+Then poll until the tmux session exits and `relax_POSCAR_01/result.out`, `relax_POSCAR_01/log`, and `relax_POSCAR_01/err` exist locally (see "Monitoring a tmux Job" in SKILL.md).
+
+### Key Points
+
+| Aspect | Value | Why |
+|--------|-------|-----|
+| `work_base` | `"LiFePO4_relax"` | Relative! Project-level identifier |
+| `task_work_path` | `"relax_POSCAR_01"` | Relative! NOT `/home/kidd/.../relax_POSCAR_01` |
+| `command` | `"bash run_simulation.sh"` | No absolute paths! |
+| `forward_files` | `["run_simulation.sh", "input.dat"]` | Just filenames, not full paths |
+| `custom_flags` | `["#SBATCH --job-name=relax-LiFePO4"]` | Sets Slurm job name |
