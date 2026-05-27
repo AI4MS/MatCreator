@@ -83,7 +83,7 @@ print("Structure saved to Ti_hcp.cif")
 
 ---
 
-## 2. Build Supercell
+## 2. Build Supercells and Doped Structures
 
 Expand an existing structure file into a supercell.
 
@@ -92,15 +92,22 @@ from ase.io import read, write
 import json
 
 # Read input structure
-input_path = "Al_fcc.extxyz"
+input_path = "GaN.extxyz"
 atoms = read(input_path)
 
 # Create supercell
 size = [2, 2, 2]  # [nx, ny, nz]
 atoms_super = atoms * size
 
+# Substitute one Ga atom with Al to create an Al-doped GaN structure
+symbols = atoms_super.get_chemical_symbols()
+ga_indices = [i for i, s in enumerate(symbols) if s == "Ga"]
+if not ga_indices:
+    raise ValueError("No Ga atoms found for Al substitution.")
+atoms_super[ga_indices[0]].symbol = "Al"
+
 # Save
-output_path = "Al_fcc_2x2x2.extxyz"
+output_path = "GaN_Al_doped_2x2x2.extxyz"
 write(output_path, atoms_super, format='extxyz')
 
 print(json.dumps({
@@ -108,7 +115,9 @@ print(json.dumps({
     "structure_path": output_path,
     "original_num_atoms": len(atoms),
     "supercell_num_atoms": len(atoms_super),
-    "size": size
+    "size": size,
+    "dopant": "Al",
+    "substituted_site": ga_indices[0]
 }))
 ```
 
@@ -312,282 +321,27 @@ print("Exported volumes.txt and energies.txt")
 
 Apply scale, strain, rotation, or custom matrix transformations.
 
-```python
-from ase.io import read, write
-import numpy as np
-import json
-
-def transform_lattice(atoms, scale=None, strain=None, rotation=None, 
-                      transform_matrix=None, scale_atoms=True):
-    """Apply lattice transformations."""
-    atoms_t = atoms.copy()
-    operations = []
-    
-    # Scale
-    if scale is not None:
-        if isinstance(scale, (int, float)):
-            scale = [scale, scale, scale]
-        scale = np.array(scale)
-        atoms_t.set_cell(atoms_t.cell * scale, scale_atoms=scale_atoms)
-        operations.append(f"scale: {scale.tolist()}")
-    
-    # Strain (Voigt notation: [exx, eyy, ezz, eyz, exz, exy])
-    if strain is not None:
-        strain = np.array(strain)
-        if len(strain) == 6:
-            # Convert Voigt to tensor
-            strain_tensor = np.array([
-                [strain[0], strain[5], strain[4]],
-                [strain[5], strain[1], strain[3]],
-                [strain[4], strain[3], strain[2]]
-            ])
-        else:
-            strain_tensor = np.array(strain).reshape(3, 3)
-        
-        deformation = np.eye(3) + strain_tensor
-        atoms_t.set_cell(deformation @ atoms_t.cell, scale_atoms=scale_atoms)
-        operations.append(f"strain: {strain.tolist()}")
-    
-    # Rotation (Euler angles ZYZ in degrees)
-    if rotation is not None:
-        rotation = np.array(rotation)
-        if len(rotation) == 3:
-            # ZYZ Euler angles
-            alpha, beta, gamma = np.radians(rotation)
-            Rz1 = np.array([[np.cos(alpha), -np.sin(alpha), 0],
-                           [np.sin(alpha), np.cos(alpha), 0],
-                           [0, 0, 1]])
-            Ry = np.array([[np.cos(beta), 0, np.sin(beta)],
-                          [0, 1, 0],
-                          [-np.sin(beta), 0, np.cos(beta)]])
-            Rz2 = np.array([[np.cos(gamma), -np.sin(gamma), 0],
-                           [np.sin(gamma), np.cos(gamma), 0],
-                           [0, 0, 1]])
-            R = Rz1 @ Ry @ Rz2
-        else:
-            R = np.array(rotation).reshape(3, 3)
-        
-        atoms_t.set_cell(R @ atoms_t.cell, scale_atoms=scale_atoms)
-        operations.append(f"rotation: {rotation.tolist()}")
-    
-    # Custom transform matrix
-    if transform_matrix is not None:
-        M = np.array(transform_matrix).reshape(3, 3)
-        atoms_t.set_cell(M @ atoms_t.cell, scale_atoms=scale_atoms)
-        operations.append(f"transform_matrix: applied")
-    
-    return atoms_t, operations
-
-# Usage example
-input_path = "structure.extxyz"
-atoms = read(input_path)
-
-# Apply transformations
-atoms_transformed, ops = transform_lattice(
-    atoms,
-    scale=0.97,  # Uniform compression by 3%
-    strain=None,
-    rotation=None,
-    scale_atoms=True
-)
-
-# Save
-output_path = "structure_compressed.extxyz"
-write(output_path, atoms_transformed, format='extxyz')
-
-print(json.dumps({
-    "status": "success",
-    "structure_path": output_path,
-    "original_cell": atoms.cell.array.tolist(),
-    "transformed_cell": atoms_transformed.cell.array.tolist(),
-    "operations_applied": ops
-}))
-```
-
-**Uniaxial strain example:**
-```python
-from ase.io import read, write
-import numpy as np
-
-atoms = read("structure.extxyz")
-
-# Apply 2% tensile strain along z
-strain = [0.0, 0.0, 0.02, 0.0, 0.0, 0.0]  # Voigt notation
-strain_tensor = np.array([
-    [strain[0], strain[5], strain[4]],
-    [strain[5], strain[1], strain[3]],
-    [strain[4], strain[3], strain[2]]
-])
-deformation = np.eye(3) + strain_tensor
-
-atoms.set_cell(deformation @ atoms.cell, scale_atoms=True)
-write("structure_strained.extxyz", atoms, format='extxyz')
-print("Applied 2% tensile strain along z")
-```
+For implementation details and example code, refer to [transform.md](assets/transform.md).
 
 ---
 
 ## 6. Filter by Diversity (Entropy-based)
 
-Select a maximally diverse subset using descriptor-based filtering.
+Select a maximally diverse subset of candidate structures using descriptor-based filtering, so that the retained set spans the broadest possible range of local environments and structural motifs while reducing near-duplicate configurations.
 
-```python
-from ase.io import read, write
-import numpy as np
-from collections import Counter
-import json
+For implementation details and example code, refer to [diversity.md](assets/diversity.md).
 
-def compute_simple_descriptor(atoms, cutoff=5.0, n_bins=20):
-    """Compute a simple RDF-based descriptor."""
-    from scipy.spatial.distance import pdist
-    
-    positions = atoms.positions
-    cell = atoms.cell.array
-    pbc = atoms.pbc
-    
-    # Minimum image convention
-    if np.any(pbc):
-        # Simple approach: use ASE neighbor list
-        from ase.neighborlist import neighbor_list
-        i, j, d, S = neighbor_list('ijdS', atoms, cutoff=cutoff)
-        
-        # Histogram distances
-        if len(d) > 0:
-            hist, _ = np.histogram(d, bins=n_bins, range=(0, cutoff))
-            return hist.astype(float) / (len(d) + 1e-10)
-        else:
-            return np.zeros(n_bins)
-    else:
-        distances = pdist(positions)
-        distances = distances[distances < cutoff]
-        if len(distances) > 0:
-            hist, _ = np.histogram(distances, bins=n_bins, range=(0, cutoff))
-            return hist.astype(float) / (len(distances) + 1e-10)
-        else:
-            return np.zeros(n_bins)
+---
 
-def entropy_based_selection(structures, reference_structures=None, 
-                           max_sel=50, chunk_size=10, cutoff=5.0):
-    """Select diverse structures using entropy maximization."""
-    
-    # Compute descriptors
-    descriptors = []
-    for atoms in structures:
-        desc = compute_simple_descriptor(atoms, cutoff=cutoff)
-        descriptors.append(desc)
-    descriptors = np.array(descriptors)
-    
-    if reference_structures:
-        ref_descriptors = []
-        for atoms in reference_structures:
-            desc = compute_simple_descriptor(atoms, cutoff=cutoff)
-            ref_descriptors.append(desc)
-        ref_descriptors = np.array(ref_descriptors)
-    else:
-        ref_descriptors = np.array([]).reshape(0, descriptors.shape[1])
-    
-    selected_indices = []
-    selected_descriptors = []
-    entropy_history = {}
-    
-    n_selected = 0
-    iteration = 0
-    
-    while n_selected < min(max_sel, len(structures)):
-        # Compute entropy for each candidate
-        if len(selected_descriptors) == 0:
-            # First selection: pick the one most different from reference
-            if len(ref_descriptors) > 0:
-                distances = np.array([
-                    np.min(np.linalg.norm(ref_descriptors - d, axis=1))
-                    for d in descriptors
-                ])
-                best_idx = np.argmax(distances)
-            else:
-                best_idx = 0
-        else:
-            # Compute entropy contribution for each remaining candidate
-            remaining_indices = [i for i in range(len(structures)) 
-                               if i not in selected_indices]
-            
-            entropies = []
-            for idx in remaining_indices:
-                d = descriptors[idx]
-                # Distance to nearest selected
-                if len(selected_descriptors) > 0:
-                    min_dist = np.min(np.linalg.norm(
-                        np.array(selected_descriptors) - d, axis=1))
-                else:
-                    min_dist = 1.0
-                entropies.append(min_dist)
-            
-            best_local_idx = np.argmax(entropies)
-            best_idx = remaining_indices[best_local_idx]
-        
-        # Select this structure
-        selected_indices.append(best_idx)
-        selected_descriptors.append(descriptors[best_idx])
-        n_selected += 1
-        
-        # Compute current entropy (simplified)
-        if len(selected_descriptors) > 1:
-            sel_array = np.array(selected_descriptors)
-            pairwise_dist = np.linalg.norm(
-                sel_array[:, np.newaxis, :] - sel_array[np.newaxis, :, :],
-                axis=2
-            )
-            np.fill_diagonal(pairwise_dist, np.inf)
-            min_distances = np.min(pairwise_dist, axis=1)
-            entropy = np.mean(np.log(min_distances + 1e-10))
-        else:
-            entropy = 0.0
-        
-        entropy_history[f"iter_{iteration:02d}"] = float(entropy)
-        iteration += 1
-        
-        if iteration >= max_sel:
-            break
-    
-    # Get selected structures
-    selected_structures = [structures[i] for i in selected_indices]
-    
-    return selected_structures, entropy_history
+## 7. Modify Disorder
 
-# Usage
-input_path = "candidates.extxyz"
-structures = read(input_path, index=':')
-if not isinstance(structures, list):
-    structures = [structures]
+Modify the degree of disorder in the structure by swapping atomic positions.
 
-# Optional: load reference
-reference_path = "existing_dataset.extxyz"
-try:
-    reference_structures = read(reference_path, index=':')
-    if not isinstance(reference_structures, list):
-        reference_structures = [reference_structures]
-except:
-    reference_structures = None
+1. Use SpacegroupAnalyzer to identify the Wyckoff sites of the ordered parent phase.
+2. Locate the primitive-cell sites corresponding to the specified element + Wyckoff label.
+3. Assign labels, build a supercell, and perform random pairwise swaps.
 
-# Select diverse subset
-selected, entropy_hist = entropy_based_selection(
-    structures,
-    reference_structures=reference_structures,
-    max_sel=50,
-    chunk_size=10,
-    cutoff=5.0
-)
-
-# Save selected structures
-output_path = "selected_diverse.extxyz"
-write(output_path, selected, format='extxyz')
-
-print(json.dumps({
-    "status": "success",
-    "selected_atoms": output_path,
-    "num_selected": len(selected),
-    "entropy": entropy_hist
-}))
-```
+For implementation details and example code, refer to [disorder.md](assets/disorder.md).
 
 ---
 

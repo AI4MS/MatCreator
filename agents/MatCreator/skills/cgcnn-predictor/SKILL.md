@@ -1,6 +1,6 @@
 ---
 name: cgcnn-predictor
-description: Predict crystal properties with local CGCNN models.
+description: Predict material properties of crystal structures with CGCNN models.
 metadata:
   tools: []
   dependent_skills: []

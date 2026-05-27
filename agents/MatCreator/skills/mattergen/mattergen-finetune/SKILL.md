@@ -1,6 +1,6 @@
 ---
 name: mattergen-finetune
-description: Finetune MatterGen models through its official CLI.
+description: Finetune MatterGen models and produce a reusable finetuned checkpoint for downstream crystal generation.
 tags: [MatterGen, training, finetuning]
 tools: [run_bash]
 dependent_skills: []

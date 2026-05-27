@@ -54,7 +54,7 @@ VASP_default_INCAR:
 
     # 输出与数值细节
     LCHARG: true
-    LWAVE: true
+    LWAVE: false
     LORBIT: 11
     LASPH: true
     LREAL: "Auto"
@@ -81,7 +81,7 @@ VASP_default_INCAR:
     ISPIN: 1
 
     # 输出与数值细节
-    LCHARG: false
+    LCHARG: true
     LWAVE: false
     LORBIT: 11
     LASPH: true

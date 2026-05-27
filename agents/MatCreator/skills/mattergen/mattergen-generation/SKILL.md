@@ -1,6 +1,6 @@
 ---
 name: mattergen-generation
-description: Generate crystal structures through its official CLI.
+description: Generate inorganic crystal structures with MatterGen, supporting unconditional sampling, property-conditioned generation, and sampling from custom trained or finetuned checkpoints.
 tags: [MatterGen, crystal generation, inverse design]
 tools: [run_bash]
 dependent_skills: []
