@@ -49,7 +49,8 @@ def _resolve_project_root() -> tuple[Path, bool]:
     # 2. Config file
     if _CONFIG_PATH.is_file():
         with open(_CONFIG_PATH) as fh:
-            cfg = yaml.safe_load(fh) or {}
+            raw_cfg = yaml.safe_load(fh)
+        cfg = raw_cfg if isinstance(raw_cfg, dict) else {}
         cfg_val = cfg.get("project_root")
         if cfg_val:
             return Path(cfg_val).expanduser().resolve(), True
