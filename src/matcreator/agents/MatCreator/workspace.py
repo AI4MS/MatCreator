@@ -1,4 +1,4 @@
-"""Workspace management for MatClaw — project-local overlay of skills/guides/memory.
+"""Workspace management for MatCreator — project-local overlay of skills/guides/memory.
 
 The workspace root is resolved in this order:
 1. ``MATCREATOR_WORKSPACE`` environment variable (absolute or relative to CWD)
@@ -44,7 +44,7 @@ def workspace_memory_path() -> Path:
 
 
 def get_session_workdir(session_id: str) -> Path:
-    env_val = os.environ.get("MATCLAW_SESSION_DIR", "")
+    env_val = os.environ.get("MATCREATOR_SESSION_DIR", "")
     if env_val:
         return Path(env_val).expanduser().resolve()
     return WORKSPACE_ROOT / "sessions" / session_id

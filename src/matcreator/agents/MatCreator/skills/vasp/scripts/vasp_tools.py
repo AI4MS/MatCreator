@@ -166,7 +166,7 @@ def _resolve_work_dir(work_dir_value: str) -> Path:
     if work_dir.is_absolute():
         return work_dir
 
-    session_dir = os.environ.get("MATCLAW_SESSION_DIR", "")
+    session_dir = os.environ.get("MATCREATOR_SESSION_DIR", "")
     if session_dir:
         return Path(session_dir).expanduser().resolve() / work_dir
 

@@ -81,7 +81,7 @@ def _session_workdir(session_id: str | None = None) -> Path | None:
     sid = session_id or st.session_state.get("session_id")
     if not sid:
         return None
-    _env_session_dir = os.environ.get("MATCLAW_SESSION_DIR", "")
+    _env_session_dir = os.environ.get("MATCREATOR_SESSION_DIR", "")
     if _env_session_dir:
         return Path(_env_session_dir).expanduser().resolve()
     return WORKSPACE_ROOT / "sessions" / sid

@@ -322,10 +322,10 @@ def run_skill_script(
             session_workdir = get_session_workdir(session_id)
             cwd = str(session_workdir)
             env = dict(os.environ)
-            env["MATCLAW_SESSION_DIR"] = str(session_workdir)
+            env["MATCREATOR_SESSION_DIR"] = str(session_workdir)
     if cwd and env is None:
         env = dict(os.environ)
-        env["MATCLAW_SESSION_DIR"] = cwd
+        env["MATCREATOR_SESSION_DIR"] = cwd
 
     _ext_map = {".py": "python", ".sh": "bash", ".bash": "bash", ".js": "node"}
     ext = script_path.suffix.lower()
