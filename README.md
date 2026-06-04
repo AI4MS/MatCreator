@@ -4,6 +4,52 @@
 MatCreator is a **skill-based, agentic platform** for computational material science tasks, with a focus on Machine Learning Force Field (MLFF) generation and application. It would evolve with users by experience accumulation and creation of new skills. 
 
 ## Quick start
+### Install Git LFS
+
+This repository stores datasets under `data/` using Git Large File Storage (Git LFS).
+
+Install Git LFS first:
+
+```bash
+# Ubuntu
+sudo apt install git-lfs
+
+# Windows
+winget install GitHub.GitLFS
+
+# macOS
+brew install git-lfs
+```
+
+Clone the repository:
+
+```bash
+git clone https://github.com/qchempku2017/PFD_Agent.git
+cd PFD_Agent
+```
+
+Initialize Git LFS:
+
+```bash
+git lfs install
+```
+
+Download LFS-managed files:
+
+```bash
+git lfs pull
+```
+
+Verify:
+
+```bash
+git lfs ls-files
+```
+expect output:
+```commandline
+data/domain_datasets.tar.gz
+```
+
 ### Installation
 ```bash
 # Create and activate an environment with uv (optional but recommended)
