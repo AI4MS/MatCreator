@@ -9,11 +9,12 @@ import "./style.css";
 
 const APP_NAME = "MatCreator";
 
-const BENCH_MODE_KEY = "mat_benchMode";
+const AGENT_MODE_KEY = "mat_agentMode";
 
 const state = {
   sessionId: localStorage.getItem("mat_sessionId") || `session-${Math.floor(Date.now() / 1000)}`,
   userId: localStorage.getItem("mat_userId") || "",
+  displayName: localStorage.getItem("mat_displayName") || localStorage.getItem("mat_userId") || "",
   activeSessionUserId: localStorage.getItem("mat_userId") || "",
   isAdmin: false,
   sessionReady: false,
@@ -21,7 +22,7 @@ const state = {
   currentUploads: [],
   isSending: false,
   sendController: null,
-  benchMode: localStorage.getItem(BENCH_MODE_KEY) === "1",
+  agentMode: localStorage.getItem(AGENT_MODE_KEY) || "normal",
 };
 
 // ---------------------------------------------------------------------------
@@ -50,11 +51,34 @@ const structureResizer = document.getElementById("structure-resizer");
 const graphStatusEl = document.getElementById("graph-status");
 const loginModal = document.getElementById("login-modal");
 const loginInput = document.getElementById("login-input");
+const loginPassword = document.getElementById("login-password");
+const loginError = document.getElementById("login-error");
+const loginUuidDisplay = document.getElementById("login-uuid-display");
 const loginSubmit = document.getElementById("login-submit");
+const loginView = document.getElementById("login-view");
+const registerView = document.getElementById("register-view");
+const regInput = document.getElementById("reg-input");
+const regPassword = document.getElementById("reg-password");
+const regConfirm = document.getElementById("reg-confirm");
+const regError = document.getElementById("reg-error");
+const regSubmit = document.getElementById("reg-submit");
+const switchToRegister = document.getElementById("switch-to-register");
+const switchToLogin = document.getElementById("switch-to-login");
 const userDisplay = document.getElementById("user-display");
 const editUserBtn = document.getElementById("edit-user");
-const benchToggle = document.getElementById("bench-mode-toggle");
-const benchChip = document.getElementById("bench-mode-chip");
+const logoutBtn = document.getElementById("logout-btn");
+const settingsLogoutBtn = document.getElementById("settings-logout-btn");
+const benchToggle = null; // removed — replaced by mode-selector
+const benchChip = null;  // removed — replaced by agent-mode-chip
+const modeSelector = document.getElementById("mode-selector");
+const agentModeChip = document.getElementById("agent-mode-chip");
+const graphColumn       = document.getElementById("graph-column");
+const sidePanel         = document.getElementById("side-panel");
+const fileExplorerCol   = document.getElementById("file-explorer-col");
+const colResizerGraph   = document.getElementById("col-resizer-graph");
+const colResizerSide    = document.getElementById("col-resizer-side");
+const colResizerFiles   = document.getElementById("col-resizer-files");
+const filesColToggleBtn = document.getElementById("files-col-toggle");
 
 function autoResizeTextInput() {
   if (!textInput) return;
@@ -71,7 +95,7 @@ autoResizeTextInput();
 textInput?.addEventListener("input", autoResizeTextInput);
 
 sessionIdEl.textContent = state.sessionId;
-if (state.userId) userDisplay.textContent = state.userId;
+if (state.userId) userDisplay.textContent = state.displayName || state.userId;
 
 // ---------------------------------------------------------------------------
 // Agent Graph Visualization
@@ -103,6 +127,17 @@ const PANEL_HEIGHT_BOUNDS = {
   "graph-viewport": { min: 220, max: 1200 },
   "graph-detail": { min: 110, max: 600 },
   "structure-viewer": { min: 140, max: 900 },
+};
+
+const COL_WIDTH_DEFAULTS = {
+  "graph-column": 360,
+  "side-panel": 300,
+  "file-explorer-col": 260,
+};
+const COL_WIDTH_BOUNDS = {
+  "graph-column":      { min: 240, max: 600 },
+  "side-panel":        { min: 200, max: 500 },
+  "file-explorer-col": { min: 160, max: 500 },
 };
 
 class AgentGraphView {
@@ -951,6 +986,135 @@ function initPanelResizer(handleEl, targetEl) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Column (horizontal) resizing — mirrors the panel (vertical) resizer pattern
+// ---------------------------------------------------------------------------
+
+function colStorageKey(colId) {
+  return `mat_col_width_${state.userId || "anon"}_${colId}`;
+}
+function filesColOpenKey() {
+  return `mat_files_col_open_${state.userId || "anon"}`;
+}
+function isFilesColOpen() {
+  return localStorage.getItem(filesColOpenKey()) === "true";
+}
+function setFilesColOpen(open) {
+  localStorage.setItem(filesColOpenKey(), String(open));
+}
+function getColWidth(colEl) {
+  return Math.round(colEl.getBoundingClientRect().width);
+}
+function applyColWidth(colEl, widthPx) {
+  const bounds = COL_WIDTH_BOUNDS[colEl.id];
+  if (!bounds) return;
+  colEl.style.width = `${clamp(widthPx, bounds.min, bounds.max)}px`;
+}
+function persistColWidth(colEl) {
+  localStorage.setItem(colStorageKey(colEl.id), String(getColWidth(colEl)));
+}
+function applyStoredColWidths() {
+  for (const colId of ["graph-column", "side-panel"]) {
+    const el = document.getElementById(colId);
+    if (!el) continue;
+    if (isMobileLayout()) { el.style.removeProperty("width"); continue; }
+    const raw = localStorage.getItem(colStorageKey(colId));
+    const w = raw ? Number(raw) : COL_WIDTH_DEFAULTS[colId];
+    applyColWidth(el, Number.isFinite(w) ? w : COL_WIDTH_DEFAULTS[colId]);
+  }
+}
+function applyFilesColState(open) {
+  if (!fileExplorerCol) return;
+  if (isMobileLayout()) {
+    fileExplorerCol.style.removeProperty("width");
+    fileExplorerCol.classList.remove("is-open");
+    colResizerFiles?.classList.add("hidden");
+    filesColToggleBtn?.classList.remove("is-active");
+    return;
+  }
+  if (open) {
+    fileExplorerCol.classList.add("is-open");
+    const raw = localStorage.getItem(colStorageKey("file-explorer-col"));
+    const w = raw ? Number(raw) : COL_WIDTH_DEFAULTS["file-explorer-col"];
+    applyColWidth(fileExplorerCol, w);
+    colResizerFiles?.classList.remove("hidden");
+    filesColToggleBtn?.classList.add("is-active");
+  } else {
+    fileExplorerCol.classList.remove("is-open");
+    fileExplorerCol.style.width = "0";
+    colResizerFiles?.classList.add("hidden");
+    filesColToggleBtn?.classList.remove("is-active");
+  }
+}
+function toggleFilesCol() {
+  const willOpen = !isFilesColOpen();
+  setFilesColOpen(willOpen);
+  applyFilesColState(willOpen);
+  if (willOpen) refreshSessionFiles();
+}
+function syncColResizerVisibility() {
+  const mobile = isMobileLayout();
+  colResizerGraph?.classList.toggle("hidden", mobile);
+  colResizerSide?.classList.toggle("hidden", mobile);
+  colResizerFiles?.classList.toggle("hidden", mobile || !isFilesColOpen());
+}
+
+/**
+ * initColResizer — horizontal mirror of initPanelResizer.
+ * direction: +1 = drag-right widens targetEl (left col), -1 = drag-right narrows it (right col).
+ */
+function initColResizer(handleEl, targetEl, direction = 1) {
+  if (!handleEl || !targetEl) return;
+  const keyStep = 16;
+  const commit = () => {
+    persistColWidth(targetEl);
+    refreshGraphAndStructureLayout();
+  };
+  handleEl.addEventListener("pointerdown", (e) => {
+    if (isMobileLayout() || handleEl.classList.contains("hidden")) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = getColWidth(targetEl);
+    handleEl.classList.add("resizing");
+    handleEl.setPointerCapture(e.pointerId);
+    const onMove = (moveEvt) => {
+      applyColWidth(targetEl, startWidth + direction * (moveEvt.clientX - startX));
+      refreshGraphAndStructureLayout();
+    };
+    const onUp = () => {
+      handleEl.classList.remove("resizing");
+      handleEl.removeEventListener("pointermove", onMove);
+      handleEl.removeEventListener("pointerup", onUp);
+      handleEl.removeEventListener("pointercancel", onUp);
+      commit();
+    };
+    handleEl.addEventListener("pointermove", onMove);
+    handleEl.addEventListener("pointerup", onUp);
+    handleEl.addEventListener("pointercancel", onUp);
+  });
+  handleEl.addEventListener("keydown", (e) => {
+    if (isMobileLayout() || handleEl.classList.contains("hidden")) return;
+    if (e.key === "ArrowLeft")  { e.preventDefault(); applyColWidth(targetEl, getColWidth(targetEl) + direction * -keyStep); commit(); }
+    if (e.key === "ArrowRight") { e.preventDefault(); applyColWidth(targetEl, getColWidth(targetEl) + direction *  keyStep); commit(); }
+  });
+}
+
+function initColResizers() {
+  applyStoredColWidths();
+  applyFilesColState(isFilesColOpen());
+  syncColResizerVisibility();
+  initColResizer(colResizerGraph, graphColumn, 1);
+  initColResizer(colResizerSide, sidePanel, -1);
+  initColResizer(colResizerFiles, fileExplorerCol, -1);
+  filesColToggleBtn?.addEventListener("click", toggleFilesCol);
+  MOBILE_LAYOUT_QUERY.addEventListener("change", () => {
+    applyStoredColWidths();
+    applyFilesColState(isFilesColOpen());
+    syncColResizerVisibility();
+    refreshGraphAndStructureLayout();
+  });
+}
+
 function initPanelResizers() {
   applyStoredPanelHeights();
   initPanelResizer(graphResizer, graphViewport);
@@ -969,10 +1133,58 @@ function initPanelResizers() {
 // Login / username management
 // ---------------------------------------------------------------------------
 
+function _isUuid(s) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+}
+
+function _isValidIdentity(s) {
+  return s === "user" || _isUuid(s);
+}
+
 function showLoginModal() {
   loginModal.classList.remove("hidden");
-  loginInput.value = state.userId;
+  loginView.classList.remove("hidden");
+  registerView.classList.add("hidden");
+  loginInput.value = state.displayName || "";
+  loginPassword.value = "";
+  loginError.textContent = "";
+  loginUuidDisplay.textContent = state.userId ? `UUID: ${state.userId}` : "";
+  // Hide register link when already logged in — log out first to register a new account.
+  const registerLink = document.getElementById("switch-to-register")?.parentElement;
+  if (registerLink) registerLink.style.display = state.userId ? "none" : "";
   loginInput.focus();
+}
+
+function logout() {
+  state.userId = "";
+  state.displayName = "";
+  state.activeSessionUserId = "";
+  state.isAdmin = false;
+  state.sessionReady = false;
+  localStorage.removeItem("mat_userId");
+  localStorage.removeItem("mat_displayName");
+  localStorage.removeItem("mat_sessionId");
+  userDisplay.textContent = "—";
+  chatArea.innerHTML = "";
+  sessionListEl.innerHTML = '<li class="empty">Sign in to see sessions</li>';
+  renderSessionFilesTree([]);
+  clearCurrentUploads();
+  agentGraph.reset();
+  planGraph.reset();
+  hidePlanGraph();
+  closeSettingsModal();
+  showLoginModal();
+}
+
+function showRegisterModal() {
+  loginModal.classList.remove("hidden");
+  loginView.classList.add("hidden");
+  registerView.classList.remove("hidden");
+  regInput.value = "";
+  regPassword.value = "";
+  regConfirm.value = "";
+  regError.textContent = "";
+  regInput.focus();
 }
 
 function hideLoginModal() {
@@ -980,7 +1192,8 @@ function hideLoginModal() {
 }
 
 function renderUserDisplay() {
-  userDisplay.textContent = state.isAdmin ? `${state.userId} (admin)` : state.userId;
+  const label = state.displayName || state.userId;
+  userDisplay.textContent = state.isAdmin ? `${label} (admin)` : label;
 }
 
 async function refreshAccess() {
@@ -996,12 +1209,16 @@ async function refreshAccess() {
   }
 }
 
-async function applyUsername(name) {
-  state.userId = name;
-  state.activeSessionUserId = name;
+function _applySession(result) {
+  state.userId = result.user_id;
+  state.displayName = result.display_name;
+  state.activeSessionUserId = result.user_id;
   state.sessionId = `session-${Math.floor(Date.now() / 1000)}`;
   state.sessionReady = false;
-  localStorage.setItem("mat_userId", name);
+  state.isAdmin = Boolean(result.is_admin);
+  loginUuidDisplay.textContent = `UUID: ${result.user_id}`;
+  localStorage.setItem("mat_userId", result.user_id);
+  localStorage.setItem("mat_displayName", result.display_name);
   localStorage.setItem("mat_sessionId", state.sessionId);
   sessionIdEl.textContent = state.sessionId;
   chatArea.innerHTML = "";
@@ -1010,33 +1227,118 @@ async function applyUsername(name) {
   agentGraph.reset();
   planGraph.reset();
   hidePlanGraph();
-  await refreshAccess();
   renderUserDisplay();
   hideLoginModal();
   applyStoredPanelHeights();
+  applyStoredColWidths();
+  applyFilesColState(isFilesColOpen());
+  syncColResizerVisibility();
   loadSessions();
+}
+
+async function applyLogin(displayName, password = null) {
+  loginError.textContent = "";
+  let result;
+  try {
+    const resp = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ display_name: displayName, password }),
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      loginError.textContent = body.detail || `Login failed (${resp.status})`;
+      return;
+    }
+    result = body;
+  } catch (err) {
+    loginError.textContent = `Login failed: ${err.message}`;
+    return;
+  }
+  _applySession(result);
+}
+
+async function applyRegister(displayName, password, confirm) {
+  regError.textContent = "";
+  if (password !== confirm) {
+    regError.textContent = "Passwords do not match.";
+    return;
+  }
+  let result;
+  try {
+    const resp = await fetch("/api/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ display_name: displayName, password }),
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      regError.textContent = body.detail || `Registration failed (${resp.status})`;
+      return;
+    }
+    result = body;
+  } catch (err) {
+    regError.textContent = `Registration failed: ${err.message}`;
+    return;
+  }
+  _applySession(result);
 }
 
 loginSubmit.addEventListener("click", () => {
   const name = loginInput.value.trim();
-  if (name) applyUsername(name);
+  if (name) applyLogin(name, loginPassword.value || null);
 });
 
 loginInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") loginPassword.focus();
+});
+
+loginPassword.addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     const name = loginInput.value.trim();
-    if (name) applyUsername(name);
+    if (name) applyLogin(name, loginPassword.value || null);
   }
 });
 
-editUserBtn.addEventListener("click", () => showLoginModal());
+regSubmit.addEventListener("click", () => {
+  const name = regInput.value.trim();
+  if (name) applyRegister(name, regPassword.value, regConfirm.value);
+});
 
-// Show login modal on load if no saved username
-if (!state.userId) {
-  showLoginModal();
-} else {
-  sessionIdEl.textContent = state.sessionId;
-  refreshAccess().then(async () => {
+regInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") regPassword.focus();
+});
+
+regPassword.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") regConfirm.focus();
+});
+
+regConfirm.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    const name = regInput.value.trim();
+    if (name) applyRegister(name, regPassword.value, regConfirm.value);
+  }
+});
+
+switchToRegister.addEventListener("click", () => showRegisterModal());
+switchToLogin.addEventListener("click", () => showLoginModal());
+
+editUserBtn.addEventListener("click", () => showLoginModal());
+logoutBtn.addEventListener("click", () => logout());
+settingsLogoutBtn.addEventListener("click", () => logout());
+
+// On load: detect legacy localStorage (display name instead of UUID) and migrate,
+// or proceed normally if already a valid identity.
+(async () => {
+  const storedId = localStorage.getItem("mat_userId") || "";
+  if (!storedId) {
+    showLoginModal();
+  } else if (!_isValidIdentity(storedId)) {
+    // Legacy: localStorage contains a raw display name (non-"user"). Show login modal.
+    showLoginModal();
+  } else {
+    sessionIdEl.textContent = state.sessionId;
+    await refreshAccess();
     renderUserDisplay();
     await loadSessions();
     if (localStorage.getItem("mat_sessionId")) {
@@ -1045,8 +1347,8 @@ if (!state.userId) {
       agentGraph.startPolling(state.sessionId);
       planGraph.startPolling(state.sessionId);
     }
-  });
-}
+  }
+})();
 
 // ---------------------------------------------------------------------------
 // Session list management
@@ -1326,6 +1628,95 @@ function formatFileSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function _createFileItem(f) {
+  const li = document.createElement("li");
+  li.className = "tree-file";
+
+  const nameSpan = document.createElement("span");
+  nameSpan.className = "tree-filename";
+  nameSpan.textContent = f.relname;
+  li.appendChild(nameSpan);
+
+  const sizeSpan = document.createElement("span");
+  sizeSpan.className = "tree-filesize";
+  sizeSpan.textContent = formatFileSize(f.size);
+  li.appendChild(sizeSpan);
+
+  const actions = document.createElement("div");
+  actions.className = "tree-actions";
+
+  const dlLink = document.createElement("a");
+  dlLink.href = `/api/workspace/files?path=${encodeURIComponent(f.path)}`;
+  dlLink.download = f.relname;
+  dlLink.className = "tree-btn";
+  dlLink.title = "Download";
+  dlLink.textContent = "↓";
+  actions.appendChild(dlLink);
+
+  if (classifyPath(f.path) === "structure") {
+    const viewBtn = document.createElement("button");
+    viewBtn.className = "tree-btn";
+    viewBtn.title = "View 3D";
+    viewBtn.textContent = "⬡";
+    viewBtn.addEventListener("click", () =>
+      openViewer({ path: f.path, name: f.relname, url: `/api/workspace/files?path=${encodeURIComponent(f.path)}` })
+    );
+    actions.appendChild(viewBtn);
+  }
+
+  li.appendChild(actions);
+  return li;
+}
+
+function _buildFileTree(files, prefix) {
+  const root = { children: {}, files: [] };
+  for (const file of files) {
+    const rel = file.path.slice(prefix.length).replace(/^\//, "");
+    const parts = rel.split("/");
+    const filename = parts[parts.length - 1];
+    const dirs = parts.slice(0, -1);
+    let node = root;
+    for (const dir of dirs) {
+      if (!node.children[dir]) {
+        node.children[dir] = { name: dir, children: {}, files: [] };
+      }
+      node = node.children[dir];
+    }
+    node.files.push({ ...file, relname: filename, relpath: rel });
+  }
+  return root;
+}
+
+function _renderTreeNode(node, container, depth) {
+  const sortedDirs = Object.keys(node.children).sort();
+  const sortedFiles = node.files.slice().sort((a, b) => a.relname.localeCompare(b.relname));
+
+  for (const dirName of sortedDirs) {
+    const child = node.children[dirName];
+    const li = document.createElement("li");
+    li.className = "tree-dir-node";
+
+    const details = document.createElement("details");
+
+    const summary = document.createElement("summary");
+    summary.className = "tree-dir-summary";
+    summary.textContent = dirName + "/";
+    details.appendChild(summary);
+
+    const childUl = document.createElement("ul");
+    childUl.className = "tree-dir-children";
+    _renderTreeNode(child, childUl, depth + 1);
+    details.appendChild(childUl);
+
+    li.appendChild(details);
+    container.appendChild(li);
+  }
+
+  for (const f of sortedFiles) {
+    container.appendChild(_createFileItem(f));
+  }
+}
+
 function renderSessionFilesTree(files) {
   const ul = document.getElementById("session-files-tree");
   ul.innerHTML = "";
@@ -1337,7 +1728,6 @@ function renderSessionFilesTree(files) {
     return;
   }
 
-  // Find prefix to strip by locating session_id in path
   let prefix = "";
   const sidIdx = files[0].path.indexOf(state.sessionId);
   if (sidIdx >= 0) {
@@ -1352,70 +1742,8 @@ function renderSessionFilesTree(files) {
     prefix = common.slice(0, common.lastIndexOf("/") + 1);
   }
 
-  // Group files by subdirectory
-  const byDir = new Map();
-  for (const file of files) {
-    const rel = file.path.slice(prefix.length).replace(/^\//, "");
-    const lastSlash = rel.lastIndexOf("/");
-    const dir = lastSlash >= 0 ? rel.slice(0, lastSlash) : "";
-    const name = lastSlash >= 0 ? rel.slice(lastSlash + 1) : rel;
-    if (!byDir.has(dir)) byDir.set(dir, []);
-    byDir.get(dir).push({ ...file, relname: name, relpath: rel });
-  }
-
-  const sortedDirs = [...byDir.keys()].sort((a, b) => {
-    if (a === "") return -1;
-    if (b === "") return 1;
-    return a.localeCompare(b);
-  });
-
-  for (const dir of sortedDirs) {
-    if (dir !== "") {
-      const dirLi = document.createElement("li");
-      dirLi.className = "tree-dir";
-      dirLi.textContent = dir + "/";
-      ul.appendChild(dirLi);
-    }
-    for (const f of byDir.get(dir)) {
-      const li = document.createElement("li");
-      li.className = dir ? "tree-file tree-file-indent" : "tree-file";
-
-      const nameSpan = document.createElement("span");
-      nameSpan.className = "tree-filename";
-      nameSpan.textContent = f.relname;
-      li.appendChild(nameSpan);
-
-      const sizeSpan = document.createElement("span");
-      sizeSpan.className = "tree-filesize";
-      sizeSpan.textContent = formatFileSize(f.size);
-      li.appendChild(sizeSpan);
-
-      const actions = document.createElement("div");
-      actions.className = "tree-actions";
-
-      const dlLink = document.createElement("a");
-      dlLink.href = `/api/workspace/files?path=${encodeURIComponent(f.path)}`;
-      dlLink.download = f.relname;
-      dlLink.className = "tree-btn";
-      dlLink.title = "Download";
-      dlLink.textContent = "↓";
-      actions.appendChild(dlLink);
-
-      if (classifyPath(f.path) === "structure") {
-        const viewBtn = document.createElement("button");
-        viewBtn.className = "tree-btn";
-        viewBtn.title = "View 3D";
-        viewBtn.textContent = "⬡";
-        viewBtn.addEventListener("click", () =>
-          openViewer({ path: f.path, name: f.relname, url: `/api/workspace/files?path=${encodeURIComponent(f.path)}` })
-        );
-        actions.appendChild(viewBtn);
-      }
-
-      li.appendChild(actions);
-      ul.appendChild(li);
-    }
-  }
+  const root = _buildFileTree(files, prefix);
+  _renderTreeNode(root, ul, 0);
 }
 
 async function refreshSessionFiles() {
@@ -1604,7 +1932,11 @@ async function createSession() {
     const resp = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(state.benchMode ? { benchmark_mode: true } : {}),
+      body: JSON.stringify(
+        state.agentMode === "normal"
+          ? {}
+          : { agent_mode: state.agentMode, ...(state.agentMode === "bench" ? { benchmark_mode: true } : {}) }
+      ),
     });
     if (!resp.ok) {
       console.error(`Failed to create session: HTTP ${resp.status}`, await resp.text());
@@ -1617,18 +1949,19 @@ async function createSession() {
   }
 }
 
-async function patchSessionBenchMode(enabled) {
+async function patchSessionAgentMode(mode) {
   if (!state.sessionReady || !state.sessionId) return;
   const url = `/apps/${APP_NAME}/users/${encodeURIComponent(state.userId)}/sessions/${encodeURIComponent(state.sessionId)}`;
   try {
+    const delta = { agent_mode: mode, benchmark_mode: mode === "bench" };
     const resp = await fetch(url, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ state_delta: { benchmark_mode: enabled } }),
+      body: JSON.stringify({ state_delta: delta }),
     });
-    if (!resp.ok) console.error(`Failed to patch session bench mode: HTTP ${resp.status}`);
+    if (!resp.ok) console.error(`Failed to patch agent mode: HTTP ${resp.status}`);
   } catch (err) {
-    console.error("Failed to patch session bench mode:", err);
+    console.error("Failed to patch agent mode:", err);
   }
 }
 
@@ -2020,6 +2353,7 @@ svClose.addEventListener("click", () => {
 });
 
 initPanelResizers();
+initColResizers();
 
 // ---------------------------------------------------------------------------
 // Event listeners
@@ -2067,15 +2401,36 @@ if (avatarUploadBtn && avatarUploadInput) {
 Array.from(document.querySelectorAll("[data-quick]"))
   .forEach((btn) => btn.addEventListener("click", () => sendMessage(btn.dataset.quick || "")));
 
-// Bench mode toggle
-if (benchToggle) {
-  benchToggle.checked = state.benchMode;
-  if (benchChip) benchChip.classList.toggle("hidden", !state.benchMode);
-  benchToggle.addEventListener("change", () => {
-    state.benchMode = benchToggle.checked;
-    localStorage.setItem(BENCH_MODE_KEY, benchToggle.checked ? "1" : "0");
-    if (benchChip) benchChip.classList.toggle("hidden", !benchToggle.checked);
-    patchSessionBenchMode(benchToggle.checked);
+// Agent mode selector
+function updateAgentModeChip(mode) {
+  if (!agentModeChip) return;
+  const labels = { flash: "⚡ Flash Mode", bench: "⚡ Bench Mode" };
+  const label = labels[mode];
+  if (label) {
+    agentModeChip.textContent = label;
+    agentModeChip.dataset.mode = mode;
+    agentModeChip.classList.remove("hidden");
+  } else {
+    agentModeChip.classList.add("hidden");
+  }
+}
+
+if (modeSelector) {
+  modeSelector.querySelectorAll(".mode-btn").forEach((btn) => {
+    btn.classList.toggle("mode-btn-active", btn.dataset.mode === state.agentMode);
+  });
+  updateAgentModeChip(state.agentMode);
+  modeSelector.addEventListener("click", (e) => {
+    const btn = e.target.closest(".mode-btn");
+    if (!btn) return;
+    const mode = btn.dataset.mode;
+    state.agentMode = mode;
+    localStorage.setItem(AGENT_MODE_KEY, mode);
+    modeSelector.querySelectorAll(".mode-btn").forEach((b) =>
+      b.classList.toggle("mode-btn-active", b.dataset.mode === mode)
+    );
+    updateAgentModeChip(mode);
+    patchSessionAgentMode(mode);
   });
 }
 
@@ -2092,4 +2447,306 @@ resetBtn.addEventListener("click", () => {
   planGraph.reset();
   hidePlanGraph();
   loadSessions();
+});
+
+// ---------------------------------------------------------------------------
+// Settings panel
+// ---------------------------------------------------------------------------
+
+const settingsModal = document.getElementById("settings-modal");
+const settingsBtn = document.getElementById("settings-btn");
+const settingsClose = document.getElementById("settings-close");
+const settingsSave = document.getElementById("settings-save");
+const settingsStatus = document.getElementById("settings-status");
+const settingsUsername = document.getElementById("settings-username");
+const settingsUuid = document.getElementById("settings-uuid");
+const skillsChecklist = document.getElementById("skills-checklist");
+const settingsRestartBtn = document.getElementById("settings-restart-btn");
+
+// Env config input refs
+const envInputs = {
+  LLM_MODEL:              () => document.getElementById("settings-llm-model"),
+  LLM_API_KEY:            () => document.getElementById("settings-llm-apikey"),
+  LLM_BASE_URL:           () => document.getElementById("settings-llm-baseurl"),
+  EMBEDDING_MODEL:        () => document.getElementById("settings-llm-embed"),
+  BOHRIUM_EMAIL:          () => document.getElementById("settings-bohr-email"),
+  BOHRIUM_PASSWORD:       () => document.getElementById("settings-bohr-password"),
+  BOHRIUM_PROJECT_ID:     () => document.getElementById("settings-bohr-project"),
+  BOHRIUM_VASP_IMAGE:     () => document.getElementById("settings-bohr-vasp-image"),
+  BOHRIUM_VASP_MACHINE:   () => document.getElementById("settings-bohr-vasp-machine"),
+  BOHRIUM_DEEPMD_IMAGE:   () => document.getElementById("settings-bohr-deepmd-image"),
+  BOHRIUM_DEEPMD_MACHINE: () => document.getElementById("settings-bohr-deepmd-machine"),
+  DEEPMD_MODEL_PATH:      () => document.getElementById("settings-bohr-deepmd-model"),
+};
+
+function openSettingsModal() {
+  settingsModal.classList.remove("hidden");
+  settingsUsername.value = state.displayName || "";
+  settingsUuid.value = state.userId || "";
+  loadSettingsData();
+}
+
+function closeSettingsModal() {
+  settingsModal.classList.add("hidden");
+}
+
+// ---- tree helpers ----------------------------------------------------------
+
+function _buildSkillTree(skills) {
+  const byName = new Map(skills.map((s) => [s.name, { ...s, children: [] }]));
+  const roots = [];
+  for (const s of skills) {
+    const node = byName.get(s.name);
+    if (s.parent && byName.has(s.parent)) {
+      byName.get(s.parent).children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+  const cmp = (a, b) => {
+    const ak = a.children.length > 0 ? 0 : 1;
+    const bk = b.children.length > 0 ? 0 : 1;
+    return ak !== bk ? ak - bk : a.name.localeCompare(b.name);
+  };
+  roots.sort(cmp);
+  roots.forEach((r) => r.children.sort(cmp));
+  return roots;
+}
+
+function _syncParent(parentCb, childWrap) {
+  const childCbs = Array.from(
+    childWrap.querySelectorAll(":scope > .st-item > .st-row > .skill-checkbox")
+  ).filter((c) => !c.disabled);
+  if (!childCbs.length) return;
+  const checkedCount = childCbs.filter((c) => c.checked).length;
+  if (checkedCount === childCbs.length) {
+    parentCb.indeterminate = false;
+    parentCb.checked = true;
+  } else if (checkedCount === 0) {
+    parentCb.indeterminate = false;
+    parentCb.checked = false;
+  } else {
+    parentCb.indeterminate = true;
+  }
+}
+
+function _renderSkillNode(node, extraSkills, depth) {
+  const hasChildren = node.children.length > 0;
+  const isBuiltIn = node.planning_enabled && !extraSkills.has(node.name);
+
+  const item = document.createElement("div");
+  item.className = "st-item";
+
+  const row = document.createElement("div");
+  row.className = "st-row";
+  if (depth > 0) row.style.paddingLeft = `${depth * 18}px`;
+
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "st-toggle";
+  toggle.innerHTML = hasChildren ? "&#9654;" : "";
+  toggle.disabled = !hasChildren;
+  if (!hasChildren) toggle.style.visibility = "hidden";
+
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.className = "skill-checkbox";
+  cb.dataset.name = node.name;
+  cb.checked = node.planning_enabled;
+  cb.disabled = isBuiltIn;
+  if (isBuiltIn) cb.title = "Enabled by built-in category";
+
+  const nameEl = document.createElement("span");
+  nameEl.className = "st-name";
+  nameEl.textContent = node.name;
+
+  const descEl = document.createElement("span");
+  descEl.className = "st-desc";
+  descEl.textContent = node.description;
+
+  row.append(toggle, cb, nameEl, descEl);
+  item.appendChild(row);
+
+  if (hasChildren) {
+    const childWrap = document.createElement("div");
+    childWrap.className = "st-children st-collapsed";
+
+    for (const child of node.children) {
+      childWrap.appendChild(_renderSkillNode(child, extraSkills, depth + 1));
+    }
+    item.appendChild(childWrap);
+
+    // Expand / collapse
+    toggle.addEventListener("click", () => {
+      const collapsed = childWrap.classList.toggle("st-collapsed");
+      toggle.innerHTML = collapsed ? "&#9654;" : "&#9660;";
+    });
+
+    // Parent → children propagation
+    cb.addEventListener("change", () => {
+      childWrap
+        .querySelectorAll(".skill-checkbox:not(:disabled)")
+        .forEach((c) => {
+          c.checked = cb.checked;
+          c.indeterminate = false;
+        });
+    });
+
+    // Children → parent tri-state
+    childWrap.addEventListener("change", () => _syncParent(cb, childWrap));
+
+    // Initial tri-state
+    queueMicrotask(() => _syncParent(cb, childWrap));
+  }
+
+  return item;
+}
+
+// ---- load / save -----------------------------------------------------------
+
+async function loadSettingsData() {
+  skillsChecklist.innerHTML =
+    '<p class="settings-hint" style="opacity:0.6">Loading…</p>';
+  try {
+    const [skillsRes, settingsRes, envRes] = await Promise.all([
+      fetch("/api/skills"),
+      fetch("/api/settings"),
+      fetch("/api/env-config"),
+    ]);
+    const skills = await skillsRes.json();
+    const cfg = await settingsRes.json();
+    const envCfg = envRes.ok ? await envRes.json() : {};
+    const extraSkills = new Set((cfg.planning || {}).extra_skills || []);
+
+    const roots = _buildSkillTree(skills);
+    skillsChecklist.innerHTML = "";
+    for (const node of roots) {
+      skillsChecklist.appendChild(_renderSkillNode(node, extraSkills, 0));
+    }
+
+    // Populate env config inputs
+    for (const [key, getEl] of Object.entries(envInputs)) {
+      const el = getEl();
+      if (el && envCfg[key] !== undefined) {
+        el.value = envCfg[key];
+      }
+    }
+  } catch (err) {
+    skillsChecklist.innerHTML = `<p class="settings-hint" style="color:#f87171">Failed to load: ${err.message}</p>`;
+  }
+}
+
+async function saveSettings() {
+  const username = settingsUsername.value.trim();
+  const extraSkills = Array.from(
+    skillsChecklist.querySelectorAll(".skill-checkbox:not(:disabled)")
+  )
+    .filter((cb) => cb.checked && !cb.indeterminate)
+    .map((cb) => cb.dataset.name);
+
+  // Collect env config values (skip empty sensitive fields with "***")
+  const envValues = {};
+  const sensitiveKeys = new Set(["LLM_API_KEY", "BOHRIUM_PASSWORD"]);
+  for (const [key, getEl] of Object.entries(envInputs)) {
+    const el = getEl();
+    if (!el) continue;
+    const val = el.value;
+    if (sensitiveKeys.has(key) && (!val || val === "***")) continue;
+    envValues[key] = val;
+  }
+
+  try {
+    settingsSave.disabled = true;
+    settingsStatus.textContent = "Saving…";
+
+    const requests = [
+      fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          planning: { extra_skills: extraSkills },
+          user: username ? { name: username } : undefined,
+        }),
+      }),
+    ];
+    if (Object.keys(envValues).length > 0) {
+      requests.push(
+        fetch("/api/env-config", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ values: envValues }),
+        })
+      );
+    }
+
+    const results = await Promise.all(requests);
+    for (const res of results) {
+      if (!res.ok) throw new Error(await res.text());
+    }
+
+    if (username && username !== state.displayName) {
+      closeSettingsModal();
+      await applyLogin(username, null);
+    }
+    settingsStatus.textContent = "Saved ✓";
+    setTimeout(() => { settingsStatus.textContent = ""; }, 2000);
+  } catch (err) {
+    settingsStatus.textContent = `Error: ${err.message}`;
+  } finally {
+    settingsSave.disabled = false;
+  }
+}
+
+// ---- restart backend -------------------------------------------------------
+
+async function _pollBackendReady(maxAttempts = 30, intervalMs = 2000) {
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    try {
+      const res = await fetch("/api/backend-status");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.ready) return;
+      }
+    } catch (_) {}
+  }
+  throw new Error("Backend did not come back online in time");
+}
+
+async function restartBackend() {
+  if (!settingsRestartBtn) return;
+  settingsRestartBtn.disabled = true;
+  settingsRestartBtn.textContent = "Restarting…";
+  settingsStatus.textContent = "Restarting backend…";
+  try {
+    const res = await fetch("/api/restart-backend", { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    await _pollBackendReady();
+    settingsStatus.textContent = "Backend restarted ✓";
+    setTimeout(() => { settingsStatus.textContent = ""; }, 3000);
+  } catch (err) {
+    settingsStatus.textContent = `Restart failed: ${err.message}`;
+  } finally {
+    settingsRestartBtn.disabled = false;
+    settingsRestartBtn.textContent = "↺ Restart Backend";
+  }
+}
+
+// Tab switching
+document.querySelectorAll(".settings-tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".settings-tab").forEach((t) => t.classList.remove("active"));
+    document.querySelectorAll(".settings-pane").forEach((p) => p.classList.add("hidden"));
+    tab.classList.add("active");
+    const pane = document.getElementById(`tab-${tab.dataset.tab}`);
+    if (pane) pane.classList.remove("hidden");
+  });
+});
+
+if (settingsBtn) settingsBtn.addEventListener("click", openSettingsModal);
+if (settingsClose) settingsClose.addEventListener("click", closeSettingsModal);
+if (settingsSave) settingsSave.addEventListener("click", saveSettings);
+if (settingsRestartBtn) settingsRestartBtn.addEventListener("click", restartBackend);
+settingsModal?.addEventListener("click", (e) => {
+  if (e.target === settingsModal) closeSettingsModal();
 });

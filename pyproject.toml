@@ -1,6 +1,6 @@
 [project]
 name = "matcreator"
-version = "1.7.4"
+version = "1.8.0"
 description = "A multi-agent framework for complex computational material tasks."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -23,7 +23,8 @@ dependencies = [
     "a2a-sdk==0.3.25",
     "tavily-cli",
     "pymatgen-analysis-diffusion",
-    "mp-api"
+    "mp-api",
+    "bcrypt>=4.0.0"
 ]
 
 [build-system]

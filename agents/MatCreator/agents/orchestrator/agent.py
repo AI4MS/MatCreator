@@ -45,6 +45,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _get_agent_mode(state: dict) -> str:
+    """Return the active agent mode: 'flash', 'bench', or 'normal'."""
+    mode = state.get("agent_mode")
+    if mode in ("normal", "bench", "flash"):
+        return mode
+    return "bench" if state.get("benchmark_mode", False) else "normal"
+
+
 def _validate_graph_ready(state: dict) -> tuple[bool, str]:
     """Return (ready, reason) — ready=True when at least one pending node exists."""
     graph = state.get("execution_graph")
@@ -108,6 +116,11 @@ class PlanningExecutionOrchestrator(BaseAgent):
             async for event in self.planning_agent.run_async(ctx):
                 yield event
             graph.log_node_complete(planning_id, "success")
+
+            # Flash mode: thinking agent handles everything; skip execution/testing phases
+            if _get_agent_mode(state) == "flash":
+                graph.log_node_complete("orchestrator", "success")
+                break
 
             testing_requested: bool = state.get("testing_requested", False)
             execution_approved: bool = state.get("execution_approved", False)

@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v1.8.0 (2026-06-04)
+
+### Bug Fixes
+
+- Update the frontend layout
+  ([`8493bb1`](https://github.com/nlz25/PFD_Agent/commit/8493bb190c950e49b986b13f83240aee7adeab9c))
+
+### Features
+
+- Add flash mode and improved frontend
+  ([`fd30da8`](https://github.com/nlz25/PFD_Agent/commit/fd30da8876146ac35f61ad2a2ba4ea10381a03f8))
+
+
 ## v1.7.4 (2026-05-28)
 
 ### Bug Fixes
