@@ -17,31 +17,44 @@ The vite dev server proxies /api/* here and /run_sse + /apps/* to the ADK server
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import signal
+import socket
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
+from dotenv import dotenv_values
+from dotenv import set_key as dotenv_set_key
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-
+from pydantic import BaseModel
 # Allow importing from agents/ and src/ when running as script
 ROOT = Path(__file__).parent.parent
+_WEB_DIR = Path(__file__).parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+if str(_WEB_DIR) not in sys.path:
+    sys.path.insert(0, str(_WEB_DIR))
 
-from matcreator.agents.MatCreator import get_session_workdir, get_workspace_root  # noqa: E402
-from matcreator.agents.MatCreator.agents.cancellation import (  # noqa: E402
+import users_db  # noqa: E402
+
+from agents.MatCreator.workspace import get_session_workdir, get_workspace_root, workspace_skills_dir  # noqa: E402
+from agents.MatCreator.agents.cancellation import (  # noqa: E402
     request_cancellation,
     is_cancellation_requested,
     get_cancellation_reason,
     clear_cancellation,
     request_step_cancellation,
 )
-from matcreator.agents.MatCreator.agents.graph_logger import AgentGraphLogger  # noqa: E402
+from agents.MatCreator.agents.graph_logger import AgentGraphLogger  # noqa: E402
+from agents.MatCreator.skill import ALL_SKILLS, PLANNING_SKILL_NAMES, refresh_skills  # noqa: E402
+from agents.MatCreator.config import load_config, save_config  # noqa: E402
 
 app = FastAPI(title="MatCreator Graph API", version="1.0.0")
 APP_NAME = "MatCreator"
@@ -51,9 +64,41 @@ DEFAULT_ADMIN_USERS = {"admin"}
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET", "POST", "DELETE"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
+
+ENV_PATH = ROOT / "agents" / "MatCreator" / ".env"
+_SENSITIVE_FIELDS = frozenset({"LLM_API_KEY", "BOHRIUM_PASSWORD"})
+_ENV_FIELDS = [
+    "LLM_MODEL", "LLM_API_KEY", "LLM_BASE_URL", "EMBEDDING_MODEL",
+    "BOHRIUM_EMAIL", "BOHRIUM_PASSWORD", "BOHRIUM_PROJECT_ID",
+    "BOHRIUM_VASP_IMAGE", "BOHRIUM_VASP_MACHINE",
+    "BOHRIUM_DEEPMD_IMAGE", "BOHRIUM_DEEPMD_MACHINE", "DEEPMD_MODEL_PATH",
+]
+
+_adk_process: subprocess.Popen | None = None
+
+
+def _is_port_open(port: int, host: str = "127.0.0.1") -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex((host, port)) == 0
+
+
+def _kill_port(port: int) -> None:
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for pid_str in result.stdout.strip().splitlines():
+            try:
+                os.kill(int(pid_str.strip()), signal.SIGTERM)
+            except (ProcessLookupError, ValueError):
+                pass
+    except Exception:
+        pass
 
 
 def _admin_users() -> set[str]:
@@ -69,7 +114,11 @@ def _admin_users() -> set[str]:
 
 
 def _is_admin(user_id: str) -> bool:
-    return user_id in _admin_users()
+    admin_names = _admin_users()
+    if user_id in admin_names:
+        return True  # legacy path: user_id is a display name (pre-UUID)
+    user = users_db.get_by_id(user_id)
+    return user is not None and user["display_name"] in admin_names
 
 
 def _session_row_to_summary(row: sqlite3.Row) -> dict:
@@ -149,6 +198,92 @@ def _available_upload_path(upload_dir: Path, filename: str) -> Path:
             return next_candidate
 
     raise HTTPException(status_code=409, detail="Too many files with the same name")
+
+
+@app.on_event("startup")
+async def _on_startup() -> None:
+    users_db.init_db()
+    users_db.migrate_legacy_adk_sessions(SESSION_DB_PATH, APP_NAME)
+
+
+class LoginBody(BaseModel):
+    display_name: str
+    password: str | None = None
+
+
+class RegisterBody(BaseModel):
+    display_name: str
+    password: str
+
+
+class SetPasswordBody(BaseModel):
+    user_id: str
+    old_password: str | None = None
+    new_password: str
+
+
+@app.post("/api/auth/login")
+async def auth_login(body: LoginBody) -> JSONResponse:
+    name = body.display_name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="display_name cannot be empty")
+
+    # Special identity: "user" always allowed, no password required.
+    if name == users_db.LEGACY_USER:
+        return JSONResponse({
+            "user_id": users_db.LEGACY_USER,
+            "display_name": users_db.LEGACY_USER,
+            "is_admin": _is_admin(users_db.LEGACY_USER),
+        })
+
+    user = users_db.get_by_display_name(name)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found. Please register first.")
+    if user["password_hash"] is None:
+        raise HTTPException(status_code=401, detail="Account has no password. Please re-register.")
+    if not users_db.verify_password(user["password_hash"], body.password):
+        raise HTTPException(status_code=401, detail="Invalid password.")
+
+    return JSONResponse({
+        "user_id": user["id"],
+        "display_name": user["display_name"],
+        "is_admin": _is_admin(user["id"]),
+    })
+
+
+@app.post("/api/auth/register")
+async def auth_register(body: RegisterBody) -> JSONResponse:
+    name = body.display_name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="display_name cannot be empty")
+    if name == users_db.LEGACY_USER:
+        raise HTTPException(status_code=400, detail="'user' is a reserved username.")
+    if not body.password:
+        raise HTTPException(status_code=422, detail="Password is required for registration.")
+
+    existing = users_db.get_by_display_name(name)
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="Username already taken.")
+
+    user = users_db.create_user(name, body.password)
+    return JSONResponse({
+        "user_id": user["id"],
+        "display_name": user["display_name"],
+        "is_admin": _is_admin(user["id"]),
+    }, status_code=201)
+
+
+@app.post("/api/auth/set-password")
+async def auth_set_password(body: SetPasswordBody) -> JSONResponse:
+    if body.user_id == users_db.LEGACY_USER:
+        raise HTTPException(status_code=400, detail="Cannot set password for the 'user' account")
+    user = users_db.get_by_id(body.user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not users_db.verify_password(user["password_hash"], body.old_password):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    users_db.set_password(body.user_id, body.new_password)
+    return JSONResponse({"status": "ok"})
 
 
 @app.get("/api/session-access/{user_id}")
@@ -430,8 +565,120 @@ async def cancel_individual_step(
     })
 
 
+@app.get("/api/skills")
+async def list_skills() -> JSONResponse:
+    """Return all loaded skills with their planning_enabled status and parent skill (if any)."""
+    from agents.MatCreator.skill import _MODULE_SKILLS_ROOT, _discover_skill_dirs  # noqa: PLC0415
+
+    parent_map: dict[str, str] = {}
+    for root in [_MODULE_SKILLS_ROOT, workspace_skills_dir()]:
+        for path in _discover_skill_dirs(root):
+            parent_skill_md = path.parent / "SKILL.md"
+            if parent_skill_md.is_file():
+                parent_map[path.name] = path.parent.name
+
+    skills = [
+        {
+            "name": s.name,
+            "description": s.description or "",
+            "planning_enabled": s.name in PLANNING_SKILL_NAMES,
+            "parent": parent_map.get(s.name),
+        }
+        for s in sorted(ALL_SKILLS, key=lambda s: s.name)
+    ]
+    return JSONResponse(skills)
+
+
+@app.get("/api/settings")
+async def get_settings() -> JSONResponse:
+    """Return the current user config."""
+    return JSONResponse(load_config())
+
+
+class SettingsBody(BaseModel):
+    planning: dict | None = None
+    user: dict | None = None
+
+
+@app.put("/api/settings")
+async def update_settings(body: SettingsBody) -> JSONResponse:
+    """Merge *body* into the config, persist it, and reload skills."""
+    config = load_config()
+    if body.planning is not None:
+        config.setdefault("planning", {}).update(body.planning)
+    if body.user is not None:
+        config.setdefault("user", {}).update(body.user)
+    save_config(config)
+    refresh_skills()
+    return JSONResponse({
+        "status": "ok",
+        "planning_skill_names": sorted(PLANNING_SKILL_NAMES),
+    })
+
+
+@app.get("/api/env-config")
+async def get_env_config() -> JSONResponse:
+    """Return the current .env configuration, masking sensitive fields."""
+    values = dotenv_values(ENV_PATH) if ENV_PATH.exists() else {}
+    result = {}
+    for field in _ENV_FIELDS:
+        val = values.get(field, "")
+        result[field] = "***" if (field in _SENSITIVE_FIELDS and val) else val
+    return JSONResponse(result)
+
+
+class EnvConfigBody(BaseModel):
+    values: dict[str, str]
+
+
+@app.put("/api/env-config")
+async def update_env_config(body: EnvConfigBody) -> JSONResponse:
+    """Write updated .env fields to disk. Skips masked (***) sensitive values."""
+    ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not ENV_PATH.exists():
+        ENV_PATH.touch()
+
+    for key, value in body.values.items():
+        if key not in _ENV_FIELDS:
+            continue
+        if key in _SENSITIVE_FIELDS and value == "***":
+            continue
+        dotenv_set_key(str(ENV_PATH), key, value)
+
+    return JSONResponse({"status": "ok"})
+
+
+@app.post("/api/restart-backend")
+async def restart_backend() -> JSONResponse:
+    """Kill the ADK API server on port 8000 and relaunch it."""
+    global _adk_process
+
+    _kill_port(8000)
+    await asyncio.sleep(1.5)
+
+    try:
+        _adk_process = subprocess.Popen(
+            ["matcreator", "api-server"],
+            cwd=str(ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="'matcreator' command not found in PATH")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to start backend: {exc}")
+
+    return JSONResponse({"status": "restarting", "pid": _adk_process.pid})
+
+
+@app.get("/api/backend-status")
+async def get_backend_status() -> JSONResponse:
+    """Check whether the ADK API server on port 8000 is reachable."""
+    return JSONResponse({"ready": _is_port_open(8000)})
+
+
 # Serve built frontend in production
-_dist = Path(__file__).parent / "vite" / "dist"
+_dist = Path(__file__).parent / "vite-frontend" / "dist"
 if _dist.exists():
     app.mount("/", StaticFiles(directory=str(_dist), html=True), name="static")
 

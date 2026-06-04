@@ -21,11 +21,13 @@
         </div>
         <div class="session-chips">
           <span class="chip">User: <span id="user-display">—</span>
-            <button class="ghost" id="edit-user" style="padding:0 6px;font-size:11px" title="Change user">✎</button>
+            <button class="ghost" id="edit-user" style="padding:0 6px;font-size:11px" title="Switch user">✎</button>
+            <button class="ghost" id="logout-btn" style="padding:0 6px;font-size:11px" title="Log out">⏏</button>
           </span>
           <span class="chip">Session: <span id="session-id">-</span></span>
-          <span class="chip bench-mode-chip hidden" id="bench-mode-chip">⚡ Bench Mode</span>
+          <span class="chip agent-mode-chip hidden" id="agent-mode-chip"></span>
           <button class="ghost" id="reset-session">New Session</button>
+          <button class="ghost" id="settings-btn" title="Settings">⚙</button>
         </div>
       </header>
 
@@ -189,15 +191,13 @@
               <button class="pill" data-quick="replan">Request Replan</button>
               <button class="pill" data-quick="continue">Continue</button>
             </div>
-            <div class="bench-mode-row">
-              <label class="bench-toggle-label" for="bench-mode-toggle">
-                <span>Bench Mode</span>
-                <span class="bench-mode-hint">(auto-approve without confirmation)</span>
-              </label>
-              <label class="toggle-switch">
-                <input type="checkbox" id="bench-mode-toggle">
-                <span class="toggle-slider"></span>
-              </label>
+            <div class="agent-mode-row">
+              <div class="agent-mode-label">Agent Mode</div>
+              <div class="mode-selector" id="mode-selector" role="group" aria-label="Agent mode">
+                <button class="mode-btn" data-mode="flash" title="Conversational with direct execution; no DAG required">Flash</button>
+                <button class="mode-btn" data-mode="normal" title="Plan first, then confirm before execution">Standard</button>
+                <button class="mode-btn" data-mode="bench" title="Plan first, then auto-confirm without waiting">Bench</button>
+              </div>
             </div>
           </div>
 
@@ -231,9 +231,97 @@
     <div id="login-modal" class="login-overlay">
       <div class="login-card">
         <div class="brand-title" style="font-size:1.4rem">MatCreator</div>
-        <p style="color:var(--muted);margin:0;font-size:0.875rem">Enter your username to continue</p>
-        <input id="login-input" class="text-input" placeholder="Username" style="width:100%;box-sizing:border-box" />
-        <button id="login-submit" class="send-btn" style="width:100%;justify-content:center">Enter →</button>
+        <!-- Login view -->
+        <div id="login-view">
+          <p style="color:var(--muted);margin:0 0 8px;font-size:0.875rem">Sign in to continue</p>
+          <input id="login-input" class="text-input" placeholder="Username" style="width:100%;box-sizing:border-box" autocomplete="username" />
+          <input id="login-password" type="password" class="text-input" placeholder="Password" style="width:100%;box-sizing:border-box;margin-top:8px" autocomplete="current-password" />
+          <p id="login-error" style="color:#f87171;font-size:0.8rem;margin:4px 0 0;min-height:1.2em"></p>
+          <p id="login-uuid-display" style="color:var(--muted);font-size:0.75rem;font-family:monospace;margin:2px 0 0;min-height:1.1em;word-break:break-all"></p>
+          <button id="login-submit" class="send-btn" style="width:100%;justify-content:center;margin-top:4px">Sign in →</button>
+          <p style="text-align:center;margin:10px 0 0;font-size:0.8rem;color:var(--muted)">
+            No account? <button id="switch-to-register" class="ghost" style="padding:0;font-size:0.8rem;color:var(--accent)">Register</button>
+          </p>
+        </div>
+        <!-- Register view -->
+        <div id="register-view" class="hidden">
+          <p style="color:var(--muted);margin:0 0 8px;font-size:0.875rem">Create a new account</p>
+          <input id="reg-input" class="text-input" placeholder="Username" style="width:100%;box-sizing:border-box" autocomplete="username" />
+          <input id="reg-password" type="password" class="text-input" placeholder="Password" style="width:100%;box-sizing:border-box;margin-top:8px" autocomplete="new-password" />
+          <input id="reg-confirm" type="password" class="text-input" placeholder="Confirm password" style="width:100%;box-sizing:border-box;margin-top:8px" autocomplete="new-password" />
+          <p id="reg-error" style="color:#f87171;font-size:0.8rem;margin:4px 0 0;min-height:1.2em"></p>
+          <button id="reg-submit" class="send-btn" style="width:100%;justify-content:center;margin-top:4px">Register →</button>
+          <p style="text-align:center;margin:10px 0 0;font-size:0.8rem;color:var(--muted)">
+            Have an account? <button id="switch-to-login" class="ghost" style="padding:0;font-size:0.8rem;color:var(--accent)">Sign in</button>
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings modal -->
+    <div id="settings-modal" class="settings-overlay hidden">
+      <div class="settings-card">
+        <div class="settings-header">
+          <span class="brand-title" style="font-size:1.1rem">Settings</span>
+          <button class="ghost" id="settings-close" style="padding:4px 10px;font-size:13px">✕</button>
+        </div>
+        <div class="settings-tabs">
+          <button class="settings-tab active" data-tab="profile">Profile</button>
+          <button class="settings-tab" data-tab="skills">Planning Skills</button>
+          <button class="settings-tab" data-tab="llm">LLM Settings</button>
+          <button class="settings-tab" data-tab="bohr">Bohr Credentials</button>
+        </div>
+        <div class="settings-body">
+          <div class="settings-pane" id="tab-profile">
+            <label class="settings-label">Username</label>
+            <input id="settings-username" class="text-input" placeholder="your username" style="width:100%;box-sizing:border-box" />
+            <label class="settings-label" style="margin-top:12px">User ID (UUID)</label>
+            <input id="settings-uuid" class="text-input" readonly style="width:100%;box-sizing:border-box;font-family:monospace;font-size:0.8rem;opacity:0.7;cursor:text" />
+            <button id="settings-logout-btn" class="ghost" style="margin-top:16px;width:100%;justify-content:center;color:#f87171;border:1px solid #f8717144">Log out</button>
+          </div>
+          <div class="settings-pane hidden" id="tab-skills">
+            <p class="settings-hint">Skills checked below will have their full SKILL.md instructions
+              available to the planning agent, in addition to the built-in
+              <code>concepts</code> and <code>guides</code> categories.</p>
+            <div id="skills-checklist" class="skills-checklist"></div>
+          </div>
+          <div class="settings-pane hidden" id="tab-llm">
+            <p class="settings-hint env-restart-notice">Changes take effect after restarting the backend.</p>
+            <label class="settings-label">LLM Model</label>
+            <input id="settings-llm-model" class="text-input settings-env-input" placeholder="e.g. openai/gpt-4o" />
+            <label class="settings-label">API Key</label>
+            <input id="settings-llm-apikey" type="password" class="text-input settings-env-input" placeholder="sk-..." autocomplete="new-password" />
+            <label class="settings-label">Base URL</label>
+            <input id="settings-llm-baseurl" class="text-input settings-env-input" placeholder="https://api.openai.com/v1" />
+            <label class="settings-label">Embedding Model</label>
+            <input id="settings-llm-embed" class="text-input settings-env-input" placeholder="e.g. openai/text-embedding-v3" />
+          </div>
+          <div class="settings-pane hidden" id="tab-bohr">
+            <p class="settings-hint env-restart-notice">Changes take effect after restarting the backend.</p>
+            <label class="settings-label">Email</label>
+            <input id="settings-bohr-email" class="text-input settings-env-input" placeholder="user@example.com" />
+            <label class="settings-label">Password</label>
+            <input id="settings-bohr-password" type="password" class="text-input settings-env-input" placeholder="password" autocomplete="new-password" />
+            <label class="settings-label">Project ID</label>
+            <input id="settings-bohr-project" class="text-input settings-env-input" placeholder="12345" />
+            <div class="settings-section-divider">Job Configuration</div>
+            <label class="settings-label">VASP Image</label>
+            <input id="settings-bohr-vasp-image" class="text-input settings-env-input" placeholder="registry.dp.tech/...vasp:5.4.4" />
+            <label class="settings-label">VASP Machine</label>
+            <input id="settings-bohr-vasp-machine" class="text-input settings-env-input" placeholder="c16_m32_cpu" />
+            <label class="settings-label">DeepMD Image</label>
+            <input id="settings-bohr-deepmd-image" class="text-input settings-env-input" placeholder="registry.dp.tech/...deepmd-kit:3.1.0" />
+            <label class="settings-label">DeepMD Machine</label>
+            <input id="settings-bohr-deepmd-machine" class="text-input settings-env-input" placeholder="1 * NVIDIA V100_32g" />
+            <label class="settings-label">DeepMD Model Path</label>
+            <input id="settings-bohr-deepmd-model" class="text-input settings-env-input" placeholder="DPA2_medium_28_10M_rc0.pt" />
+          </div>
+        </div>
+        <div class="settings-footer">
+          <span id="settings-status" class="settings-status"></span>
+          <button class="ghost" id="settings-restart-btn" title="Restart the ADK backend to apply credential changes">↺ Restart Backend</button>
+          <button class="send-btn" id="settings-save" style="justify-content:center">Save</button>
+        </div>
       </div>
     </div>
 

@@ -14,6 +14,7 @@ from google.adk.tools import skill_toolset
 from google.adk.tools.function_tool import FunctionTool
 from .workspace import workspace_skills_dir
 from .tools.workspace_tools import list_workspace_skills, run_skill_script
+from .config import get_planning_skills
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -65,10 +66,12 @@ def _build_planning_skill_names() -> frozenset[str]:
         for path in _discover_skill_dirs(root):
             if path.parent.name in _PLANNING_CATEGORIES:
                 names.add(path.name)
+    for name in get_planning_skills():
+        names.add(name)
     return frozenset(names)
 
 
-PLANNING_SKILL_NAMES = _build_planning_skill_names()
+PLANNING_SKILL_NAMES: set[str] = set(_build_planning_skill_names())
 
 
 class MatCreatorSkillToolset(skill_toolset.SkillToolset):
@@ -165,6 +168,8 @@ def refresh_skills() -> dict:
     new_skills = load_skills()
     ALL_SKILLS.clear()
     ALL_SKILLS.extend(new_skills)
+    PLANNING_SKILL_NAMES.clear()
+    PLANNING_SKILL_NAMES.update(_build_planning_skill_names())
     seed_result = seed_skills_to_graph()
     return {
         "status": "ok",

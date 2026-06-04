@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import logging
+from typing import Optional
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
@@ -160,6 +161,57 @@ def request_skill_testing(skill_or_description: str, tool_context: ToolContext) 
 
 
 # ---------------------------------------------------------------------------
+# Mode helper
+# ---------------------------------------------------------------------------
+
+
+def _get_agent_mode(state: dict) -> str:
+    """Return the active agent mode: 'flash', 'bench', or 'normal'."""
+    mode = state.get("agent_mode")
+    if mode in ("normal", "bench", "flash"):
+        return mode
+    return "bench" if state.get("benchmark_mode", False) else "normal"
+
+
+# ---------------------------------------------------------------------------
+# Flash mode: ad-hoc step execution
+# ---------------------------------------------------------------------------
+
+
+async def run_flash_step(
+    action: str,
+    suggested_skills: list[str],
+    tool_context: ToolContext,
+    label: Optional[str] = None,
+) -> dict:
+    """Execute a step ad-hoc. No DAG or plan required.
+
+    Use when direct computation, scripts, or skill-level execution is needed.
+    Multiple independent calls in one response turn run concurrently.
+
+    Args:
+        action: What to do (same semantics as a DAG node action).
+        suggested_skills: Skill names to preload in the executor.
+        label: Optional display name shown in the agent graph.
+    """
+    from ..execution_agent.step_executor_runner import run_step_executor
+
+    counter = tool_context.state.get("_flash_step_counter", 0) + 1
+    tool_context.state["_flash_step_counter"] = counter
+    node_id = label.lower().replace(" ", "_")[:40] if label else f"flash_{counter}"
+
+    return await run_step_executor(
+        step_number=counter,
+        action=action,
+        suggested_skills=suggested_skills,
+        workspace_dir="",
+        prior_context=None,
+        node_id=node_id,
+        tool_context=tool_context,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Instruction
 # ---------------------------------------------------------------------------
 
@@ -247,7 +299,16 @@ def before_agent_callback(callback_context: CallbackContext) -> None:
         if key not in state:
             callback_context.state[key] = default
 
-    if state.get("benchmark_mode", False):
+    agent_mode = _get_agent_mode(state)
+    if agent_mode == "flash":
+        callback_context.state["confirmation_instruction"] = (
+            "4. **Flash mode is active.** You have direct execution capability.\n"
+            "   - Call `run_flash_step` whenever computation, scripts, or skills are needed "
+            "— no DAG, no plan, no user approval required.\n"
+            "   - Be conversational and responsive. You are NOT required to build a plan.\n"
+            "   - Do NOT call `confirm_plan_and_start_execution` or `request_skill_testing`."
+        )
+    elif agent_mode == "bench":
         callback_context.state["confirmation_instruction"] = (
             "4. **Benchmark mode is active.** Immediately call `confirm_plan_and_start_execution` "
             "after `validate_graph` succeeds — do NOT wait for user confirmation."
@@ -297,6 +358,7 @@ thinking_agent = LlmAgent(
         FunctionTool(refresh_skills),
         FunctionTool(run_python),
         FunctionTool(run_bash),
+        FunctionTool(run_flash_step),
         FunctionTool(read_execution_trajectory),
         FunctionTool(read_agent_graph),
         FunctionTool(load_skill),
