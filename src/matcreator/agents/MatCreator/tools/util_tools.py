@@ -14,16 +14,16 @@ def show_plot(plot_path: str) -> dict:
     Streamlit UI recognises as a plot result.
 
     Args:
-        plot_path: Absolute (or MATCLAW_WORKSPACE-relative) path to the PNG file.
+        plot_path: Absolute (or MATCREATOR_WORKSPACE-relative) path to the PNG file.
 
     Returns:
         dict with ``plot_path`` (resolved absolute path) on success, or an
         ``error`` key if the file cannot be found.
     """
-    # Resolve relative paths against MATCLAW_WORKSPACE
+    # Resolve relative paths against MATCREATOR_WORKSPACE
     p = Path(plot_path)
     if not p.is_absolute():
-        ws_root = os.environ.get("MATCLAW_WORKSPACE") or str(
+        ws_root = os.environ.get("MATCREATOR_WORKSPACE") or str(
             Path(__file__).parent / ".workspace"
         )
         p = Path(ws_root) / p
@@ -47,7 +47,7 @@ def show_structure(structure_path: str) -> dict:
     Streamlit UI recognises as a structure result.
 
     Args:
-        structure_path: Absolute (or MATCLAW_WORKSPACE-relative) path to the
+        structure_path: Absolute (or MATCREATOR_WORKSPACE-relative) path to the
             structure file (e.g. CIF, extXYZ, VASP POSCAR).
 
     Returns:
@@ -56,7 +56,7 @@ def show_structure(structure_path: str) -> dict:
     """
     p = Path(structure_path)
     if not p.is_absolute():
-        ws_root = os.environ.get("MATCLAW_WORKSPACE") or str(
+        ws_root = os.environ.get("MATCREATOR_WORKSPACE") or str(
             Path(__file__).parent / ".workspace"
         )
         p = Path(ws_root) / p
@@ -81,7 +81,7 @@ def show_artifact(artifact_path: str) -> dict:
     Call this tool immediately after the artifact file has been written to disk.
 
     Args:
-        artifact_path: Absolute (or MATCLAW_WORKSPACE-relative) path to the
+        artifact_path: Absolute (or MATCREATOR_WORKSPACE-relative) path to the
             artifact file.
 
     Returns:
@@ -90,7 +90,7 @@ def show_artifact(artifact_path: str) -> dict:
     """
     p = Path(artifact_path)
     if not p.is_absolute():
-        ws_root = os.environ.get("MATCLAW_WORKSPACE") or str(
+        ws_root = os.environ.get("MATCREATOR_WORKSPACE") or str(
             Path(__file__).parent / ".workspace"
         )
         p = Path(ws_root) / p

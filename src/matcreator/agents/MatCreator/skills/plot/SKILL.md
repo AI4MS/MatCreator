@@ -15,7 +15,7 @@ metadata:
 ## Workflow
 
 1. **Determine output directory**
-   Use `run_python` to build a unique timestamped output directory. First try `plots/` relative to the current working directory; fall back to `$MATCLAW_WORKSPACE/plots/` if cwd is not writable:
+   Use `run_python` to build a unique timestamped output directory. First try `plots/` relative to the current working directory; fall back to `$MATCREATOR_WORKSPACE/plots/` if cwd is not writable:
    ```python
    import os, datetime, random
    tag = datetime.datetime.now().strftime("%Y%m%d%H%M%S") + f"_{random.randint(100000,999999)}"
@@ -25,7 +25,7 @@ metadata:
        os.makedirs(cwd_plots, exist_ok=True)
        output_dir = cwd_plots
    except OSError:
-       ws_root = os.environ.get("MATCLAW_WORKSPACE") or os.path.expanduser("~/.workspace")
+       ws_root = os.environ.get("MATCREATOR_WORKSPACE") or os.path.expanduser("~/.workspace")
        output_dir = os.path.join(ws_root, "plots", tag)
        os.makedirs(output_dir, exist_ok=True)
    print(output_dir)
@@ -73,4 +73,4 @@ metadata:
 - Use timestamps in filenames to prevent overwrites.
 - If execution fails, read the error, fix the code, and retry (max 3 attempts).
 - Never fabricate a `plot_path` — only report the path after `run_bash` confirms the file exists.
-- Data files passed as relative paths should be resolved relative to `MATCLAW_WORKSPACE` (same logic as step 1).
+- Data files passed as relative paths should be resolved relative to `MATCREATOR_WORKSPACE` (same logic as step 1).

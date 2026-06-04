@@ -1,7 +1,7 @@
 """Workspace authoring tools for the thinking_agent.
 
 These tools allow the agent to create and manage skills under the project
-workspace directory ($MATCLAW_WORKSPACE or ./.workspace).
+workspace directory ($MATCREATOR_WORKSPACE or ./.workspace).
 
 Security contract
 -----------------
@@ -361,7 +361,7 @@ def run_skill_script(
 def init_workspace_tool() -> str:
     """Initialise the project workspace directory and seed it with built-in defaults.
 
-    Creates ``$MATCLAW_WORKSPACE`` (or ``./.workspace``) if it does not exist,
+    Creates ``$MATCREATOR_WORKSPACE`` (or ``./.workspace``) if it does not exist,
     then copies the built-in skills and guides into it so the user can customise
     them.  Existing workspace files are never overwritten.
 

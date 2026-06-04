@@ -1,7 +1,7 @@
 """Workspace management for MatClaw — project-local overlay of skills/guides/memory.
 
 The workspace root is resolved in this order:
-1. ``MATCLAW_WORKSPACE`` environment variable (absolute or relative to CWD)
+1. ``MATCREATOR_WORKSPACE`` environment variable (absolute or relative to CWD)
 2. ``~/.workspace/`` in the user's home directory
 
 On first use, call :func:`init_workspace` to create the directory tree and
@@ -23,7 +23,7 @@ from .constants import _AGENT_PATH
 
 def get_workspace_root() -> Path:
     """Return the resolved workspace root path (not guaranteed to exist)."""
-    env_val = os.environ.get("MATCLAW_WORKSPACE", "")
+    env_val = os.environ.get("MATCREATOR_WORKSPACE", "")
     if env_val:
         return Path(env_val).expanduser().resolve()
     return (Path(__file__).parent / ".workspace").resolve()

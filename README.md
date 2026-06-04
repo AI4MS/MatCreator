@@ -208,7 +208,7 @@ matcreator run -p "Build a silicon FCC structure" --output-format json -o result
 # Override the workspace directory
 matcreator run --workspace /data/my_workspace -p "Build a silicon FCC structure"
 # or via environment variable
-MATCLAW_WORKSPACE=/data/my_workspace matcreator run -p "Build a silicon FCC structure"
+MATCREATOR_WORKSPACE=/data/my_workspace matcreator run -p "Build a silicon FCC structure"
 ```
 
 Each run creates a session directory under `<workspace>/sessions/<session-id>/` where any files produced by the agent are saved.
@@ -249,7 +249,7 @@ uv run server.py --port 50001
 Skills are Markdown files with a YAML frontmatter block (declaring `name`, `description`, `tools`, and `dependent_skills`) followed by a plain-text instruction body. The active loader discovers any workspace directory that contains a `SKILL.md` file, including nested directories such as `skills/mattergen/mattergen_generation/SKILL.md`. MatCreator loads skills from two locations in order:
 
 1. **Built-in skills** — shipped with the package under `agents/MatCreator/knowledge/skills/`. Skills can be placed as flat `<name>.md` files or in a subdirectory `<name>/<name>.md`; the subdirectory form takes precedence.
-2. **Workspace overlay** — your personal skills under `$MATCLAW_WORKSPACE/skills/` (defaults to `.workspace/` in the project root). Any skill here with the same name overrides the built-in version.
+2. **Workspace overlay** — your personal skills under `$MATCREATOR_WORKSPACE/skills/` (defaults to `.workspace/` in the project root). Any skill here with the same name overrides the built-in version.
 
 To customize a skill manually, copy its skill directory into your workspace `skills/` directory and edit the contained `SKILL.md`. To add a new skill, create a new `skills/<name>/SKILL.md` file following the same frontmatter format.
 

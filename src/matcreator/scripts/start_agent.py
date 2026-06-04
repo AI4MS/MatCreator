@@ -15,7 +15,7 @@ Examples:
     matcreator api-server
     matcreator run -p "Build a silicon FCC structure"
     matcreator run -f prompt.txt --output-format json -o result.json
-    MATCLAW_WORKSPACE=/data/ws matcreator run -p "hello"
+    MATCREATOR_WORKSPACE=/data/ws matcreator run -p "hello"
 """
 
 import asyncio
@@ -68,7 +68,7 @@ _shared_options = [
     click.option("--port", default=8000, show_default=True, type=int,
                  help="Port for the ADK server."),
     click.option("--workspace", default=None, metavar="DIR",
-                 help="Override the workspace root directory (also settable via MATCLAW_WORKSPACE)."),
+                 help="Override the workspace root directory (also settable via MATCREATOR_WORKSPACE)."),
     click.option("--log-level",
                  type=click.Choice(["debug", "info", "warning", "error", "critical"],
                                    case_sensitive=False),
@@ -87,7 +87,7 @@ def add_shared_options(fn):
 
 def _resolve_workspace() -> Path:
     """Resolve the workspace root using the same logic as workspace.py."""
-    env_val = os.environ.get("MATCLAW_WORKSPACE", "")
+    env_val = os.environ.get("MATCREATOR_WORKSPACE", "")
     if env_val:
         return Path(env_val).expanduser().resolve()
     return AGENTS_DIR / "MatCreator" / ".workspace"
@@ -97,7 +97,7 @@ def _setup_workspace(workspace: str | None) -> Path:
     """Resolve, create, and chdir into the workspace root."""
     if workspace:
         ws_root = Path(workspace).expanduser().resolve()
-        os.environ["MATCLAW_WORKSPACE"] = str(ws_root)
+        os.environ["MATCREATOR_WORKSPACE"] = str(ws_root)
     else:
         ws_root = _resolve_workspace()
 
@@ -190,7 +190,7 @@ async def run_agent_async(
     Returns a dict with keys: answer, model_name, num_turns, is_error,
     duration_ms, num_events.
     """
-    os.environ["MATCLAW_WORKSPACE"] = str(Path(workspace_dir).resolve())
+    os.environ["MATCREATOR_WORKSPACE"] = str(Path(workspace_dir).resolve())
 
     from google.adk.runners import InMemoryRunner
     from google.genai import types
@@ -263,7 +263,7 @@ async def run_agent_async(
 
 @main.command("run")
 @click.option("--workspace", default=None, metavar="DIR",
-              help="Override the workspace root directory (also settable via MATCLAW_WORKSPACE).")
+              help="Override the workspace root directory (also settable via MATCREATOR_WORKSPACE).")
 @click.option("-p", "--prompt", "prompt_text", default=None,
               help="Inline prompt text to send to the agent.")
 @click.option("-f", "--prompt-file", default=None, type=click.Path(exists=True),

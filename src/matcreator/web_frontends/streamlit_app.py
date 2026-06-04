@@ -48,7 +48,7 @@ import py3Dmol
 
 # Resolve workspace root (mirrors workspace.py logic).
 # Paths returned by the agent are relative to this directory.
-_env_workspace = os.environ.get("MATCLAW_WORKSPACE", "")
+_env_workspace = os.environ.get("MATCREATOR_WORKSPACE", "")
 WORKSPACE_ROOT: Path = (
     Path(_env_workspace).expanduser().resolve()
     if _env_workspace
