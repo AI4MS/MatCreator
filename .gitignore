@@ -235,3 +235,7 @@ POT_GGA_PAW_PBE/
 # Front end
 src/matcreator/web_frontends/vite/dist/
 src/matcreator/web_frontends/vite/node_modules/
+
+# IDE
+.idea/
+.vscode/
