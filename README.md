@@ -4,6 +4,52 @@
 MatCreator is a **skill-based, agentic platform** for computational material science tasks, with a focus on Machine Learning Force Field (MLFF) generation and application. It would evolve with users by experience accumulation and creation of new skills. 
 
 ## Quick start
+### Install Git LFS
+
+This repository stores datasets under `data/` using Git Large File Storage (Git LFS).
+
+Install Git LFS first:
+
+```bash
+# Ubuntu
+sudo apt install git-lfs
+
+# Windows
+winget install GitHub.GitLFS
+
+# macOS
+brew install git-lfs
+```
+
+Clone the repository:
+
+```bash
+git clone https://github.com/qchempku2017/PFD_Agent.git
+cd PFD_Agent
+```
+
+Initialize Git LFS:
+
+```bash
+git lfs install
+```
+
+Download LFS-managed files:
+
+```bash
+git lfs pull
+```
+
+Verify:
+
+```bash
+git lfs ls-files
+```
+expect output:
+```commandline
+data/domain_datasets.tar.gz
+```
+
 ### Installation
 ```bash
 # Create and activate an environment with uv (optional but recommended)
@@ -64,7 +110,7 @@ npm -v
 ### Install frontend dependencies
 
 ```bash
-cd web/vite-frontend
+cd web_frontends/vite
 npm install
 npm run dev
 ```
@@ -128,7 +174,7 @@ If you prefer different LLM models for sub-agents, you can override the default 
 A modern web UI with graph visualization, artifact upload/download, structure visualization, and scientific plotting. Start all three services (ADK API server, FastAPI middle layer, and Vite frontend) with a single script:
 
 ```bash
-bash script/start_matcreator.sh
+bash src/matcrreator/scripts/start_matcreator.sh
 ```
 
 This starts:
@@ -170,7 +216,7 @@ Each run creates a session directory under `<workspace>/sessions/<session-id>/` 
 #### Default adk web server (old style)
 
 ```bash
-matcreator run web
+matcreator run web_frontends
 ```
 This would set up the MatCreator agent network through the default `adk web` server. You can tune the LLM model and communication settings for the agents.
 
