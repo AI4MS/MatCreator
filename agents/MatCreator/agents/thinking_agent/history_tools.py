@@ -37,6 +37,8 @@ def read_execution_trajectory(
         session_id: Session to read. Defaults to the current session.
     """
     sid = session_id or tool_context._invocation_context.session.id
+    if isinstance(last_n_steps, str):
+        last_n_steps = int(last_n_steps)
     traj_path = _workspace_root() / "trajectories" / f"{sid}.jsonl"
 
     if not traj_path.exists():

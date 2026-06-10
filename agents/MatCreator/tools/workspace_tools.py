@@ -189,7 +189,7 @@ def create_skill(
 # Script execution tools
 # ---------------------------------------------------------------------------
 
-_EXEC_TIMEOUT = 3600  # seconds
+_EXEC_TIMEOUT = 7200  # seconds
 
 
 def run_python(code: str, tool_context: ToolContext) -> str:
