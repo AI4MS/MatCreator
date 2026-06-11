@@ -1,133 +1,143 @@
 ---
 name: dpa4
-description: DPA4 model finetuning and testing skill (currently neo version). Use this skill whenever finetuning a DPA-4 (SeZM) model or running model tests. DPA4 only supports finetuning (not training from scratch) and jobs run exclusively on the Bohrium platform via the dpdisp skill.
+description: DPA4 (SeZM) finetuning skill — finetuning only, remote on Bohrium. All training labels and benchmarks must come from DFT; the pretrained model is for MD exploration only.
 metadata:
   tools:
     - run_bash
   dependent_skills:
     - dpdisp
+    - vasp
+    - abacus
+    - atomic-structure
   tags:
     - deepmd
     - dpa4
     - sezm
     - finetuning
     - machine-learning-potential
+    - dft-labeling
 ---
 
 # DPA4 Skill
 
-DPA4 (SeZM-type descriptor) **finetuning only** skill. Unlike the generic `deepmd` skill,
-DPA4 jobs run **exclusively on the Bohrium platform** — there is no local execution path.
-DPA4 does **not** support training from scratch; it always finetunes from a pretrained model.
+DPA4 (SeZM-type descriptor) **finetuning only** skill, targeting the **neo** version.
+Future versions (air, plus, pro) will ship their own model and parameters — do not mix
+across versions.
 
-> **DPA4 is currently in early stage.** This skill targets the **neo** version of DPA4.
-> Future versions (air, plus, pro, …) will require their own matching model and parameters.
-> Each model version has a **one-to-one correspondence** with its input.json configuration —
-> do not mix parameters across versions.
-
-| Model version | Status | Description |
-|---|---|---|
-| **neo** | ✅ Current | Default version, supported now |
-| air | 🔜 Planned | — |
-| plus | 🔜 Planned | — |
-| pro | 🔜 Planned | — |
-
----
-
-## Version–parameter correspondence
-
-Each DPA4 model version ships with its own pretrained model directory **and** its own
-`input.json` template. The prepare script selects the correct template based on the
-`--version` flag (default: `neo`).
-
-| Version | Descriptor | Optimizer | LR schedule | Loss |
-|---|---|---|---|---|
-| **neo** | SeZM | HybridMuon | wsd | mae |
-| air | _(TBD)_ | _(TBD)_ | _(TBD)_ | _(TBD)_ |
-| plus | _(TBD)_ | _(TBD)_ | _(TBD)_ | _(TBD)_ |
-| pro | _(TBD)_ | _(TBD)_ | _(TBD)_ | _(TBD)_ |
-
-> **Rule:** The model directory and the `--version` flag must match. Using a neo model
-> with air parameters (or vice versa) will produce incorrect results or fail.
-
----
-
-Training and evaluation are split into two decoupled phases:
+**Two phases:**
 
 | Phase | Tool | Where |
 |---|---|---|
 | **Prepare** | `dpa4_prepare.py` | always local |
-| **Execute** | `dp` CLI | **remote only** via Bohrium (dpdisp skill) |
+| **Execute** | `dp` CLI | **remote only** via Bohrium (`dpdisp` skill) |
 
-Script: `dpa4_prepare.py` (in the skill's `scripts/` directory).
-
-Use the `run_skill_script` tool to execute it:
-- `skill_name`: `"dpa4"`
-- `script_name`: `"dpa4_prepare.py"`
-- `args`: the sub-command and flags as a single string
-
-The tool resolves the script from the skill directory and runs it with `cwd` set to the
-session working directory, so relative paths in arguments resolve correctly.
+Run the prepare script via `run_skill_script(skill_name="dpa4", script_name="dpa4_prepare.py", args="...")`.
 
 ---
 
 ## Recommended Workflow — Generate a force field with DPA4
 
-When a user asks to generate or finetune a DPA4 force field, follow this decision tree:
+When a user asks to generate or finetune a DPA4 force field, follow this decision tree.
 
-### Step 0 — Ask the user: Do you have a labelled dataset?
+> **Core principle:** The pretrained model is a **tool for exploration** (MD to discover
+> candidate structures), **not a source of truth**. All training labels and evaluation
+> benchmarks must come from **DFT calculations**. This is DFT-based fine-tuning,
+> not distillation.
 
-**If the user HAS a dataset (with energy + force labels):**
+### Step 0 — Ask the user: Do you have a DFT-labelled dataset?
 
-1. **Zero-shot test first** — freeze the pretrained model and test it on the user's data
-   to check baseline energy/force accuracy without any finetuning:
+A "DFT-labelled dataset" means structures whose energy, forces, and (optionally) virial
+were computed by DFT (VASP, ABACUS, etc.), **not** by a pretrained ML model.
 
+- **Bench mode** (`agent_mode == "bench"`): skip this question — assume NO dataset and
+  proceed directly to the "NO dataset" path below.
+
+**If the user HAS a DFT-labelled dataset:**
+
+1. Use the dataset directly for finetuning (sample at most **100 frames**).
+
+2. Run DFT benchmarks (EOS, elastic constants, etc.) on the equilibrium structure as
+   the ground-truth reference. Use the `vasp` or `abacus` skill — see
+   `concepts/dft-calculation` for choosing between them.
+
+3. Finetune DPA4, then evaluate against the DFT benchmarks. Report the comparison
+   (model predictions vs DFT ground truth).
+
+**If the user has NO DFT-labelled dataset:**
+
+Follow Phases A–D below.
+
+---
+
+#### Phase A — Determine system complexity & generate candidate structures
+
+1. **Classify the system:**
+   - **Simple systems** — bulk crystals, random alloys, simple compounds.
+   - **Complex systems** — defects, dopants, surfaces, interfaces, transition states,
+     high-entropy alloys, amorphous structures, etc.
+
+2. **For complex systems: ask the user if they already have structure files.**
+   If yes, use the user's structures as the starting point. If no, generate them
+   using the `atomic-structure` skill (or `matcraft-kit` for surfaces/defects).
+
+3. **Generate candidate structures** for MD exploration:
+   - Use the pretrained model **only for MD** to explore configuration space.
+   - Use the `atomic-structure` skill to build, supercell, and perturb structures.
+
+4. **Atom count rules for DFT calculations:**
+   | System type | Supercell? | Target atoms |
+   |---|---|---|
+   | Simple (bulk, alloy) | Yes, if needed | ~50 atoms |
+   | Complex (defect, surface, …) | No | original cell size |
+
+   > Keep each DFT structure at roughly **50 atoms** when possible. For complex systems,
+   > do NOT supercell — use the original cell as-is.
+
+#### Phase B — DFT labeling
+
+Run DFT single-point calculations on all candidate structures to obtain energy, force,
+and virial labels.
+
+- Use the `vasp` or `abacus` skill for DFT input preparation and execution.
+- See `concepts/dft-calculation` for guidance on choosing a DFT code.
+- Job submission is handled by the `dpdisp` skill (Bohrium).
+
+**Frame budget:**
+
+| System type | Max DFT frames |
+|---|---|
+| Simple | **30** |
+| Complex | **100** |
+
+#### Phase C — DFT benchmarks
+
+Run DFT calculations for property benchmarks for evaluation. These DFT values are the
+**absolute ground truth** — the finetuned model is evaluated against them.
+
+| Property | What to compute |
+|---|---|
+| EOS | Energy vs. volume curve around equilibrium |
+| Elastic constants | Cij matrix from strain-energy relations |
+| Other | Formation energy, surface energy, defect energy — as relevant |
+
+- Use the equilibrium structure. Do NOT supercell unless the system is simple and
+  supercelling is appropriate for the property.
+- Reference the `vasp` or `abacus` skill for setup.
+
+#### Phase D — Finetune & evaluate
+
+1. Convert the DFT-labelled dataset to `deepmd/npy` format:
    ```
    run_skill_script(
        skill_name="dpa4",
        script_name="dpa4_prepare.py",
-       args="convert-data --data user_data.extxyz --outdir ./test_data"
+       args="prepare-finetune --workdir ./finetune_001 --train_data dft_data.extxyz --base_model /path/to/dpa4_model --numb_steps 10000"
    )
    ```
 
-   Then submit a test-only job on Bohrium:
+2. Submit finetune + test job on Bohrium via the `dpdisp` skill.
 
-   ```json
-   {
-     "command": "dp --pt test -m <model> -s test -d result-test -l log-test",
-     "forward_files": ["test_data", "<model>"],
-     "backward_files": ["log-test", "result-test*"]
-   }
-   ```
-
-   Report per-atom energy MAE and atomic force MAE to the user.
-
-2. **If zero-shot results are satisfactory** → done, no finetuning needed.
-
-3. **If zero-shot results are unsatisfactory** → sample **100 frames** from the dataset
-   for finetuning, then evaluate:
-
-   ```
-   run_skill_script(
-       skill_name="dpa4",
-       script_name="dpa4_prepare.py",
-       args="prepare-finetune --workdir ./finetune_001 --train_data user_data.extxyz --base_model /path/to/dpa4_model --numb_steps 10000"
-   )
-   ```
-
-   Submit finetune + test job, then compare with zero-shot baseline.
-
-**If the user has NO dataset:**
-
-1. Generate a small training set (**no more than 100 frames total**) from the user's
-   structures (unlabelled is fine — DFT labels will be computed if needed, or the user
-   can provide them later).
-
-2. Proceed with finetuning using the generated set, then evaluate.
-
-> **Key principle:** Always start with zero-shot evaluation when data exists. Only finetune
-> when the pretrained model is insufficient. Keep finetuning sets small (≤100 frames) to
-> minimize cost.
+3. Evaluate the finetuned model against DFT benchmarks (Phase C). Report the comparison.
 
 ---
 
@@ -151,14 +161,10 @@ DPA4 requires **all** standard Bohrium variables plus two DPA4-specific variable
 
 ## Phase 1 — Preparation
 
-`dpa4_prepare.py` converts raw structure files into `deepmd/npy` format and writes
-`input.json` ready for `dp --pt train` with version-specific DPA4 configuration.
-It always runs locally and requires `ase`, `dpdata`, and `numpy`.
+`dpa4_prepare.py` converts raw structures to `deepmd/npy` and writes `input.json`.
+Each sub-command prints a JSON summary with the exact `dp` command for Phase 2.
 
-Check env variable `BOHRIUM_DPA4_MODEL` for default pre-trained model, or submit explicit model path.
-
-Each sub-command prints a JSON summary to stdout that includes the exact `dp` execution
-command to use in Phase 2.
+Check `BOHRIUM_DPA4_MODEL` for the default pretrained model, or pass `--base_model` explicitly.
 
 ### 1a. Finetune a DPA4 model (single-task)
 
@@ -187,7 +193,7 @@ The `--version` flag selects the matching input.json template. Default is `neo`.
 
 ### 1b. Convert test data to deepmd/npy
 
-For zero-shot evaluation or standalone testing:
+For standalone testing or benchmark evaluation:
 
 ```
 run_skill_script(
@@ -203,17 +209,7 @@ The command prints a JSON result with `system_dirs` and `dp_test_commands`.
 
 ## Phase 2 — Execution (remote on Bohrium)
 
-All DPA4 jobs are submitted to Bohrium via the `dpdisp` skill. There is no local execution.
-
-### Step 1 — Prepare locally
-
-```
-run_skill_script(
-    skill_name="dpa4",
-    script_name="dpa4_prepare.py",
-    args="prepare-finetune --workdir ./finetune_001 --train_data data.extxyz --base_model /models/dpa4 --numb_steps 10000 --copy_model"
-)
-```
+### Step 1 — Prepare locally (see Phase 1)
 
 ### Step 2 — Generate submission.template.json
 
@@ -253,26 +249,8 @@ Use `remote_profile` with an `input_data` sub-object for Bohrium.
 }
 ```
 
-**Zero-shot test only (no finetuning):**
-
-```json
-{
-  "work_base": ".",
-  "machine": { "..." : "..." },
-  "resources": { "group_size": 1 },
-  "task_list": [
-    {
-      "command": "dp --pt test -m <model> -s test -d result-test -l log-test",
-      "task_work_path": "./zeroshot_test",
-      "forward_files": ["test_data", "<model>"],
-      "backward_files": ["log-test", "result-test*"]
-    }
-  ]
-}
-```
-
-> **Note:** `<model>` is the name of the base model (file or directory) inside the workdir.
-> The prepare script prints this as `model_name` in its JSON output.
+> `<model>` is the base model name inside the workdir — the prepare script prints it as
+> `model_name` in its JSON output.
 
 ### Step 3 — Substitute, validate, and submit
 
@@ -311,17 +289,15 @@ dp --pt freeze -c model.ckpt.pt -o frozen
 # Test (frozen model)
 dp --pt test -m frozen.pt2 -s <test_data_dir> -d result-test -l log-test
 
-# Test (pretrained model directory — for zero-shot evaluation)
+# Test (pretrained model directory — for standalone evaluation)
 dp --pt test -m <model> -s <test_data_dir> -d result-test -l log-test
 ```
 
 Key differences from DPA-1/DPA-2:
-- `--skip-neighbor-stat` flag is **required for training only** (not needed for test/freeze)
+- `--skip-neighbor-stat` required for training only (not test/freeze)
 - No `--use-pretrain-script` or `--model-branch` flags
 - Freeze produces `frozen.pt2` (not `frozen_model.pb`)
 - Base model is a **file** (e.g. zip archive), not a directory
-- **Fintuning only** — no training from scratch
-- **Version-locked** — model version and input parameters must match exactly
 
 ---
 
@@ -340,15 +316,16 @@ Key differences from DPA-1/DPA-2:
 
 ## Constraints
 
-- DPA4 **only supports finetuning** — there is no training-from-scratch option.
-- DPA4 jobs run **exclusively on Bohrium** — there is no local execution path.
 - `dpa4_prepare.py` requires `ase`, `dpdata`, and `numpy` in the local Python environment.
-- All input structure files must contain labeled structures (energy + forces). Unlabeled
-  structures will raise an error during dpdata export.
-- The base model for DPA4 must be a **file** (not a directory).
-- **Model version and input parameters must match exactly** — do not mix across versions.
-- `deepmd/npy` systems are written per chemical formula; use `--mixed_type` to allow
-  variable composition within a single directory.
-- All `task_work_path` entries in `submission.json` must share the same `work_base` directory
-  (dpdispatcher requirement — see `dpdisp` skill documentation).
-- When finetuning, keep training set small (≤100 frames) unless the user has a specific need.
+- All input structures must be **DFT-labelled** (energy + forces). Unlabeled structures
+  raise an error during dpdata export.
+- Base model must be a **file** (not a directory). Model version and input parameters must
+  match exactly — do not mix across versions.
+- `deepmd/npy` systems are written per chemical formula; use `--mixed_type` for variable
+  composition within a single directory.
+- All `task_work_path` entries must share the same `work_base` (dpdispatcher requirement).
+- **Frame budget:** simple systems ≤30 DFT frames; complex systems ≤100 DFT frames.
+- **Atom count:** ~50 atoms/DFT structure. Simple systems may supercell; complex systems
+  (defects, dopants, surfaces, interfaces, transition states, high-entropy alloys) must NOT.
+- **DFT benchmarks are mandatory** — EOS, elastic constants, etc. computed with DFT as the
+  absolute ground truth.
