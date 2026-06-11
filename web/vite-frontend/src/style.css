@@ -48,6 +48,71 @@ body {
 .brand-title { font-weight: 700; letter-spacing: 0.3px; }
 .brand-sub { font-size: 12px; color: var(--muted); }
 
+.knowledge-review-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  border-radius: 999px;
+  background: rgba(251, 191, 36, 0.09);
+  color: #fcd34d;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
+  max-width: min(560px, 42vw);
+  min-width: 220px;
+}
+
+.knowledge-review-banner #knowledge-review-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge-review-banner:hover:not(:disabled) {
+  border-color: #fcd34d;
+  background: rgba(251, 191, 36, 0.16);
+}
+
+.knowledge-review-banner:disabled {
+  cursor: wait;
+}
+
+.knowledge-review-banner.status-idle,
+.knowledge-review-banner.status-completed {
+  border-color: rgba(125, 211, 252, 0.35);
+  background: rgba(125, 211, 252, 0.08);
+  color: var(--accent);
+}
+
+.knowledge-review-banner.status-failed {
+  border-color: rgba(248, 113, 113, 0.55);
+  background: rgba(248, 113, 113, 0.1);
+  color: #f87171;
+}
+
+.knowledge-review-banner.status-completed_with_errors {
+  border-color: rgba(251, 191, 36, 0.55);
+  background: rgba(251, 191, 36, 0.1);
+  color: #fcd34d;
+}
+
+.knowledge-review-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(252, 211, 77, 0.3);
+  border-top-color: #fcd34d;
+  border-radius: 50%;
+  animation: knowledge-review-spin 0.8s linear infinite;
+}
+
+@keyframes knowledge-review-spin {
+  to { transform: rotate(360deg); }
+}
+
 .session-chips { display: flex; align-items: center; gap: 10px; }
 .chip {
   padding: 8px 12px; border-radius: 999px;
@@ -792,6 +857,14 @@ details summary:hover { color: var(--text); }
 
 /* ── Responsive ─────────────────────────────────────────── */
 @media (max-width: 900px) {
+  .topbar { flex-wrap: wrap; gap: 12px; }
+  .knowledge-review-banner {
+    order: 3;
+    width: 100%;
+    max-width: none;
+    justify-content: center;
+  }
+  .session-chips { flex-wrap: wrap; justify-content: flex-end; }
   .app-grid { flex-direction: column; }
   .graph-column, .side-panel, .file-explorer-col {
     width: 100% !important; flex: 0 0 auto;

@@ -79,6 +79,10 @@ const colResizerGraph   = document.getElementById("col-resizer-graph");
 const colResizerSide    = document.getElementById("col-resizer-side");
 const colResizerFiles   = document.getElementById("col-resizer-files");
 const filesColToggleBtn = document.getElementById("files-col-toggle");
+const knowledgeReviewBanner = document.getElementById("knowledge-review-banner");
+const knowledgeReviewText = document.getElementById("knowledge-review-text");
+const knowledgeReviewSpinner = document.getElementById("knowledge-review-spinner");
+let knowledgeReviewPoll = null;
 
 function autoResizeTextInput() {
   if (!textInput) return;
@@ -96,6 +100,7 @@ textInput?.addEventListener("input", autoResizeTextInput);
 
 sessionIdEl.textContent = state.sessionId;
 if (state.userId) userDisplay.textContent = state.displayName || state.userId;
+refreshKnowledgeReviewStatus();
 
 // ---------------------------------------------------------------------------
 // Agent Graph Visualization
@@ -1983,11 +1988,103 @@ async function createSession() {
       return;
     }
     state.sessionReady = true;
+    await startKnowledgeReview();
     await loadSessions();
   } catch (err) {
     console.error("Failed to create session:", err);
   }
 }
+
+function renderKnowledgeReviewStatus(review) {
+  const status = review?.status || "idle";
+  const running = status === "running";
+  const progress = review?.progress || {};
+  const completed = progress.completed || 0;
+  const total = progress.total || 0;
+  const results = Array.isArray(review?.results) ? review.results : [];
+  const errors = Array.isArray(review?.errors) ? review.errors : [];
+  if (knowledgeReviewBanner) {
+    knowledgeReviewBanner.disabled = running;
+    knowledgeReviewBanner.className = `knowledge-review-banner status-${status}`;
+    const detail = review?.summary || errors[0];
+    knowledgeReviewBanner.title = detail
+      ? `${detail}${running ? "" : " Click to start memory review."}`
+      : running
+        ? "Memory review is running"
+        : "Click to start memory review";
+  }
+  knowledgeReviewSpinner?.classList.toggle("hidden", !running);
+  if (knowledgeReviewText) {
+    if (running) {
+      knowledgeReviewText.textContent = total
+        ? `Reviewing Know-Do Graph memory: ${completed}/${total} (${progress.percent || 0}%)`
+        : "Starting Know-Do Graph memory review";
+    } else if (status === "failed") {
+      knowledgeReviewText.textContent = `Review failed: ${errors[0] || "unknown error"} · click to retry`;
+    } else if (status === "completed" || status === "completed_with_errors") {
+      const promoted = results.filter((item) => item.action === "promoted").length;
+      const linked = results.filter((item) => item.action === "linked").length;
+      const deleted = results.filter((item) => item.action === "deleted").length;
+      const warning = errors.length ? `, ${errors.length} errors` : "";
+      knowledgeReviewText.textContent = `Review complete: ${completed}/${total}, ${promoted} promoted, ${linked} linked, ${deleted} deleted${warning} · click to run again`;
+    } else {
+      knowledgeReviewText.textContent = "Review memory · click to start";
+    }
+  }
+  if (!running && knowledgeReviewPoll) {
+    clearInterval(knowledgeReviewPoll);
+    knowledgeReviewPoll = null;
+  }
+}
+
+async function refreshKnowledgeReviewStatus() {
+  try {
+    const resp = await fetch("/api/knowledge-review/status");
+    if (!resp.ok) return;
+    const review = await resp.json();
+    renderKnowledgeReviewStatus(review);
+    if (review.status === "running" && !knowledgeReviewPoll) {
+      knowledgeReviewPoll = setInterval(refreshKnowledgeReviewStatus, 2000);
+    }
+  } catch (_) {
+    // The banner is informational; session work should continue if polling fails.
+  }
+}
+
+async function startKnowledgeReview() {
+  renderKnowledgeReviewStatus({
+    status: "running",
+    message: "Starting Know-Do Graph memory review.",
+  });
+  try {
+    const resp = await fetch("/api/knowledge-review/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: state.sessionId }),
+    });
+    const review = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      renderKnowledgeReviewStatus({
+        status: "failed",
+        errors: [review.detail || `HTTP ${resp.status}`],
+      });
+      return;
+    }
+    renderKnowledgeReviewStatus(review);
+    if (!knowledgeReviewPoll) {
+      knowledgeReviewPoll = setInterval(refreshKnowledgeReviewStatus, 2000);
+    }
+  } catch (_) {
+    renderKnowledgeReviewStatus({
+      status: "failed",
+      errors: ["Could not reach the review service"],
+    });
+  }
+}
+
+knowledgeReviewBanner?.addEventListener("click", () => {
+  if (!knowledgeReviewBanner.disabled) startKnowledgeReview();
+});
 
 async function patchSessionAgentMode(mode) {
   if (!state.sessionReady || !state.sessionId) return;
@@ -2475,7 +2572,7 @@ if (modeSelector) {
   });
 }
 
-resetBtn.addEventListener("click", () => {
+resetBtn.addEventListener("click", async () => {
   state.sessionId = `session-${Math.floor(Date.now() / 1000)}`;
   state.activeSessionUserId = state.userId;
   state.sessionReady = false;
@@ -2487,7 +2584,7 @@ resetBtn.addEventListener("click", () => {
   agentGraph.reset();
   planGraph.reset();
   hidePlanGraph();
-  loadSessions();
+  await createSession();
 });
 
 // ---------------------------------------------------------------------------

@@ -26,7 +26,7 @@ dependencies = [
     "mp-api",
     "bcrypt>=4.0.0",
     "matcraft-kit",
-    "know-do-graph"
+    "know-do-graph>=0.1.3"
 ]
 
 [build-system]

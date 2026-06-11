@@ -27,6 +27,7 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import List
 
@@ -60,6 +61,8 @@ from agents.MatCreator.agents.cancellation import (  # noqa: E402
 from agents.MatCreator.agents.graph_logger import AgentGraphLogger  # noqa: E402
 from agents.MatCreator.skill import ALL_SKILLS, PLANNING_SKILL_NAMES, refresh_skills, get_default_skill_names  # noqa: E402
 from agents.MatCreator.config import load_config, save_config, get_disabled_skills  # noqa: E402
+from agents.MatCreator.constants import GRAPH_AGENT_MODEL  # noqa: E402
+from agents.MatCreator.knowledge.query import _get_kg  # noqa: E402
 
 app = FastAPI(title="MatCreator Graph API", version="1.0.0")
 APP_NAME = "MatCreator"
@@ -83,6 +86,16 @@ _ENV_FIELDS = [
 ]
 
 _adk_process: subprocess.Popen | None = None
+_knowledge_review_lock = threading.Lock()
+_knowledge_review_task: asyncio.Task | None = None
+_knowledge_review_state = {
+    "status": "idle",
+    "trigger_session_id": None,
+    "progress": {"completed": 0, "total": 0, "percent": 0},
+    "results": [],
+    "errors": [],
+    "summary": "",
+}
 
 
 def _is_port_open(port: int, host: str = "127.0.0.1") -> bool:
@@ -228,6 +241,99 @@ class SetPasswordBody(BaseModel):
     user_id: str
     old_password: str | None = None
     new_password: str
+
+
+class KnowledgeReviewBody(BaseModel):
+    session_id: str
+
+
+def _knowledge_review_snapshot() -> dict:
+    with _knowledge_review_lock:
+        return dict(_knowledge_review_state)
+
+
+def _set_knowledge_review_state(**changes) -> None:
+    with _knowledge_review_lock:
+        _knowledge_review_state.update(changes)
+
+
+def _review_model_config() -> tuple[str, str, str | None]:
+    model = os.environ.get("REVIEW_AGENT_MODEL") or os.environ.get(
+        "GRAPH_AGENT_MODEL",
+        GRAPH_AGENT_MODEL,
+    )
+    api_key = os.environ.get("LLM_API_KEY") or os.environ.get("MINIMAX_API_KEY", "")
+    base_url = os.environ.get("LLM_BASE_URL") or os.environ.get("MINIMAX_API_BASE") or None
+    if "/" in model:
+        model = model.split("/", 1)[1]
+    return model, api_key, base_url
+
+
+async def _run_knowledge_review(session_id: str) -> None:
+    try:
+        model, api_key, base_url = _review_model_config()
+        if not api_key:
+            raise RuntimeError(
+                "No review API key configured. Set LLM_API_KEY in Settings or "
+                "MINIMAX_API_KEY in agents/MatCreator/.env."
+            )
+        if not model:
+            raise RuntimeError("No REVIEW_AGENT_MODEL or GRAPH_AGENT_MODEL configured.")
+
+        def run_review() -> dict:
+            graph = _get_kg()
+            review = graph.chat(
+                agent="reviewer",
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
+                batch_size=20,
+                on_status=lambda status: _set_knowledge_review_state(
+                    **status,
+                    trigger_session_id=session_id,
+                ),
+            )
+            result = review.review_memory()
+            graph.refresh()
+            return result
+
+        result = await asyncio.to_thread(run_review)
+        _set_knowledge_review_state(**result, trigger_session_id=session_id)
+    except Exception as exc:
+        _set_knowledge_review_state(
+            status="failed",
+            trigger_session_id=session_id,
+            progress={"completed": 0, "total": 0, "percent": 0},
+            results=[],
+            errors=[str(exc)],
+            summary="",
+        )
+    finally:
+        global _knowledge_review_task
+        _knowledge_review_task = None
+
+
+@app.post("/api/knowledge-review/start")
+async def start_knowledge_review(body: KnowledgeReviewBody) -> JSONResponse:
+    global _knowledge_review_task
+    if _knowledge_review_task is not None and not _knowledge_review_task.done():
+        return JSONResponse(_knowledge_review_snapshot(), status_code=202)
+
+    _set_knowledge_review_state(
+        status="running",
+        trigger_session_id=body.session_id,
+        progress={"completed": 0, "total": 0, "percent": 0},
+        results=[],
+        errors=[],
+        summary="",
+    )
+    _knowledge_review_task = asyncio.create_task(_run_knowledge_review(body.session_id))
+    return JSONResponse(_knowledge_review_snapshot(), status_code=202)
+
+
+@app.get("/api/knowledge-review/status")
+async def get_knowledge_review_status() -> JSONResponse:
+    return JSONResponse(_knowledge_review_snapshot())
 
 
 @app.post("/api/auth/login")
