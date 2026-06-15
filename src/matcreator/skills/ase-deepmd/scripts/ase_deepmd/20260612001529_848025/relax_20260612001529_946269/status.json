@@ -1,7 +1,0 @@
-{
-  "status": "error",
-  "message": "Head must be set for multitask model! Available heads are: ['Domains_Alloy', 'Domains_Anode', 'Domains_Cluster', 'Domains_Drug', 'Domains_FerroEle', 'Domains_OC2M', 'Domains_SSE-PBE', 'Domains_SemiCond', 'H2O_H2O-PD', 'Metals_AgAu-PBE', 'Metals_AlMgCu', 'Metals_Cu', 'Metals_Sn', 'Metals_Ti', 'Metals_V', 'Metals_W', 'Others_C12H26', 'Others_HfO2', 'Domains_ANI', 'Domains_SSE-PBESol', 'Domains_Transition1x', 'H2O_H2O-DPLR', 'H2O_H2O-PBE0TS-MD', 'H2O_H2O-PBE0TS', 'H2O_H2O-SCAN0', 'Metals_AgAu-PBED3', 'Others_In2Se3', 'MP_traj_v024_alldata_mixu'], use `dp --pt show your_model.pt model-branch` to show detail information.",
-  "optimized_structure": "",
-  "optimization_traj": "",
-  "final_energy": null
-}

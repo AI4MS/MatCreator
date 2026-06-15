@@ -1,9 +1,0 @@
-{
-  "job_type": "relax",
-  "structure_file": "structure.extxyz",
-  "model_path": "../model.pt",
-  "head": null,
-  "force_tolerance": 0.01,
-  "max_iterations": 200,
-  "relax_cell": false
-}
