@@ -145,7 +145,7 @@ This starts:
 - **FastAPI middle layer** on `http://localhost:8001`
 - **Vite frontend** on `http://localhost:5173`
 
-Logs are written to `logs/{api-server,web-main,vite}.log`. Press `Ctrl+C` to stop all services.
+Logs are written to `~/.matcreator/logs/{api-server,web-main,vite}.log` by default. Set `MATCREATOR_LOG_DIR=/path/to/logs` to override this location. The API server starts with `MATCREATOR_API_LOG_LEVEL=debug` so ADK/LLM request logs are captured; set it to `info` for quieter logs. Press `Ctrl+C` to stop all services.
 
 > No frontend build step is needed — the Vite dev server runs directly with hot-reload.
 
