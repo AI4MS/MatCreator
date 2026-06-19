@@ -242,6 +242,24 @@ def _ase_to_labeled(atoms: Atoms) -> dpdata.LabeledSystem:
     names = list(dict.fromkeys(symbols))
     numbs = [symbols.count(n) for n in names]
     types = np.array([names.index(s) for s in symbols], dtype=int)
+
+    # Energy: prefer calculator, fall back to atoms.info
+    try:
+        energy = atoms.get_potential_energy()
+    except RuntimeError:
+        energy = atoms.info.get("energy")
+        if energy is None:
+            raise ValueError("Atoms has no calculator and no energy in atoms.info")
+
+    # Forces: prefer calculator, fall back to atoms.arrays
+    try:
+        forces = atoms.get_forces()
+    except RuntimeError:
+        if "forces" in atoms.arrays:
+            forces = atoms.arrays["forces"]
+        else:
+            raise ValueError("Atoms has no calculator and no forces in atoms.arrays")
+
     data: Dict[str, Any] = {
         "atom_names": names,
         "atom_numbs": numbs,
@@ -250,11 +268,11 @@ def _ase_to_labeled(atoms: Atoms) -> dpdata.LabeledSystem:
         "coords": np.array([atoms.get_positions()]),
         "orig": np.zeros(3),
         "nopbc": not np.any(atoms.get_pbc()),
-        "energies": np.array([atoms.get_potential_energy()]),
-        "forces": np.array([atoms.get_forces()]),
+        "energies": np.array([energy]),
+        "forces": np.array([forces]),
     }
-    if "virial" in atoms.arrays:
-        data["virial"] = np.array([atoms.arrays["virial"]])
+    if "virial" in atoms.info:
+        data["virials"] = np.array([atoms.info["virial"]])
     return dpdata.LabeledSystem.from_dict({"data": data})
 
 

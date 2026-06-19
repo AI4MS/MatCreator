@@ -71,8 +71,8 @@ def _dpdata2ase_single(sys: dpdata.System) -> Atoms:
         cell=sys.data["cells"][0].tolist(),
         pbc=not sys.nopbc,
     )
-    if "virial" in sys.data:
-        atoms.set_array("virial", sys.data["virial"][0])
+    if "virials" in sys.data:
+        atoms.info["virial"] = sys.data["virials"][0]
     if "forces" in sys.data:
         atoms.set_array("forces", sys.data["forces"][0])
     if "energies" in sys.data:
