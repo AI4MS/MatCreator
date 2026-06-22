@@ -2,6 +2,31 @@
 
 <!-- version list -->
 
+## v2.1.0 (2026-06-22)
+
+### Bug Fixes
+
+- Add nginx server config and server mode doc
+  ([`028ac3e`](https://github.com/nlz25/PFD_Agent/commit/028ac3e6256d86a8f0cb8d998457c9392149345f))
+
+- Issues with log directory and custom workdir
+  ([`8d10980`](https://github.com/nlz25/PFD_Agent/commit/8d109802b3a60b4ed2ec6221ee1d6be192f446bb))
+
+- Move sub-agent process to main conversation
+  ([`aba1514`](https://github.com/nlz25/PFD_Agent/commit/aba151484dd869ebf7271397c44bea335fb5fb6f))
+
+- Restore dpa4 skill and fix virial data handling
+  ([`c35e5c7`](https://github.com/nlz25/PFD_Agent/commit/c35e5c7d13e847c4e2e1736785ddaf50ba812eea))
+
+### Features
+
+- Add workspace CLI interface
+  ([`a2faf21`](https://github.com/nlz25/PFD_Agent/commit/a2faf2138943f2558fb45e176ceef0721c7dff79))
+
+- Implement multi-user mode
+  ([`d155022`](https://github.com/nlz25/PFD_Agent/commit/d155022e72a6d452720d7d4aac0e725f01338d9a))
+
+
 ## v2.0.0 (2026-06-18)
 
 ### Bug Fixes
