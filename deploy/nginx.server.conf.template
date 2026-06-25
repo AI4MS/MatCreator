@@ -1,9 +1,15 @@
+# MatCreator server-mode nginx configuration template.
+# This file is processed by envsubst at container startup so that ports
+# are configurable via environment variables:
+#   MATCREATOR_WEB_PORT          — control-plane container port (default: 8001)
+#   MATCREATOR_SERVER_PROXY_PORT — proxy listen port inside container (default: 80)
+
 upstream control_plane {
-    server control-plane:8001;
+    server control-plane:${MATCREATOR_WEB_PORT};
 }
 
 server {
-    listen 80;
+    listen ${MATCREATOR_SERVER_PROXY_PORT};
     server_name _;
 
     client_max_body_size 100M;

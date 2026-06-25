@@ -32,12 +32,21 @@ services:
   # --------------------------------------------------------------------------
   # Reverse proxy — routes browser traffic to the control plane
   # --------------------------------------------------------------------------
+  # Nginx reverse proxy — routes browser traffic to the control plane.
+  # The nginx config template is processed by envsubst at container startup,
+  # replacing ${MATCREATOR_WEB_PORT} and ${MATCREATOR_SERVER_PROXY_PORT} with
+  # the values set in the environment below.
   proxy:
     image: nginx:stable-alpine
+    command: >
+      sh -c "envsubst '$$MATCREATOR_WEB_PORT $$MATCREATOR_SERVER_PROXY_PORT' < /etc/nginx/conf.d/default.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"
     ports:
-      - "80:80"
+      - "${MATCREATOR_SERVER_PROXY_HOST_PORT:-80}:${MATCREATOR_SERVER_PROXY_PORT:-80}"
     volumes:
-      - ./deploy/nginx.server.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/nginx.server.conf.template:/etc/nginx/conf.d/default.conf.template:ro
+    environment:
+      - MATCREATOR_WEB_PORT=${MATCREATOR_WEB_PORT:-8001}
+      - MATCREATOR_SERVER_PROXY_PORT=${MATCREATOR_SERVER_PROXY_PORT:-80}
     depends_on:
       - control-plane
     networks:
@@ -65,6 +74,19 @@ services:
       - MATCREATOR_WORKER_MEM_LIMIT=${MATCREATOR_WORKER_MEM_LIMIT:-}
       - MATCREATOR_WORKER_CPUS=${MATCREATOR_WORKER_CPUS:-}
       - MATCREATOR_WORKER_PIDS_LIMIT=${MATCREATOR_WORKER_PIDS_LIMIT:-}
+      # Port configuration — control-plane port and worker port range.
+      - MATCREATOR_ADK_PORT=${MATCREATOR_ADK_PORT:-8000}
+      - ADK_LOCAL_PORT=${MATCREATOR_ADK_PORT:-8000}
+      - MATCREATOR_WEB_PORT=${MATCREATOR_WEB_PORT:-8001}
+      - MATCREATOR_WORKER_BASE_PORT=${MATCREATOR_WORKER_BASE_PORT:-9001}
+      # MCP tool server ports — used by mcp_tools.py for tool discovery.
+      - MATCREATOR_MCP_HOST=${MATCREATOR_MCP_HOST:-localhost}
+      - MATCREATOR_MCP_DATABASE_PORT=${MATCREATOR_MCP_DATABASE_PORT:-50001}
+      - MATCREATOR_MCP_DPA_PORT=${MATCREATOR_MCP_DPA_PORT:-50002}
+      - MATCREATOR_MCP_ABACUS_PORT=${MATCREATOR_MCP_ABACUS_PORT:-50003}
+      - MATCREATOR_MCP_STRUCTURE_PORT=${MATCREATOR_MCP_STRUCTURE_PORT:-50004}
+      - MATCREATOR_MCP_VASP_PORT=${MATCREATOR_MCP_VASP_PORT:-50005}
+      - MATCREATOR_MCP_MATTERGEN_PORT=${MATCREATOR_MCP_MATTERGEN_PORT:-50006}
     env_file:
       - agents/MatCreator/.env
     volumes:
@@ -74,12 +96,12 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./logs:/app/logs
     ports:
-      - "8001:8001"
+      - "${MATCREATOR_WEB_HOST_PORT:-8001}:${MATCREATOR_WEB_PORT:-8001}"
     networks:
       - matcreator-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:${MATCREATOR_WEB_PORT:-8001}/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -96,7 +118,7 @@ services:
   # --------------------------------------------------------------------------
   # worker-alice:
   #   <<: *worker-defaults
-  #   command: matcreator api-server --host 0.0.0.0 --port 8000
+  #   command: matcreator api-server --host 0.0.0.0 --port ${MATCREATOR_ADK_PORT:-8000}
   #   volumes:
   #     - ${MATCREATOR_HOST_DATA_ROOT}/users/alice/.matcreator:/root/.matcreator
   #   environment:

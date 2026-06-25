@@ -4,9 +4,21 @@ services:
     image: matcreator:latest
     container_name: matcreator
     ports:
-      - "8000:8000"
-      - "8001:8001"
-      - "5173:5173"
+      - "${MATCREATOR_ADK_HOST_PORT:-8000}:${MATCREATOR_ADK_PORT:-8000}"
+      - "${MATCREATOR_WEB_HOST_PORT:-8001}:${MATCREATOR_WEB_PORT:-8001}"
+      - "${MATCREATOR_FRONTEND_HOST_PORT:-5173}:${MATCREATOR_FRONTEND_PORT:-5173}"
+    environment:
+      - MATCREATOR_ADK_PORT=${MATCREATOR_ADK_PORT:-8000}
+      - ADK_LOCAL_PORT=${MATCREATOR_ADK_PORT:-8000}
+      - MATCREATOR_WEB_PORT=${MATCREATOR_WEB_PORT:-8001}
+      - MATCREATOR_FRONTEND_PORT=${MATCREATOR_FRONTEND_PORT:-5173}
+      - MATCREATOR_MCP_HOST=${MATCREATOR_MCP_HOST:-localhost}
+      - MATCREATOR_MCP_DATABASE_PORT=${MATCREATOR_MCP_DATABASE_PORT:-50001}
+      - MATCREATOR_MCP_DPA_PORT=${MATCREATOR_MCP_DPA_PORT:-50002}
+      - MATCREATOR_MCP_ABACUS_PORT=${MATCREATOR_MCP_ABACUS_PORT:-50003}
+      - MATCREATOR_MCP_STRUCTURE_PORT=${MATCREATOR_MCP_STRUCTURE_PORT:-50004}
+      - MATCREATOR_MCP_VASP_PORT=${MATCREATOR_MCP_VASP_PORT:-50005}
+      - MATCREATOR_MCP_MATTERGEN_PORT=${MATCREATOR_MCP_MATTERGEN_PORT:-50006}
     volumes:
       - ./agents/MatCreator/.workspace:/app/agents/MatCreator/.workspace
       - ./agents/MatCreator/.adk:/app/agents/MatCreator/.adk
@@ -15,7 +27,7 @@ services:
       - agents/MatCreator/.env
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:${MATCREATOR_WEB_PORT:-8001}/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
