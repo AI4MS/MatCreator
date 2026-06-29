@@ -1056,6 +1056,9 @@ class ExecutionPlanView {
     this._pollInterval = null;
     this._didInitialFit = false;
     this._structureKey = null;
+    this._subgraphs = [];
+    this._currentIndex = 0;
+    this._hierarchicalMode = true;
     this._init();
   }
 
@@ -1144,6 +1147,68 @@ class ExecutionPlanView {
     };
   }
 
+  _extractConnectedSubgraphs(graphData) {
+    const nodes = graphData.nodes || {};
+    const rawEdges = graphData.edges || [];
+    const nodeIds = Object.keys(nodes);
+    if (nodeIds.length === 0) return [graphData];
+
+    // No edges at all → treat as one graph
+    if (rawEdges.length === 0) return [graphData];
+
+    const adj = {};
+    nodeIds.forEach((id) => { adj[id] = []; });
+    rawEdges.forEach((e) => {
+      const from = Array.isArray(e) ? e[0] : e.from;
+      const to = Array.isArray(e) ? e[1] : e.to;
+      if (adj[from]) adj[from].push(to);
+      if (adj[to]) adj[to].push(from);
+    });
+
+    const visited = new Set();
+    const components = [];
+    for (const id of nodeIds) {
+      if (visited.has(id)) continue;
+      const compIds = new Set();
+      const queue = [id];
+      visited.add(id);
+      while (queue.length) {
+        const cur = queue.shift();
+        compIds.add(cur);
+        for (const nb of (adj[cur] || [])) {
+          if (!visited.has(nb)) {
+            visited.add(nb);
+            queue.push(nb);
+          }
+        }
+      }
+      const compNodes = {};
+      const compEdges = [];
+      for (const cid of compIds) {
+        if (nodes[cid]) compNodes[cid] = nodes[cid];
+      }
+      rawEdges.forEach((e) => {
+        const from = Array.isArray(e) ? e[0] : e.from;
+        const to = Array.isArray(e) ? e[1] : e.to;
+        if (compIds.has(from) || compIds.has(to)) {
+          compEdges.push(e);
+        }
+      });
+      components.push({ nodes: compNodes, edges: compEdges });
+    }
+
+    // Merge all isolated (single-node) components into one group
+    const multi = components.filter((c) => Object.keys(c.nodes).length > 1);
+    const singles = components.filter((c) => Object.keys(c.nodes).length === 1);
+    if (singles.length > 0) {
+      const mergedNodes = {};
+      singles.forEach((c) => Object.assign(mergedNodes, c.nodes));
+      multi.push({ nodes: mergedNodes, edges: [] });
+    }
+
+    return multi.length > 0 ? multi : [graphData];
+  }
+
   update(graphData) {
     if (!graphData || typeof graphData.nodes !== "object") return;
     const nodeEntries = Object.entries(graphData.nodes);
@@ -1155,13 +1220,74 @@ class ExecutionPlanView {
     }
 
     const rawEdges = graphData.edges || [];
-    const nodeIds  = nodeEntries.map(([id]) => id);
-    const levels   = this._computeLevels(nodeIds, rawEdges);
+    const nodeIds = nodeEntries.map(([id]) => id);
 
-    const visNodes = nodeEntries.map(([id, n]) => this._visNode(id, n, levels[id] ?? 0));
+    // Detect structural changes
+    const structureKey = JSON.stringify({ ids: [...nodeIds].sort(), edges: rawEdges });
+    const structureChanged = structureKey !== this._structureKey;
+    if (structureChanged) {
+      this._structureKey = structureKey;
+      this._subgraphs = this._extractConnectedSubgraphs(graphData);
+      this._currentIndex = 0;
+    }
+
+    if (this._subgraphs.length === 0) return;
+    this._renderCurrentSubgraph();
+    this._updateNavUI();
+  }
+
+  _renderCurrentSubgraph() {
+    const sub = this._subgraphs[this._currentIndex];
+    if (!sub) return;
+
+    const nodeEntries = Object.entries(sub.nodes);
+    const rawEdges = sub.edges || [];
+    const nodeIds = nodeEntries.map(([id]) => id);
+    const levels = this._computeLevels(nodeIds, rawEdges);
+    const maxLevel = Math.max(...Object.values(levels), 0);
+    const noHierarchy = maxLevel === 0 && nodeIds.length > 1;
+
+    let visNodes;
+    if (noHierarchy) {
+      if (this._hierarchicalMode !== false) {
+        this._network.setOptions({ layout: { hierarchical: false, randomSeed: 42 } });
+        this._hierarchicalMode = false;
+      }
+      const cols = Math.ceil(Math.sqrt(nodeIds.length));
+      const gapX = 260;
+      const gapY = 55;
+      visNodes = nodeEntries.map(([id, n], i) => {
+        const col = i % cols;
+        const row = Math.floor(i / cols);
+        return {
+          ...this._visNode(id, n, 0),
+          x: col * gapX,
+          y: row * gapY,
+          fixed: { x: true, y: true },
+        };
+      });
+    } else {
+      if (this._hierarchicalMode !== true) {
+        this._network.setOptions({
+          layout: {
+            hierarchical: {
+              direction: "LR",
+              sortMethod: "directed",
+              nodeSpacing: 120,
+              levelSeparation: 170,
+              blockShifting: true,
+              edgeMinimization: true,
+            },
+          },
+        });
+        this._hierarchicalMode = true;
+      }
+      visNodes = nodeEntries.map(([id, n]) => this._visNode(id, n, levels[id] ?? 0));
+    }
+
     const visEdges = rawEdges.map((e) => {
       const from = Array.isArray(e) ? e[0] : e.from;
-      const to   = Array.isArray(e) ? e[1] : e.to;
+      const to = Array.isArray(e) ? e[1] : e.to;
       return {
         id: `e__${from}__${to}`,
         from,
@@ -1171,11 +1297,6 @@ class ExecutionPlanView {
         smooth: { type: "cubicBezier", forceDirection: "horizontal" },
       };
     });
-
-    // Rebuild via setData so hierarchical layout sees nodes + edges together.
-    // Only fit on very first load; after that preserve the user's camera position.
-    const structureKey = JSON.stringify({ ids: [...nodeIds].sort(), edges: rawEdges });
-    const structureChanged = structureKey !== this._structureKey;
 
     // Save camera before setData resets the layout
     let savedCamera = null;
@@ -1191,12 +1312,9 @@ class ExecutionPlanView {
     this._network.setData({ nodes: new DataSet(visNodes), edges: new DataSet(visEdges) });
 
     if (!this._didInitialFit) {
-      this._structureKey = structureKey;
       this._network.fit({ animation: { duration: 300, easingFunction: "easeInOutQuad" } });
       this._didInitialFit = true;
     } else {
-      if (structureChanged) this._structureKey = structureKey;
-      // Restore the user's camera position
       if (savedCamera) {
         this._network.moveTo({
           position: savedCamera.position,
@@ -1204,6 +1322,39 @@ class ExecutionPlanView {
           animation: false,
         });
       }
+    }
+  }
+
+  _updateNavUI() {
+    const counter = document.getElementById("plan-graph-counter");
+    const prevBtn = document.getElementById("plan-graph-prev");
+    const nextBtn = document.getElementById("plan-graph-next");
+    if (this._subgraphs.length <= 1) {
+      if (counter) counter.textContent = "";
+      if (prevBtn) prevBtn.style.display = "none";
+      if (nextBtn) nextBtn.style.display = "none";
+    } else {
+      if (counter) counter.textContent = `Plan Graph ${this._currentIndex + 1} / ${this._subgraphs.length}`;
+      if (prevBtn) { prevBtn.style.display = ""; prevBtn.disabled = this._currentIndex === 0; }
+      if (nextBtn) { nextBtn.style.display = ""; nextBtn.disabled = this._currentIndex >= this._subgraphs.length - 1; }
+    }
+  }
+
+  goPrev() {
+    if (this._currentIndex > 0) {
+      this._currentIndex--;
+      this._didInitialFit = false;
+      this._renderCurrentSubgraph();
+      this._updateNavUI();
+    }
+  }
+
+  goNext() {
+    if (this._currentIndex < this._subgraphs.length - 1) {
+      this._currentIndex++;
+      this._didInitialFit = false;
+      this._renderCurrentSubgraph();
+      this._updateNavUI();
     }
   }
 
@@ -1234,9 +1385,25 @@ class ExecutionPlanView {
 
   reset() {
     this._currentSessionId = null;
+    this._hierarchicalMode = true;
+    this._network?.setOptions({
+      layout: {
+        hierarchical: {
+          direction: "LR",
+          sortMethod: "directed",
+          nodeSpacing: 120,
+          levelSeparation: 170,
+          blockShifting: true,
+          edgeMinimization: true,
+        },
+      },
+    });
     this._network?.setData({ nodes: new DataSet([]), edges: new DataSet([]) });
     this._didInitialFit = false;
     this._structureKey = null;
+    this._subgraphs = [];
+    this._currentIndex = 0;
+    this._updateNavUI();
     this.stopPolling();
   }
 
@@ -1313,6 +1480,8 @@ planGraphCloseBtn?.addEventListener("click", hidePlanGraph);
 document.getElementById("plan-graph-zoom-in")?.addEventListener("click", () => planGraph.zoomIn());
 document.getElementById("plan-graph-zoom-out")?.addEventListener("click", () => planGraph.zoomOut());
 document.getElementById("plan-graph-fit")?.addEventListener("click", () => planGraph.fitToView());
+document.getElementById("plan-graph-prev")?.addEventListener("click", () => planGraph.goPrev());
+document.getElementById("plan-graph-next")?.addEventListener("click", () => planGraph.goNext());
 // ---------------------------------------------------------------------------
 
 function isMobileLayout() {
