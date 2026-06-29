@@ -184,6 +184,10 @@
               <div class="eyebrow">Conversations</div>
               <h2>Orchestration Chat</h2>
             </div>
+            <div id="session-summary-header" class="session-summary-header">
+              <span id="session-summary-text" class="session-summary-text"></span>
+              <button id="session-summary-edit" class="session-summary-edit" title="Edit summary">✎</button>
+            </div>
             <div style="display:flex;align-items:center;gap:8px;">
               <button class="ghost" id="plan-graph-toggle" title="Toggle execution plan graph" style="font-size:11px;padding:4px 8px;">Plan Graph</button>
               <div id="avatar-upload-btn" class="message-avatar user-avatar avatar-upload-btn" title="Upload your avatar" style="cursor:pointer;"></div>
@@ -230,6 +234,11 @@
                 <button class="ghost plan-graph-zoom-btn" id="plan-graph-zoom-in" title="Zoom in">＋</button>
                 <button class="ghost plan-graph-zoom-btn" id="plan-graph-zoom-out" title="Zoom out">－</button>
                 <button class="ghost plan-graph-zoom-btn" id="plan-graph-fit" title="Reset view">⊡</button>
+              </div>
+              <span class="plan-graph-counter" id="plan-graph-counter"></span>
+              <div class="plan-graph-nav-controls">
+                <button class="ghost plan-graph-nav-btn" id="plan-graph-prev" title="Previous graph">◀</button>
+                <button class="ghost plan-graph-nav-btn" id="plan-graph-next" title="Next graph">▶</button>
               </div>
               <button class="ghost plan-graph-close-btn" id="plan-graph-close" title="Close">✕</button>
             </div>
@@ -425,6 +434,20 @@
           <button class="ghost" id="fv-close" style="padding:4px 10px;font-size:13px">✕</button>
         </div>
         <div id="fv-content" class="fv-content"></div>
+      </div>
+    </div>
+
+    <!-- Image lightbox -->
+    <div id="image-lightbox" class="lightbox-overlay hidden">
+      <div class="lightbox-toolbar">
+        <span class="lightbox-zoom-label" id="lightbox-zoom-label">100%</span>
+        <button class="ghost lightbox-zoom-btn" id="lightbox-zoom-out" title="Zoom out">−</button>
+        <button class="ghost lightbox-zoom-btn" id="lightbox-zoom-reset" title="Reset zoom">⊡</button>
+        <button class="ghost lightbox-zoom-btn" id="lightbox-zoom-in" title="Zoom in">＋</button>
+        <button class="ghost lightbox-close-btn" id="lightbox-close" title="Close">✕</button>
+      </div>
+      <div class="lightbox-viewport" id="lightbox-viewport">
+        <img id="lightbox-img" class="lightbox-img" src="" alt="">
       </div>
     </div>
 

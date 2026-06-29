@@ -449,6 +449,17 @@ body {
   transform: rotate(90deg);
 }
 
+.step-feed-details[open] > .step-feed-summary {
+  align-items: flex-start;
+}
+
+.step-feed-details[open] > .step-feed-summary .step-feed-title {
+  white-space: normal;
+  text-overflow: clip;
+  overflow: visible;
+  word-break: break-all;
+}
+
 .step-feed-title {
   flex: 1;
   min-width: 0;
@@ -861,6 +872,73 @@ details.panel-block:not([open]) > summary.block-header::after { transform: rotat
   border-radius: 4px;
 }
 
+/* ── Image lightbox ──────────────────────────────────── */
+.lightbox-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.88);
+  display: flex;
+  flex-direction: column;
+  z-index: 9999;
+  cursor: grab;
+}
+.lightbox-overlay:active {
+  cursor: grabbing;
+}
+.lightbox-overlay.hidden {
+  display: none;
+}
+.lightbox-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: rgba(0, 0, 0, 0.5);
+  flex-shrink: 0;
+  justify-content: flex-end;
+}
+.lightbox-zoom-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  min-width: 40px;
+  text-align: right;
+}
+.lightbox-zoom-btn,
+.lightbox-close-btn {
+  font-size: 14px;
+  color: #ccc;
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 3px 9px;
+  line-height: 1;
+}
+.lightbox-zoom-btn:hover,
+.lightbox-close-btn:hover {
+  color: #fff;
+  background: rgba(255,255,255,0.12);
+}
+.lightbox-close-btn {
+  font-size: 16px;
+  padding: 3px 10px;
+}
+.lightbox-viewport {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+.lightbox-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  transition: transform 0.08s ease;
+  pointer-events: none;
+  user-select: none;
+}
+
 /* ── Login overlay ───────────────────────────────────────── */
 .login-overlay {
   position: fixed;
@@ -901,6 +979,9 @@ details.panel-block:not([open]) > summary.block-header::after { transform: rotat
 .session-item-content {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
+}
+.session-item-id {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -982,6 +1063,65 @@ details.panel-block:not([open]) > summary.block-header::after { transform: rotat
   font-weight: 600;
 }
 .confirm-ok:hover { background: #ef4444; }
+
+.session-item-summary {
+  font-size: 11px;
+  color: var(--muted);
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 2px;
+  font-family: inherit;
+}
+
+/* ── Session summary in card-header ───────────────────────── */
+.session-summary-header {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  max-width: 55%;
+  margin: auto 0;
+  padding: 0 12px;
+}
+.session-summary-text {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-summary-placeholder {
+  opacity: 0.4;
+  font-style: italic;
+}
+.session-summary-edit {
+  flex-shrink: 0;
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 0.15s, background 0.15s;
+}
+.session-summary-edit:hover {
+  opacity: 1;
+  background: rgba(125, 211, 252, 0.15);
+}
+.session-summary-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--accent);
+  background: rgba(125, 211, 252, 0.08);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 2px 8px;
+  outline: none;
+  text-align: center;
+}
 
 .structure-view-btn {
   margin-top: 6px;
@@ -1275,6 +1415,34 @@ details summary:hover { color: var(--text); }
   flex: 1;
   width: 100%;
   overflow: hidden;
+}
+
+.plan-graph-counter {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
+.plan-graph-nav-controls {
+  display: flex;
+  gap: 2px;
+  margin-left: 2px;
+}
+
+.plan-graph-nav-btn {
+  font-size: 11px;
+  padding: 2px 6px;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.plan-graph-nav-btn:hover {
+  color: var(--text);
+  background: rgba(255,255,255,0.06);
 }
 
 /* ── Responsive ─────────────────────────────────────────── */

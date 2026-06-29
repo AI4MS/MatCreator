@@ -28,6 +28,8 @@ const state = {
   sendController: null,
   agentMode: localStorage.getItem(AGENT_MODE_KEY) || "normal",
   customWorkdir: "",
+  sessionSummaries: {},   // { sessionId: "summary text" }
+  summaryGeneratedFor: new Set(),  // sessionIds that have triggered summary generation
 };
 
 // ---------------------------------------------------------------------------
@@ -84,6 +86,9 @@ const fileExplorerCol   = document.getElementById("file-explorer-col");
 const colResizerGraph   = document.getElementById("col-resizer-graph");
 const colResizerSide    = document.getElementById("col-resizer-side");
 const colResizerFiles   = document.getElementById("col-resizer-files");
+const sessionSummaryHeader = document.getElementById("session-summary-header");
+const sessionSummaryText = document.getElementById("session-summary-text");
+const sessionSummaryEdit = document.getElementById("session-summary-edit");
 const filesColToggleBtn = document.getElementById("files-col-toggle");
 const knowledgeReviewBanner = document.getElementById("knowledge-review-banner");
 const knowledgeReviewText = document.getElementById("knowledge-review-text");
@@ -1056,6 +1061,9 @@ class ExecutionPlanView {
     this._pollInterval = null;
     this._didInitialFit = false;
     this._structureKey = null;
+    this._subgraphs = [];
+    this._currentIndex = 0;
+    this._hierarchicalMode = true;
     this._init();
   }
 
@@ -1144,6 +1152,68 @@ class ExecutionPlanView {
     };
   }
 
+  _extractConnectedSubgraphs(graphData) {
+    const nodes = graphData.nodes || {};
+    const rawEdges = graphData.edges || [];
+    const nodeIds = Object.keys(nodes);
+    if (nodeIds.length === 0) return [graphData];
+
+    // No edges at all → treat as one graph
+    if (rawEdges.length === 0) return [graphData];
+
+    const adj = {};
+    nodeIds.forEach((id) => { adj[id] = []; });
+    rawEdges.forEach((e) => {
+      const from = Array.isArray(e) ? e[0] : e.from;
+      const to = Array.isArray(e) ? e[1] : e.to;
+      if (adj[from]) adj[from].push(to);
+      if (adj[to]) adj[to].push(from);
+    });
+
+    const visited = new Set();
+    const components = [];
+    for (const id of nodeIds) {
+      if (visited.has(id)) continue;
+      const compIds = new Set();
+      const queue = [id];
+      visited.add(id);
+      while (queue.length) {
+        const cur = queue.shift();
+        compIds.add(cur);
+        for (const nb of (adj[cur] || [])) {
+          if (!visited.has(nb)) {
+            visited.add(nb);
+            queue.push(nb);
+          }
+        }
+      }
+      const compNodes = {};
+      const compEdges = [];
+      for (const cid of compIds) {
+        if (nodes[cid]) compNodes[cid] = nodes[cid];
+      }
+      rawEdges.forEach((e) => {
+        const from = Array.isArray(e) ? e[0] : e.from;
+        const to = Array.isArray(e) ? e[1] : e.to;
+        if (compIds.has(from) || compIds.has(to)) {
+          compEdges.push(e);
+        }
+      });
+      components.push({ nodes: compNodes, edges: compEdges });
+    }
+
+    // Merge all isolated (single-node) components into one group
+    const multi = components.filter((c) => Object.keys(c.nodes).length > 1);
+    const singles = components.filter((c) => Object.keys(c.nodes).length === 1);
+    if (singles.length > 0) {
+      const mergedNodes = {};
+      singles.forEach((c) => Object.assign(mergedNodes, c.nodes));
+      multi.push({ nodes: mergedNodes, edges: [] });
+    }
+
+    return multi.length > 0 ? multi : [graphData];
+  }
+
   update(graphData) {
     if (!graphData || typeof graphData.nodes !== "object") return;
     const nodeEntries = Object.entries(graphData.nodes);
@@ -1155,13 +1225,74 @@ class ExecutionPlanView {
     }
 
     const rawEdges = graphData.edges || [];
-    const nodeIds  = nodeEntries.map(([id]) => id);
-    const levels   = this._computeLevels(nodeIds, rawEdges);
+    const nodeIds = nodeEntries.map(([id]) => id);
 
-    const visNodes = nodeEntries.map(([id, n]) => this._visNode(id, n, levels[id] ?? 0));
+    // Detect structural changes
+    const structureKey = JSON.stringify({ ids: [...nodeIds].sort(), edges: rawEdges });
+    const structureChanged = structureKey !== this._structureKey;
+    if (structureChanged) {
+      this._structureKey = structureKey;
+      this._subgraphs = this._extractConnectedSubgraphs(graphData);
+      this._currentIndex = 0;
+    }
+
+    if (this._subgraphs.length === 0) return;
+    this._renderCurrentSubgraph();
+    this._updateNavUI();
+  }
+
+  _renderCurrentSubgraph() {
+    const sub = this._subgraphs[this._currentIndex];
+    if (!sub) return;
+
+    const nodeEntries = Object.entries(sub.nodes);
+    const rawEdges = sub.edges || [];
+    const nodeIds = nodeEntries.map(([id]) => id);
+    const levels = this._computeLevels(nodeIds, rawEdges);
+    const maxLevel = Math.max(...Object.values(levels), 0);
+    const noHierarchy = maxLevel === 0 && nodeIds.length > 1;
+
+    let visNodes;
+    if (noHierarchy) {
+      if (this._hierarchicalMode !== false) {
+        this._network.setOptions({ layout: { hierarchical: false, randomSeed: 42 } });
+        this._hierarchicalMode = false;
+      }
+      const cols = Math.ceil(Math.sqrt(nodeIds.length));
+      const gapX = 260;
+      const gapY = 55;
+      visNodes = nodeEntries.map(([id, n], i) => {
+        const col = i % cols;
+        const row = Math.floor(i / cols);
+        return {
+          ...this._visNode(id, n, 0),
+          x: col * gapX,
+          y: row * gapY,
+          fixed: { x: true, y: true },
+        };
+      });
+    } else {
+      if (this._hierarchicalMode !== true) {
+        this._network.setOptions({
+          layout: {
+            hierarchical: {
+              direction: "LR",
+              sortMethod: "directed",
+              nodeSpacing: 120,
+              levelSeparation: 170,
+              blockShifting: true,
+              edgeMinimization: true,
+            },
+          },
+        });
+        this._hierarchicalMode = true;
+      }
+      visNodes = nodeEntries.map(([id, n]) => this._visNode(id, n, levels[id] ?? 0));
+    }
+
     const visEdges = rawEdges.map((e) => {
       const from = Array.isArray(e) ? e[0] : e.from;
-      const to   = Array.isArray(e) ? e[1] : e.to;
+      const to = Array.isArray(e) ? e[1] : e.to;
       return {
         id: `e__${from}__${to}`,
         from,
@@ -1171,11 +1302,6 @@ class ExecutionPlanView {
         smooth: { type: "cubicBezier", forceDirection: "horizontal" },
       };
     });
-
-    // Rebuild via setData so hierarchical layout sees nodes + edges together.
-    // Only fit on very first load; after that preserve the user's camera position.
-    const structureKey = JSON.stringify({ ids: [...nodeIds].sort(), edges: rawEdges });
-    const structureChanged = structureKey !== this._structureKey;
 
     // Save camera before setData resets the layout
     let savedCamera = null;
@@ -1191,12 +1317,9 @@ class ExecutionPlanView {
     this._network.setData({ nodes: new DataSet(visNodes), edges: new DataSet(visEdges) });
 
     if (!this._didInitialFit) {
-      this._structureKey = structureKey;
       this._network.fit({ animation: { duration: 300, easingFunction: "easeInOutQuad" } });
       this._didInitialFit = true;
     } else {
-      if (structureChanged) this._structureKey = structureKey;
-      // Restore the user's camera position
       if (savedCamera) {
         this._network.moveTo({
           position: savedCamera.position,
@@ -1204,6 +1327,39 @@ class ExecutionPlanView {
           animation: false,
         });
       }
+    }
+  }
+
+  _updateNavUI() {
+    const counter = document.getElementById("plan-graph-counter");
+    const prevBtn = document.getElementById("plan-graph-prev");
+    const nextBtn = document.getElementById("plan-graph-next");
+    if (this._subgraphs.length <= 1) {
+      if (counter) counter.textContent = "";
+      if (prevBtn) prevBtn.style.display = "none";
+      if (nextBtn) nextBtn.style.display = "none";
+    } else {
+      if (counter) counter.textContent = `Plan Graph ${this._currentIndex + 1} / ${this._subgraphs.length}`;
+      if (prevBtn) { prevBtn.style.display = ""; prevBtn.disabled = this._currentIndex === 0; }
+      if (nextBtn) { nextBtn.style.display = ""; nextBtn.disabled = this._currentIndex >= this._subgraphs.length - 1; }
+    }
+  }
+
+  goPrev() {
+    if (this._currentIndex > 0) {
+      this._currentIndex--;
+      this._didInitialFit = false;
+      this._renderCurrentSubgraph();
+      this._updateNavUI();
+    }
+  }
+
+  goNext() {
+    if (this._currentIndex < this._subgraphs.length - 1) {
+      this._currentIndex++;
+      this._didInitialFit = false;
+      this._renderCurrentSubgraph();
+      this._updateNavUI();
     }
   }
 
@@ -1234,9 +1390,25 @@ class ExecutionPlanView {
 
   reset() {
     this._currentSessionId = null;
+    this._hierarchicalMode = true;
+    this._network?.setOptions({
+      layout: {
+        hierarchical: {
+          direction: "LR",
+          sortMethod: "directed",
+          nodeSpacing: 120,
+          levelSeparation: 170,
+          blockShifting: true,
+          edgeMinimization: true,
+        },
+      },
+    });
     this._network?.setData({ nodes: new DataSet([]), edges: new DataSet([]) });
     this._didInitialFit = false;
     this._structureKey = null;
+    this._subgraphs = [];
+    this._currentIndex = 0;
+    this._updateNavUI();
     this.stopPolling();
   }
 
@@ -1313,6 +1485,8 @@ planGraphCloseBtn?.addEventListener("click", hidePlanGraph);
 document.getElementById("plan-graph-zoom-in")?.addEventListener("click", () => planGraph.zoomIn());
 document.getElementById("plan-graph-zoom-out")?.addEventListener("click", () => planGraph.zoomOut());
 document.getElementById("plan-graph-fit")?.addEventListener("click", () => planGraph.fitToView());
+document.getElementById("plan-graph-prev")?.addEventListener("click", () => planGraph.goPrev());
+document.getElementById("plan-graph-next")?.addEventListener("click", () => planGraph.goNext());
 // ---------------------------------------------------------------------------
 
 function isMobileLayout() {
@@ -1909,11 +2083,9 @@ function hideLocalAuthControls() {
   await refreshAccess();
   renderUserDisplay();
   await loadSessions();
-  if (localStorage.getItem("mat_sessionId")) {
-    await loadSession(state.sessionId);
-    agentGraph.startPolling(state.sessionId);
-    planGraph.startPolling(state.sessionId);
-  }
+  // Don't auto-restore previous session on page load — start fresh
+  // User can click a session in the sidebar to switch to it
+  localStorage.removeItem("mat_sessionId");
 })();
 
 // ---------------------------------------------------------------------------
@@ -1935,6 +2107,7 @@ async function loadSessions() {
 }
 
 function renderSessionList(sessions) {
+  renderSessionList._lastSessions = sessions;
   sessionListEl.innerHTML = "";
   if (!Array.isArray(sessions) || !sessions.length) {
     sessionListEl.innerHTML = '<li class="empty">No sessions yet</li>';
@@ -1952,7 +2125,19 @@ function renderSessionList(sessions) {
 
       const content = document.createElement("div");
       content.className = "session-item-content";
-      content.textContent = state.isAdmin ? `${owner} / ${s.id}` : s.id;
+
+      const idLine = document.createElement("div");
+      idLine.className = "session-item-id";
+      idLine.textContent = state.isAdmin ? `${owner} / ${s.id}` : s.id;
+      content.appendChild(idLine);
+
+      const summary = s.summary || state.sessionSummaries[s.id];
+      if (summary) {
+        const summaryLine = document.createElement("div");
+        summaryLine.className = "session-item-summary";
+        summaryLine.textContent = summary;
+        content.appendChild(summaryLine);
+      }
       li.appendChild(content);
 
       const logBtn = document.createElement("button");
@@ -2378,6 +2563,8 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
         img.src = pathToApiUrl(plotPath);
         img.className = "timeline-image";
         img.alt = plotPath.split("/").pop();
+        img.style.cursor = "zoom-in";
+        img.addEventListener("click", () => lightbox.open(img.src));
         container.appendChild(img);
       }
       // Render inline "View Structure" button for structure tool responses
@@ -2905,6 +3092,105 @@ async function uploadFilesToSession(fileList) {
 }
 
 // ---------------------------------------------------------------------------
+// Session summary (experimental)
+// ---------------------------------------------------------------------------
+
+function renderSessionBanner(summary) {
+  if (!sessionSummaryHeader || !sessionSummaryText) return;
+  if (summary) {
+    sessionSummaryText.textContent = summary;
+    sessionSummaryText.classList.remove("session-summary-placeholder");
+  } else {
+    sessionSummaryText.textContent = "New Session";
+    sessionSummaryText.classList.add("session-summary-placeholder");
+  }
+  sessionSummaryHeader.style.display = state.sessionReady ? "flex" : "none";
+}
+
+function startSummaryEdit() {
+  if (!sessionSummaryText || !sessionSummaryHeader || sessionSummaryHeader.querySelector("input")) return;
+  const isPlaceholder = sessionSummaryText.classList.contains("session-summary-placeholder");
+  const original = isPlaceholder ? "" : sessionSummaryText.textContent;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = original;
+  input.className = "session-summary-input";
+  input.maxLength = 60;
+  input.placeholder = "Enter session summary…";
+  sessionSummaryText.style.display = "none";
+  sessionSummaryHeader.insertBefore(input, sessionSummaryEdit);
+  input.focus();
+  input.select();
+
+  const finish = async (save) => {
+    const newValue = input.value.trim();
+    input.remove();
+    sessionSummaryText.style.display = "";
+    if (save && newValue !== original) {
+      if (newValue) {
+        sessionSummaryText.textContent = newValue;
+        sessionSummaryText.classList.remove("session-summary-placeholder");
+        state.sessionSummaries[state.sessionId] = newValue;
+        await saveSessionSummary(state.sessionId, newValue);
+      } else {
+        sessionSummaryText.textContent = "New Session";
+        sessionSummaryText.classList.add("session-summary-placeholder");
+        delete state.sessionSummaries[state.sessionId];
+        await saveSessionSummary(state.sessionId, "");
+      }
+      renderSessionList._lastSessions && renderSessionList(renderSessionList._lastSessions);
+    } else if (!save && isPlaceholder) {
+      // Restore placeholder on cancel
+      sessionSummaryText.textContent = "New Session";
+      sessionSummaryText.classList.add("session-summary-placeholder");
+    }
+  };
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { finish(false); }
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+if (sessionSummaryEdit) {
+  sessionSummaryEdit.addEventListener("click", startSummaryEdit);
+}
+
+async function saveSessionSummary(sessionId, summary) {
+  try {
+    await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/summary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ summary }),
+    });
+  } catch (_) {
+    // silently ignore
+  }
+}
+
+async function generateSessionSummary(sessionId) {
+  try {
+    const resp = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/summarize`, {
+      method: "POST",
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (data.summary) {
+      state.sessionSummaries[sessionId] = data.summary;
+      // Only update banner if user is still on this session
+      if (sessionId === state.sessionId) {
+        renderSessionBanner(data.summary);
+      }
+      // Refresh session list to show summary
+      renderSessionList._lastSessions && renderSessionList(renderSessionList._lastSessions);
+    }
+  } catch (_) {
+    // silently ignore — summary is non-critical
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Session management
 // ---------------------------------------------------------------------------
 
@@ -3227,6 +3513,14 @@ async function loadSession(sessionId) {
     }
     state.sessionReady = true;
     const events = sessionData.events || [];
+
+    // Show session summary banner if available, clear otherwise
+    if (sessionData.summary) {
+      state.sessionSummaries[sessionId] = sessionData.summary;
+      state.summaryGeneratedFor.add(sessionId);
+    }
+    renderSessionBanner(sessionData.summary || "");
+
     const graphNodes = await fetchSessionStepNodes(sessionId);
     renderSessionTimeline(events, graphNodes);
 
@@ -3406,6 +3700,7 @@ async function sendMessage(message) {
   const timeline = [];
   let timelineContainer = null;
   let accText = "";
+  let summaryTriggered = false;
   const shownPlotPaths = new Set();
 
   try {
@@ -3461,6 +3756,12 @@ async function sendMessage(message) {
             } else if (p.text) {
               accText = mergeReplayedText(accText, p.text);
               upsertTimelineText(timeline, compactRepeatedPrefixSnapshots(accText));
+              // Trigger summary early: on first agent text output (after planning)
+              if (!summaryTriggered && !state.summaryGeneratedFor.has(state.sessionId) && !state.sessionSummaries[state.sessionId]) {
+                summaryTriggered = true;
+                state.summaryGeneratedFor.add(state.sessionId);
+                generateSessionSummary(state.sessionId);
+              }
             }
 
             if (timeline.length > 0 && !timelineContainer) {
@@ -3593,6 +3894,8 @@ async function openFileViewer(file) {
     const img = document.createElement("img");
     img.src = url;
     img.alt = file.name;
+    img.style.cursor = "zoom-in";
+    img.addEventListener("click", () => lightbox.open(url));
     wrap.appendChild(img);
     content.innerHTML = "";
     content.appendChild(wrap);
@@ -3623,6 +3926,114 @@ document.getElementById("fv-close")?.addEventListener("click", () => {
 document.getElementById("file-viewer-modal")?.addEventListener("click", (e) => {
   if (e.target === e.currentTarget)
     e.currentTarget.classList.add("hidden");
+});
+
+// ---------------------------------------------------------------------------
+// Image lightbox
+// ---------------------------------------------------------------------------
+
+const lightbox = {
+  el: document.getElementById("image-lightbox"),
+  img: document.getElementById("lightbox-img"),
+  viewport: document.getElementById("lightbox-viewport"),
+  label: document.getElementById("lightbox-zoom-label"),
+  _scale: 1,
+  _tx: 0,
+  _ty: 0,
+  _dragging: false,
+  _dragStartX: 0,
+  _dragStartY: 0,
+  _dragStartTx: 0,
+  _dragStartTy: 0,
+
+  open(src) {
+    this._scale = 1;
+    this._tx = 0;
+    this._ty = 0;
+    this.img.src = src;
+    this.img.style.transform = "";
+    this.el.classList.remove("hidden");
+    this._updateLabel();
+  },
+
+  close() {
+    this.el.classList.add("hidden");
+    this.img.src = "";
+  },
+
+  _apply() {
+    this.img.style.transform = `translate(${this._tx}px, ${this._ty}px) scale(${this._scale})`;
+    this._updateLabel();
+  },
+
+  _updateLabel() {
+    if (this.label) this.label.textContent = `${Math.round(this._scale * 100)}%`;
+  },
+
+  zoomIn() {
+    this._scale = Math.min(this._scale * 1.3, 20);
+    this._apply();
+  },
+
+  zoomOut() {
+    const newScale = this._scale / 1.3;
+    if (newScale < 0.1) return;
+    const oldScale = this._scale;
+    this._scale = newScale;
+    const factor = this._scale / oldScale;
+    this._tx *= factor;
+    this._ty *= factor;
+    this._apply();
+  },
+
+  resetZoom() {
+    this._scale = 1;
+    this._tx = 0;
+    this._ty = 0;
+    this._apply();
+  },
+};
+
+lightbox.viewport?.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  if (e.deltaY < 0) lightbox.zoomIn();
+  else lightbox.zoomOut();
+}, { passive: false });
+
+lightbox.viewport?.addEventListener("mousedown", (e) => {
+  if (e.target === lightbox.img) {
+    lightbox._dragging = true;
+    lightbox._dragStartX = e.clientX;
+    lightbox._dragStartY = e.clientY;
+    lightbox._dragStartTx = lightbox._tx;
+    lightbox._dragStartTy = lightbox._ty;
+    e.preventDefault();
+  }
+});
+
+document.addEventListener("mousemove", (e) => {
+  if (!lightbox._dragging) return;
+  lightbox._tx = lightbox._dragStartTx + (e.clientX - lightbox._dragStartX);
+  lightbox._ty = lightbox._dragStartTy + (e.clientY - lightbox._dragStartY);
+  lightbox._apply();
+});
+
+document.addEventListener("mouseup", () => {
+  lightbox._dragging = false;
+});
+
+// Click on viewport backdrop (not the image) to close
+lightbox.viewport?.addEventListener("click", (e) => {
+  if (e.target === lightbox.viewport) lightbox.close();
+});
+
+document.getElementById("lightbox-close")?.addEventListener("click", () => lightbox.close());
+document.getElementById("lightbox-zoom-in")?.addEventListener("click", () => lightbox.zoomIn());
+document.getElementById("lightbox-zoom-out")?.addEventListener("click", () => lightbox.zoomOut());
+document.getElementById("lightbox-zoom-reset")?.addEventListener("click", () => lightbox.resetZoom());
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !lightbox.el.classList.contains("hidden")) lightbox.close();
 });
 
 initPanelResizers();
@@ -3720,6 +4131,9 @@ async function _doNewSession(customWorkdir) {
   sessionIdEl.textContent = state.sessionId;
   chatArea.innerHTML = "";
   stepExecutionFeed.reset();
+  state.sessionSummaries = {};
+  state.summaryGeneratedFor = new Set();
+  renderSessionBanner("");
   renderSessionFilesTree([]);
   clearCurrentUploads();
   agentGraph.reset();
