@@ -449,6 +449,17 @@ body {
   transform: rotate(90deg);
 }
 
+.step-feed-details[open] > .step-feed-summary {
+  align-items: flex-start;
+}
+
+.step-feed-details[open] > .step-feed-summary .step-feed-title {
+  white-space: normal;
+  text-overflow: clip;
+  overflow: visible;
+  word-break: break-all;
+}
+
 .step-feed-title {
   flex: 1;
   min-width: 0;
