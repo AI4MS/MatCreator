@@ -18,6 +18,7 @@ from google.genai import types
 from ...workspace import get_session_workdir
 from .step_executor import StepExecutorInput, StepExecutorResult, step_executor_agent
 from ..graph_logger import AgentGraphLogger
+from ..session_log import append_session_log_entry, collect_artifact_paths, is_session_log_state_key
 from ..cancellation import (
     is_cancellation_requested,
     get_cancellation_reason,
@@ -56,6 +57,71 @@ def _append_unique(values: list[str], value) -> None:
         values.append(value)
 
 
+def _is_within_any_root(path: Path, roots: list[Path]) -> bool:
+    resolved_path = path.resolve()
+    for root in roots:
+        try:
+            resolved_path.relative_to(root.resolve())
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _artifact_allowed_roots(step_workspace: Path, suggested_skills: list[str]) -> list[Path]:
+    roots = [step_workspace]
+    if "skill-creation" in suggested_skills:
+        from ...skill import user_skills_dir
+
+        roots.append(user_skills_dir().expanduser())
+    return roots
+
+
+def _split_verified_artifacts(
+    artifacts: list[str],
+    allowed_roots: Optional[list[Path]] = None,
+) -> tuple[list[str], list[str]]:
+    """Return (existing, invalid_or_missing) artifact paths."""
+    existing: list[str] = []
+    missing: list[str] = []
+    for artifact in artifacts:
+        artifact_path = Path(artifact).expanduser()
+        is_valid = artifact_path.is_absolute() and artifact_path.exists()
+        if is_valid and allowed_roots is not None:
+            is_valid = _is_within_any_root(artifact_path, allowed_roots)
+        if is_valid:
+            existing.append(str(artifact_path))
+        else:
+            missing.append(artifact)
+    return existing, missing
+
+
+def _verify_step_result_artifacts(
+    result: StepExecutorResult,
+    allowed_roots: Optional[list[Path]] = None,
+) -> tuple[StepExecutorResult, list[str]]:
+    """Prevent successful step results from claiming nonexistent artifacts."""
+    existing_artifacts, missing_artifacts = _split_verified_artifacts(
+        result.artifacts,
+        allowed_roots=allowed_roots,
+    )
+    result.artifacts = existing_artifacts
+
+    if result.status == "success" and missing_artifacts:
+        missing_text = ", ".join(missing_artifacts)
+        result.status = "needs_replanning"
+        result.replan_reason = (
+            "Step reported success but claimed artifact path(s) were not found "
+            "or were outside allowed artifact roots: "
+            f"{missing_text}"
+        )
+        logger.warning("[step_executor_runner] %s", result.replan_reason)
+        result.concise_summary = result.replan_reason
+        result.key_results = result.replan_reason
+
+    return result, missing_artifacts
+
+
 async def _watch_for_cancellation(
     target: asyncio.Task,
     session_id: str,
@@ -91,15 +157,17 @@ async def _stream_step_events(
     step_id: str,
     tool_context: ToolContext,
     graph: AgentGraphLogger,
-) -> tuple[dict, list[str]]:
+) -> tuple[dict, list[str], list[str], dict]:
     """Stream events from the step executor sub-agent and collect results.
 
-    Returns (step_state_delta, plot_paths).  Raises CancelledError if the task
-    is cancelled mid-stream.
+    Returns (step_state_delta, plot_paths, artifact_paths, event_log). Raises
+    CancelledError if the task is cancelled mid-stream.
     """
     step_state_delta: dict = {}
     pending_tool_calls: dict[str, dict] = {}
     plot_paths: list[str] = []
+    artifact_paths: list[str] = []
+    event_log: dict = {"conversation": [], "tool_calls": []}
 
     async with aclosing(
         runner.run_async(
@@ -119,47 +187,59 @@ async def _stream_step_events(
                     text = getattr(part, "text", None)
 
                     if is_thought and text:
-                        await asyncio.to_thread(graph.log_conversation_event, step_id, {
+                        entry = {
                             "timestamp": _now(),
                             "author": event.author,
                             "type": "thought",
                             "content": text,
-                        })
+                        }
+                        event_log["conversation"].append(entry)
+                        await asyncio.to_thread(graph.log_conversation_event, step_id, entry)
                     elif text and not fc and not fr:
-                        await asyncio.to_thread(graph.log_conversation_event, step_id, {
+                        entry = {
                             "timestamp": _now(),
                             "author": event.author,
                             "type": "text",
                             "content": text,
-                        })
+                        }
+                        event_log["conversation"].append(entry)
+                        await asyncio.to_thread(graph.log_conversation_event, step_id, entry)
                     elif fc and not is_thought:
                         pending_tool_calls[fc.name] = {
                             "name": fc.name,
                             "args_summary": str(dict(fc.args or {}))[:300],
                             "start_time": _now(),
                         }
-                        await asyncio.to_thread(graph.log_conversation_event, step_id, {
+                        entry = {
                             "timestamp": _now(),
                             "author": event.author,
                             "type": "function_call",
                             "content": f"{fc.name}({str(dict(fc.args or {}))[:500]})",
-                        })
+                        }
+                        event_log["conversation"].append(entry)
+                        await asyncio.to_thread(graph.log_conversation_event, step_id, entry)
                     elif fr:
                         response = _response_dict(fr.response)
                         _append_unique(plot_paths, response.get("plot_path"))
+                        for artifact_path in collect_artifact_paths(response):
+                            _append_unique(artifact_paths, artifact_path)
 
                         record = pending_tool_calls.pop(fr.name, {"name": fr.name, "start_time": _now()})
                         record["result_summary"] = str(fr.response)[:300]
                         record["end_time"] = _now()
+                        record["artifacts"] = collect_artifact_paths(response)
+                        event_log["tool_calls"].append(record.copy())
                         await asyncio.to_thread(graph.log_tool_call, step_id, record)
-                        await asyncio.to_thread(graph.log_conversation_event, step_id, {
+                        entry = {
                             "timestamp": _now(),
                             "author": event.author,
                             "type": "function_response",
                             "content": f"{fr.name} → {str(fr.response)[:500]}",
-                        })
+                        }
+                        event_log["conversation"].append(entry)
+                        await asyncio.to_thread(graph.log_conversation_event, step_id, entry)
 
-    return step_state_delta, plot_paths
+    return step_state_delta, plot_paths, artifact_paths, event_log
 
 
 MAX_RECURSION_DEPTH = 3
@@ -230,6 +310,20 @@ async def run_step_executor(
         "prior_context": prior_context,
         "suggested_skills": suggested_skills,
     })
+    step_input_log = {
+        "node_id": effective_id,
+        "step_id": step_id,
+        "parent_id": parent_id,
+        "step_number": step_number,
+        "action": action,
+        "workspace_dir": str(step_workspace),
+        "prior_context": prior_context,
+        "suggested_skills": suggested_skills,
+    }
+    append_session_log_entry(tool_context, {
+        "kind": "step_start",
+        **step_input_log,
+    })
 
     # Pre-step cancellation check — abort before creating the runner if flagged
     if is_cancellation_requested(session_id) or is_step_cancellation_requested(session_id, step_number):
@@ -240,6 +334,12 @@ async def run_step_executor(
         )
         await asyncio.to_thread(graph.log_node_complete, step_id, "failed", summary=f"Cancelled before start: {reason}")
         clear_step_cancellation(session_id, step_number)
+        append_session_log_entry(tool_context, {
+            "kind": "step_complete",
+            **step_input_log,
+            "status": "cancelled",
+            "message": f"Node {effective_id} skipped: execution cancellation was requested ({reason}).",
+        })
         return {
             "status": "cancelled",
             "message": f"Node {effective_id} skipped: execution cancellation was requested ({reason}).",
@@ -262,7 +362,7 @@ async def run_step_executor(
     state_dict = {
         k: v
         for k, v in tool_context.state.to_dict().items()
-        if not k.startswith("_adk")
+        if not k.startswith("_adk") and not is_session_log_state_key(k)
     }
     state_dict["workspace_dir"] = str(step_workspace)
     state_dict["recursion_depth"] = recursion_depth + 1
@@ -290,8 +390,10 @@ async def run_step_executor(
     timed_out = False
     step_state_delta: dict = {}
     plot_paths: list[str] = []
+    artifact_paths: list[str] = []
+    event_log: dict = {"conversation": [], "tool_calls": []}
     try:
-        step_state_delta, plot_paths = await asyncio.wait_for(
+        step_state_delta, plot_paths, artifact_paths, event_log = await asyncio.wait_for(
             inner_task, timeout=_SUB_STEP_TIMEOUT
         )
     except asyncio.TimeoutError:
@@ -318,6 +420,13 @@ async def run_step_executor(
             summary=f"Timed out after {_SUB_STEP_TIMEOUT}s",
         )
         clear_step_cancellation(session_id, step_number)
+        append_session_log_entry(tool_context, {
+            "kind": "step_complete",
+            **step_input_log,
+            "status": "needs_replanning",
+            "replan_reason": f"Step {step_number} timed out after {_SUB_STEP_TIMEOUT}s.",
+            "events": event_log,
+        }, artifacts=artifact_paths)
         return {
             "status": "needs_replanning",
             "replan_reason": f"Step {step_number} timed out after {_SUB_STEP_TIMEOUT}s.",
@@ -334,6 +443,13 @@ async def run_step_executor(
             step_id, "failed", summary=f"Cancelled mid-step ({reason})"
         )
         clear_step_cancellation(session_id, step_number)
+        append_session_log_entry(tool_context, {
+            "kind": "step_complete",
+            **step_input_log,
+            "status": "cancelled",
+            "message": f"Step {step_number} cancelled ({reason}).",
+            "events": event_log,
+        }, artifacts=artifact_paths)
         return {
             "status": "cancelled",
             "message": f"Step {step_number} cancelled ({reason}).",
@@ -341,11 +457,19 @@ async def run_step_executor(
 
     if step_state_delta:
         await asyncio.to_thread(graph.log_state_delta, step_id, step_state_delta)
+    public_state_delta = {
+        key: value for key, value in step_state_delta.items()
+        if not key.startswith("_")
+    }
 
     step_result_data = step_state_delta.get("_step_result")
     if step_result_data:
         tool_context.state["_step_result"] = None  # State has no pop(); reset instead
         result = StepExecutorResult.model_validate(step_result_data)
+        result, missing_artifacts = _verify_step_result_artifacts(
+            result,
+            allowed_roots=_artifact_allowed_roots(step_workspace, suggested_skills),
+        )
         await asyncio.to_thread(
             graph.log_node_complete,
             step_id,
@@ -354,9 +478,20 @@ async def run_step_executor(
             artifacts=result.artifacts,
         )
         payload = result.model_dump(exclude_none=True)
+        if missing_artifacts:
+            payload["missing_artifacts"] = missing_artifacts
+            payload["message"] = result.replan_reason
         if plot_paths:
             payload["plot_paths"] = plot_paths
             payload["plot_path"] = plot_paths[0]
+        append_session_log_entry(tool_context, {
+            "kind": "step_complete",
+            **step_input_log,
+            "status": result.status,
+            "result": payload,
+            "state_delta": public_state_delta,
+            "events": event_log,
+        }, artifacts=[*artifact_paths, *result.artifacts, *plot_paths])
         clear_step_cancellation(session_id, step_number)
         return payload
 
@@ -367,5 +502,13 @@ async def run_step_executor(
         replan_reason="step executor did not call submit_step_result — no result captured",
     )
     await asyncio.to_thread(graph.log_node_complete, step_id, "needs_replanning")
+    append_session_log_entry(tool_context, {
+        "kind": "step_complete",
+        **step_input_log,
+        "status": "needs_replanning",
+        "result": result.model_dump(),
+        "state_delta": public_state_delta,
+        "events": event_log,
+    }, artifacts=artifact_paths)
     clear_step_cancellation(session_id, step_number)
     return result.model_dump()

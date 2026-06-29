@@ -1,142 +1,131 @@
-"""History reading tools for the thinking_agent.
-
-These tools let the planner inspect trajectory logs and the execution graph
-after execution returns to planning (e.g. after cancellation, failure, or
-partial completion).
-"""
+"""Unified session-log reading tool for the thinking_agent."""
 from __future__ import annotations
 
-import json
 import logging
 from typing import Optional
 
 from google.adk.tools.tool_context import ToolContext
 
+from ..session_log import (
+    normalize_artifact_paths,
+    session_artifacts_from_state,
+    session_log_entries_from_state,
+    session_log_graph_from_entries,
+    strip_conversation_from_entry,
+)
+
 logger = logging.getLogger(__name__)
 
-
-def _adk_dir():
-    from ...workspace import ADK_DIR  # lazy import avoids circular deps
-    return ADK_DIR
+_SESSION_LOG_VIEWS = {"overview", "detail", "artifacts"}
 
 
-def _workspace_root():
-    from ...workspace import get_workspace_root  # lazy import avoids circular deps
-    return get_workspace_root()
-
-
-def read_execution_trajectory(
-    tool_context: ToolContext,
-    last_n_steps: Optional[int] = None,
-    session_id: Optional[str] = None,
-) -> dict:
-    """Read the execution trajectory log for this session.
-
-    Returns completed step summaries: step_index, goal, key_results, artifacts,
-    and concise_summary for each step. Use this after execution returns to
-    planning to understand what work has been done before replanning.
-
-    Args:
-        last_n_steps: Return only the most recent N steps. Omit for all steps.
-        session_id: Session to read. Defaults to the current session.
-    """
-    sid = session_id or tool_context._invocation_context.session.id
-    traj_path = _workspace_root() / "trajectories" / f"{sid}.jsonl"
-
-    if not traj_path.exists():
-        return {
-            "status": "not_found",
-            "session_id": sid,
-            "message": (
-                f"No trajectory found for session {sid}. "
-                "Execution may not have started or completed any steps yet."
-            ),
-            "steps": [],
-            "total_steps": 0,
-        }
-
-    entries = []
+def _state_dict(tool_context: ToolContext) -> dict:
+    state = tool_context.state
+    if hasattr(state, "to_dict"):
+        return state.to_dict()
     try:
-        with traj_path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if line:
-                    try:
-                        entries.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
-    except OSError as exc:
+        return dict(state)
+    except (TypeError, ValueError):
+        return {}
+
+
+def read_session_log(
+    tool_context: ToolContext,
+    view: str = "overview",
+    node_id: Optional[str] = None,
+    step_id: Optional[str] = None,
+    event_id: Optional[str] = None,
+    include_conversation: bool = False,
+    last_n_events: Optional[int] = None,
+) -> dict:
+    """Read the unified session log hierarchically.
+
+    Default ``view='overview'`` returns a coarse graph of executor nodes with
+    statuses, event IDs, and counts only. Use ``view='detail'`` with exactly one
+    selector (``node_id``, ``step_id``, or ``event_id``) to inspect one executor.
+    Use ``view='artifacts'`` to list all recorded artifact paths.
+    """
+    sid = tool_context._invocation_context.session.id
+    requested_view = (view or "overview").strip().lower()
+    if requested_view not in _SESSION_LOG_VIEWS:
         return {
             "status": "error",
             "session_id": sid,
-            "message": f"Failed to read trajectory: {exc}",
-            "steps": [],
+            "message": f"Unknown view '{view}'. Choose one of: {sorted(_SESSION_LOG_VIEWS)}.",
         }
 
-    total = len(entries)
-    if last_n_steps is not None and int(last_n_steps) > 0:
-        last_n_steps = int(last_n_steps)
-        entries = entries[-last_n_steps:]
+    state = _state_dict(tool_context)
+    entries = session_log_entries_from_state(state)
+    artifacts = session_artifacts_from_state(state)
 
-    return {
-        "status": "ok",
-        "session_id": sid,
-        "total_steps": total,
-        "returned_steps": len(entries),
-        "steps": entries,
-    }
-
-
-def read_agent_graph(
-    tool_context: ToolContext,
-    node_type_filter: Optional[str] = None,
-    include_conversation: bool = False,
-    session_id: Optional[str] = None,
-) -> dict:
-    """Read the agent execution graph for this session.
-
-    Returns the hierarchical execution tree with node statuses, tool calls,
-    and artifacts. Use this to diagnose which steps failed and what tools
-    were called during execution.
-
-    Args:
-        node_type_filter: Restrict returned nodes to this type. Options:
-            'step', 'execution', 'planning', 'orchestrator', 'tester'.
-        include_conversation: If True, include the full conversation log per
-            node. Defaults to False — conversation logs can be hundreds of KB.
-        session_id: Session to read. Defaults to the current session.
-    """
-    sid = session_id or tool_context._invocation_context.session.id
-    graph_path = _adk_dir() / "agent_graphs" / f"{sid}.json"
-
-    if not graph_path.exists():
+    if requested_view == "overview":
+        graph = session_log_graph_from_entries(entries)
         return {
-            "status": "not_found",
+            "status": "ok",
+            "view": "overview",
             "session_id": sid,
-            "message": f"No agent graph found for session {sid}.",
+            "event_count": len(entries),
+            "executor_count": len(graph["nodes"]),
+            "artifact_count": len(artifacts),
+            "graph": graph,
+            "next_step": (
+                "Call read_session_log(view='detail', step_id='<id>') or "
+                "read_session_log(view='detail', node_id='<node_id>') for one executor."
+            ),
         }
 
-    try:
-        data = json.loads(graph_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        return {"status": "error", "session_id": sid, "message": f"Failed to read agent graph: {exc}"}
+    if requested_view == "artifacts":
+        return {
+            "status": "ok",
+            "view": "artifacts",
+            "session_id": sid,
+            "artifact_count": len(artifacts),
+            "artifacts": artifacts,
+        }
 
-    nodes = data.get("nodes", {})
+    selectors = {
+        "event_id": event_id,
+        "step_id": step_id,
+        "node_id": node_id,
+    }
+    active_selectors = {key: value for key, value in selectors.items() if value}
+    if len(active_selectors) != 1:
+        return {
+            "status": "error",
+            "view": "detail",
+            "session_id": sid,
+            "message": "Detail view requires exactly one selector: event_id, step_id, or node_id.",
+            "overview_hint": "Call read_session_log(view='overview') first to discover executor IDs.",
+        }
 
-    if node_type_filter:
-        nodes = {nid: n for nid, n in nodes.items() if n.get("type") == node_type_filter}
+    selector_name, selector_value = next(iter(active_selectors.items()))
+    if selector_name == "event_id":
+        entries = [entry for entry in entries if entry.get("event_id") == selector_value]
+    elif selector_name == "step_id":
+        entries = [entry for entry in entries if entry.get("step_id") == selector_value]
+    else:
+        entries = [
+            entry for entry in entries
+            if entry.get("node_id") == selector_value or entry.get("step_id") == selector_value
+        ]
+
+    if last_n_events is not None and int(last_n_events) > 0:
+        entries = entries[-int(last_n_events):]
 
     if not include_conversation:
-        nodes = {
-            nid: {k: v for k, v in n.items() if k != "conversation"}
-            for nid, n in nodes.items()
-        }
+        entries = [strip_conversation_from_entry(entry) for entry in entries]
+
+    selected_artifacts = normalize_artifact_paths(
+        artifact for entry in entries for artifact in (entry.get("artifacts") or [])
+    )
 
     return {
         "status": "ok",
+        "view": "detail",
         "session_id": sid,
-        "node_count": len(nodes),
-        "nodes": nodes,
-        "edges": data.get("edges", []),
-        "updated_at": data.get("updated_at"),
+        "selector": {selector_name: selector_value},
+        "event_count": len(entries),
+        "artifacts": selected_artifacts,
+        "graph": session_log_graph_from_entries(entries),
+        "events": entries,
     }

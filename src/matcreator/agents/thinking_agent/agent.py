@@ -40,7 +40,7 @@ from ...tools.util_tools import (
     show_plot,
     show_structure
 )
-from .history_tools import read_execution_trajectory, read_agent_graph
+from .history_tools import read_session_log
 
 
 logger = logging.getLogger(__name__)
@@ -309,11 +309,11 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
 - You may call `run_synthesizer` when the knowledge graph seems stale or after heavy knowledge accumulation.
 
 ## Reviewing execution history
-- After execution returns to planning (e.g. after cancellation, node failure, or partial
-  completion), call `read_execution_trajectory` to review completed node outcomes and artifacts.
-- Call `read_agent_graph(node_type_filter="step")` to inspect node statuses and tool calls —
-  especially useful for diagnosing a stuck or failed node.
-- Use this information when replanning: avoid re-running nodes that already succeeded.
+- Use the current `execution_graph` state for normal replanning; avoid re-running
+    nodes that already succeeded.
+- As a last-resort debug path, call `read_session_log(view="overview")` first to inspect
+    the coarse executor graph. Only then call `read_session_log(view="detail", step_id="...")`
+    or `node_id="..."` for one executor of interest; do not request bulk detail by default.
 """
 
 _MATCREATOR_INSTRUCTION = "{instruction_body}"
@@ -403,8 +403,7 @@ thinking_agent = LlmAgent(
         FunctionTool(run_python),
         FunctionTool(run_bash),
         FunctionTool(run_flash_step),
-        FunctionTool(read_execution_trajectory),
-        FunctionTool(read_agent_graph),
+        FunctionTool(read_session_log),
         FunctionTool(load_skill),
         show_artifact,
         show_plot,

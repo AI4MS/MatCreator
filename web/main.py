@@ -79,6 +79,7 @@ from matcreator.agents.cancellation import (  # noqa: E402
     request_step_cancellation,
 )
 from matcreator.agents.graph_logger import AgentGraphLogger  # noqa: E402
+from matcreator.agents.session_log import build_session_log_export  # noqa: E402
 from matcreator.skill import ALL_SKILLS, PLANNING_SKILL_NAMES, refresh_skills, get_default_skill_names  # noqa: E402
 from matcreator.config import load_config, save_config, get_disabled_skills  # noqa: E402
 from matcreator.config import ENV_TO_YAML, YAML_TO_ENV, SENSITIVE_YAML_KEYS  # noqa: E402
@@ -1521,11 +1522,35 @@ def _load_execution_graph(session_id: str) -> dict:
     return {"nodes": {}, "edges": []}
 
 
+def _load_session_log_export(session_id: str, user_id: str | None = None) -> dict:
+    owner_id, state = _load_session_state(session_id, user_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Session not found")
+    payload = build_session_log_export(session_id, state)
+    payload["owner_id"] = owner_id
+    return payload
+
+
 @app.get("/api/execution-graph/{session_id}")
 async def get_execution_graph(session_id: str) -> JSONResponse:
     """Return the execution graph (plan DAG) from session state for frontend visualization."""
     data = _load_execution_graph(session_id)
     return JSONResponse(data)
+
+
+@app.get("/api/sessions/{session_id}/session-log")
+async def download_session_log(
+    session_id: str,
+    user_id: str = Query(default="", description="Current user ID; required to scope server-mode sessions."),
+) -> Response:
+    payload = _load_session_log_export(session_id, user_id or None)
+    content = json.dumps(payload, ensure_ascii=False, indent=2)
+    response = Response(content=content, media_type="application/json")
+    safe_session_id = re.sub(r"[^A-Za-z0-9_.-]", "_", session_id)
+    response.headers["Content-Disposition"] = (
+        f'attachment; filename="matcreator-session-log-{safe_session_id}.json"'
+    )
+    return response
 
 
 

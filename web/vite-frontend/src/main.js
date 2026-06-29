@@ -1935,6 +1935,16 @@ function renderSessionList(sessions) {
       content.textContent = state.isAdmin ? `${owner} / ${s.id}` : s.id;
       li.appendChild(content);
 
+      const logBtn = document.createElement("button");
+      logBtn.className = "session-item-log";
+      logBtn.textContent = "LOG JSON";
+      logBtn.title = "Download full session log";
+      logBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        downloadSessionLog(s.id, owner);
+      });
+      li.appendChild(logBtn);
+
       const delBtn = document.createElement("button");
       delBtn.className = "session-item-delete";
       delBtn.textContent = "×";
@@ -2037,6 +2047,31 @@ async function deleteSession(sessionId) {
 }
 
 refreshSessionsBtn.addEventListener("click", (e) => { e.stopPropagation(); loadSessions(); });
+
+async function downloadSessionLog(sessionId, owner = state.userId) {
+  if (!sessionId) return;
+  const userQuery = owner || state.userId;
+  const query = userQuery ? `?user_id=${encodeURIComponent(userQuery)}` : "";
+  const url = `/api/sessions/${encodeURIComponent(sessionId)}/session-log${query}`;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      const msg = await resp.text().catch(() => "");
+      throw new Error(msg || `HTTP ${resp.status}`);
+    }
+    const blob = await resp.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = `matcreator-session-log-${sessionId}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
+  } catch (err) {
+    console.warn("Failed to download session log", err);
+  }
+}
 
 document.getElementById("refresh-files").addEventListener("click", (e) => { e.stopPropagation(); refreshSessionFiles(); });
 

@@ -894,21 +894,31 @@ details.panel-block:not([open]) > summary.block-header::after { transform: rotat
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.session-item-log,
 .session-item-delete {
   flex-shrink: 0;
-  font-size: 16px;
+  font-size: 10px;
   line-height: 1;
-  padding: 0 4px;
-  border: none;
-  background: none;
+  padding: 3px 5px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.04);
   color: var(--muted);
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.15s, color 0.15s;
   border-radius: 4px;
 }
+.session-item-delete {
+  font-size: 16px;
+  padding: 0 4px;
+  border: none;
+  background: none;
+}
+.session-item:hover .session-item-log,
 .session-item:hover .session-item-delete { opacity: 0.5; }
+.session-item-log:hover { opacity: 1 !important; color: var(--accent); border-color: rgba(125, 211, 252, 0.35); }
 .session-item-delete:hover { opacity: 1 !important; color: #f87171; }
+.session-item-log:focus-visible { opacity: 0.7; color: var(--accent); outline: 1px solid var(--accent); }
 .session-item-delete:focus-visible { opacity: 0.7; color: #f87171; outline: 1px solid var(--accent); }
 
 /* ── Confirm dialog ──────────────────────────────────────── */
