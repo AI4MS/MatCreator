@@ -2563,6 +2563,8 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
         img.src = pathToApiUrl(plotPath);
         img.className = "timeline-image";
         img.alt = plotPath.split("/").pop();
+        img.style.cursor = "zoom-in";
+        img.addEventListener("click", () => lightbox.open(img.src));
         container.appendChild(img);
       }
       // Render inline "View Structure" button for structure tool responses
@@ -3892,6 +3894,8 @@ async function openFileViewer(file) {
     const img = document.createElement("img");
     img.src = url;
     img.alt = file.name;
+    img.style.cursor = "zoom-in";
+    img.addEventListener("click", () => lightbox.open(url));
     wrap.appendChild(img);
     content.innerHTML = "";
     content.appendChild(wrap);
@@ -3922,6 +3926,114 @@ document.getElementById("fv-close")?.addEventListener("click", () => {
 document.getElementById("file-viewer-modal")?.addEventListener("click", (e) => {
   if (e.target === e.currentTarget)
     e.currentTarget.classList.add("hidden");
+});
+
+// ---------------------------------------------------------------------------
+// Image lightbox
+// ---------------------------------------------------------------------------
+
+const lightbox = {
+  el: document.getElementById("image-lightbox"),
+  img: document.getElementById("lightbox-img"),
+  viewport: document.getElementById("lightbox-viewport"),
+  label: document.getElementById("lightbox-zoom-label"),
+  _scale: 1,
+  _tx: 0,
+  _ty: 0,
+  _dragging: false,
+  _dragStartX: 0,
+  _dragStartY: 0,
+  _dragStartTx: 0,
+  _dragStartTy: 0,
+
+  open(src) {
+    this._scale = 1;
+    this._tx = 0;
+    this._ty = 0;
+    this.img.src = src;
+    this.img.style.transform = "";
+    this.el.classList.remove("hidden");
+    this._updateLabel();
+  },
+
+  close() {
+    this.el.classList.add("hidden");
+    this.img.src = "";
+  },
+
+  _apply() {
+    this.img.style.transform = `translate(${this._tx}px, ${this._ty}px) scale(${this._scale})`;
+    this._updateLabel();
+  },
+
+  _updateLabel() {
+    if (this.label) this.label.textContent = `${Math.round(this._scale * 100)}%`;
+  },
+
+  zoomIn() {
+    this._scale = Math.min(this._scale * 1.3, 20);
+    this._apply();
+  },
+
+  zoomOut() {
+    const newScale = this._scale / 1.3;
+    if (newScale < 0.1) return;
+    const oldScale = this._scale;
+    this._scale = newScale;
+    const factor = this._scale / oldScale;
+    this._tx *= factor;
+    this._ty *= factor;
+    this._apply();
+  },
+
+  resetZoom() {
+    this._scale = 1;
+    this._tx = 0;
+    this._ty = 0;
+    this._apply();
+  },
+};
+
+lightbox.viewport?.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  if (e.deltaY < 0) lightbox.zoomIn();
+  else lightbox.zoomOut();
+}, { passive: false });
+
+lightbox.viewport?.addEventListener("mousedown", (e) => {
+  if (e.target === lightbox.img) {
+    lightbox._dragging = true;
+    lightbox._dragStartX = e.clientX;
+    lightbox._dragStartY = e.clientY;
+    lightbox._dragStartTx = lightbox._tx;
+    lightbox._dragStartTy = lightbox._ty;
+    e.preventDefault();
+  }
+});
+
+document.addEventListener("mousemove", (e) => {
+  if (!lightbox._dragging) return;
+  lightbox._tx = lightbox._dragStartTx + (e.clientX - lightbox._dragStartX);
+  lightbox._ty = lightbox._dragStartTy + (e.clientY - lightbox._dragStartY);
+  lightbox._apply();
+});
+
+document.addEventListener("mouseup", () => {
+  lightbox._dragging = false;
+});
+
+// Click on viewport backdrop (not the image) to close
+lightbox.viewport?.addEventListener("click", (e) => {
+  if (e.target === lightbox.viewport) lightbox.close();
+});
+
+document.getElementById("lightbox-close")?.addEventListener("click", () => lightbox.close());
+document.getElementById("lightbox-zoom-in")?.addEventListener("click", () => lightbox.zoomIn());
+document.getElementById("lightbox-zoom-out")?.addEventListener("click", () => lightbox.zoomOut());
+document.getElementById("lightbox-zoom-reset")?.addEventListener("click", () => lightbox.resetZoom());
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !lightbox.el.classList.contains("hidden")) lightbox.close();
 });
 
 initPanelResizers();
