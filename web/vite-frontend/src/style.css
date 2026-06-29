@@ -1350,6 +1350,34 @@ details summary:hover { color: var(--text); }
   overflow: hidden;
 }
 
+.plan-graph-counter {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
+.plan-graph-nav-controls {
+  display: flex;
+  gap: 2px;
+  margin-left: 2px;
+}
+
+.plan-graph-nav-btn {
+  font-size: 11px;
+  padding: 2px 6px;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.plan-graph-nav-btn:hover {
+  color: var(--text);
+  background: rgba(255,255,255,0.06);
+}
+
 /* ── Responsive ─────────────────────────────────────────── */
 @media (max-width: 900px) {
   .topbar { flex-wrap: wrap; gap: 12px; }
