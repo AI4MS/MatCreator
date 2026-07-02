@@ -55,6 +55,7 @@ const refreshSessionsBtn = document.getElementById("refresh-sessions");
 const graphViewport = document.getElementById("graph-viewport");
 const graphDetail = document.getElementById("graph-detail");
 const centerTabs = document.getElementById("center-tabs");
+const centerTabsScroll = document.getElementById("center-tabs-scroll");
 const centerTabPanels = document.getElementById("center-tab-panels");
 const graphResizer = document.getElementById("graph-resizer");
 const graphStatusEl = document.getElementById("graph-status");
@@ -3266,14 +3267,46 @@ async function uploadFilesToSession(fileList) {
 
 function renderSessionBanner(summary) {
   if (!sessionSummaryHeader || !sessionSummaryText) return;
+  const isVisible = sessionSummaryHeader.classList.contains("visible");
   if (summary) {
+    const isFirstShow = !isVisible || sessionSummaryText.classList.contains("session-summary-placeholder");
     sessionSummaryText.textContent = summary;
     sessionSummaryText.classList.remove("session-summary-placeholder");
+    if (isFirstShow) {
+      sessionSummaryText.style.opacity = "0";
+      sessionSummaryText.classList.remove("typewriter", "typewriter-done");
+      sessionSummaryHeader.classList.add("visible");
+      setTimeout(() => {
+        runTypewriter(sessionSummaryText, summary);
+      }, 700);
+    }
   } else {
-    sessionSummaryText.textContent = "New Session";
-    sessionSummaryText.classList.add("session-summary-placeholder");
+    sessionSummaryText.textContent = "";
+    sessionSummaryText.classList.remove("session-summary-placeholder", "typewriter", "typewriter-done");
+    sessionSummaryHeader.classList.remove("visible");
   }
-  sessionSummaryHeader.style.display = state.sessionReady ? "flex" : "none";
+}
+
+function runTypewriter(el, text) {
+  el.classList.remove("typewriter", "typewriter-done");
+  el.style.opacity = "";
+  el.style.maxWidth = "none";
+  el.textContent = text;
+  const fullW = el.scrollWidth;
+  el.style.maxWidth = "";
+  void el.offsetWidth;
+  const len = [...text].length;
+  el.style.setProperty("--tw-steps", len);
+  el.style.setProperty("--tw-width", fullW + "px");
+  el.textContent = text;
+  el.classList.add("typewriter");
+  el.addEventListener("animationend", function onEnd() {
+    el.removeEventListener("animationend", onEnd);
+    el.classList.remove("typewriter");
+    el.classList.add("typewriter-done");
+    el.style.removeProperty("--tw-steps");
+    el.style.removeProperty("--tw-width");
+  });
 }
 
 function startSummaryEdit() {
@@ -4007,7 +4040,7 @@ function structureTabTitle(path) {
 
 function activateCenterTab(tabId) {
   state.activeCenterTabId = tabId;
-  centerTabs?.querySelectorAll(".center-tab")?.forEach((tab) => {
+  centerTabsScroll?.querySelectorAll(".center-tab")?.forEach((tab) => {
     const active = tab.dataset.tabId === tabId;
     tab.classList.toggle("active", active);
     tab.setAttribute("aria-selected", String(active));
@@ -4096,7 +4129,7 @@ function ensureStructureTab(item) {
   canvas.className = "sv-canvas structure-tab-canvas";
 
   panel.append(header, canvas);
-  centerTabs?.appendChild(button);
+  centerTabsScroll?.appendChild(button);
   centerTabPanels?.appendChild(panel);
 
   const tab = { id: tabId, item, button, panel, canvas, meta, viewer: null };
