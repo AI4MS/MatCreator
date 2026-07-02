@@ -924,9 +924,24 @@ def _fetch_first_user_message(session_id: str) -> str:
 
 _SUMMARIZE_PROMPT = (
     "请用一句简洁的中文（不超过30个字）总结以下对话的核心内容。"
-    "只输出总结本身，不要任何前缀、解释或标点以外的符号。\n\n"
+    "只输出总结本身，不要任何前缀、解释或标点符号。不要使用句号、逗号、感叹号等任何标点。\n\n"
     "对话内容：\n{text}"
 )
+
+_SUMMARIZE_PROMPT_EN = (
+    "Summarize the following conversation in a concise English phrase (no more than 6 words). "
+    "Output only the summary itself, no prefixes, no explanations, no punctuation whatsoever "
+    "(no periods, commas, exclamation marks, colons, semicolons, or any other punctuation).\n\n"
+    "Conversation:\n{text}"
+)
+
+
+def _is_primarily_english(text: str) -> bool:
+    """Return True if the majority of non-whitespace characters are ASCII letters."""
+    alpha = [c for c in text.strip()[:500] if c.isalpha()]
+    if not alpha:
+        return False
+    return sum(1 for c in alpha if c.isascii()) / len(alpha) > 0.5
 
 
 def _llm_config() -> tuple[str, str | None, str | None]:
@@ -964,7 +979,8 @@ async def summarize_session(session_id: str) -> JSONResponse:
         from litellm import acompletion
 
         model, api_key, base_url = _llm_config()
-        prompt = _SUMMARIZE_PROMPT.format(text=first_msg[:2000])
+        prompt_template = _SUMMARIZE_PROMPT_EN if _is_primarily_english(first_msg) else _SUMMARIZE_PROMPT
+        prompt = prompt_template.format(text=first_msg[:2000])
 
         response = await acompletion(
             model=model,
@@ -975,7 +991,8 @@ async def summarize_session(session_id: str) -> JSONResponse:
             max_tokens=100,
         )
         raw = response.choices[0].message.content or ""
-        summary = raw.strip().strip('"\'')
+        import unicodedata
+        summary = ''.join(c for c in raw if unicodedata.category(c)[0] != 'P').strip()
     except Exception as exc:
         import logging
         logging.getLogger(__name__).warning("Session summary LLM call failed: %s", exc)
