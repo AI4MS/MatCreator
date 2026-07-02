@@ -14,14 +14,16 @@ Use this skill to streamline and automate materials modeling workflows. The fram
 Tasks dedicated to creating and manipulating atomic structures.
 
 * **Command:** `mckit operate -h`
-* **Capabilities:** Building bulk crystals, generating surface slabs with precise termination control, applying structural modifications, etc.
+* **Included tools:** bulk, supercell, surface, interface, adsorption, defect creation, perturbation, molecule creation, nano crystal, solvation, and vdW stacking.
+* **Use for:** building structures, generating slabs/interfaces, adding defects, making molecules or clusters, and other geometry edits.
 
 ### Observations (Inspect & Analyze)
 
 Tasks dedicated to analyzing structural properties and verifying geometry.
 
 * **Command:** `mckit observe -h`
-* **Capabilities:** Calculating structural metrics, inspecting coordination environments, and running validation checks.
+* **Included tools:** `inspect` for structure summaries and `basic_check` for geometric sanity checks.
+* **Inspect output:** basic structure data, detected molecules, vacuum layers, and slab composition information.
 
 ---
 

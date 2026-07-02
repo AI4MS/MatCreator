@@ -1,10 +1,11 @@
 ---
 name: deepmd
-description: DeePMD-kit training, finetuning, testing, and model inspection skill. Use this skill whenever training or finetuning a Deep Potential (DP / DPA-1 / DPA-2) model, running model tests, or inspecting model parameters. Training is split into a preparation phase (data conversion + input.json generation, always local) and an execution phase (dp CLI commands, local or via dpdisp skill on hpc or Bohrium).
+description: DeePMD-kit training, finetuning, testing, and model inspection skill. Use this skill whenever training or finetuning a Deep Potential (DP / DPA-1 / DPA-2) model, running model tests, or inspecting model parameters. Training is split into a preparation phase (data conversion + input.json generation, always local) and an execution phase (dp CLI commands, local or via bohrium skill on Bohrium cloud, with dpdisp as fallback).
 metadata:
   tools:
     - run_bash
   dependent_skills:
+    - bohrium
     - dpdisp
   tags:
     - deepmd
@@ -215,23 +216,25 @@ dp --pt compress -i model.ckpt.pt -o model_compressed.pt
 
 ---
 
-## Remote execution via the dpdisp skill
+## Remote execution via the bohrium skill (preferred)
 
-Submission uses the `dpdisp` skill (DPDispatcher) with `BohriumContext`. The `bohr` skill and `bohrium_submit.py` are deprecated — do not use them for new workflows.
+The primary submission method uses the `bohrium` skill (`bohr` CLI). It is simpler and more
+stable than the dpdisp-based workflow. Use dpdisp only when `bohr` CLI is unavailable or
+when targeting non-Bohrium backends (Slurm, PBS, etc.).
 
 ### Environment variables
 
 | Variable | Description |
 |---|---|
-| `BOHRIUM_EMAIL` | Bohrium account e-mail |
-| `BOHRIUM_PASSWORD` | Bohrium account password |
 | `BOHRIUM_PROJECT_ID` | Bohrium project ID (integer) |
-| `BOHRIUM_DEEPMD_MACHINE` | Machine/scass type for training, e.g. `gpu_8_v100_32g` |
-| `BOHRIUM_DEEPMD_IMAGE` | Container image URI with deepmd-kit installed |
+| `BOHRIUM_DEEPMD_MACHINE` | Machine type for training, e.g. `1 * NVIDIA V100_32g` |
+| `BOHRIUM_DEEPMD_IMAGE` | Container image URI with deepmd-kit installed, e.g. `registry.dp.tech/dptech/deepmd-kit:3.1.3` |
+
+Authentication is handled via `bohr login` (credentials stored in `~/.bohrium/credentials.yaml`).
 
 ### Step 1 — Prepare locally
 
-Always use `--copy_model` for finetune jobs so the model file is a regular file inside `<workdir>` (dpdispatcher cannot upload symlinks).
+Always use `--copy_model` for finetune jobs so the model file is a regular file inside `<workdir>`.
 
 ```
 run_skill_script(
@@ -241,11 +244,94 @@ run_skill_script(
 )
 ```
 
+### Step 2 — Create a job group and submit
+
+```bash
+# Create a job group for tracking
+JOB_GROUP_ID=$(bohr job_group create -n "deepmd-train" -p "$BOHRIUM_PROJECT_ID" | grep -oP '\d+')
+echo "$JOB_GROUP_ID" > .bohrium_job_group_id
+
+# Submit — adjust --command and --backward_files for your job type
+bohr job submit \
+    --project_id "$BOHRIUM_PROJECT_ID" \
+    --job_name "deepmd-train-001" \
+    --machine_type "$BOHRIUM_DEEPMD_MACHINE" \
+    --image_address "$BOHRIUM_DEEPMD_IMAGE" \
+    --input_directory "./train_001/" \
+    --job_group_id "$JOB_GROUP_ID" \
+    --backward_files "model.ckpt.pt,lcurve.out,log,err" \
+    --command "dp --pt train input.json"
+```
+
+**Finetuning (single-task):**
+
+```bash
+bohr job submit \
+    --project_id "$BOHRIUM_PROJECT_ID" \
+    --job_name "deepmd-finetune-001" \
+    --machine_type "$BOHRIUM_DEEPMD_MACHINE" \
+    --image_address "$BOHRIUM_DEEPMD_IMAGE" \
+    --input_directory "./train_001/" \
+    --job_group_id "$JOB_GROUP_ID" \
+    --backward_files "model.ckpt.pt,input.json,lcurve.out,log,err" \
+    --command "dp --pt train input.json --finetune DPA2.pt --use-pretrain-script --model-branch Omat24"
+```
+
+**Finetuning (multi-task):**
+
+```bash
+bohr job submit \
+    --project_id "$BOHRIUM_PROJECT_ID" \
+    --job_name "deepmd-finetune-mt" \
+    --machine_type "$BOHRIUM_DEEPMD_MACHINE" \
+    --image_address "$BOHRIUM_DEEPMD_IMAGE" \
+    --input_directory "./train_001/" \
+    --job_group_id "$JOB_GROUP_ID" \
+    --backward_files "model.ckpt.pt,input.json,lcurve.out,log,err" \
+    --command "dp --pt train input.json --finetune DPA2.pt --use-pretrain-script"
+```
+
+### Step 3 — Monitor and download results
+
+```bash
+# Persist job group ID (already done in step 2, but re-read if session restarted)
+GROUP_ID=$(cat .bohrium_job_group_id)
+
+# Poll until all jobs reach terminal state
+while true; do
+    OUTPUT=$(timeout 120 bohr job list -j "$GROUP_ID" --json 2>/dev/null)
+    TOTAL=$(echo "$OUTPUT" | jq 'length')
+    DONE=$(echo "$OUTPUT" | jq '[.[] | select(.status == "Finished" or .status == "Failed" or .status == "Cancelled" or .status == "Terminated")] | length')
+    FAILED=$(echo "$OUTPUT" | jq '[.[] | select(.status == "Failed" or .status == "Cancelled" or .status == "Terminated")] | length')
+    echo "[$(date '+%H:%M:%S')] $DONE/$TOTAL jobs done, $FAILED failed"
+    if [ "$DONE" -eq "$TOTAL" ] && [ "$TOTAL" -gt 0 ]; then
+        [ "$FAILED" -gt 0 ] && echo "$FAILED job(s) failed!" && break
+        echo "All $TOTAL jobs finished successfully!" && break
+    fi
+    sleep 60
+done
+
+# Download all results
+bohr job_group download -j "$GROUP_ID" -o ./output/
+```
+
+For long-running training jobs, wrap the submission + polling in `tmux`:
+
+```bash
+tmux new-session -d -s deepmd_train "bash -c '...submit+poll commands...'"
+tmux ls
+```
+
+---
+
+## Remote execution via the dpdisp skill (fallback)
+
+Use this method only when `bohr` CLI is unavailable or when targeting non-Bohrium backends
+(Slurm, PBS, LSF). See the `dpdisp` skill for full documentation.
+
+### Step 1 — Prepare locally (same as above)
+
 ### Step 2 — Generate submission.template.json
-
-Use `remote_profile` with an `input_data` sub-object for Bohrium. Adjust `forward_files` to match the job type (see variants below).
-
-**Training from scratch:**
 
 ```json
 {
@@ -279,34 +365,8 @@ Use `remote_profile` with an `input_data` sub-object for Bohrium. Adjust `forwar
 }
 ```
 
-**Finetuning (single-task)** — add the model file to `forward_files` and extend the command:
-
-```json
-{
-  "command": "dp --pt train input.json --finetune DPA2.pt --use-pretrain-script --model-branch Omat24",
-  "task_work_path": "./train_001",
-  "forward_files": ["input.json", "train_data", "valid_data", "DPA2.pt"],
-  "backward_files": ["model.ckpt.pt", "input.json", "lcurve.out", "log", "err"]
-}
-```
-
-**Finetuning (multi-task)** — list each per-task data directory explicitly:
-
-```json
-{
-  "command": "dp --pt train input.json --finetune DPA2.pt --use-pretrain-script",
-  "task_work_path": "./train_001",
-  "forward_files": [
-    "input.json",
-    "train_data_task1", "valid_data_task1",
-    "train_data_task2", "valid_data_task2",
-    "DPA2.pt"
-  ],
-  "backward_files": ["model.ckpt.pt", "input.json", "lcurve.out", "log", "err"]
-}
-```
-
-> Directory names in `forward_files` are uploaded recursively by dpdispatcher.
+For finetuning, add the model file to `forward_files` and adjust the command (see bohrium
+section above for the exact commands).
 
 ### Step 3 — Substitute, validate, and submit
 
@@ -317,16 +377,8 @@ envsubst '${BOHRIUM_EMAIL} ${BOHRIUM_PASSWORD} ${BOHRIUM_PROJECT_ID} ${BOHRIUM_D
 uv run -m json.tool submission.json >/dev/null
 uvx --with dpdispatcher dargs check -f dpdispatcher.entrypoints.submit.submission_args submission.json
 
-# Always use --with oss2 for Bohrium jobs (oss2 is not bundled with dpdispatcher in uvx environments)
+# Always use --with oss2 for Bohrium jobs
 uvx --from dpdispatcher --with oss2 dpdisp submit submission.json
-```
-
-For long-running training jobs, wrap in `tmux` to survive SSH disconnects:
-
-```bash
-tmux new-session -d -s deepmd_train \
-    "uvx --from dpdispatcher --with oss2 dpdisp submit submission.json"
-tmux ls
 ```
 
 ---

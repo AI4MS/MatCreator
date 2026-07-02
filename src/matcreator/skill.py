@@ -15,7 +15,7 @@ from google.adk.tools import skill_toolset
 from google.adk.tools.function_tool import FunctionTool
 from .workspace import workspace_skills_dir
 from .tools.workspace_tools import list_workspace_skills, run_skill_script
-from .config import get_planning_skills
+from .config import get_disabled_skills, get_planning_skills
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -152,6 +152,16 @@ class MatCreatorSkillToolset(skill_toolset.SkillToolset):
             *kept,
             FunctionTool(run_skill_script),
         ]
+
+    def _get_skill(self, skill_name: str):
+        skill = super()._get_skill(skill_name)
+        if skill is not None and skill.name in get_disabled_skills():
+            return None
+        return skill
+
+    def _list_skills(self) -> list:
+        disabled = set(get_disabled_skills())
+        return [skill for skill in super()._list_skills() if skill.name not in disabled]
 
     async def process_llm_request(self, *, tool_context, llm_request) -> None:
         # Suppress the default XML skill-list injection; agents use search_skills instead.
