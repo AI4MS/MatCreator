@@ -500,6 +500,22 @@ def _entry_preview(content: str | None, *, limit: int = 280) -> str:
     return preview[: limit - 3].rstrip() + "..."
 
 
+def _json_ready(value):
+    if hasattr(value, "model_dump"):
+        return _json_ready(value.model_dump())
+    if hasattr(value, "value"):
+        return value.value
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(k): _json_ready(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, (set, tuple)):
+        return [_json_ready(item) for item in value]
+    return value
+
+
 def _load_skill_graph_payload(*, limit: int = 400) -> dict:
     graph = _get_kg()
     nodes = []
@@ -516,15 +532,22 @@ def _load_skill_graph_payload(*, limit: int = 400) -> dict:
             if entry_type == "memory":
                 continue
             metadata = entry.metadata
+            metadata_payload = _json_ready(metadata)
             nodes.append(
                 {
                     "id": entry.id,
                     "label": entry.title,
                     "title": entry.title,
+                    "slug": entry.slug,
                     "entry_type": entry_type,
-                    "content": _entry_preview(entry.content),
+                    "content": entry.content,
+                    "content_preview": _entry_preview(entry.content),
                     "tags": entry.tags,
                     "aliases": entry.aliases,
+                    "internal_refs": entry.internal_refs,
+                    "scripts": _json_ready(entry.scripts),
+                    "assets": _json_ready(entry.assets),
+                    "metadata": metadata_payload,
                     "verification_status": _entry_value(metadata.verification_status),
                     "refinement_status": _entry_value(metadata.refinement_status),
                     "usage_count": metadata.usage_count,

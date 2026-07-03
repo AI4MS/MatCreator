@@ -3070,7 +3070,7 @@ workspaceCliToggle?.addEventListener("click", () => {
 });
 
 skillGraphOpenBtn?.addEventListener("click", () => {
-  loadSkillGraphTab();
+  loadSkillGraphTab({ force: true });
 });
 
 window.addEventListener("resize", resizeWorkspaceTerminal);
@@ -4013,14 +4013,138 @@ function skillGraphNodeColor(type) {
   return SKILL_GRAPH_COLORS[type] || SKILL_GRAPH_COLORS.generic;
 }
 
+function isEmptyDetailValue(value) {
+  if (value === undefined || value === null || value === "") return true;
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === "object") return Object.keys(value).length === 0;
+  return false;
+}
+
+function formatDetailValue(value) {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value, null, 2);
+}
+
+function createSkillGraphSection(title, children) {
+  const visibleChildren = children.filter(Boolean);
+  if (!visibleChildren.length) return null;
+  const section = document.createElement("section");
+  section.className = "skill-graph-detail-section";
+  const heading = document.createElement("h4");
+  heading.textContent = title;
+  section.append(heading, ...visibleChildren);
+  return section;
+}
+
+function createSkillGraphMarkdown(value, className = "skill-graph-markdown") {
+  const formatted = formatDetailValue(value);
+  if (!formatted) return null;
+  const div = document.createElement("div");
+  div.className = className;
+  div.innerHTML = renderMarkdown(formatted);
+  return div;
+}
+
+function createSkillGraphFacts(items) {
+  const facts = document.createElement("dl");
+  facts.className = "skill-graph-facts";
+  for (const [key, value, options = {}] of items) {
+    if (isEmptyDetailValue(value)) continue;
+    const dt = document.createElement("dt");
+    dt.textContent = key;
+    const dd = document.createElement("dd");
+    const formatted = formatDetailValue(value);
+    if (options.markdown) {
+      dd.appendChild(createSkillGraphMarkdown(value));
+    } else if (formatted.includes("\n")) {
+      const pre = document.createElement("pre");
+      pre.textContent = formatted;
+      dd.appendChild(pre);
+    } else {
+      dd.textContent = formatted;
+    }
+    facts.append(dt, dd);
+  }
+  return facts.children.length ? facts : null;
+}
+
+function createSkillGraphList(values) {
+  if (!Array.isArray(values) || !values.length) return null;
+  const list = document.createElement("ul");
+  list.className = "skill-graph-list";
+  values.forEach((value) => {
+    const item = document.createElement("li");
+    const formatted = formatDetailValue(value);
+    if (typeof value === "string") {
+      item.appendChild(createSkillGraphMarkdown(formatted, "skill-graph-inline-markdown"));
+    } else {
+      item.textContent = formatted;
+    }
+    list.appendChild(item);
+  });
+  return list;
+}
+
+function createSkillGraphObjectList(values, titleKey = "filename") {
+  if (!Array.isArray(values) || !values.length) return null;
+  const list = document.createElement("div");
+  list.className = "skill-graph-object-list";
+  values.forEach((value, index) => {
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = value?.[titleKey] || value?.name || value?.id || `Item ${index + 1}`;
+    details.append(summary, createSkillGraphMarkdown(value));
+    list.appendChild(details);
+  });
+  return list;
+}
+
+function createSkillGraphLinks(nodeId) {
+  const edges = skillGraphTab?.edges || [];
+  const nodeData = skillGraphTab?.nodeData || new Map();
+  const related = [
+    ...edges
+      .filter((edge) => edge.from === nodeId)
+      .map((edge) => ({ direction: "Outgoing", relation: edge.relation, node: nodeData.get(edge.to), nodeId: edge.to })),
+    ...edges
+      .filter((edge) => edge.to === nodeId)
+      .map((edge) => ({ direction: "Incoming", relation: edge.relation, node: nodeData.get(edge.from), nodeId: edge.from })),
+  ];
+  if (!related.length) return null;
+
+  const list = document.createElement("div");
+  list.className = "skill-graph-links";
+  related.forEach((link) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "skill-graph-link-row";
+    const label = link.node?.title || link.node?.label || link.nodeId;
+    row.innerHTML = `
+      <span class="skill-graph-link-direction"></span>
+      <span class="skill-graph-link-main"></span>
+      <span class="skill-graph-link-relation"></span>
+    `;
+    row.querySelector(".skill-graph-link-direction").textContent = link.direction;
+    row.querySelector(".skill-graph-link-main").textContent = label;
+    row.querySelector(".skill-graph-link-relation").textContent = link.relation || "related";
+    row.addEventListener("click", () => {
+      if (!skillGraphTab?.network) return;
+      skillGraphTab.network.selectNodes([link.nodeId]);
+      skillGraphTab.network.focus(link.nodeId, { scale: 1.05, animation: { duration: 280, easingFunction: "easeInOutQuad" } });
+      renderSkillGraphDetail(link.node);
+    });
+    list.appendChild(row);
+  });
+  return list;
+}
+
 function renderSkillGraphDetail(node) {
   if (!skillGraphTab?.detail) return;
+  skillGraphTab.panel.classList.toggle("has-selection", Boolean(node));
   if (!node) {
-    skillGraphTab.detail.innerHTML = `
-      <div class="skill-graph-empty">
-        Select a node to view details.
-      </div>
-    `;
+    skillGraphTab.detail.innerHTML = "";
     return;
   }
 
@@ -4039,33 +4163,68 @@ function renderSkillGraphDetail(node) {
 
   const tags = document.createElement("div");
   tags.className = "skill-graph-tags";
-  (node.tags || []).slice(0, 12).forEach((tag) => {
+  (node.tags || []).forEach((tag) => {
     const chip = document.createElement("span");
     chip.textContent = tag;
     tags.appendChild(chip);
   });
 
-  const content = document.createElement("p");
-  content.className = "skill-graph-detail-content";
-  content.textContent = node.content || "No content preview.";
+  const content = createSkillGraphMarkdown(node.content || "No content.", "skill-graph-detail-content skill-graph-markdown");
 
-  const facts = document.createElement("dl");
-  facts.className = "skill-graph-facts";
-  const addFact = (key, value) => {
-    if (value === undefined || value === null || value === "") return;
-    const dt = document.createElement("dt");
-    dt.textContent = key;
-    const dd = document.createElement("dd");
-    dd.textContent = String(value);
-    facts.append(dt, dd);
-  };
-  addFact("Usage", node.usage_count);
-  addFact("Trust", node.trust_score);
-  addFact("Source", node.source_provenance);
+  const metadata = node.metadata || {};
+  const identity = createSkillGraphFacts([
+    ["ID", node.id],
+    ["Slug", node.slug],
+    ["Type", node.entry_type],
+    ["Aliases", node.aliases],
+  ]);
+  const quality = createSkillGraphFacts([
+    ["Verification", metadata.verification_status || node.verification_status],
+    ["Refinement", metadata.refinement_status || node.refinement_status],
+    ["Skill level", metadata.skill_level],
+    ["Trust", metadata.trust_score ?? node.trust_score],
+    ["Usage", metadata.usage_count ?? node.usage_count],
+    ["Review count", metadata.review_count],
+    ["Modify count", metadata.modify_count],
+    ["Needs generalization", metadata.needs_generalization],
+  ]);
+  const provenance = createSkillGraphFacts([
+    ["Source", metadata.source_provenance || node.source_provenance],
+    ["Extraction", metadata.extraction_method],
+    ["Timestamp", metadata.timestamp],
+    ["Last reviewed", metadata.last_reviewed_at],
+    ["Remote source", metadata.remote_source],
+  ]);
+  const requirements = createSkillGraphFacts([
+    ["Applicability", metadata.applicability],
+    ["Failure modes", metadata.failure_modes],
+    ["Runtime", metadata.runtime_requirements],
+    ["Related envs", metadata.related_environments],
+    ["Script language", metadata.script_language],
+    ["Script filename", metadata.script_filename],
+    ["Script requirements", metadata.script_requirements],
+  ]);
+  const custom = createSkillGraphFacts([["Custom", metadata.custom]]);
 
   skillGraphTab.detail.append(title, meta);
   if (tags.children.length) skillGraphTab.detail.appendChild(tags);
-  skillGraphTab.detail.append(content, facts);
+  const sections = [
+    createSkillGraphSection("Content", [content]),
+    createSkillGraphSection("Identity", [identity]),
+    createSkillGraphSection("Quality", [quality]),
+    createSkillGraphSection("Provenance", [provenance]),
+    createSkillGraphSection("References", [
+      createSkillGraphList(node.internal_refs),
+      createSkillGraphList(metadata.external_refs),
+    ]),
+    createSkillGraphSection("Execution Context", [requirements]),
+    createSkillGraphSection("Feedback", [createSkillGraphObjectList(metadata.feedback_log, "verdict")]),
+    createSkillGraphSection("Scripts", [createSkillGraphObjectList(node.scripts)]),
+    createSkillGraphSection("Assets", [createSkillGraphObjectList(node.assets)]),
+    createSkillGraphSection("Custom Metadata", [custom]),
+    createSkillGraphSection("Links", [createSkillGraphLinks(node.id)]),
+  ].filter(Boolean);
+  skillGraphTab.detail.append(...sections);
 }
 
 function ensureSkillGraphTab() {
@@ -4124,17 +4283,20 @@ function ensureSkillGraphTab() {
 
   centerTabs?.appendChild(button);
   centerTabPanels?.appendChild(panel);
-  skillGraphTab = { button, panel, status, canvas, detail, network: null, nodeData: new Map(), loaded: false };
-  renderSkillGraphDetail(null);
+  skillGraphTab = { button, panel, status, canvas, detail, network: null, nodeData: new Map(), edges: [], loaded: false };
   activateCenterTab(tabId);
   return skillGraphTab;
 }
 
-async function loadSkillGraphTab() {
+async function loadSkillGraphTab({ force = false } = {}) {
   const tab = ensureSkillGraphTab();
-  if (tab.loaded) return;
+  if (tab.loaded && !force) return;
   tab.status.textContent = "loading";
   tab.status.className = "graph-status status-polling";
+  tab.loaded = false;
+  tab.network?.destroy();
+  tab.network = null;
+  renderSkillGraphDetail(null);
   tab.canvas.innerHTML = '<div class="skill-graph-loading">Loading graph...</div>';
 
   try {
@@ -4142,6 +4304,7 @@ async function loadSkillGraphTab() {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
     tab.nodeData = new Map((data.nodes || []).map((node) => [node.id, node]));
+    tab.edges = data.edges || [];
 
     const nodes = new DataSet((data.nodes || []).map((node) => ({
       id: node.id,
@@ -4172,7 +4335,7 @@ async function loadSkillGraphTab() {
         stabilization: { iterations: 160 },
         barnesHut: { gravitationalConstant: -5600, springLength: 120, springConstant: 0.045 },
       },
-      interaction: { hover: true, tooltipDelay: 180, navigationButtons: true, keyboard: false },
+      interaction: { hover: true, tooltipDelay: 180, navigationButtons: false, keyboard: false },
       nodes: { borderWidth: 2 },
       edges: { width: 1.6 },
     });
