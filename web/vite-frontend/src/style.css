@@ -597,16 +597,17 @@ body[data-theme="light"] .theme-icon-sun {
 .center-tabs {
   display: flex;
   align-items: flex-end;
-  padding: 4px 8px 0;
+  padding: 0 10px 0 0;
   border-bottom: 1px solid var(--border);
   background: rgba(var(--panel-rgb), 0.86);
   flex: 0 0 auto;
   min-width: 0;
+  min-height: 36px;
 }
 
 .center-tabs-scroll {
   display: flex;
-  align-items: flex-end;
+  align-items: stretch;
   gap: 2px;
   overflow-x: auto;
   overflow-y: hidden;
@@ -619,13 +620,13 @@ body[data-theme="light"] .theme-icon-sun {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  max-width: 190px;
+  max-width: 220px;
   min-width: 92px;
-  height: 26px;
-  padding: 0 9px;
+  height: 36px;
+  padding: 0 12px;
   border: 1px solid transparent;
   border-bottom: 0;
-  border-radius: 7px 7px 0 0;
+  border-radius: 10px 10px 0 0;
   background: transparent;
   color: var(--muted);
   font: inherit;
@@ -645,7 +646,11 @@ body[data-theme="light"] .theme-icon-sun {
   border-color: var(--border);
   color: var(--text);
   margin-bottom: -1px;
-  height: 27px;
+  height: 37px;
+}
+
+.center-tab:first-child {
+  border-top-left-radius: calc(var(--radius) - 1px);
 }
 
 .center-tab-title {
@@ -653,6 +658,39 @@ body[data-theme="light"] .theme-icon-sun {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.center-tab[data-tab-id="chat"] {
+  min-width: 112px;
+  max-width: min(360px, 42vw);
+}
+
+.session-tab-title {
+  display: block;
+  max-width: 100%;
+  font-size: 12px;
+  letter-spacing: 0;
+  opacity: 1;
+  transition: color 0.2s ease;
+}
+
+.center-tab.active .session-tab-title {
+  color: var(--accent);
+}
+
+.center-tab .session-summary-input {
+  max-width: 100%;
+  height: 24px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0;
+  color: var(--accent);
+  background: rgba(var(--accent-rgb, 125, 211, 252), 0.04);
+  border-color: rgba(var(--accent-rgb, 125, 211, 252), 0.24);
+  border-radius: 4px;
+  padding: 2px 4px;
+  text-align: left;
+  box-shadow: none;
 }
 
 .center-tab-close {
@@ -705,9 +743,15 @@ body[data-theme="light"] .theme-icon-sun {
   padding: 12px 16px;
 }
 .user-message .message-bubble {
+  flex: 0 1 auto;
+  max-width: min(72%, 760px);
   background: linear-gradient(135deg, rgba(109, 40, 217, 0.14), rgba(109, 40, 217, 0.08));
   border: 1px solid rgba(168, 85, 247, 0.25);
   box-shadow: 0 10px 30px rgba(168, 85, 247, 0.1);
+}
+
+.user-message .markdown-content {
+  overflow-wrap: anywhere;
 }
 
 .step-feed-message .message-bubble {
@@ -1640,6 +1684,11 @@ details.panel-block:not([open]) > summary.block-header::after { transform: rotat
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.session-item.has-summary .session-item-id {
+  font-size: 10px;
+  opacity: 0.62;
+  margin-top: 2px;
+}
 .session-item-log,
 .session-item-delete {
   flex-shrink: 0;
@@ -1734,14 +1783,17 @@ details.panel-block:not([open]) > summary.block-header::after { transform: rotat
 .confirm-ok:hover { background: #ef4444; }
 
 .session-item-summary {
-  font-size: 11px;
-  color: var(--muted);
-  opacity: 0.75;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text);
+  opacity: 0.92;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  margin-top: 2px;
   font-family: inherit;
+}
+.session-item.active .session-item-summary {
+  color: var(--accent);
 }
 
 /* ── Session summary banner ───────────────────────────────── */

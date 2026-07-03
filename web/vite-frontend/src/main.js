@@ -86,9 +86,8 @@ const fileExplorerCol   = document.getElementById("file-explorer-col");
 const colResizerGraph   = document.getElementById("col-resizer-graph");
 const colResizerSide    = document.getElementById("col-resizer-side");
 const colResizerFiles   = document.getElementById("col-resizer-files");
-const sessionSummaryHeader = document.getElementById("session-summary-header");
 const sessionSummaryText = document.getElementById("session-summary-text");
-const sessionSummaryEdit = document.getElementById("session-summary-edit");
+const chatTab = document.getElementById("tab-chat");
 const filesColToggleBtn = document.getElementById("files-col-toggle");
 const knowledgeReviewBanner = document.getElementById("knowledge-review-banner");
 const knowledgeReviewText = document.getElementById("knowledge-review-text");
@@ -100,6 +99,10 @@ let workspaceTerminal = null;
 let workspaceTerminalFit = null;
 let workspaceTerminalSocket = null;
 const structureTabs = new Map();
+
+function sessionTabTooltip(title) {
+  return `${title || "Chat"}\nDouble-click to edit session name`;
+}
 
 function autoResizeTextInput() {
   if (!textInput) return;
@@ -2248,18 +2251,22 @@ function renderSessionList(sessions) {
 
       const content = document.createElement("div");
       content.className = "session-item-content";
+      const sessionLabel = state.isAdmin ? `${owner} / ${s.id}` : s.id;
+      const summary = s.summary || state.sessionSummaries[s.id];
 
       const idLine = document.createElement("div");
       idLine.className = "session-item-id";
-      idLine.textContent = state.isAdmin ? `${owner} / ${s.id}` : s.id;
-      content.appendChild(idLine);
+      idLine.textContent = sessionLabel;
 
-      const summary = s.summary || state.sessionSummaries[s.id];
       if (summary) {
+        li.classList.add("has-summary");
         const summaryLine = document.createElement("div");
         summaryLine.className = "session-item-summary";
         summaryLine.textContent = summary;
         content.appendChild(summaryLine);
+        content.appendChild(idLine);
+      } else {
+        content.appendChild(idLine);
       }
       li.appendChild(content);
 
@@ -2283,7 +2290,7 @@ function renderSessionList(sessions) {
       });
       li.appendChild(delBtn);
 
-      li.title = state.isAdmin ? `${owner} / ${s.id}` : s.id;
+      li.title = summary ? `${summary}\n${sessionLabel}` : sessionLabel;
       li.addEventListener("click", () => switchSession(s.id, owner));
       sessionListEl.appendChild(li);
     });
@@ -3266,24 +3273,21 @@ async function uploadFilesToSession(fileList) {
 // ---------------------------------------------------------------------------
 
 function renderSessionBanner(summary) {
-  if (!sessionSummaryHeader || !sessionSummaryText) return;
-  const isVisible = sessionSummaryHeader.classList.contains("visible");
+  if (!sessionSummaryText) return;
+  const defaultTitle = sessionSummaryText.dataset.defaultTitle || "Chat";
   if (summary) {
-    const isFirstShow = !isVisible || sessionSummaryText.classList.contains("session-summary-placeholder");
     sessionSummaryText.textContent = summary;
+    chatTab?.setAttribute("title", sessionTabTooltip(summary));
     sessionSummaryText.classList.remove("session-summary-placeholder");
-    if (isFirstShow) {
-      sessionSummaryText.style.opacity = "0";
-      sessionSummaryText.classList.remove("typewriter", "typewriter-done");
-      sessionSummaryHeader.classList.add("visible");
-      setTimeout(() => {
-        runTypewriter(sessionSummaryText, summary);
-      }, 700);
-    }
+    sessionSummaryText.classList.remove("typewriter", "typewriter-done");
+    sessionSummaryText.style.removeProperty("opacity");
+    sessionSummaryText.style.removeProperty("max-width");
   } else {
-    sessionSummaryText.textContent = "";
+    sessionSummaryText.textContent = defaultTitle;
+    chatTab?.setAttribute("title", sessionTabTooltip(defaultTitle));
     sessionSummaryText.classList.remove("session-summary-placeholder", "typewriter", "typewriter-done");
-    sessionSummaryHeader.classList.remove("visible");
+    sessionSummaryText.style.removeProperty("opacity");
+    sessionSummaryText.style.removeProperty("max-width");
   }
 }
 
@@ -3310,17 +3314,22 @@ function runTypewriter(el, text) {
 }
 
 function startSummaryEdit() {
-  if (!sessionSummaryText || !sessionSummaryHeader || sessionSummaryHeader.querySelector("input")) return;
+  if (!sessionSummaryText || !chatTab || chatTab.querySelector("input")) return;
   const isPlaceholder = sessionSummaryText.classList.contains("session-summary-placeholder");
-  const original = isPlaceholder ? "" : sessionSummaryText.textContent;
+  const defaultTitle = sessionSummaryText.dataset.defaultTitle || "Chat";
+  const original = isPlaceholder || sessionSummaryText.textContent === defaultTitle ? "" : sessionSummaryText.textContent;
   const input = document.createElement("input");
   input.type = "text";
   input.value = original;
   input.className = "session-summary-input";
   input.maxLength = 60;
-  input.placeholder = "Enter session summary…";
+  input.placeholder = "Enter session name…";
+  const labelWidth = Math.ceil(sessionSummaryText.getBoundingClientRect().width);
+  input.style.width = `${Math.max(44, labelWidth)}px`;
+  input.addEventListener("click", (e) => e.stopPropagation());
+  input.addEventListener("dblclick", (e) => e.stopPropagation());
   sessionSummaryText.style.display = "none";
-  sessionSummaryHeader.insertBefore(input, sessionSummaryEdit);
+  chatTab.insertBefore(input, sessionSummaryText);
   input.focus();
   input.select();
 
@@ -3330,21 +3339,19 @@ function startSummaryEdit() {
     sessionSummaryText.style.display = "";
     if (save && newValue !== original) {
       if (newValue) {
-        sessionSummaryText.textContent = newValue;
-        sessionSummaryText.classList.remove("session-summary-placeholder");
         state.sessionSummaries[state.sessionId] = newValue;
+        state.summaryGeneratedFor.add(state.sessionId);
+        renderSessionBanner(newValue);
         await saveSessionSummary(state.sessionId, newValue);
       } else {
-        sessionSummaryText.textContent = "New Session";
-        sessionSummaryText.classList.add("session-summary-placeholder");
         delete state.sessionSummaries[state.sessionId];
+        state.summaryGeneratedFor.delete(state.sessionId);
+        renderSessionBanner("");
         await saveSessionSummary(state.sessionId, "");
       }
       renderSessionList._lastSessions && renderSessionList(renderSessionList._lastSessions);
-    } else if (!save && isPlaceholder) {
-      // Restore placeholder on cancel
-      sessionSummaryText.textContent = "New Session";
-      sessionSummaryText.classList.add("session-summary-placeholder");
+    } else if (!save) {
+      renderSessionBanner(original || state.sessionSummaries[state.sessionId] || "");
     }
   };
 
@@ -3355,9 +3362,11 @@ function startSummaryEdit() {
   input.addEventListener("blur", () => finish(true));
 }
 
-if (sessionSummaryEdit) {
-  sessionSummaryEdit.addEventListener("click", startSummaryEdit);
-}
+chatTab?.addEventListener("dblclick", (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  startSummaryEdit();
+});
 
 async function saveSessionSummary(sessionId, summary) {
   try {
@@ -3380,6 +3389,7 @@ async function generateSessionSummary(sessionId) {
     const data = await resp.json();
     if (data.summary) {
       state.sessionSummaries[sessionId] = data.summary;
+      state.summaryGeneratedFor.add(sessionId);
       // Only update banner if user is still on this session
       if (sessionId === state.sessionId) {
         renderSessionBanner(data.summary);
@@ -3723,15 +3733,21 @@ async function loadSession(sessionId) {
     }
     const events = sessionData.events || [];
 
-    // Show session summary banner if available, clear otherwise
+    // Show the session summary in the Chat tab when available.
     if (sessionData.summary) {
       state.sessionSummaries[sessionId] = sessionData.summary;
       state.summaryGeneratedFor.add(sessionId);
     }
-    renderSessionBanner(sessionData.summary || "");
+    const sessionSummary = sessionData.summary || state.sessionSummaries[sessionId] || "";
+    renderSessionBanner(sessionSummary);
 
     const graphNodes = await fetchSessionStepNodes(sessionId);
     renderSessionTimeline(events, graphNodes);
+
+    const hasUserMessage = events.some((event) => event?.author === "user");
+    if (hasUserMessage && !sessionSummary && !state.summaryGeneratedFor.has(sessionId)) {
+      generateSessionSummary(sessionId);
+    }
 
     await refreshSessionFiles();
     updateSessionWorkdirDisplay(sessionData);
@@ -3968,7 +3984,6 @@ async function sendMessage(message) {
               // Trigger summary early: on first agent text output (after planning)
               if (!summaryTriggered && !state.summaryGeneratedFor.has(state.sessionId) && !state.sessionSummaries[state.sessionId]) {
                 summaryTriggered = true;
-                state.summaryGeneratedFor.add(state.sessionId);
                 generateSessionSummary(state.sessionId);
               }
             }

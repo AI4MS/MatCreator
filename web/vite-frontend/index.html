@@ -128,16 +128,10 @@
 
         <!-- Centre: Chat -->
         <section class="card chat-card">
-          <div class="session-summary-banner" id="session-summary-header">
-            <div class="session-summary-banner-inner">
-              <span class="session-summary-text" id="session-summary-text"></span>
-              <button class="session-summary-edit" id="session-summary-edit" title="Edit summary">✎</button>
-            </div>
-          </div>
           <div class="center-tabs" id="center-tabs" role="tablist" aria-label="Middle panel tabs">
             <div class="center-tabs-scroll" id="center-tabs-scroll">
-              <button class="center-tab active" id="tab-chat" type="button" role="tab" aria-selected="true" aria-controls="chat-tab-panel" data-tab-id="chat">
-                <span class="center-tab-title">Chat</span>
+              <button class="center-tab active" id="tab-chat" type="button" role="tab" aria-selected="true" aria-controls="chat-tab-panel" data-tab-id="chat" title="Chat&#10;Double-click to edit session name">
+                <span class="center-tab-title session-tab-title" id="session-summary-text" data-default-title="Chat">Chat</span>
               </button>
             </div>
           </div>
