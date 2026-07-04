@@ -4233,6 +4233,21 @@ function listToCsv(values) {
   return Array.isArray(values) ? values.join(", ") : "";
 }
 
+function skillGraphAvailableSkillNames(exclude = "") {
+  return Array.from(skillGraphTab?.nodeData?.values?.() || [])
+    .map((node) => node.skill_name)
+    .filter((name) => name && name !== exclude)
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function skillGraphEntryTypes() {
+  return ["capability", "procedure", "workflow", "tool", "repository", "environment", "dependency", "data", "analytical", "heuristic", "constraint", "generic"];
+}
+
+function skillGraphSkillLevels() {
+  return ["L1", "L2", "L3", "L4"];
+}
+
 function createSkillGraphEditToggle(node) {
   if (!node.skill_name) return null;
   const host = document.createElement("section");
@@ -4250,6 +4265,14 @@ function createSkillGraphEditToggle(node) {
     loadSkillGraphEditor(node, editorHost);
   });
   host.appendChild(button);
+  if (node.skill_name) {
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "ghost mini-btn danger";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => removeSkillGraphNode(node));
+    host.appendChild(remove);
+  }
   return host;
 }
 
@@ -4408,6 +4431,165 @@ function addSkillGraphFolder(host) {
   host._skillGraphUploadFolders = Array.from(new Set([...(host._skillGraphUploadFolders || []), folder]));
   input.value = "";
   pushSkillGraphEditorHistory(host);
+}
+
+function renderSkillGraphCreatePanel() {
+  if (!skillGraphTab?.detail) return;
+  skillGraphTab.panel.classList.add("has-selection");
+  skillGraphTab.network?.unselectAll();
+  const host = document.createElement("section");
+  host.className = "skill-graph-editor";
+  host.innerHTML = `
+    <h4>Add Node</h4>
+    <div class="skill-graph-editor-actions">
+      <button type="button" class="ghost mini-btn" data-create-action="cancel">Cancel</button>
+      <button type="button" class="primary mini-btn" data-create-action="save">Create</button>
+    </div>
+    <label class="skill-graph-editor-field">Name
+      <input data-create-field="name" type="text" placeholder="new-skill-name" />
+    </label>
+    <label class="skill-graph-editor-field">Description
+      <input data-create-field="description" type="text" />
+    </label>
+    <div class="skill-graph-editor-grid">
+      <label class="skill-graph-editor-field">Type
+        <select data-create-field="entry_type"></select>
+      </label>
+      <label class="skill-graph-editor-field">Skill level
+        <select data-create-field="skill_level"></select>
+      </label>
+    </div>
+    <label class="skill-graph-editor-field">Tags
+      <input data-create-field="tags" type="text" placeholder="comma separated" />
+    </label>
+    <div class="skill-graph-editor-field">Dependencies
+      <input data-dependency-filter type="text" placeholder="filter skills" />
+      <div class="skill-graph-dependency-list"></div>
+    </div>
+    <label class="skill-graph-editor-field">SKILL.md body
+      <textarea data-create-field="content" spellcheck="false"></textarea>
+    </label>
+    <div class="skill-graph-editor-attachments">
+      <strong>Attachments</strong>
+      <div class="skill-graph-new-folder">
+        <input data-new-folder-name type="text" placeholder="new folder, e.g. references/setup" />
+        <button type="button" class="ghost mini-btn" data-create-action="add-folder">New folder</button>
+      </div>
+      <div class="skill-graph-folder-list"></div>
+    </div>
+    <div class="skill-graph-editor-status"></div>
+  `;
+  const typeSelect = host.querySelector("[data-create-field='entry_type']");
+  skillGraphEntryTypes().forEach((type) => {
+    const option = document.createElement("option");
+    option.value = type;
+    option.textContent = type;
+    typeSelect.appendChild(option);
+  });
+  const levelSelect = host.querySelector("[data-create-field='skill_level']");
+  skillGraphSkillLevels().forEach((level) => {
+    const option = document.createElement("option");
+    option.value = level;
+    option.textContent = level;
+    levelSelect.appendChild(option);
+  });
+  typeSelect.value = "capability";
+  levelSelect.value = "L1";
+  host.querySelector("[data-create-field='content']").value = "# New skill\n\nDescribe how and when to use this skill.";
+  renderSkillGraphDependencyPicker(host, skillGraphAvailableSkillNames(), []);
+  host.querySelector("[data-create-action='cancel']").addEventListener("click", () => renderSkillGraphDetail(null));
+  host.querySelector("[data-create-action='save']").addEventListener("click", () => createSkillGraphNode(host));
+  host.querySelector("[data-create-action='add-folder']").addEventListener("click", () => addSkillGraphFolder(host));
+  host.querySelector("[data-new-folder-name]").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addSkillGraphFolder(host);
+    }
+  });
+  skillGraphTab.detail.innerHTML = "";
+  skillGraphTab.detail.appendChild(host);
+  host.querySelector("[data-create-field='name']")?.focus();
+}
+
+async function createSkillGraphNode(host) {
+  const status = host.querySelector(".skill-graph-editor-status");
+  const saveButton = host.querySelector("[data-create-action='save']");
+  const name = host.querySelector("[data-create-field='name']")?.value.trim();
+  if (!name) {
+    status.classList.add("error");
+    status.textContent = "Name is required.";
+    return;
+  }
+  const payload = {
+    name,
+    description: host.querySelector("[data-create-field='description']")?.value || "",
+    entry_type: host.querySelector("[data-create-field='entry_type']")?.value || "capability",
+    skill_level: host.querySelector("[data-create-field='skill_level']")?.value || "L1",
+    tags: csvToList(host.querySelector("[data-create-field='tags']")?.value),
+    dependent_skills: Array.from(host._skillGraphDependencySelected || []),
+    content: host.querySelector("[data-create-field='content']")?.value || "",
+  };
+  status.textContent = "Creating...";
+  status.classList.remove("error");
+  saveButton.disabled = true;
+  try {
+    const resp = await fetch("/api/skill-graph/skills", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    for (const pending of host._skillGraphPendingUploads || []) {
+      const files = pending.files || [];
+      if (!files.length) continue;
+      const formData = new FormData();
+      formData.append("category", pending.folder || "references");
+      files.forEach((file) => formData.append("files", file));
+      const uploadResp = await fetch(`/api/skill-graph/skills/${encodeURIComponent(name)}/attachments`, {
+        method: "POST",
+        body: formData,
+      });
+      if (!uploadResp.ok) throw new Error(await uploadResp.text());
+    }
+    await refreshSkillGraphData();
+    const created = Array.from(skillGraphTab.nodeData.values()).find((node) => node.skill_name === name);
+    if (created) {
+      skillGraphTab.network?.selectNodes([created.id]);
+      renderSkillGraphDetail(created);
+    }
+  } catch (err) {
+    status.classList.add("error");
+    status.textContent = `Create failed: ${String(err.message || err)}`;
+  } finally {
+    saveButton.disabled = false;
+  }
+}
+
+async function removeSkillGraphNode(node) {
+  if (!node?.skill_name) return;
+  const message = node.is_custom
+    ? `Remove custom skill '${node.skill_name}' from the workspace?`
+    : `Remove default skill '${node.skill_name}'?\n\nThis can delete files from the bundled skill directory in this checkout. Only continue if you really intend to remove it.`;
+  if (!window.confirm(message)) return;
+  if (!node.is_custom && !window.confirm(`Please confirm again: permanently remove default skill '${node.skill_name}'?`)) return;
+  const previousStatus = skillGraphTab.status.textContent;
+  skillGraphTab.status.textContent = "removing";
+  skillGraphTab.status.className = "graph-status status-polling";
+  try {
+    const resp = await fetch(`/api/skill-graph/skills/${encodeURIComponent(node.skill_name)}`, {
+      method: "DELETE",
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    await refreshSkillGraphData();
+    renderSkillGraphDetail(null);
+  } catch (err) {
+    skillGraphTab.status.className = "graph-status status-idle";
+    skillGraphTab.status.textContent = previousStatus || "idle";
+    const error = document.createElement("div");
+    error.className = "skill-graph-editor-status error";
+    error.textContent = `Remove failed: ${String(err.message || err)}`;
+    skillGraphTab.detail.prepend(error);
+  }
 }
 
 function pushSkillGraphEditorHistory(host) {
@@ -4738,10 +4920,18 @@ function ensureSkillGraphTab() {
   header.className = "skill-graph-header";
   const heading = document.createElement("div");
   heading.innerHTML = '<div class="eyebrow">Knowledge</div><strong>Skill Graph</strong>';
+  const actions = document.createElement("div");
+  actions.className = "skill-graph-header-actions";
+  const addNode = document.createElement("button");
+  addNode.type = "button";
+  addNode.className = "ghost mini-btn";
+  addNode.textContent = "Add node";
+  addNode.addEventListener("click", renderSkillGraphCreatePanel);
   const status = document.createElement("span");
   status.className = "graph-status status-idle";
   status.textContent = "idle";
-  header.append(heading, status);
+  actions.append(addNode, status);
+  header.append(heading, actions);
 
   const body = document.createElement("div");
   body.className = "skill-graph-body";

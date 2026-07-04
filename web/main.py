@@ -527,6 +527,9 @@ def _json_ready(value):
 def _load_skill_graph_payload(*, limit: int = 400) -> dict:
     graph = _get_kg()
     disabled_skills = set(get_disabled_skills())
+    default_skill_names = get_default_skill_names()
+    skill_dirs = _skill_dir_map()
+    workspace_skill_root = workspace_skills_dir().resolve()
     nodes = []
     included_ids: set[str] = set()
     offset = 0
@@ -543,7 +546,21 @@ def _load_skill_graph_payload(*, limit: int = 400) -> dict:
             metadata = entry.metadata
             metadata_payload = _json_ready(metadata)
             skill_name = entry.title if "matcreator-skill" in entry.tags else None
+            skill_dir = skill_dirs.get(skill_name) if skill_name else None
+            if (
+                skill_name
+                and "matcreator-guide" not in entry.tags
+                and skill_dir is None
+            ):
+                continue
             enabled = skill_name not in disabled_skills if skill_name else True
+            skill_path = str(skill_dir.resolve()) if skill_dir else None
+            removable = bool(
+                skill_name
+                and skill_name not in default_skill_names
+                and skill_dir is not None
+                and skill_dir.resolve().is_relative_to(workspace_skill_root)
+            )
             nodes.append(
                 {
                     "id": entry.id,
@@ -551,6 +568,10 @@ def _load_skill_graph_payload(*, limit: int = 400) -> dict:
                     "title": entry.title,
                     "slug": entry.slug,
                     "skill_name": skill_name,
+                    "skill_path": skill_path,
+                    "is_custom": bool(skill_name and skill_name not in default_skill_names),
+                    "removable": removable,
+                    "remove_requires_confirmation": bool(skill_name and skill_name in default_skill_names),
                     "enabled": enabled,
                     "entry_type": entry_type,
                     "content": entry.content,
@@ -2059,6 +2080,29 @@ def _sanitize_attachment_category(category: str) -> str:
     return "/".join(parts)
 
 
+def _delete_skill_graph_entries(skill_name: str) -> int:
+    graph = _get_kg()
+    entry_ids = []
+    offset = 0
+    page_size = 200
+    while True:
+        page = graph.list(limit=page_size, offset=offset)
+        if not page:
+            break
+        for entry in page:
+            if entry.title == skill_name and "matcreator-skill" in entry.tags:
+                entry_ids.append(entry.id)
+        if len(page) < page_size:
+            break
+        offset += len(page)
+    deleted = sum(int(bool(graph.delete(entry_id))) for entry_id in entry_ids)
+    try:
+        graph.refresh()
+    except Exception:
+        pass
+    return deleted
+
+
 class SkillGraphEditBody(BaseModel):
     content: str
     description: str | None = None
@@ -2067,6 +2111,87 @@ class SkillGraphEditBody(BaseModel):
     tags: list[str] = []
     dependent_skills: list[str] = []
     metadata: dict | None = None
+
+
+class SkillGraphCreateBody(BaseModel):
+    name: str
+    description: str = ""
+    content: str = ""
+    entry_type: str = "capability"
+    skill_level: str = "L1"
+    tags: list[str] = []
+    dependent_skills: list[str] = []
+
+
+@app.post("/api/skill-graph/skills")
+async def create_skill_graph_skill(body: SkillGraphCreateBody) -> JSONResponse:
+    skill_name = body.name.strip()
+    if not _SKILL_NAME_RE.match(skill_name):
+        raise HTTPException(
+            status_code=422,
+            detail="Skill name must be lowercase alphanumeric with hyphens/underscores, starting with a letter or digit.",
+        )
+    if skill_name in {s.name for s in ALL_SKILLS} or skill_name in get_default_skill_names():
+        raise HTTPException(status_code=409, detail=f"Skill '{skill_name}' already exists.")
+
+    skill_dir = (workspace_skills_dir() / skill_name).resolve()
+    workspace_root = workspace_skills_dir().resolve()
+    if not skill_dir.is_relative_to(workspace_root):
+        raise HTTPException(status_code=400, detail="Invalid skill path.")
+    if skill_dir.exists():
+        raise HTTPException(status_code=409, detail=f"Skill folder already exists: {skill_name}")
+
+    frontmatter = {
+        "name": skill_name,
+        "description": body.description.strip() or f"Custom skill '{skill_name}'.",
+        "metadata": {
+            "entry_type": body.entry_type or "capability",
+            "skill_level": body.skill_level or "L1",
+            "tags": [str(tag).strip() for tag in body.tags if str(tag).strip()],
+            "dependent_skills": [
+                str(dep).strip()
+                for dep in body.dependent_skills
+                if str(dep).strip() and str(dep).strip() != skill_name
+            ],
+        },
+    }
+    content = _compose_skill_md(
+        frontmatter,
+        body.content.strip() or f"# {skill_name}\n\nDescribe how and when to use this skill.",
+    )
+    try:
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+        refresh_result = refresh_skills()
+    except OSError as exc:
+        shutil.rmtree(skill_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Failed to create skill: {exc}")
+    except Exception as exc:
+        shutil.rmtree(skill_dir, ignore_errors=True)
+        raise HTTPException(status_code=422, detail=f"Skill was written but failed to load: {exc}")
+    return JSONResponse({"status": "ok", "skill_name": skill_name, "path": str(skill_dir), "refresh": refresh_result})
+
+
+@app.delete("/api/skill-graph/skills/{skill_name}")
+async def delete_skill_graph_skill(skill_name: str) -> JSONResponse:
+    if not _SKILL_NAME_RE.match(skill_name):
+        raise HTTPException(status_code=400, detail=f"Invalid skill name: '{skill_name}'.")
+    skill_dir = _resolve_skill_dir(skill_name)
+    allowed_roots = [_MODULE_SKILLS_ROOT.resolve(), workspace_skills_dir().resolve()]
+    if not any(skill_dir.is_relative_to(root) for root in allowed_roots):
+        raise HTTPException(status_code=400, detail="This skill root cannot be removed from the graph UI.")
+    try:
+        shutil.rmtree(skill_dir)
+        deleted_graph_nodes = _delete_skill_graph_entries(skill_name)
+        refresh_result = refresh_skills()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to remove skill: {exc}")
+    return JSONResponse({
+        "status": "ok",
+        "deleted": skill_name,
+        "deleted_graph_nodes": deleted_graph_nodes,
+        "refresh": refresh_result,
+    })
 
 
 @app.get("/api/skill-graph/skills/{skill_name}/edit")

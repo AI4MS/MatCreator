@@ -712,6 +712,19 @@ body[data-theme="light"] .theme-icon-sun {
   font-size: 14px;
 }
 
+.skill-graph-header-actions,
+.skill-graph-edit-toggle {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.mini-btn.danger {
+  color: #f87171;
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(248, 113, 113, 0.06);
+}
+
 .skill-graph-body {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
