@@ -518,6 +518,7 @@ def _json_ready(value):
 
 def _load_skill_graph_payload(*, limit: int = 400) -> dict:
     graph = _get_kg()
+    disabled_skills = set(get_disabled_skills())
     nodes = []
     included_ids: set[str] = set()
     offset = 0
@@ -533,12 +534,16 @@ def _load_skill_graph_payload(*, limit: int = 400) -> dict:
                 continue
             metadata = entry.metadata
             metadata_payload = _json_ready(metadata)
+            skill_name = entry.title if "matcreator-skill" in entry.tags else None
+            enabled = skill_name not in disabled_skills if skill_name else True
             nodes.append(
                 {
                     "id": entry.id,
                     "label": entry.title,
                     "title": entry.title,
                     "slug": entry.slug,
+                    "skill_name": skill_name,
+                    "enabled": enabled,
                     "entry_type": entry_type,
                     "content": entry.content,
                     "content_preview": _entry_preview(entry.content),

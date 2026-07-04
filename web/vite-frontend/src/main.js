@@ -4009,8 +4009,37 @@ const SKILL_GRAPH_COLORS = {
   generic: { background: "#475569", border: "#64748B", highlight: { background: "#64748B", border: "#94A3B8" } },
 };
 
-function skillGraphNodeColor(type) {
-  return SKILL_GRAPH_COLORS[type] || SKILL_GRAPH_COLORS.generic;
+function hexToRgb(hex) {
+  const value = hex.replace("#", "");
+  return [
+    parseInt(value.slice(0, 2), 16),
+    parseInt(value.slice(2, 4), 16),
+    parseInt(value.slice(4, 6), 16),
+  ];
+}
+
+function rgba(hex, alpha) {
+  const [r, g, b] = hexToRgb(hex);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function skillGraphNodeColor(type, enabled = true) {
+  const color = SKILL_GRAPH_COLORS[type] || SKILL_GRAPH_COLORS.generic;
+  if (enabled !== false) return color;
+  return {
+    background: rgba(color.background, 0.28),
+    border: rgba(color.border, 0.34),
+    highlight: {
+      background: rgba(color.highlight.background, 0.42),
+      border: rgba(color.highlight.border, 0.55),
+    },
+  };
+}
+
+function skillGraphEdgeColor(disabled = false) {
+  return disabled
+    ? { color: "rgba(140, 160, 194, 0.16)", highlight: "rgba(125, 211, 252, 0.38)" }
+    : { color: "rgba(140, 160, 194, 0.45)", highlight: "#7dd3fc" };
 }
 
 function isEmptyDetailValue(value) {
@@ -4156,6 +4185,7 @@ function renderSkillGraphDetail(node) {
   meta.className = "skill-graph-detail-meta";
   const metaItems = [
     node.entry_type,
+    node.enabled === false ? "disabled" : "enabled",
     node.verification_status,
     node.refinement_status,
   ].filter(Boolean);
@@ -4175,6 +4205,8 @@ function renderSkillGraphDetail(node) {
   const identity = createSkillGraphFacts([
     ["ID", node.id],
     ["Slug", node.slug],
+    ["Skill", node.skill_name],
+    ["Enabled", node.enabled !== false],
     ["Type", node.entry_type],
     ["Aliases", node.aliases],
   ]);
@@ -4309,18 +4341,28 @@ async function loadSkillGraphTab({ force = false } = {}) {
     const nodes = new DataSet((data.nodes || []).map((node) => ({
       id: node.id,
       label: node.label,
-      title: `${node.title}\n${node.entry_type}`,
-      color: skillGraphNodeColor(node.entry_type),
-      font: { color: state.theme === "light" ? "#132033" : "#e7edf7", size: 13, face: "Manrope" },
+      title: `${node.title}\n${node.entry_type}${node.enabled === false ? "\ndisabled" : ""}`,
+      color: skillGraphNodeColor(node.entry_type, node.enabled),
+      font: {
+        color: node.enabled === false
+          ? (state.theme === "light" ? "rgba(19, 32, 51, 0.42)" : "rgba(231, 237, 247, 0.42)")
+          : (state.theme === "light" ? "#132033" : "#e7edf7"),
+        size: 13,
+        face: "Manrope",
+      },
       shape: "dot",
       size: node.entry_type === "capability" || node.entry_type === "workflow" ? 18 : 13,
+      borderWidth: node.enabled === false ? 1 : 2,
     })));
     const edges = new DataSet((data.edges || []).map((edge) => ({
       id: edge.id,
       from: edge.from,
       to: edge.to,
       arrows: "to",
-      color: { color: "rgba(140, 160, 194, 0.45)", highlight: "#7dd3fc" },
+      color: skillGraphEdgeColor(
+        tab.nodeData.get(edge.from)?.enabled === false
+          || tab.nodeData.get(edge.to)?.enabled === false
+      ),
       title: edge.relation || "related",
       smooth: { type: "dynamic" },
     })));
