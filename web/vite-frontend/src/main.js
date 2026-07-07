@@ -4646,11 +4646,14 @@ async function createSkillGraphNode(host) {
 
 async function removeSkillGraphNode(node) {
   if (!node?.skill_name) return;
+  if (!node.is_custom) {
+    window.alert(`Managed skill '${node.skill_name}' cannot be removed here.`);
+    return;
+  }
   const message = node.is_custom
     ? `Remove custom skill '${node.skill_name}' from the workspace?`
     : `Remove default skill '${node.skill_name}'?\n\nThis can delete files from the bundled skill directory in this checkout. Only continue if you really intend to remove it.`;
   if (!window.confirm(message)) return;
-  if (!node.is_custom && !window.confirm(`Please confirm again: permanently remove default skill '${node.skill_name}'?`)) return;
   const previousStatus = skillGraphTab.status.textContent;
   skillGraphTab.status.textContent = "removing";
   skillGraphTab.status.className = "graph-status status-polling";
@@ -5565,7 +5568,6 @@ function _syncParent(parentCb, childWrap) {
 
 function _renderSkillNode(node, extraSkills, depth) {
   const hasChildren = node.children.length > 0;
-  const isBuiltIn = node.planning_enabled && !extraSkills.has(node.name);
 
   const item = document.createElement("div");
   item.className = "st-item";
@@ -5586,8 +5588,6 @@ function _renderSkillNode(node, extraSkills, depth) {
   cb.className = "skill-checkbox";
   cb.dataset.name = node.name;
   cb.checked = node.planning_enabled;
-  cb.disabled = isBuiltIn;
-  if (isBuiltIn) cb.title = "Enabled by built-in category";
 
   const enabledCb = document.createElement("input");
   enabledCb.type = "checkbox";
@@ -5599,6 +5599,20 @@ function _renderSkillNode(node, extraSkills, depth) {
   const nameEl = document.createElement("span");
   nameEl.className = "st-name";
   nameEl.textContent = node.name;
+
+  if (node.source === "builtin") {
+    const badge = document.createElement("span");
+    badge.className = "skill-badge-custom";
+    badge.textContent = "Builtin";
+    nameEl.appendChild(badge);
+  }
+
+  if (node.source === "official") {
+    const badge = document.createElement("span");
+    badge.className = "skill-badge-custom";
+    badge.textContent = "Official";
+    nameEl.appendChild(badge);
+  }
 
   if (node.is_custom) {
     const badge = document.createElement("span");
