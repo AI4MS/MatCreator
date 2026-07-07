@@ -351,7 +351,7 @@ async def run_skill_script(
     """
     from ..config import get_disabled_skills
     from ..workspace import workspace_skills_dir
-    from ..skill import _MODULE_SKILLS_ROOT, user_skills_dir
+    from ..skill import _MODULE_SKILLS_ROOT, official_skills_dir, user_skills_dir
 
     if skill_name in get_disabled_skills():
         return f"Skill '{skill_name}' is disabled."
@@ -360,11 +360,13 @@ async def run_skill_script(
     if script_path is None:
         script_path = _resolve_skill_script_path(user_skills_dir(), skill_name, script_name)
     if script_path is None:
+        script_path = _resolve_skill_script_path(official_skills_dir(), skill_name, script_name)
+    if script_path is None:
         script_path = _resolve_skill_script_path(_MODULE_SKILLS_ROOT, skill_name, script_name)
     if script_path is None:
         return (
             f"Script not found for skill '{skill_name}': scripts/{script_name}\n"
-            f"Searched under: {workspace_skills_dir()}, {user_skills_dir()}, and {_MODULE_SKILLS_ROOT}\n"
+            f"Searched under: {workspace_skills_dir()}, {user_skills_dir()}, {official_skills_dir()}, and {_MODULE_SKILLS_ROOT}\n"
             f"Ensure the skill has a scripts/{script_name} file."
         )
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from click.testing import CliRunner
 
-from src.matcreator.scripts import start_agent
+from matcreator.scripts import start_agent
 
 
 def test_graph_stats_uses_matcreator_kdg_db(monkeypatch) -> None:
