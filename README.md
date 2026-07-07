@@ -68,6 +68,19 @@ Start an interactive session from the workspace you want MatCreator to use
 matcreator chat --workspace .
 ```
 
+### [Optional] Install official skills (SkillForge)
+
+MatCreator can install corporation-maintained official skills from the SkillForge repository managed by the MatCreator team.
+These skills are installed into `~/.matcreator/skills/official` and loaded alongside built-in and custom skills.
+
+> **Notice:** Only authenticated users with repository access can install official skills from SkillForge.
+
+```bash
+matcreator install official --repo git@github.com:AI4MS/SkillForge.git --ref devel
+```
+
+If your repository requires authentication, configure your Git SSH keys or credential helper first.
+
 ### [Optional] Install vite
 For using vite web frontend, you need to install it first:
 ```bash
