@@ -86,6 +86,8 @@ from matcreator.skill import (  # noqa: E402
     _MODULE_SKILLS_ROOT,
     _discover_skill_dirs,
     _skill_dir_map,
+    get_skill_source,
+    official_skills_dir,
     refresh_skills,
     get_default_skill_names,
 )
@@ -555,10 +557,12 @@ def _load_skill_graph_payload(*, limit: int = 400) -> dict:
                 continue
             enabled = skill_name not in disabled_skills if skill_name else True
             skill_path = str(skill_dir.resolve()) if skill_dir else None
+            source = get_skill_source(skill_name) if skill_name else None
             removable = bool(
                 skill_name
-                and skill_name not in default_skill_names
                 and skill_dir is not None
+                and source
+                and source.editable
                 and skill_dir.resolve().is_relative_to(workspace_skill_root)
             )
             nodes.append(
@@ -569,9 +573,13 @@ def _load_skill_graph_payload(*, limit: int = 400) -> dict:
                     "slug": entry.slug,
                     "skill_name": skill_name,
                     "skill_path": skill_path,
-                    "is_custom": bool(skill_name and skill_name not in default_skill_names),
+                    "source": source.name if source else None,
+                    "editable": bool(source and source.editable),
+                    "managed": bool(source and source.managed),
+                    "trusted": bool(source and source.trusted),
+                    "is_custom": bool(source and source.name in {"custom", "workspace"}),
                     "removable": removable,
-                    "remove_requires_confirmation": bool(skill_name and skill_name in default_skill_names),
+                    "remove_requires_confirmation": bool(skill_name and source and source.managed),
                     "enabled": enabled,
                     "entry_type": entry_type,
                     "content": entry.content,
@@ -2000,7 +2008,7 @@ async def cancel_individual_step(
 
 
 def _skill_bundle_roots() -> list[Path]:
-    return [_MODULE_SKILLS_ROOT, workspace_skills_dir(), Path.home() / ".matcreator" / "skills"]
+    return [_MODULE_SKILLS_ROOT, official_skills_dir(), workspace_skills_dir(), Path.home() / ".matcreator" / "skills"]
 
 
 def _resolve_skill_dir(skill_name: str) -> Path:
@@ -2321,7 +2329,7 @@ async def list_skills() -> JSONResponse:
     from matcreator.skill import _MODULE_SKILLS_ROOT, _discover_skill_dirs  # noqa: PLC0415
 
     parent_map: dict[str, str] = {}
-    for root in [_MODULE_SKILLS_ROOT, workspace_skills_dir()]:
+    for root in [_MODULE_SKILLS_ROOT, official_skills_dir(), workspace_skills_dir()]:
         for path in _discover_skill_dirs(root):
             parent_skill_md = path.parent / "SKILL.md"
             if parent_skill_md.is_file():
@@ -2329,17 +2337,21 @@ async def list_skills() -> JSONResponse:
 
     default_skill_names = get_default_skill_names()
     disabled_skills = set(get_disabled_skills())
-    skills = [
-        {
+    skills = []
+    for s in sorted(ALL_SKILLS, key=lambda s: s.name):
+        source = get_skill_source(s.name)
+        skills.append({
             "name": s.name,
             "description": s.description or "",
             "planning_enabled": s.name in PLANNING_SKILL_NAMES,
             "enabled": s.name not in disabled_skills,
             "parent": parent_map.get(s.name),
-            "is_custom": s.name not in default_skill_names,
-        }
-        for s in sorted(ALL_SKILLS, key=lambda s: s.name)
-    ]
+            "source": source.name if source else None,
+            "editable": bool(source and source.editable),
+            "managed": bool(source and source.managed),
+            "trusted": bool(source and source.trusted),
+            "is_custom": bool(source and source.name in {"custom", "workspace"}),
+        })
     return JSONResponse(skills)
 
 
