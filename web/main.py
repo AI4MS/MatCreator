@@ -37,14 +37,11 @@ import termios
 import threading
 import time
 from pathlib import Path
-from typing import List
+from typing import Any, List
 from urllib.parse import unquote
 
 import httpx
 import yaml
-
-from dotenv import dotenv_values, load_dotenv
-from dotenv import set_key as dotenv_set_key
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -108,7 +105,6 @@ _LOCAL_MATCREATOR_HOME = Path("~/.matcreator").expanduser()
 _MATCREATOR_HOME = _CONTROL_PLANE_HOME if _MATCREATOR_MODE == "server" else _LOCAL_MATCREATOR_HOME
 SESSION_DB_PATH = _MATCREATOR_HOME / ".adk" / "session.db"
 _ADK_DIR = _MATCREATOR_HOME / ".adk"
-ENV_PATH = _MATCREATOR_HOME / ".env"
 _USERS_DATA_ROOT = _SERVER_DATA_ROOT / "users"
 _USERS_HOST_ROOT = _SERVER_HOST_DATA_ROOT / "users"
 _WORKER_MATCREATOR_HOME = Path("/root/.matcreator")
@@ -122,16 +118,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-if ENV_PATH.exists():
-    load_dotenv(ENV_PATH, override=False)
 SUMMARIES_PATH = ROOT / "agents" / "MatCreator" / ".adk" / "session_summaries.json"
 _SENSITIVE_FIELDS = frozenset({"LLM_API_KEY", "BOHRIUM_PASSWORD"})
 _ENV_FIELDS = [
     "LLM_MODEL", "LLM_API_KEY", "LLM_BASE_URL", "EMBEDDING_MODEL",
+    "GRAPH_AGENT_MODEL", "REVIEW_AGENT_MODEL",
     "BOHRIUM_EMAIL", "BOHRIUM_PASSWORD", "BOHRIUM_PROJECT_ID",
     "BOHRIUM_VASP_IMAGE", "BOHRIUM_VASP_MACHINE",
     "BOHRIUM_DEEPMD_IMAGE", "BOHRIUM_DEEPMD_MACHINE", "DEEPMD_MODEL_PATH",
 ]
+_CUSTOM_ENV_CONFIG_KEY = "CUSTOM_ENV"
+_ENV_VALUE_MASK = "***"
+_USER_ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_PROTECTED_USER_ENV_KEYS = frozenset({
+    "HOME",
+    "PATH",
+    "PYTHONPATH",
+    "LD_LIBRARY_PATH",
+    "MATCREATOR_HOME",
+    "MATCREATOR_MODE",
+    "MATCREATOR_USER_ID",
+})
 
 _adk_process: subprocess.Popen | None = None
 _knowledge_review_lock = threading.Lock()
@@ -163,13 +170,6 @@ def _config_value_for_env_key(env_key: str) -> str:
     return "" if value is None else str(value)
 
 
-def _dotenv_value(env_key: str) -> str:
-    if not ENV_PATH.exists():
-        return ""
-    value = dotenv_values(ENV_PATH).get(env_key, "")
-    return "" if value is None else str(value)
-
-
 def _runtime_env_value(env_key: str) -> str:
     """Resolve a setting from the active runtime plus persisted UI settings."""
     mode = os.environ.get("MATCREATOR_MODE", "local")
@@ -177,16 +177,18 @@ def _runtime_env_value(env_key: str) -> str:
         value = (
             _config_value_for_env_key(env_key)
             or os.environ.get(env_key, "")
-            or _dotenv_value(env_key)
         )
     else:
-        value = _dotenv_value(env_key) or os.environ.get(env_key, "")
+        value = (
+            os.environ.get(env_key, "")
+            or _config_value_for_env_key(env_key)
+        )
     if value:
         return value
     legacy_key = _LEGACY_ENV_ALIASES.get(env_key)
     if not legacy_key:
         return ""
-    return _dotenv_value(legacy_key) or os.environ.get(legacy_key, "")
+    return os.environ.get(legacy_key, "")
 
 # ---------------------------------------------------------------------------
 # Server-mode worker management
@@ -225,6 +227,121 @@ def _safe_user_dir_name(user_id: str) -> str:
 def _user_matcreator_home(user_id: str, *, host: bool = False) -> Path:
     root = _USERS_HOST_ROOT if host else _USERS_DATA_ROOT
     return root / _safe_user_dir_name(user_id) / ".matcreator"
+
+
+def _config_path_for_user(user_id: str = "") -> Path | None:
+    if _MATCREATOR_MODE != "server":
+        return None
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required in server mode")
+    return _user_matcreator_home(user_id) / "config.yaml"
+
+
+def _config_paths_for_user(user_id: str = "") -> list[Path]:
+    path = _config_path_for_user(user_id)
+    if path is None:
+        return []
+    paths = [path]
+    host_path = _user_matcreator_home(user_id, host=True) / "config.yaml"
+    if host_path != path:
+        paths.insert(0, host_path)
+    return paths
+
+
+def _load_config_for_user(user_id: str = "") -> dict[str, Any]:
+    paths = _config_paths_for_user(user_id)
+    if not paths:
+        return load_config()
+    path = next((candidate for candidate in paths if candidate.exists()), paths[0])
+    if not path.exists():
+        return {}
+    try:
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (yaml.YAMLError, OSError):
+        return {}
+
+
+def _save_config_for_user(config: dict[str, Any], user_id: str = "") -> None:
+    paths = _config_paths_for_user(user_id)
+    if not paths:
+        save_config(config)
+        return
+    rendered = yaml.dump(config, default_flow_style=False, allow_unicode=True)
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(rendered, encoding="utf-8")
+
+
+def _get_nested_config_value(config: dict[str, Any], dotted_key: str) -> str:
+    current: Any = config
+    parts = dotted_key.split(".")
+    for part in parts[:-1]:
+        if not isinstance(current, dict):
+            return ""
+        current = current.get(part, {})
+    if not isinstance(current, dict):
+        return ""
+    value = current.get(parts[-1], "")
+    return "" if value is None else str(value)
+
+
+def _set_nested_config_value(config: dict[str, Any], dotted_key: str, value: str) -> None:
+    current = config
+    parts = dotted_key.split(".")
+    for part in parts[:-1]:
+        next_value = current.setdefault(part, {})
+        if not isinstance(next_value, dict):
+            next_value = {}
+            current[part] = next_value
+        current = next_value
+    current[parts[-1]] = value
+
+
+def _is_sensitive_env_key(env_key: str) -> bool:
+    upper = env_key.upper()
+    return env_key in _SENSITIVE_FIELDS or any(
+        token in upper for token in ("API_KEY", "PASSWORD", "SECRET", "TOKEN", "CREDENTIAL")
+    )
+
+
+def _validate_user_env_key(env_key: str) -> None:
+    if not _USER_ENV_KEY_RE.fullmatch(env_key):
+        raise HTTPException(status_code=400, detail=f"Invalid environment variable name: {env_key}")
+    if env_key in _PROTECTED_USER_ENV_KEYS:
+        raise HTTPException(status_code=400, detail=f"Protected environment variable cannot be overridden: {env_key}")
+
+
+def _masked_env_value(env_key: str, value: str) -> str:
+    return _ENV_VALUE_MASK if (_is_sensitive_env_key(env_key) and value) else value
+
+
+def _custom_env_from_config(config: dict[str, Any]) -> dict[str, str]:
+    env_cfg = config.get("env", {})
+    if not isinstance(env_cfg, dict):
+        return {}
+    return {
+        str(key): "" if value is None else str(value)
+        for key, value in env_cfg.items()
+    }
+
+
+def _config_env_values(config: dict[str, Any]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for yaml_key, env_key in YAML_TO_ENV.items():
+        value = _get_nested_config_value(config, yaml_key)
+        if value:
+            values[env_key] = value
+    for env_key, value in _custom_env_from_config(config).items():
+        if not value or not _USER_ENV_KEY_RE.fullmatch(env_key) or env_key in _PROTECTED_USER_ENV_KEYS:
+            continue
+        values[env_key] = value
+    return values
+
+
+def _local_adk_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env.update(_config_env_values(load_config()))
+    return env
 
 
 def _user_adk_dir(user_id: str) -> Path:
@@ -300,8 +417,48 @@ def _next_free_port() -> int:
     return port
 
 
+def _worker_image_id(dc) -> str:
+    try:
+        return dc.images.get(_WORKER_IMAGE).id or ""
+    except Exception as exc:
+        logger.warning("Could not resolve worker image %s: %s", _WORKER_IMAGE, exc)
+        return ""
+
+
+def _container_image_id(container) -> str:
+    image = getattr(container, "image", None)
+    image_id = getattr(image, "id", "") or ""
+    if image_id:
+        return image_id
+    attrs = getattr(container, "attrs", {}) or {}
+    return str(attrs.get("Image") or "")
+
+
+def _worker_container_uses_current_image(dc, container) -> bool:
+    current_image_id = _worker_image_id(dc)
+    container_image_id = _container_image_id(container)
+    return bool(current_image_id and container_image_id and current_image_id == container_image_id)
+
+
+def _remove_worker_container(user_id: str, container=None) -> None:
+    try:
+        dc = _get_docker()
+        target = container or dc.containers.get(_worker_container_name(user_id))
+        target.remove(force=True)
+    except Exception as exc:
+        logger.warning("Failed to remove worker for user %s: %s", user_id, exc)
+    _worker_registry.pop(user_id, None)
+    _worker_ports.pop(user_id, None)
+    _worker_last_used.pop(user_id, None)
+
+
 def _worker_env_vars() -> dict[str, str]:
-    """Credentials to forward into each worker container."""
+    """Default environment to forward into each worker container.
+
+    In server mode this comes from the control-plane runtime first, then the
+    persistent control-plane config.yaml. Each worker may still override these
+    defaults from its mounted user config.yaml during agent startup.
+    """
     keys = [
         "LLM_MODEL", "LLM_API_KEY", "LLM_BASE_URL", "EMBEDDING_MODEL",
         "GRAPH_AGENT_MODEL", "REVIEW_AGENT_MODEL",
@@ -310,7 +467,12 @@ def _worker_env_vars() -> dict[str, str]:
         "BOHRIUM_DEEPMD_IMAGE", "BOHRIUM_DEEPMD_MACHINE", "DEEPMD_MODEL_PATH",
         "KDG_EMBED_MODEL", "HF_HUB_OFFLINE",
     ]
-    return {k: v for k in keys if (v := _runtime_env_value(k))}
+    env_vars = {k: v for k in keys if (v := _runtime_env_value(k))}
+    for key, value in _custom_env_from_config(load_config()).items():
+        if not value or not _USER_ENV_KEY_RE.fullmatch(key) or key in _PROTECTED_USER_ENV_KEYS:
+            continue
+        env_vars[key] = value
+    return env_vars
 
 
 def ensure_worker_running(user_id: str) -> str:
@@ -331,10 +493,13 @@ def ensure_worker_running(user_id: str) -> str:
             target = _worker_registry[user_id]
             try:
                 c = dc.containers.get(name)
-                if c.status != "running":
-                    c.start()
-                _worker_last_used[user_id] = time.time()
-                return target
+                if not _worker_container_uses_current_image(dc, c):
+                    _remove_worker_container(user_id, c)
+                else:
+                    if c.status != "running":
+                        c.start()
+                    _worker_last_used[user_id] = time.time()
+                    return target
             except _docker.errors.NotFound:
                 del _worker_registry[user_id]
                 _worker_ports.pop(user_id, None)
@@ -342,8 +507,11 @@ def ensure_worker_running(user_id: str) -> str:
         # Container might exist from a previous server start.
         try:
             c = dc.containers.get(name)
+            if not _worker_container_uses_current_image(dc, c):
+                _remove_worker_container(user_id, c)
+                c = None
             port = None
-            if _WORKER_CONNECT_MODE == "host-port":
+            if c is not None and _WORKER_CONNECT_MODE == "host-port":
                 bindings = c.ports.get(f"{get_adk_port()}/tcp") or []
                 if not bindings:
                     c.remove(force=True)
@@ -418,15 +586,7 @@ def stop_worker(user_id: str) -> None:
 
 def remove_worker(user_id: str) -> None:
     """Stop and remove the worker container and clean up the registry."""
-    try:
-        import docker as _docker
-        dc = _get_docker()
-        dc.containers.get(_worker_container_name(user_id)).remove(force=True)
-    except Exception as exc:
-        logger.warning("Failed to remove worker for user %s: %s", user_id, exc)
-    _worker_registry.pop(user_id, None)
-    _worker_ports.pop(user_id, None)
-    _worker_last_used.pop(user_id, None)
+    _remove_worker_container(user_id)
 
 
 def _list_workers() -> list[dict]:
@@ -945,15 +1105,14 @@ def _is_primarily_english(text: str) -> bool:
 
 
 def _llm_config() -> tuple[str, str | None, str | None]:
-    """Resolve LLM config from env vars, with .env fallback.
+    """Resolve LLM config from env vars/config.yaml.
 
     Returns None for api_key/base_url when not explicitly set, so litellm
     can use its built-in provider detection (e.g. MINIMAX_API_KEY for minimax/).
     """
-    env = dotenv_values(ENV_PATH) if ENV_PATH.exists() else {}
-    model = os.environ.get("LLM_MODEL") or env.get("LLM_MODEL", "")
-    api_key = os.environ.get("LLM_API_KEY") or env.get("LLM_API_KEY") or None
-    base_url = os.environ.get("LLM_BASE_URL") or env.get("LLM_BASE_URL") or None
+    model = _runtime_env_value("LLM_MODEL")
+    api_key = _runtime_env_value("LLM_API_KEY") or None
+    base_url = _runtime_env_value("LLM_BASE_URL") or None
     return model, api_key, base_url
 
 
@@ -2530,7 +2689,7 @@ async def delete_skill_graph_attachment(skill_name: str, path: str = Query(...))
 
 
 @app.get("/api/skills")
-async def list_skills() -> JSONResponse:
+async def list_skills(user_id: str = Query(default="")) -> JSONResponse:
     """Return all loaded skills with their planning_enabled status and parent skill (if any)."""
     from matcreator.skill import _MODULE_SKILLS_ROOT, _discover_skill_dirs  # noqa: PLC0415
 
@@ -2542,14 +2701,16 @@ async def list_skills() -> JSONResponse:
                 parent_map[path.name] = path.parent.name
 
     default_skill_names = get_default_skill_names()
-    disabled_skills = set(get_disabled_skills())
+    config = _load_config_for_user(user_id)
+    planning_skills = set((config.get("planning") or {}).get("extra_skills") or [])
+    disabled_skills = set((config.get("skills") or {}).get("disabled") or [])
     skills = []
     for s in sorted(ALL_SKILLS, key=lambda s: s.name):
         source = get_skill_source(s.name)
         skills.append({
             "name": s.name,
             "description": s.description or "",
-            "planning_enabled": s.name in PLANNING_SKILL_NAMES,
+            "planning_enabled": s.name in PLANNING_SKILL_NAMES or s.name in planning_skills,
             "enabled": s.name not in disabled_skills,
             "parent": parent_map.get(s.name),
             "source": source.name if source else None,
@@ -2686,9 +2847,9 @@ async def delete_custom_skill(skill_name: str) -> JSONResponse:
 
 
 @app.get("/api/settings")
-async def get_settings() -> JSONResponse:
+async def get_settings(user_id: str = Query(default="")) -> JSONResponse:
     """Return the current user config."""
-    return JSONResponse(load_config())
+    return JSONResponse(_load_config_for_user(user_id))
 
 
 class SettingsBody(BaseModel):
@@ -2696,12 +2857,13 @@ class SettingsBody(BaseModel):
     user: dict | None = None
     skills: dict | None = None
     workspace: dict | None = None
+    llm: dict | None = None
 
 
 @app.put("/api/settings")
-async def update_settings(body: SettingsBody) -> JSONResponse:
+async def update_settings(body: SettingsBody, user_id: str = Query(default="")) -> JSONResponse:
     """Merge *body* into the config, persist it, and reload skills."""
-    config = load_config()
+    config = _load_config_for_user(user_id)
     if body.planning is not None:
         config.setdefault("planning", {}).update(body.planning)
     if body.user is not None:
@@ -2710,7 +2872,9 @@ async def update_settings(body: SettingsBody) -> JSONResponse:
         config.setdefault("skills", {}).update(body.skills)
     if body.workspace is not None:
         config.setdefault("workspace", {}).update(body.workspace)
-    save_config(config)
+    if body.llm is not None:
+        config.setdefault("llm", {}).update(body.llm)
+    _save_config_for_user(config, user_id)
     try:
         refresh_skills()
     except Exception as exc:
@@ -2722,77 +2886,117 @@ async def update_settings(body: SettingsBody) -> JSONResponse:
 
 
 @app.get("/api/env-config")
-async def get_env_config() -> JSONResponse:
-    """Return current LLM/compute configuration, masking sensitive fields.
+async def get_env_config(user_id: str = Query(default="")) -> JSONResponse:
+    """Return current LLM/custom environment overrides, masking sensitive fields.
 
-    In local mode, values come from ~/.matcreator/config.yaml (with .env as
-    fallback). In server mode, values come from the .env file as before.
+    In local mode, values come from ~/.matcreator/config.yaml with process env
+    fallback. In server mode, values come from the user's mounted config.yaml;
+    deployment defaults are intentionally not returned.
     """
     mode = os.environ.get("MATCREATOR_MODE", "local")
     result: dict[str, str] = {}
 
+    config = _load_config_for_user(user_id)
+
     if mode == "local":
-        from matcreator.config import get_config_value
         for env_key in _ENV_FIELDS:
             yaml_key = ENV_TO_YAML.get(env_key)
             if yaml_key:
-                val = get_config_value(yaml_key)
+                val = _get_nested_config_value(config, yaml_key)
             else:
-                val = dotenv_values(ENV_PATH).get(env_key, "") if ENV_PATH.exists() else ""
-            sensitive = yaml_key in SENSITIVE_YAML_KEYS if yaml_key else env_key in _SENSITIVE_FIELDS
-            result[env_key] = "***" if (sensitive and val) else val
+                val = ""
+            if not val:
+                val = os.environ.get(env_key, "")
+            result[env_key] = _masked_env_value(env_key, val)
     else:
-        values = dotenv_values(ENV_PATH) if ENV_PATH.exists() else {}
         for field in _ENV_FIELDS:
-            val = values.get(field, "")
-            result[field] = "***" if (field in _SENSITIVE_FIELDS and val) else val
+            yaml_key = ENV_TO_YAML.get(field)
+            val = _get_nested_config_value(config, yaml_key) if yaml_key else ""
+            result[field] = _masked_env_value(field, val)
+
+    result[_CUSTOM_ENV_CONFIG_KEY] = {
+        key: _masked_env_value(key, value)
+        for key, value in sorted(_custom_env_from_config(config).items())
+    }
 
     return JSONResponse(result)
 
 
 class EnvConfigBody(BaseModel):
-    values: dict[str, str]
+    values: dict[str, Any]
 
 
 @app.put("/api/env-config")
-async def update_env_config(body: EnvConfigBody) -> JSONResponse:
+async def update_env_config(body: EnvConfigBody, user_id: str = Query(default="")) -> JSONResponse:
     """Write updated configuration fields.
 
     In local mode, writes to ~/.matcreator/config.yaml.
-    In server mode, writes to agents/MatCreator/.env as before.
+    In server mode, writes to the user's mounted ~/.matcreator/config.yaml.
     """
     mode = os.environ.get("MATCREATOR_MODE", "local")
 
+    config = _load_config_for_user(user_id)
+    previous_custom_env = _custom_env_from_config(config)
+
+    for key, raw_value in body.values.items():
+        if key == _CUSTOM_ENV_CONFIG_KEY:
+            continue
+        value = "" if raw_value is None else str(raw_value)
+        if key not in _ENV_FIELDS:
+            continue
+        yaml_key = ENV_TO_YAML.get(key)
+        if yaml_key is None:
+            continue
+        sensitive = yaml_key in SENSITIVE_YAML_KEYS or _is_sensitive_env_key(key)
+        if sensitive and value == _ENV_VALUE_MASK:
+            continue
+        _set_nested_config_value(config, yaml_key, value)
+
+    custom_env_raw = body.values.get(_CUSTOM_ENV_CONFIG_KEY)
+    if isinstance(custom_env_raw, dict):
+        existing_custom_env = _custom_env_from_config(config)
+        next_custom_env: dict[str, str] = {}
+        for raw_key, raw_value in custom_env_raw.items():
+            env_key = str(raw_key).strip()
+            if not env_key:
+                continue
+            _validate_user_env_key(env_key)
+            value = "" if raw_value is None else str(raw_value)
+            if _is_sensitive_env_key(env_key) and value == _ENV_VALUE_MASK:
+                value = existing_custom_env.get(env_key, "")
+            if value:
+                next_custom_env[env_key] = value
+        if next_custom_env:
+            config["env"] = dict(sorted(next_custom_env.items()))
+        else:
+            config.pop("env", None)
+
+    _save_config_for_user(config, user_id)
+
     if mode == "local":
-        from matcreator.config import set_config_value
-        for key, value in body.values.items():
+        for key, raw_value in body.values.items():
+            if key == _CUSTOM_ENV_CONFIG_KEY:
+                continue
+            value = "" if raw_value is None else str(raw_value)
             if key not in _ENV_FIELDS:
                 continue
             yaml_key = ENV_TO_YAML.get(key)
             if yaml_key is None:
                 continue
             sensitive = yaml_key in SENSITIVE_YAML_KEYS
-            if sensitive and value == "***":
+            if sensitive and value == _ENV_VALUE_MASK:
                 continue
-            set_config_value(yaml_key, value)
             if value:
                 os.environ[key] = value
             else:
                 os.environ.pop(key, None)
-    else:
-        ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if not ENV_PATH.exists():
-            ENV_PATH.touch()
-        for key, value in body.values.items():
-            if key not in _ENV_FIELDS:
-                continue
-            if key in _SENSITIVE_FIELDS and value == "***":
-                continue
-            dotenv_set_key(str(ENV_PATH), key, value)
-            if value:
-                os.environ[key] = value
-            else:
-                os.environ.pop(key, None)
+        if isinstance(custom_env_raw, dict):
+            next_custom_env = _custom_env_from_config(config)
+            for env_key in previous_custom_env:
+                if env_key not in next_custom_env:
+                    os.environ.pop(env_key, None)
+            for env_key, value in _custom_env_from_config(config).items():
+                os.environ[env_key] = value
 
     return JSONResponse({"status": "ok"})
 
@@ -2810,17 +3014,9 @@ async def restart_backend(user_id: str = Query(default="")) -> JSONResponse:
         if not user_id:
             raise HTTPException(status_code=400, detail="user_id required in server mode")
         try:
-            import docker as _docker
-            dc = _get_docker()
-            name = _worker_container_name(user_id)
-            try:
-                c = dc.containers.get(name)
-                c.restart(timeout=15)
-            except _docker.errors.NotFound:
-                target = await asyncio.to_thread(ensure_worker_running, user_id)
-                return JSONResponse({"status": "created", "user_id": user_id, "target": target})
-            target = _worker_registry.get(user_id)
-            return JSONResponse({"status": "restarting", "user_id": user_id, "target": target})
+            await asyncio.to_thread(remove_worker, user_id)
+            target = await asyncio.to_thread(ensure_worker_running, user_id)
+            return JSONResponse({"status": "recreated", "user_id": user_id, "target": target})
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 
@@ -2833,6 +3029,7 @@ async def restart_backend(user_id: str = Query(default="")) -> JSONResponse:
             cwd=str(ROOT),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=_local_adk_env(),
         )
     except FileNotFoundError:
         raise HTTPException(status_code=500, detail="'matcreator' command not found in PATH")

@@ -71,6 +71,59 @@ def test_embedding_model_is_forwarded_to_kdg_embedder(monkeypatch, tmp_path: Pat
     assert constants.os.environ["KDG_EMBED_BASE_URL"] == "https://embed.example/v1"
 
 
+def test_server_mode_config_overrides_container_defaults(monkeypatch, tmp_path: Path) -> None:
+    matcreator_home = tmp_path / "worker-home"
+    matcreator_home.mkdir()
+    (matcreator_home / "config.yaml").write_text(
+        "llm:\n"
+        "  model: openai/user-model\n"
+        "env:\n"
+        "  MP_API_KEY: user-mp-key\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MATCREATOR_MODE", "server")
+    monkeypatch.setenv("MATCREATOR_HOME", str(matcreator_home))
+    monkeypatch.setenv("LLM_MODEL", "openai/container-default")
+    monkeypatch.delenv("KDG_DB_PATH", raising=False)
+    monkeypatch.delenv("MP_API_KEY", raising=False)
+    sys.modules.pop("src.matcreator.constants", None)
+    sys.modules.pop("src.matcreator.config", None)
+
+    constants = importlib.import_module("src.matcreator.constants")
+
+    assert constants.LLM_MODEL == "openai/user-model"
+    assert constants.os.environ["LLM_MODEL"] == "openai/user-model"
+    assert constants.os.environ["MP_API_KEY"] == "user-mp-key"
+
+
+def test_api_server_startup_applies_config_env_to_harness(monkeypatch, tmp_path: Path) -> None:
+    matcreator_home = tmp_path / "worker-home"
+    matcreator_home.mkdir()
+    (matcreator_home / "config.yaml").write_text(
+        "llm:\n"
+        "  model: openai/user-harness-model\n"
+        "env:\n"
+        "  FRONTEND_SET_FLAG: visible-to-harness\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MATCREATOR_MODE", "server")
+    monkeypatch.setenv("MATCREATOR_HOME", str(matcreator_home))
+    monkeypatch.setenv("LLM_MODEL", "openai/container-default")
+    monkeypatch.delenv("FRONTEND_SET_FLAG", raising=False)
+    for module_name in (
+        "matcreator.config",
+        "matcreator.ports",
+        "src.matcreator.scripts.start_agent",
+    ):
+        sys.modules.pop(module_name, None)
+
+    start_agent = importlib.import_module("src.matcreator.scripts.start_agent")
+    start_agent._apply_harness_config_env()
+
+    assert start_agent.os.environ["LLM_MODEL"] == "openai/user-harness-model"
+    assert start_agent.os.environ["FRONTEND_SET_FLAG"] == "visible-to-harness"
+
+
 def test_matcreator_home_overrides_user_storage_paths(monkeypatch, tmp_path: Path) -> None:
     matcreator_home = tmp_path / "server-home"
     monkeypatch.setenv("MATCREATOR_HOME", str(matcreator_home))
@@ -86,3 +139,15 @@ def test_matcreator_home_overrides_user_storage_paths(monkeypatch, tmp_path: Pat
     assert constants.DEFAULT_KDG_DB_PATH == matcreator_home / ".adk" / "know_do_graph.db"
     assert config._CONFIG_PATH == matcreator_home / "config.yaml"
     assert workspace.get_workspace_root() == (matcreator_home / "workspace").resolve()
+
+
+def test_matcreator_config_path_overrides_config_file_location(monkeypatch, tmp_path: Path) -> None:
+    matcreator_home = tmp_path / "server-home"
+    config_path = tmp_path / "service-config.yaml"
+    monkeypatch.setenv("MATCREATOR_HOME", str(matcreator_home))
+    monkeypatch.setenv("MATCREATOR_CONFIG_PATH", str(config_path))
+    sys.modules.pop("src.matcreator.config", None)
+
+    config = importlib.import_module("src.matcreator.config")
+
+    assert config._CONFIG_PATH == config_path

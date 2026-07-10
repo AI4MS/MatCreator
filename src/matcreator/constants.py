@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
-
-from dotenv import load_dotenv
 
 _script_dir = Path(__file__).parent.resolve()
 _MATCREATOR_DIR = Path(os.environ.get("MATCREATOR_HOME", str(Path.home() / ".matcreator"))).expanduser()
@@ -18,19 +17,25 @@ _LEGACY_ENV_ALIASES = {
     "LLM_API_KEY": "MINIMAX_API_KEY",
     "LLM_BASE_URL": "MINIMAX_API_BASE",
 }
+_CONFIG_OVERRIDES_PRE_ENV = os.environ.get("MATCREATOR_MODE", "local") == "server"
+_USER_ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_PROTECTED_USER_ENV_KEYS = frozenset({
+    "HOME",
+    "PATH",
+    "PYTHONPATH",
+    "LD_LIBRARY_PATH",
+    "MATCREATOR_HOME",
+    "MATCREATOR_MODE",
+    "MATCREATOR_USER_ID",
+})
 
-# Priority: explicit env vars (highest) > config.yaml > .env (lowest)
-# Capture what was set before we load any file.
+# Priority: explicit env vars (highest) > config.yaml.
+# Capture what was set before we apply config.yaml values.
 _pre_env = frozenset(os.environ.keys())
 
-# Load .env files without overriding existing env vars (lowest priority).
-# ~/.matcreator/.env for user-global settings; CWD .env for workspace overrides.
-load_dotenv(_MATCREATOR_DIR / ".env", override=False)
-load_dotenv(Path(".env"), override=False)
-
-# Apply config.yaml values — override .env values but not vars that were
-# already present in the environment before this module was imported.
-from .config import get_llm_config, get_bohrium_config, get_compute_config  # noqa: E402
+# Apply config.yaml values, but do not override vars that were already present
+# in the environment before this module was imported unless running as a server worker.
+from .config import get_llm_config, get_bohrium_config, get_compute_config, get_env_overrides  # noqa: E402
 
 _llm_cfg = get_llm_config()
 _bohrium_cfg = get_bohrium_config()
@@ -54,7 +59,13 @@ _yaml_to_env: dict[str, str | None] = {
 }
 
 for _env_key, _yaml_val in _yaml_to_env.items():
-    if _yaml_val and _env_key not in _pre_env:
+    if _yaml_val and (_CONFIG_OVERRIDES_PRE_ENV or _env_key not in _pre_env):
+        os.environ[_env_key] = _yaml_val
+
+for _env_key, _yaml_val in get_env_overrides().items():
+    if not _USER_ENV_KEY_RE.fullmatch(_env_key) or _env_key in _PROTECTED_USER_ENV_KEYS:
+        continue
+    if _yaml_val and (_CONFIG_OVERRIDES_PRE_ENV or _env_key not in _pre_env):
         os.environ[_env_key] = _yaml_val
 
 for _env_key, _legacy_key in _LEGACY_ENV_ALIASES.items():

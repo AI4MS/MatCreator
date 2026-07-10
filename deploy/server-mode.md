@@ -32,16 +32,52 @@ Workers are disposable. User data is persistent because it is host-mounted.
 
 1. Docker Engine and Docker Compose plugin.
 2. A built MatCreator image.
-3. Shared model/compute credentials in `agents/MatCreator/.env`.
+3. Server defaults in a config file. By default, server mode uses `./config.yaml` from the repository root.
 
-Example `.env` entries:
+Example control-plane `config.yaml` entries:
 
-```env
-LLM_MODEL=openai/your-model
-LLM_API_KEY=your-key
-LLM_BASE_URL=https://your-compatible-api/v1
-EMBEDDING_MODEL=openai/your-embedding-model
+```yaml
+llm:
+  model: openai/your-model
+  api_key: your-key
+  base_url: https://your-compatible-api/v1
+  embedding_model: openai/your-embedding-model
+  executor_cards:
+    default: standard
+    cards:
+      standard:
+        model: openai/your-model
+        description: Default executor model.
+
+env:
+  MP_API_KEY: your-default-materials-project-key
 ```
+
+Create the config file before starting the service:
+
+```bash
+touch config.yaml
+$EDITOR config.yaml
+```
+
+To use a different host-side config path, set:
+
+```bash
+export MATCREATOR_HOST_CONFIG_PATH=/path/to/config.yaml
+```
+
+The selected host file is mounted into the control-plane container as
+`/app/config.yaml`, and the container receives `MATCREATOR_CONFIG_PATH=/app/config.yaml`.
+
+Per-user overrides live at:
+
+```text
+server-data/users/<user_id>/.matcreator/config.yaml
+```
+
+Users can also edit those overrides from the frontend settings UI. MatCreator
+application settings are not read from `agents/MatCreator/.env`; use process
+environment variables only for deployment/runtime knobs.
 
 ## Quick start
 
@@ -51,6 +87,7 @@ From the repository root:
 docker compose build
 
 export MATCREATOR_HOST_DATA_ROOT="$(pwd)/server-data"
+touch config.yaml
 docker compose -f docker-compose.server.yml up -d
 ```
 
@@ -67,12 +104,11 @@ Register a user and log in. The first login/register starts a dedicated worker.
 With `MATCREATOR_HOST_DATA_ROOT="$(pwd)/server-data"`:
 
 ```text
+config.yaml
 server-data/
   control-plane/
     .matcreator/
       users.db
-      config.yaml
-      .env
   users/
     <user_id>/
       .matcreator/
@@ -115,6 +151,27 @@ Set it to `0` to disable idle shutdown:
 ```bash
 MATCREATOR_WORKER_IDLE_TIMEOUT_SECONDS=0 \
 docker compose -f docker-compose.server.yml up -d
+```
+
+## Stop the service
+
+Stop and remove the Compose-managed services:
+
+```bash
+docker compose -f docker-compose.server.yml down
+```
+
+Remove dynamically created workers as well:
+
+```bash
+docker ps -a --filter "name=matcreator-worker-" --format "{{.Names}}" | xargs -r docker rm -f
+```
+
+Persistent data remains under `server-data/`. Remove it only if you want to
+delete all users, sessions, workspaces, and server defaults:
+
+```bash
+rm -rf server-data
 ```
 
 ### CPU, memory, and PID limits

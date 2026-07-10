@@ -3077,6 +3077,94 @@ body[data-theme="light"] .panel-resizer.resizing::before {
 }
 .settings-env-input:focus { outline: none; border-color: var(--accent); }
 
+.settings-json-textarea {
+  min-height: 150px;
+  resize: vertical;
+  font-family: var(--mono);
+  line-height: 1.45;
+}
+
+.settings-llm-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-llm-key-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-llm-key-field > span {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.settings-llm-card-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.025);
+}
+
+.settings-llm-card-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.settings-llm-card-header {
+  display: grid;
+  grid-template-columns: 1fr 34px;
+  gap: 8px;
+  align-items: center;
+}
+
+.settings-llm-card-name {
+  font-family: var(--mono);
+}
+
+.settings-llm-card-remove {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+}
+
+.settings-llm-card-description {
+  min-height: 70px;
+  resize: vertical;
+}
+
+.settings-llm-card-custom {
+  min-height: 92px;
+}
+
+.settings-llm-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settings-llm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .env-restart-notice {
   padding: 6px 10px;
   border-radius: 8px;
@@ -3095,6 +3183,53 @@ body[data-theme="light"] .panel-resizer.resizing::before {
   border-top: 1px solid var(--border);
   padding-top: 10px;
   margin-top: 4px;
+}
+
+.settings-env-pairs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-env-pair-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.8fr) minmax(160px, 1.2fr) 34px;
+  gap: 8px;
+  align-items: center;
+}
+
+.settings-env-key {
+  font-family: var(--mono);
+}
+
+.settings-env-remove {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+}
+
+@media (max-width: 640px) {
+  .settings-llm-card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-env-pair-row {
+    grid-template-columns: 1fr 34px;
+  }
+
+  .settings-env-value {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .settings-env-remove {
+    grid-column: 2;
+    grid-row: 1;
+  }
 }
 
 /* ── Custom skill badge ──────────────────────────────────── */

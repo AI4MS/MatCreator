@@ -5679,6 +5679,12 @@ const settingsUsername = document.getElementById("settings-username");
 const settingsUuid = document.getElementById("settings-uuid");
 const skillsChecklist = document.getElementById("skills-checklist");
 const settingsRestartBtn = document.getElementById("settings-restart-btn");
+const settingsEnvPairs = document.getElementById("settings-env-pairs");
+const settingsEnvAdd = document.getElementById("settings-env-add");
+const settingsLlmExecutorDefault = document.getElementById("settings-llm-executor-default");
+const settingsLlmCards = document.getElementById("settings-llm-cards");
+const settingsLlmCardAdd = document.getElementById("settings-llm-card-add");
+const CUSTOM_ENV_CONFIG_KEY = "CUSTOM_ENV";
 
 // Env config input refs
 const envInputs = {
@@ -5686,15 +5692,213 @@ const envInputs = {
   LLM_API_KEY:            () => document.getElementById("settings-llm-apikey"),
   LLM_BASE_URL:           () => document.getElementById("settings-llm-baseurl"),
   EMBEDDING_MODEL:        () => document.getElementById("settings-llm-embed"),
-  BOHRIUM_EMAIL:          () => document.getElementById("settings-bohr-email"),
-  BOHRIUM_PASSWORD:       () => document.getElementById("settings-bohr-password"),
-  BOHRIUM_PROJECT_ID:     () => document.getElementById("settings-bohr-project"),
-  BOHRIUM_VASP_IMAGE:     () => document.getElementById("settings-bohr-vasp-image"),
-  BOHRIUM_VASP_MACHINE:   () => document.getElementById("settings-bohr-vasp-machine"),
-  BOHRIUM_DEEPMD_IMAGE:   () => document.getElementById("settings-bohr-deepmd-image"),
-  BOHRIUM_DEEPMD_MACHINE: () => document.getElementById("settings-bohr-deepmd-machine"),
-  DEEPMD_MODEL_PATH:      () => document.getElementById("settings-bohr-deepmd-model"),
+  GRAPH_AGENT_MODEL:      () => document.getElementById("settings-llm-graph-model"),
+  REVIEW_AGENT_MODEL:     () => document.getElementById("settings-llm-review-model"),
 };
+
+function settingsQueryString() {
+  return state.deploymentMode === "server" && state.userId
+    ? `?user_id=${encodeURIComponent(state.userId)}`
+    : "";
+}
+
+function settingsApiUrl(path) {
+  return `${path}${settingsQueryString()}`;
+}
+
+function createEnvPairRow(key = "", value = "") {
+  const row = document.createElement("div");
+  row.className = "settings-env-pair-row";
+
+  const keyInput = document.createElement("input");
+  keyInput.className = "text-input settings-env-input settings-env-key";
+  keyInput.placeholder = "KEY";
+  keyInput.value = key;
+  keyInput.autocomplete = "off";
+
+  const valueInput = document.createElement("input");
+  valueInput.className = "text-input settings-env-input settings-env-value";
+  valueInput.placeholder = "value";
+  valueInput.value = value;
+  valueInput.autocomplete = "new-password";
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "ghost settings-env-remove";
+  remove.title = "Remove variable";
+  remove.textContent = "×";
+  remove.addEventListener("click", () => row.remove());
+
+  row.append(keyInput, valueInput, remove);
+  return row;
+}
+
+function renderEnvPairs(envCfg = {}) {
+  if (!settingsEnvPairs) return;
+  settingsEnvPairs.innerHTML = "";
+  const entries = Object.entries(envCfg || {}).sort(([a], [b]) => a.localeCompare(b));
+  entries.forEach(([key, value]) => settingsEnvPairs.appendChild(createEnvPairRow(key, value)));
+}
+
+function collectEnvPairs() {
+  const values = {};
+  settingsEnvPairs?.querySelectorAll(".settings-env-pair-row")?.forEach((row) => {
+    const key = row.querySelector(".settings-env-key")?.value.trim();
+    const value = row.querySelector(".settings-env-value")?.value || "";
+    if (key && value) values[key] = value;
+  });
+  return values;
+}
+
+function formatJsonConfig(value) {
+  if (!value || (typeof value === "object" && !Object.keys(value).length)) return "";
+  return JSON.stringify(value, null, 2);
+}
+
+function parseJsonConfig(text, label) {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return undefined;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+      throw new Error(`${label} must be a JSON object.`);
+    }
+    return parsed;
+  } catch (err) {
+    throw new Error(`${label} is not valid JSON: ${err.message}`);
+  }
+}
+
+function csvFieldToList(value) {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function listFieldToCsv(value) {
+  return Array.isArray(value) ? value.join(", ") : String(value || "");
+}
+
+function executorCardKnownFields() {
+  return new Set([
+    "model",
+    "description",
+    "skills",
+    "tags",
+    "routing_keywords",
+    "cost_tier",
+    "latency_tier",
+    "priority",
+  ]);
+}
+
+function createExecutorCardEditor(name = "", data = {}) {
+  const card = document.createElement("section");
+  card.className = "settings-llm-card-editor";
+  const customData = { ...(data || {}) };
+  executorCardKnownFields().forEach((key) => delete customData[key]);
+
+  card.innerHTML = `
+    <div class="settings-llm-card-title">Executor Card</div>
+    <label class="settings-label">name</label>
+    <div class="settings-llm-card-header">
+      <input data-card-field="name" class="text-input settings-env-input settings-llm-card-name" placeholder="card name" autocomplete="off" />
+      <button type="button" class="ghost settings-llm-card-remove" title="Remove card">×</button>
+    </div>
+    <label class="settings-label">Model</label>
+    <input data-card-field="model" class="text-input settings-env-input" placeholder="openai/qwen3-plus" />
+    <label class="settings-label">Description</label>
+    <textarea data-card-field="description" class="text-input settings-env-input settings-llm-card-description" spellcheck="false" placeholder="When this card should be used"></textarea>
+    <div class="settings-llm-card-grid">
+      <label class="settings-llm-field">Skills
+        <input data-card-field="skills" class="text-input settings-env-input" placeholder="filesystem, python" />
+      </label>
+      <label class="settings-llm-field">Tags
+        <input data-card-field="tags" class="text-input settings-env-input" placeholder="vision, cheap" />
+      </label>
+      <label class="settings-llm-field">Routing Keywords
+        <input data-card-field="routing_keywords" class="text-input settings-env-input" placeholder="debug, analyze" />
+      </label>
+      <label class="settings-llm-field">Cost Tier
+        <input data-card-field="cost_tier" class="text-input settings-env-input" placeholder="low / medium / high" />
+      </label>
+      <label class="settings-llm-field">Latency Tier
+        <input data-card-field="latency_tier" class="text-input settings-env-input" placeholder="low / medium / high" />
+      </label>
+      <label class="settings-llm-field">Priority
+        <input data-card-field="priority" type="number" class="text-input settings-env-input" placeholder="0" />
+      </label>
+    </div>
+    <label class="settings-label">Custom Fields JSON</label>
+    <textarea data-card-field="custom" class="text-input settings-env-input settings-json-textarea settings-llm-card-custom" spellcheck="false" placeholder='{"api_key":"...","base_url":"https://..."}'></textarea>
+  `;
+
+  card.querySelector("[data-card-field='name']").value = name;
+  card.querySelector("[data-card-field='model']").value = data?.model || "";
+  card.querySelector("[data-card-field='description']").value = data?.description || "";
+  card.querySelector("[data-card-field='skills']").value = listFieldToCsv(data?.skills);
+  card.querySelector("[data-card-field='tags']").value = listFieldToCsv(data?.tags);
+  card.querySelector("[data-card-field='routing_keywords']").value = listFieldToCsv(data?.routing_keywords || data?.keywords);
+  card.querySelector("[data-card-field='cost_tier']").value = data?.cost_tier || "";
+  card.querySelector("[data-card-field='latency_tier']").value = data?.latency_tier || "";
+  card.querySelector("[data-card-field='priority']").value = data?.priority ?? "";
+  card.querySelector("[data-card-field='custom']").value = formatJsonConfig(customData);
+  card.querySelector(".settings-llm-card-remove")?.addEventListener("click", () => card.remove());
+  return card;
+}
+
+function renderExecutorCards(executorCards = {}) {
+  if (!settingsLlmCards) return;
+  settingsLlmCards.innerHTML = "";
+  if (settingsLlmExecutorDefault) settingsLlmExecutorDefault.value = executorCards?.default || "";
+  const cards = executorCards?.cards && typeof executorCards.cards === "object" ? executorCards.cards : {};
+  Object.entries(cards)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .forEach(([name, data]) => {
+      settingsLlmCards.appendChild(createExecutorCardEditor(name, data || {}));
+    });
+}
+
+function collectExecutorCards() {
+  const defaultName = settingsLlmExecutorDefault?.value.trim() || "";
+  const cards = {};
+  settingsLlmCards?.querySelectorAll(".settings-llm-card-editor")?.forEach((card) => {
+    const name = card.querySelector("[data-card-field='name']")?.value.trim();
+    if (!name) return;
+    const data = {};
+    const setText = (field) => {
+      const value = card.querySelector(`[data-card-field='${field}']`)?.value.trim();
+      if (value) data[field] = value;
+    };
+    setText("model");
+    setText("description");
+    ["skills", "tags", "routing_keywords"].forEach((field) => {
+      const value = csvFieldToList(card.querySelector(`[data-card-field='${field}']`)?.value || "");
+      if (value.length) data[field] = value;
+    });
+    setText("cost_tier");
+    setText("latency_tier");
+    const priorityRaw = card.querySelector("[data-card-field='priority']")?.value;
+    if (priorityRaw !== undefined && priorityRaw !== "") data.priority = Number(priorityRaw);
+    const custom = parseJsonConfig(card.querySelector("[data-card-field='custom']")?.value || "", `Custom Fields for ${name}`);
+    cards[name] = { ...(custom || {}), ...data };
+  });
+  return { default: defaultName, cards };
+}
+
+settingsLlmCardAdd?.addEventListener("click", () => {
+  const nextIndex = (settingsLlmCards?.querySelectorAll(".settings-llm-card-editor")?.length || 0) + 1;
+  const card = createExecutorCardEditor(`card_${nextIndex}`, {});
+  settingsLlmCards?.appendChild(card);
+  card.querySelector("[data-card-field='name']")?.focus();
+});
+
+settingsEnvAdd?.addEventListener("click", () => {
+  const row = createEnvPairRow();
+  settingsEnvPairs?.appendChild(row);
+  row.querySelector(".settings-env-key")?.focus();
+});
 
 function openSettingsModal() {
   settingsModal.classList.remove("hidden");
@@ -5768,7 +5972,7 @@ function _renderSkillNode(node, extraSkills, depth) {
   cb.type = "checkbox";
   cb.className = "skill-checkbox";
   cb.dataset.name = node.name;
-  cb.checked = node.planning_enabled;
+  cb.checked = node.planning_enabled || extraSkills.has(node.name);
 
   const enabledCb = document.createElement("input");
   enabledCb.type = "checkbox";
@@ -5937,13 +6141,14 @@ async function loadSettingsData() {
     '<p class="settings-hint" style="opacity:0.6">Loading…</p>';
   try {
     const [skillsRes, settingsRes, envRes] = await Promise.all([
-      fetch("/api/skills"),
-      fetch("/api/settings"),
-      fetch("/api/env-config"),
+      fetch(settingsApiUrl("/api/skills")),
+      fetch(settingsApiUrl("/api/settings")),
+      fetch(settingsApiUrl("/api/env-config")),
     ]);
     const skills = await skillsRes.json();
     const cfg = await settingsRes.json();
     const envCfg = envRes.ok ? await envRes.json() : {};
+    const llmCfg = cfg.llm || {};
     const extraSkills = new Set((cfg.planning || {}).extra_skills || []);
 
     // Populate default workdir from config
@@ -5994,6 +6199,8 @@ async function loadSettingsData() {
         el.value = envCfg[key];
       }
     }
+    renderExecutorCards(llmCfg.executor_cards || {});
+    renderEnvPairs(envCfg[CUSTOM_ENV_CONFIG_KEY] || {});
   } catch (err) {
     skillsChecklist.innerHTML = `<p class="settings-hint" style="color:#f87171">Failed to load: ${err.message}</p>`;
   }
@@ -6016,7 +6223,7 @@ async function saveSettings() {
 
   // Collect env config values (skip empty sensitive fields with "***")
   const envValues = {};
-  const sensitiveKeys = new Set(["LLM_API_KEY", "BOHRIUM_PASSWORD"]);
+  const sensitiveKeys = new Set(["LLM_API_KEY"]);
   for (const [key, getEl] of Object.entries(envInputs)) {
     const el = getEl();
     if (!el) continue;
@@ -6024,13 +6231,21 @@ async function saveSettings() {
     if (sensitiveKeys.has(key) && (!val || val === "***")) continue;
     envValues[key] = val;
   }
+  envValues[CUSTOM_ENV_CONFIG_KEY] = collectEnvPairs();
+  let llmValues = undefined;
+  try {
+    llmValues = { executor_cards: collectExecutorCards() };
+  } catch (err) {
+    settingsStatus.textContent = `Error: ${err.message}`;
+    return;
+  }
 
   try {
     settingsSave.disabled = true;
     settingsStatus.textContent = "Saving…";
 
     const requests = [
-      fetch("/api/settings", {
+      fetch(settingsApiUrl("/api/settings"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -6038,12 +6253,13 @@ async function saveSettings() {
           skills: { disabled: disabledSkills },
           user: username ? { name: username } : undefined,
           workspace: { default_workdir: nextDefaultWorkdir },
+          ...(llmValues ? { llm: llmValues } : {}),
         }),
       }),
     ];
     if (Object.keys(envValues).length > 0) {
       requests.push(
-        fetch("/api/env-config", {
+        fetch(settingsApiUrl("/api/env-config"), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ values: envValues }),

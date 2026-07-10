@@ -10,17 +10,16 @@
 #
 # Usage:
 #   export MATCREATOR_HOST_DATA_ROOT="$(pwd)/server-data"
+#   export MATCREATOR_HOST_CONFIG_PATH="$(pwd)/config.yaml"   # optional; default shown
 #   docker compose -f docker-compose.server.yml up -d
 #
 # Prerequisites:
 #   - Build the image first:  docker compose build
-#   - Set credentials in agents/MatCreator/.env (shared across all workers)
+#   - Put service defaults in ${MATCREATOR_HOST_CONFIG_PATH:-./config.yaml}
 
 x-worker-defaults: &worker-defaults
   image: matcreator:latest
   restart: unless-stopped
-  env_file:
-    - agents/MatCreator/.env
   environment:
     - MATCREATOR_MODE=server
     - MATCREATOR_WORKER_CONNECT_MODE=network
@@ -66,6 +65,7 @@ services:
       - MATCREATOR_MODE=server
       - MATCREATOR_DATA_ROOT=/data/matcreator
       - MATCREATOR_HOME=/data/matcreator/control-plane/.matcreator
+      - MATCREATOR_CONFIG_PATH=/app/config.yaml
       - MATCREATOR_HOST_DATA_ROOT=${MATCREATOR_HOST_DATA_ROOT:-${PWD}/server-data}
       - MATCREATOR_WORKER_CONNECT_MODE=network
       - MATCREATOR_WORKER_NETWORK=matcreator-net
@@ -79,11 +79,11 @@ services:
       - ADK_LOCAL_PORT=${MATCREATOR_ADK_PORT:-8000}
       - MATCREATOR_WEB_PORT=${MATCREATOR_WEB_PORT:-8001}
       - MATCREATOR_WORKER_BASE_PORT=${MATCREATOR_WORKER_BASE_PORT:-9001}
-    env_file:
-      - agents/MatCreator/.env
     volumes:
       # Control-plane state plus read-only/admin view of user data.
       - ${MATCREATOR_HOST_DATA_ROOT:-./server-data}:/data/matcreator
+      # Server-wide MatCreator defaults. Set MATCREATOR_HOST_CONFIG_PATH to override.
+      - ${MATCREATOR_HOST_CONFIG_PATH:-./config.yaml}:/app/config.yaml:ro
       # Docker socket so control plane can manage worker containers
       - /var/run/docker.sock:/var/run/docker.sock
       - ./logs:/app/logs
