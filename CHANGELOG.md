@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v2.9.0 (2026-07-11)
+
+### Bug Fixes
+
+- Improve server frontend
+  ([`de70f88`](https://github.com/AI4MS/MatCreator/commit/de70f88ca7bb6ddfb7dbcc281ac92a9ea45a6611))
+
+### Features
+
+- Streamline server mode
+  ([`1f1203c`](https://github.com/AI4MS/MatCreator/commit/1f1203c173fb405f1b4bfca4ad52b8eeec193748))
+
+
 ## v2.8.0 (2026-07-08)
 
 ### Bug Fixes
