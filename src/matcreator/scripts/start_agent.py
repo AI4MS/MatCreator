@@ -69,12 +69,21 @@ import yaml
 import click
 
 from matcreator.ports import get_adk_host, get_adk_port
+from matcreator.config import apply_config_env_overrides
 
 
+_PRE_CONFIG_ENV = frozenset(os.environ.keys())
 _MATCREATOR_HOME = Path(os.environ.get("MATCREATOR_HOME", "~/.matcreator")).expanduser()
 _CONFIG_PATH = _MATCREATOR_HOME / "config.yaml"
 _DEFAULT_ADK_DIR = _MATCREATOR_HOME / ".adk"
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _apply_harness_config_env() -> None:
+    apply_config_env_overrides(
+        override_existing=os.environ.get("MATCREATOR_MODE", "local") == "server",
+        pre_env=_PRE_CONFIG_ENV,
+    )
 
 
 def _configure_logging(log_level: str) -> None:
@@ -117,6 +126,7 @@ def _start_adk_server(
     reload: bool = False,
 ) -> None:
     """Start the ADK server programmatically with controlled session storage."""
+    _apply_harness_config_env()
     if host is None:
         host = get_adk_host()
     if port is None:
