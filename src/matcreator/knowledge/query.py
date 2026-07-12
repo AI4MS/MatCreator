@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Optional
 
 from know_do_graph import (
@@ -12,6 +13,7 @@ from know_do_graph import (
     KnowDoGraph,
 )
 
+from ..env_schema import DISCOVERY_CONTENT_CHARS, REVIEW_BATCH_SIZE, REVIEW_STRATEGY
 from .kdg_memory import (
     add_memory,
     increment_usage,
@@ -25,6 +27,7 @@ from .review import (
 logger = logging.getLogger(__name__)
 _graph: Optional[KnowDoGraph] = None
 _migration_result: dict[str, int] | None = None
+_graph_lock = threading.Lock()
 
 
 def _configure_auto_review(graph: KnowDoGraph) -> None:
@@ -50,11 +53,11 @@ def _configure_auto_review(graph: KnowDoGraph) -> None:
         or LLM_BASE_URL
         or None
     )
-    batch_size = int(os.environ.get("MATCREATOR_REVIEW_BATCH_SIZE", "5"))
+    batch_size = REVIEW_BATCH_SIZE.get()
     graph.auto_review(
         threshold=threshold,
         policy=review_policy(),
-        strategy=os.environ.get("MATCREATOR_REVIEW_STRATEGY", "auto"),
+        strategy=REVIEW_STRATEGY.get(),
         include_existing=True,
         model=model,
         api_key=api_key,
@@ -64,13 +67,18 @@ def _configure_auto_review(graph: KnowDoGraph) -> None:
 
 
 def _get_kg() -> KnowDoGraph:
+    """Return the singleton KnowDoGraph, creating it on first call (thread-safe)."""
     global _graph, _migration_result
-    if _graph is None:
-        from ..constants import KNOW_DO_GRAPH_DB, KNOW_DO_MEMORY_DIR
+    if _graph is not None:
+        return _graph
 
-        _graph = KnowDoGraph(path=KNOW_DO_GRAPH_DB, memory_dir=KNOW_DO_MEMORY_DIR)
-        _migration_result = {"know_do_nodes": 0, "memory_entries": 0, "edges": 0}
-        _configure_auto_review(_graph)
+    with _graph_lock:
+        if _graph is None:  # double-checked locking
+            from ..constants import KNOW_DO_GRAPH_DB, KNOW_DO_MEMORY_DIR
+
+            _graph = KnowDoGraph(path=KNOW_DO_GRAPH_DB, memory_dir=KNOW_DO_MEMORY_DIR)
+            _migration_result = {"know_do_nodes": 0, "memory_entries": 0, "edges": 0}
+            _configure_auto_review(_graph)
     return _graph
 
 def get_migration_result() -> dict[str, int]:
@@ -83,7 +91,7 @@ _get_skill_kg = _get_kg
 _get_memory_kg = _get_kg
 
 
-_DISCOVERY_CONTENT_CHARS = 240
+_DISCOVERY_CONTENT_CHARS = DISCOVERY_CONTENT_CHARS
 
 
 def _clip_content(content: str, limit: int) -> str:

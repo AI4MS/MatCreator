@@ -49,11 +49,12 @@ env:
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from .common import PROTECTED_USER_ENV_KEYS, USER_ENV_KEY_RE
 
 _MATCREATOR_HOME = Path(os.environ.get("MATCREATOR_HOME", str(Path.home() / ".matcreator"))).expanduser()
 _CONFIG_PATH = Path(os.environ.get("MATCREATOR_CONFIG_PATH", str(_MATCREATOR_HOME / "config.yaml"))).expanduser()
@@ -81,16 +82,6 @@ ENV_TO_YAML: dict[str, str] = {v: k for k, v in YAML_TO_ENV.items()}
 
 # Fields whose values should be masked when displayed.
 SENSITIVE_YAML_KEYS = frozenset({"llm.api_key", "bohrium.password"})
-_USER_ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_PROTECTED_USER_ENV_KEYS = frozenset({
-    "HOME",
-    "PATH",
-    "PYTHONPATH",
-    "LD_LIBRARY_PATH",
-    "MATCREATOR_HOME",
-    "MATCREATOR_MODE",
-    "MATCREATOR_USER_ID",
-})
 
 
 def load_config() -> dict[str, Any]:
@@ -191,7 +182,7 @@ def apply_config_env_overrides(
     for env_key, value in get_env_overrides().items():
         if not value:
             continue
-        if not _USER_ENV_KEY_RE.fullmatch(env_key) or env_key in _PROTECTED_USER_ENV_KEYS:
+        if not USER_ENV_KEY_RE.fullmatch(env_key) or env_key in PROTECTED_USER_ENV_KEYS:
             continue
         if override_existing or env_key not in explicit_env:
             os.environ[env_key] = value

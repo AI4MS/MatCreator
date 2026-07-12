@@ -7,15 +7,16 @@ back into the parent session state so one session record contains the full run.
 
 from __future__ import annotations
 
-import os
 import hashlib
+import os
 import threading
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 from google.adk.tools.tool_context import ToolContext
+
+from ..common import utc_now
 
 SESSION_LOG_KEY = "session_log"
 SESSION_ARTIFACTS_KEY = "session_artifacts"
@@ -29,10 +30,6 @@ _ARTIFACT_LIST_KEYS = {"artifacts", "artifact_paths", "plot_paths", "structure_p
 
 _session_locks: dict[str, threading.Lock] = {}
 _session_locks_mutex = threading.Lock()
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _session_id(tool_context: ToolContext) -> str:
@@ -51,15 +48,8 @@ def _lock_for_session(session_id: str) -> threading.Lock:
 
 
 def _json_safe(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(k): _json_safe(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_json_safe(v) for v in value]
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    if isinstance(value, os.PathLike):
-        return str(value)
-    return str(value)
+    from ..common import json_safe
+    return json_safe(value)
 
 
 def normalize_artifact_paths(paths: Iterable[Any]) -> list[str]:
@@ -263,7 +253,7 @@ def append_session_log_entry(
     event_id = uuid.uuid4().hex
     record = {
         "event_id": event_id,
-        "timestamp": _now(),
+        "timestamp": utc_now(),
         "session_id": sid,
         **_json_safe(entry),
     }

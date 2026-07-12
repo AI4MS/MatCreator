@@ -16,6 +16,8 @@ def test_skill_creation_guide_loads_as_planning_skill() -> None:
     assert loaded.name == "skill-creation"
     assert "get_user_skills_root" in loaded.instructions
     assert "Required Checks" in loaded.instructions
+    # Ensure skills are loaded before checking PLANNING_SKILL_NAMES (lazy init).
+    skill._ensure_skills_loaded()
     assert loaded.name in skill.PLANNING_SKILL_NAMES
 
 

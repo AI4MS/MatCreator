@@ -21,11 +21,9 @@ The vite dev server proxies /api/* here and /run_sse + /apps/* to the ADK server
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import json
 import logging
 import os
-import pty
 import re
 import shutil
 import signal
@@ -34,12 +32,31 @@ import sqlite3
 import struct
 import subprocess
 import sys
-import termios
 import threading
 import time
 from pathlib import Path
 from typing import Any, List
 from urllib.parse import unquote
+
+# Unix-only terminal modules — guarded for cross-platform compatibility.
+# On Windows these are unavailable; terminal WebSocket features gracefully
+# report unavailability instead of crashing on import.
+try:
+    import fcntl  # type: ignore[import-not-found]
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
+
+try:
+    import pty  # type: ignore[import-not-found]
+except ImportError:
+    pty = None  # type: ignore[assignment]
+
+try:
+    import termios  # type: ignore[import-not-found]
+except ImportError:
+    termios = None  # type: ignore[assignment]
+
+_UNIX_TERMINAL_AVAILABLE = fcntl is not None and pty is not None and termios is not None
 
 import httpx
 import yaml
@@ -89,6 +106,7 @@ from matcreator.skill import (  # noqa: E402
     refresh_skills,
     get_default_skill_names,
 )
+from matcreator.common import LEGACY_ENV_ALIASES as _LEGACY_ENV_ALIASES, PROTECTED_USER_ENV_KEYS as _PROTECTED_USER_ENV_KEYS, USER_ENV_KEY_RE as _USER_ENV_KEY_RE  # noqa: E402
 from matcreator.config import load_config, save_config, get_disabled_skills  # noqa: E402
 from matcreator.config import ENV_TO_YAML, YAML_TO_ENV, SENSITIVE_YAML_KEYS  # noqa: E402
 from matcreator.constants import GRAPH_AGENT_MODEL, KNOW_DO_GRAPH_DB  # noqa: E402
@@ -132,16 +150,6 @@ _ENV_FIELDS = [
 ]
 _CUSTOM_ENV_CONFIG_KEY = "CUSTOM_ENV"
 _ENV_VALUE_MASK = "***"
-_USER_ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_PROTECTED_USER_ENV_KEYS = frozenset({
-    "HOME",
-    "PATH",
-    "PYTHONPATH",
-    "LD_LIBRARY_PATH",
-    "MATCREATOR_HOME",
-    "MATCREATOR_MODE",
-    "MATCREATOR_USER_ID",
-})
 
 _adk_process: subprocess.Popen | None = None
 _knowledge_review_lock = threading.Lock()
@@ -153,10 +161,6 @@ _knowledge_review_state = {
     "results": [],
     "errors": [],
     "summary": "",
-}
-_LEGACY_ENV_ALIASES = {
-    "LLM_API_KEY": "MINIMAX_API_KEY",
-    "LLM_BASE_URL": "MINIMAX_API_BASE",
 }
 
 
@@ -1604,6 +1608,8 @@ def _complete_workspace_paths(workspace_root: Path, cwd: str, token: str) -> dic
 
 
 def _set_pty_size(fd: int, rows: int, cols: int) -> None:
+    if not _UNIX_TERMINAL_AVAILABLE:
+        return
     rows = max(1, min(int(rows or 24), 200))
     cols = max(1, min(int(cols or 80), 400))
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
@@ -1617,6 +1623,14 @@ async def _send_terminal_output(websocket: WebSocket, data: bytes) -> None:
 
 
 async def _local_terminal_session(websocket: WebSocket) -> None:
+    if not _UNIX_TERMINAL_AVAILABLE:
+        await websocket.send_text(json.dumps({
+            "type": "error",
+            "data": "Terminal is not supported on this platform (requires Unix PTY).",
+        }))
+        await websocket.close()
+        return
+
     workspace = get_workspace_root().resolve()
     workspace.mkdir(parents=True, exist_ok=True)
 

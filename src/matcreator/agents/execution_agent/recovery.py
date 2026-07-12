@@ -7,14 +7,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from ...common import utc_now
+from ...env_schema import STEP_RECOVERY_STALE_AFTER
 from ...workspace import ADK_DIR
 
 _RECOVERY_DIR = "recovery"
-_STALE_AFTER_SECONDS = int(os.environ.get("STEP_RECOVERY_STALE_AFTER", "60"))
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+_STALE_AFTER_SECONDS = STEP_RECOVERY_STALE_AFTER.get()
 
 
 def _parse_time(value: Any) -> Optional[datetime]:
@@ -116,7 +114,7 @@ def start_node_attempt(
     attempt_number = _next_attempt_number(node_dir)
     attempt_path = node_dir / f"attempt-{attempt_number:03d}.json"
     latest_path = node_dir / "latest.json"
-    now = _now()
+    now = utc_now()
     attempt = {
         "session_id": session_id,
         "node_id": node_id,
@@ -143,7 +141,7 @@ def heartbeat_node_attempt(attempt: dict[str, Any]) -> None:
     """Refresh the heartbeat for a running attempt."""
     if not attempt or attempt.get("status") != "running":
         return
-    attempt["heartbeat_at"] = _now()
+    attempt["heartbeat_at"] = utc_now()
     _write_attempt(attempt)
 
 
@@ -159,7 +157,7 @@ def finish_node_attempt(
     if not attempt:
         return
     attempt["status"] = status
-    attempt["completed_at"] = _now()
+    attempt["completed_at"] = utc_now()
     attempt["heartbeat_at"] = attempt["completed_at"]
     if result is not None:
         attempt["result"] = result
@@ -181,7 +179,7 @@ def _attempt_summary(attempt: dict[str, Any]) -> str:
 
 
 def _mark_attempt_stale(latest_path: Path, attempt: dict[str, Any]) -> None:
-    now = _now()
+    now = utc_now()
     attempt["status"] = "stale"
     attempt["completed_at"] = now
     attempt["stale_at"] = now
@@ -237,7 +235,7 @@ def reconcile_recovery_state(
             node["recovery"] = {
                 "attempt": attempt.get("attempt"),
                 "status": "stale",
-                "recovered_at": _now(),
+                "recovered_at": utc_now(),
             }
             actions.append({"node_id": node_id, "action": "reset_stale_running", "status": "pending"})
             continue
@@ -254,7 +252,7 @@ def reconcile_recovery_state(
             node["recovery"] = {
                 "attempt": attempt.get("attempt"),
                 "status": attempt_status,
-                "recovered_at": _now(),
+                "recovered_at": utc_now(),
             }
             actions.append({"node_id": node_id, "action": "recover_completed", "status": recovered_status})
 

@@ -11,7 +11,7 @@ from google.adk.tools.tool_context import ToolContext
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from ...llm_cards import LLMCard
-from ...skill import ALL_SKILLS_TOOLSET
+from ...skill import get_all_skills_toolset
 from ...knowledge.query import get_related_skills, search_skill_context, search_skills
 from ...tools.remoteagent_tool import load_remote_a2a_agents
 from ...tools.util_tools import show_artifact, show_plot, show_structure
@@ -214,7 +214,7 @@ def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
             FunctionTool(get_user_skills_root),
             FunctionTool(run_python),
             FunctionTool(run_bash),
-            ALL_SKILLS_TOOLSET,
+            get_all_skills_toolset(),
             FunctionTool(show_plot),
             FunctionTool(show_structure),
             FunctionTool(show_artifact),

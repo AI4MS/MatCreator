@@ -34,4 +34,14 @@ jobs:
             tests/test_web_ports.py \
             tests/test_compose_ports.py \
             tests/test_vite_config_ports.py \
+            tests/test_skill_creation_guide.py \
+            tests/test_skill_graph_seed.py \
+            tests/test_skill_tools.py \
+            tests/test_session_log.py \
+            tests/test_llm_cards.py \
+            tests/test_kdg_memory.py \
+            tests/test_kdg_review_pipeline.py \
+            tests/test_execution_recovery.py \
+            tests/test_disabled_skills.py \
+            tests/test_matcreator_constants.py \
             -v

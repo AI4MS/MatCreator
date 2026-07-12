@@ -20,6 +20,7 @@ from .agents.thinking_agent import thinking_agent
 from .agents.execution_agent import execution_agent
 from .agents.orchestrator.agent import PlanningExecutionOrchestrator
 from .constants import LLM_MODEL, LLM_API_KEY, LLM_BASE_URL
+from .env_schema import COMPACTION_INTERVAL, COMPACTION_OVERLAP_SIZE
 
 model_name = os.environ.get("LLM_MODEL", LLM_MODEL)
 model_api_key = os.environ.get("LLM_API_KEY", LLM_API_KEY)
@@ -49,8 +50,8 @@ app = App(
         is_resumable=True,
     ),
     events_compaction_config=EventsCompactionConfig(
-        compaction_interval=3,
-        overlap_size=1,
+        compaction_interval=COMPACTION_INTERVAL,
+        overlap_size=COMPACTION_OVERLAP_SIZE,
         summarizer=compaction_summarizer,
     ),
 )

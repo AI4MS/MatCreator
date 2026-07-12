@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 from google.adk.tools.tool_context import ToolContext
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from ...skill import ALL_SKILLS
+from ...skill import ALL_SKILLS, _ensure_skills_loaded
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ class PlanStep(BaseModel):
     @field_validator("suggested_skills")
     @classmethod
     def _validate_skill_names(cls, values: List[str]) -> List[str]:
+        _ensure_skills_loaded()
         allowed_names = {s.name for s in ALL_SKILLS}
         invalid = [v for v in values if v not in allowed_names]
         if invalid:
@@ -100,6 +101,7 @@ class GraphNode(BaseModel):
     @field_validator("suggested_skills")
     @classmethod
     def _validate_skill_names(cls, values: List[str]) -> List[str]:
+        _ensure_skills_loaded()
         allowed_names = {s.name for s in ALL_SKILLS}
         invalid = [v for v in values if v not in allowed_names]
         if invalid:

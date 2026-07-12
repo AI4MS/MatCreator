@@ -9,6 +9,7 @@ the guide system unchanged.
 
 import logging
 import os
+import threading
 from dataclasses import dataclass
 from mimetypes import guess_type
 
@@ -21,6 +22,9 @@ from .config import get_disabled_skills, get_planning_skills
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+_skills_lock = threading.Lock()
+_skills_loaded = False
 
 
 def _discover_skill_dirs(skills_root: Path) -> list[Path]:
@@ -181,7 +185,34 @@ def load_skills() -> list:
     return skills
 
 
-ALL_SKILLS = load_skills()
+def _ensure_skills_loaded() -> None:
+    """Populate ALL_SKILLS and ALL_SKILLS_TOOLSET on first access (thread-safe).
+
+    Previously executed at module import time; now deferred to first use so
+    importing ``matcreator.skill`` has no side effects.
+    """
+    global _skills_loaded, ALL_SKILLS_TOOLSET
+    if _skills_loaded:
+        return
+    with _skills_lock:
+        if not _skills_loaded:
+            _skills_loaded = True
+            new_skills = load_skills()
+            ALL_SKILLS.clear()
+            ALL_SKILLS.extend(new_skills)
+            PLANNING_SKILL_NAMES.clear()
+            PLANNING_SKILL_NAMES.update(_build_planning_skill_names())
+            ALL_SKILLS_TOOLSET = MatCreatorSkillToolset(ALL_SKILLS)
+
+
+def get_all_skills_toolset():
+    """Return the skill toolset, initialising it on first call."""
+    _ensure_skills_loaded()
+    return ALL_SKILLS_TOOLSET
+
+
+ALL_SKILLS: list = []
+ALL_SKILLS_TOOLSET = None
 
 _PLANNING_CATEGORIES = frozenset({"concepts", "guides"})
 
@@ -199,7 +230,7 @@ def _build_planning_skill_names() -> frozenset[str]:
     return frozenset(names)
 
 
-PLANNING_SKILL_NAMES: set[str] = set(_build_planning_skill_names())
+PLANNING_SKILL_NAMES: set[str] = set()
 
 
 class MatCreatorSkillToolset(skill_toolset.SkillToolset):
@@ -230,23 +261,17 @@ class MatCreatorSkillToolset(skill_toolset.SkillToolset):
         pass
 
 
-ALL_SKILLS_TOOLSET = MatCreatorSkillToolset(ALL_SKILLS)
-
-
 def seed_skills_to_graph() -> dict:
     """Upsert all workspace skills and guides into Know-Do Graph.
 
-    The primary skill node stores the full SKILL.md instruction body so graph
-    search can retrieve the same text the agent actually reads. Sidecar files
-    such as ``references/*``, ``assets/*``, ``scripts/*``, and ``README.md``
-    are attached directly to that node using the Know-Do Graph's native
-    attachment fields. Skill and guide nodes are marked immutable — they are
-    dev-maintained and will not be silently updated by the extractor or
-    synthesizer.
-
-    After all nodes are seeded, ``depends_on`` edges are created between skill
-    nodes based on the ``dependent_skills`` field in each SKILL.md's metadata.
+    Seeds SKILL.md content, references, assets, scripts, and README files
+    into the Know-Do Graph, then creates ``depends_on`` edges based on
+    each skill's ``dependent_skills`` metadata.
     """
+    # Only auto-load if ALL_SKILLS hasn't been populated yet (e.g. by tests
+    # that monkeypatch ALL_SKILLS before calling this function).
+    if not ALL_SKILLS:
+        _ensure_skills_loaded()
     from know_do_graph import (
         EdgeRelation,
         EntryMetadata,
@@ -449,11 +474,15 @@ def refresh_skills() -> dict:
     Call this after creating or modifying a skill to make it available
     in the current session without restarting.
     """
+    global _skills_loaded, ALL_SKILLS_TOOLSET
+
     new_skills = load_skills()
     ALL_SKILLS.clear()
     ALL_SKILLS.extend(new_skills)
     PLANNING_SKILL_NAMES.clear()
     PLANNING_SKILL_NAMES.update(_build_planning_skill_names())
+    ALL_SKILLS_TOOLSET = MatCreatorSkillToolset(ALL_SKILLS)
+    _skills_loaded = True
     seed_result = seed_skills_to_graph()
     return {
         "status": "ok",

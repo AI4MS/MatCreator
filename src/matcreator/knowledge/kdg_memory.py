@@ -20,6 +20,8 @@ from know_do_graph import (
     VerificationStatus,
 )
 
+from ..env_schema import SKILL_SIMILARITY_THRESHOLD
+
 logger = logging.getLogger(__name__)
 
 LEGACY_RELATIONS = {
@@ -48,7 +50,7 @@ def find_entry(
     title: str,
     *,
     entry_types: Iterable[EntryType] | None = None,
-    similarity_threshold: float = 0.9,
+    similarity_threshold: float = SKILL_SIMILARITY_THRESHOLD,
 ) -> Entry | None:
     allowed = set(entry_types or EntryType)
     folded = title.strip().casefold()
@@ -74,7 +76,7 @@ def upsert_entry(
     internal_refs: Iterable[str] | None = None,
     scripts: Iterable[Any] | None = None,
     assets: Iterable[Any] | None = None,
-    similarity_threshold: float = 0.9,
+    similarity_threshold: float = SKILL_SIMILARITY_THRESHOLD,
 ) -> tuple[Entry, bool]:
     title = title.strip()
     if not title:

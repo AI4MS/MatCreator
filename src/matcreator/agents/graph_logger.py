@@ -33,10 +33,10 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Literal, Optional
 
+from ..common import utc_now
 from ..workspace import ADK_DIR
 
 _session_locks: dict[str, threading.Lock] = {}
@@ -44,10 +44,6 @@ _session_locks_mutex = threading.Lock()
 
 NodeStatus = Literal["idle", "running", "success", "failed", "needs_replanning"]
 NodeType = Literal["orchestrator", "planning", "execution", "tester", "step"]
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 class AgentGraphLogger:
@@ -84,7 +80,7 @@ class AgentGraphLogger:
                 "label": label,
                 "status": "running",
                 "parent_id": parent_id,
-                "start_time": existing["start_time"] if existing else _now(),
+                "start_time": existing["start_time"] if existing else utc_now(),
                 "end_time": None,
                 "summary": None,
                 "artifacts": [],
@@ -114,7 +110,7 @@ class AgentGraphLogger:
             if node is None:
                 return
             node["status"] = status
-            node["end_time"] = _now()
+            node["end_time"] = utc_now()
             if summary is not None:
                 node["summary"] = summary
             if artifacts is not None:
@@ -178,7 +174,7 @@ class AgentGraphLogger:
         """
         with self._lock:
             graph = self._read()
-            now = _now()
+            now = utc_now()
             for node in graph["nodes"].values():
                 if node.get("status") != "running":
                     continue
@@ -196,7 +192,7 @@ class AgentGraphLogger:
         """
         with self._lock:
             graph = self._read()
-            now = _now()
+            now = utc_now()
             for node in graph["nodes"].values():
                 if (
                     node.get("type") == "step"
@@ -218,7 +214,7 @@ class AgentGraphLogger:
         """
         with self._lock:
             graph = self._read()
-            now = _now()
+            now = utc_now()
             for node in graph["nodes"].values():
                 if (
                     node.get("type") == "step"
@@ -242,8 +238,8 @@ class AgentGraphLogger:
                 return json.loads(self._path.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
                 pass
-        return {"session_id": self.session_id, "nodes": {}, "edges": [], "updated_at": _now()}
+        return {"session_id": self.session_id, "nodes": {}, "edges": [], "updated_at": utc_now()}
 
     def _write(self, graph: dict) -> None:
-        graph["updated_at"] = _now()
+        graph["updated_at"] = utc_now()
         self._path.write_text(json.dumps(graph, ensure_ascii=False, indent=2), encoding="utf-8")

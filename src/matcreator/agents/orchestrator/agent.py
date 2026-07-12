@@ -31,6 +31,8 @@ from google.adk.events import Event
 from ...workspace import get_workspace_root, init_session_workdir
 from ..graph_logger import AgentGraphLogger
 from ..cancellation import clear_cancellation
+from ...common import get_agent_mode
+from ...env_schema import SYNTHESIZER_INTERVAL
 from ...knowledge.extractor import run_knowledge_extractor
 from ...knowledge.synthesizer import run_knowledge_synthesizer
 from ...knowledge.kg_state import increment_exec_count, record_synthesizer_run
@@ -42,14 +44,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _get_agent_mode(state: dict) -> str:
-    """Return the active agent mode: 'flash', 'bench', or 'normal'."""
-    mode = state.get("agent_mode")
-    if mode in ("normal", "bench", "flash"):
-        return mode
-    return "bench" if state.get("benchmark_mode", False) else "normal"
 
 
 def _validate_graph_ready(state: dict) -> tuple[bool, str]:
@@ -132,7 +126,7 @@ class PlanningExecutionOrchestrator(BaseAgent):
             graph.log_node_complete(planning_id, "success")
 
             # Flash mode: thinking agent handles everything; skip execution phase
-            if _get_agent_mode(state) == "flash":
+            if get_agent_mode(state) == "flash":
                 graph.log_node_complete("orchestrator", "success")
                 break
 
@@ -191,7 +185,7 @@ class PlanningExecutionOrchestrator(BaseAgent):
 
                         # Run synthesizer every 10 completed executions (counted across sessions)
                         exec_count = increment_exec_count()
-                        if exec_count % 10 == 0:
+                        if exec_count % SYNTHESIZER_INTERVAL == 0:
                             synth_result = run_knowledge_synthesizer()
                             record_synthesizer_run()
                             logger.info("[orchestrator] knowledge synthesizer: %s", synth_result.get("message"))

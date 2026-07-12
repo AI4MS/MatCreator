@@ -1,10 +1,22 @@
-"""MatCreator agent configuration helpers."""
+"""MatCreator agent configuration helpers.
+
+.. note::
+    This module applies config-derived values to ``os.environ`` at import
+    time for backward compatibility.  Callers that need to control this
+    behaviour (e.g. tests) can call :func:`reset_env_state` after importing
+    or set the env var ``MATCREATOR_SKIP_ENV_INIT=1`` before import.
+"""
 
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
+
+from .common import (
+    LEGACY_ENV_ALIASES,
+    PROTECTED_USER_ENV_KEYS,
+    USER_ENV_KEY_RE,
+)
 
 _script_dir = Path(__file__).parent.resolve()
 _MATCREATOR_DIR = Path(os.environ.get("MATCREATOR_HOME", str(Path.home() / ".matcreator"))).expanduser()
@@ -13,64 +25,53 @@ _KDG_EMBED_ALIASES = {
     "KDG_EMBED_API_KEY": "LLM_API_KEY",
     "KDG_EMBED_BASE_URL": "LLM_BASE_URL",
 }
-_LEGACY_ENV_ALIASES = {
-    "LLM_API_KEY": "MINIMAX_API_KEY",
-    "LLM_BASE_URL": "MINIMAX_API_BASE",
-}
 _CONFIG_OVERRIDES_PRE_ENV = os.environ.get("MATCREATOR_MODE", "local") == "server"
-_USER_ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_PROTECTED_USER_ENV_KEYS = frozenset({
-    "HOME",
-    "PATH",
-    "PYTHONPATH",
-    "LD_LIBRARY_PATH",
-    "MATCREATOR_HOME",
-    "MATCREATOR_MODE",
-    "MATCREATOR_USER_ID",
-})
 
-# Priority: explicit env vars (highest) > config.yaml.
-# Capture what was set before we apply config.yaml values.
-_pre_env = frozenset(os.environ.keys())
 
-# Apply config.yaml values, but do not override vars that were already present
-# in the environment before this module was imported unless running as a server worker.
-from .config import get_llm_config, get_bohrium_config, get_compute_config, get_env_overrides  # noqa: E402
+def apply_config_to_environ() -> None:
+    """Apply config.yaml values and legacy aliases to ``os.environ``.
 
-_llm_cfg = get_llm_config()
-_bohrium_cfg = get_bohrium_config()
-_compute_cfg = get_compute_config()
+    Previously inlined at module scope; now extracted into a function so
+    callers (especially tests) can control when the side effect happens.
+    """
+    from .config import get_llm_config, get_bohrium_config, get_compute_config, get_env_overrides
 
-_yaml_to_env: dict[str, str | None] = {
-    "LLM_MODEL":            _llm_cfg.get("model"),
-    "LLM_API_KEY":          _llm_cfg.get("api_key"),
-    "LLM_BASE_URL":         _llm_cfg.get("base_url"),
-    "EMBEDDING_MODEL":      _llm_cfg.get("embedding_model"),
-    "GRAPH_AGENT_MODEL":    _llm_cfg.get("graph_agent_model"),
-    "REVIEW_AGENT_MODEL":   _llm_cfg.get("review_agent_model"),
-    "BOHRIUM_USERNAME":     _bohrium_cfg.get("email"),
-    "BOHRIUM_PASSWORD":     _bohrium_cfg.get("password"),
-    "BOHRIUM_PROJECT_ID":   str(_bohrium_cfg["project_id"]) if _bohrium_cfg.get("project_id") else None,
-    "BOHRIUM_VASP_IMAGE":   _compute_cfg.get("vasp_image"),
-    "BOHRIUM_VASP_MACHINE": _compute_cfg.get("vasp_machine"),
-    "BOHRIUM_DEEPMD_IMAGE": _compute_cfg.get("deepmd_image"),
-    "BOHRIUM_DEEPMD_MACHINE": _compute_cfg.get("deepmd_machine"),
-    "DEEPMD_MODEL_PATH":    _compute_cfg.get("deepmd_model_path"),
-}
+    pre_env = frozenset(os.environ.keys())
 
-for _env_key, _yaml_val in _yaml_to_env.items():
-    if _yaml_val and (_CONFIG_OVERRIDES_PRE_ENV or _env_key not in _pre_env):
-        os.environ[_env_key] = _yaml_val
+    _llm_cfg = get_llm_config()
+    _bohrium_cfg = get_bohrium_config()
+    _compute_cfg = get_compute_config()
 
-for _env_key, _yaml_val in get_env_overrides().items():
-    if not _USER_ENV_KEY_RE.fullmatch(_env_key) or _env_key in _PROTECTED_USER_ENV_KEYS:
-        continue
-    if _yaml_val and (_CONFIG_OVERRIDES_PRE_ENV or _env_key not in _pre_env):
-        os.environ[_env_key] = _yaml_val
+    _yaml_to_env: dict[str, str | None] = {
+        "LLM_MODEL":            _llm_cfg.get("model"),
+        "LLM_API_KEY":          _llm_cfg.get("api_key"),
+        "LLM_BASE_URL":         _llm_cfg.get("base_url"),
+        "EMBEDDING_MODEL":      _llm_cfg.get("embedding_model"),
+        "GRAPH_AGENT_MODEL":    _llm_cfg.get("graph_agent_model"),
+        "REVIEW_AGENT_MODEL":   _llm_cfg.get("review_agent_model"),
+        "BOHRIUM_USERNAME":     _bohrium_cfg.get("email"),
+        "BOHRIUM_PASSWORD":     _bohrium_cfg.get("password"),
+        "BOHRIUM_PROJECT_ID":   str(_bohrium_cfg["project_id"]) if _bohrium_cfg.get("project_id") else None,
+        "BOHRIUM_VASP_IMAGE":   _compute_cfg.get("vasp_image"),
+        "BOHRIUM_VASP_MACHINE": _compute_cfg.get("vasp_machine"),
+        "BOHRIUM_DEEPMD_IMAGE": _compute_cfg.get("deepmd_image"),
+        "BOHRIUM_DEEPMD_MACHINE": _compute_cfg.get("deepmd_machine"),
+        "DEEPMD_MODEL_PATH":    _compute_cfg.get("deepmd_model_path"),
+    }
 
-for _env_key, _legacy_key in _LEGACY_ENV_ALIASES.items():
-    if not os.environ.get(_env_key) and os.environ.get(_legacy_key):
-        os.environ[_env_key] = os.environ[_legacy_key]
+    for env_key, yaml_val in _yaml_to_env.items():
+        if yaml_val and (_CONFIG_OVERRIDES_PRE_ENV or env_key not in pre_env):
+            os.environ[env_key] = yaml_val
+
+    for env_key, yaml_val in get_env_overrides().items():
+        if not USER_ENV_KEY_RE.fullmatch(env_key) or env_key in PROTECTED_USER_ENV_KEYS:
+            continue
+        if yaml_val and (_CONFIG_OVERRIDES_PRE_ENV or env_key not in pre_env):
+            os.environ[env_key] = yaml_val
+
+    for env_key, legacy_key in LEGACY_ENV_ALIASES.items():
+        if not os.environ.get(env_key) and os.environ.get(legacy_key):
+            os.environ[env_key] = os.environ[legacy_key]
 
 
 def _normalize_kdg_embedding_env() -> None:
@@ -86,7 +87,11 @@ def _normalize_kdg_embedding_env() -> None:
         os.environ["KDG_EMBED_PROVIDER"] = "openai"
 
 
-_normalize_kdg_embedding_env()
+# Apply config-derived env values at import time for backward compatibility.
+# Set MATCREATOR_SKIP_ENV_INIT=1 to suppress this (useful in tests).
+if os.environ.get("MATCREATOR_SKIP_ENV_INIT", "").strip().lower() not in {"1", "true", "yes"}:
+    apply_config_to_environ()
+    _normalize_kdg_embedding_env()
 
 LLM_MODEL: str = os.environ.get("LLM_MODEL", "")
 GRAPH_AGENT_MODEL: str = os.environ.get("GRAPH_AGENT_MODEL", LLM_MODEL)

@@ -12,11 +12,12 @@ from google.adk.tools.tool_context import ToolContext
 from google.adk.agents.callback_context import CallbackContext
 
 from ...constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+from ...common import get_agent_mode
 from .planning import validate_plan, validate_graph
 from .intent import validate_intent
 from .summarize import validate_summarize
 from .session_summary import write_session_summary
-from ...skill import ALL_SKILLS, PLANNING_SKILL_NAMES, ALL_SKILLS_TOOLSET, refresh_skills, seed_skills_to_graph
+from ...skill import ALL_SKILLS, PLANNING_SKILL_NAMES, refresh_skills, seed_skills_to_graph, _ensure_skills_loaded
 from .memory import (
     chat_with_knowledge_graph,
     get_related_skills,
@@ -49,13 +50,22 @@ _model_name = os.environ.get("LLM_MODEL", LLM_MODEL)
 _model_api_key = os.environ.get("LLM_API_KEY", LLM_API_KEY)
 _model_base_url = os.environ.get("LLM_BASE_URL", LLM_BASE_URL)
 
-def _seed_skills_background() -> None:
-    try:
-        seed_skills_to_graph()
-    except Exception as _seed_exc:
-        logger.warning("Failed to seed skills into knowledge graph: %s", _seed_exc)
+_skills_seeded = False
+_skills_seed_lock = threading.Lock()
 
-threading.Thread(target=_seed_skills_background, name="seed-skills", daemon=True).start()
+
+def _ensure_skills_seeded() -> None:
+    """Seed skills into the knowledge graph on first use (thread-safe, once)."""
+    global _skills_seeded
+    if _skills_seeded:
+        return
+    with _skills_seed_lock:
+        if not _skills_seeded:
+            _skills_seeded = True
+            try:
+                seed_skills_to_graph()
+            except Exception as _seed_exc:
+                logger.warning("Failed to seed skills into knowledge graph: %s", _seed_exc)
 
 
 def load_skill(skill_name: str) -> dict:
@@ -70,6 +80,7 @@ def load_skill(skill_name: str) -> dict:
     Args:
         skill_name: Exact name as returned by search_skills.
     """
+    _ensure_skills_loaded()
     normalized = (skill_name or "").strip()
     skill = next((s for s in ALL_SKILLS if s.name == normalized), None)
     if skill is None:
@@ -162,19 +173,6 @@ def resume_execution(tool_context: ToolContext) -> dict:
             f"The orchestrator will continue with {len(pending)} pending node(s)."
         ),
     }
-
-
-# ---------------------------------------------------------------------------
-# Mode helper
-# ---------------------------------------------------------------------------
-
-
-def _get_agent_mode(state: dict) -> str:
-    """Return the active agent mode: 'flash', 'bench', or 'normal'."""
-    mode = state.get("agent_mode")
-    if mode in ("normal", "bench", "flash"):
-        return mode
-    return "bench" if state.get("benchmark_mode", False) else "normal"
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +322,9 @@ _MATCREATOR_INSTRUCTION = "{instruction_body}"
 
 def before_agent_callback(callback_context: CallbackContext) -> None:
     """Refresh memory and state each invocation."""
+    # Seed skills into the knowledge graph on first use (was previously at import time).
+    _ensure_skills_seeded()
+
     state = callback_context._invocation_context.session.state
     for key, default in [
         ("execution_graph", None),
@@ -338,7 +339,7 @@ def before_agent_callback(callback_context: CallbackContext) -> None:
     session_id = state.get("session_id", "default")
     callback_context.state["workspace_dir"] = state.get("workdir") or str(get_session_workdir(session_id))
 
-    agent_mode = _get_agent_mode(state)
+    agent_mode = get_agent_mode(state)
     if agent_mode == "flash":
         callback_context.state["instruction_body"] = _FLASH_INSTRUCTION.format(
             goal=state.get("goal") or "Not set",

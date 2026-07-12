@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from know_do_graph import EdgeRelation
 
+from ..env_schema import CLUSTER_SIMILARITY_THRESHOLD, SYNTHESIZER_MIN_INSIGHTS, SYNTHESIZER_STALE_DAYS
 from .kdg_memory import connect_once, iter_memory, promote_memory
 from .query import _get_kg
 
@@ -19,7 +20,7 @@ def _normalized(text: str) -> str:
     return " ".join(re.findall(r"[a-z0-9_.+-]+", text.casefold()))
 
 
-def _clusters(memories, threshold: float = 0.72):
+def _clusters(memories, threshold: float = CLUSTER_SIMILARITY_THRESHOLD):
     clusters: list[list] = []
     for memory in memories:
         normalized = _normalized(memory.content)
@@ -34,9 +35,9 @@ def _clusters(memories, threshold: float = 0.72):
 
 
 def run_knowledge_synthesizer(
-    stale_days: int = 30,
+    stale_days: int = SYNTHESIZER_STALE_DAYS,
     stale_min_refs: int = 0,
-    min_insights_for_workflow: int = 3,
+    min_insights_for_workflow: int = SYNTHESIZER_MIN_INSIGHTS,
 ) -> dict:
     """Promote repeated successful memory and prune stale failed/unchecked notes.
 

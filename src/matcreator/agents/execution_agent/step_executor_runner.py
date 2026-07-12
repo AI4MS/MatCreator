@@ -6,7 +6,6 @@ import mimetypes
 import os
 import re
 from contextlib import aclosing
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -17,6 +16,15 @@ from google.adk.tools.agent_tool import ForwardingArtifactService
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
+from ...common import utc_now
+from ...env_schema import (
+    CANCEL_POLL_INTERVAL,
+    MAX_INPUT_IMAGE_ATTACHMENTS,
+    MAX_INPUT_IMAGE_BYTES,
+    MAX_RECURSION_DEPTH,
+    SUB_STEP_TIMEOUT,
+    STEP_RECOVERY_HEARTBEAT_INTERVAL,
+)
 from ...llm_cards import LLMCard, select_executor_llm_card
 from ...workspace import get_session_workdir
 from .step_executor import (
@@ -42,17 +50,6 @@ from ..cancellation import (
 
 logger = logging.getLogger(__name__)
 
-# Time between flag-file polls in the watcher task.
-# Event-count polling is unreliable when events are sparse (e.g. mid-LLM-call),
-# so we use a wall-clock interval instead.
-_CANCEL_POLL_INTERVAL = 0.5  # seconds
-
-# Wall-clock timeout for a single step or sub-step execution.
-# A sub-step that exceeds this returns needs_replanning instead of hanging.
-_SUB_STEP_TIMEOUT = int(os.environ.get("SUB_STEP_TIMEOUT", "3600"))  # seconds
-_RECOVERY_HEARTBEAT_INTERVAL = int(os.environ.get("STEP_RECOVERY_HEARTBEAT_INTERVAL", "10"))  # seconds
-_MAX_INPUT_IMAGE_ATTACHMENTS = int(os.environ.get("MATCREATOR_MAX_INPUT_IMAGE_ATTACHMENTS", "4"))
-_MAX_INPUT_IMAGE_BYTES = int(os.environ.get("MATCREATOR_MAX_INPUT_IMAGE_BYTES", str(5 * 1024 * 1024)))
 _IMAGE_PATH_RE = re.compile(
     r"(?P<path>(?:~|/|\./|\.\./)?[^\s'\"<>]+?\.(?:png|jpe?g|webp|gif|bmp|tiff?))",
     re.IGNORECASE,
@@ -70,9 +67,12 @@ _IMAGE_CONTEXT_TOKENS = {
     "vision",
 }
 
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+# Resolve env vars at import time (values are stable for the process lifetime).
+_SUB_STEP_TIMEOUT = SUB_STEP_TIMEOUT.get()
+_RECOVERY_HEARTBEAT_INTERVAL = STEP_RECOVERY_HEARTBEAT_INTERVAL.get()
+_MAX_INPUT_IMAGE_ATTACHMENTS = MAX_INPUT_IMAGE_ATTACHMENTS.get()
+_MAX_INPUT_IMAGE_BYTES = MAX_INPUT_IMAGE_BYTES.get()
+_CANCEL_POLL_INTERVAL = CANCEL_POLL_INTERVAL
 
 
 def _response_dict(response) -> dict:
@@ -351,7 +351,7 @@ async def _stream_step_events(
 
                     if is_thought and text:
                         entry = {
-                            "timestamp": _now(),
+                            "timestamp": utc_now(),
                             "author": event.author,
                             "type": "thought",
                             "content": text,
@@ -360,7 +360,7 @@ async def _stream_step_events(
                         await asyncio.to_thread(graph.log_conversation_event, step_id, entry)
                     elif text and not fc and not fr:
                         entry = {
-                            "timestamp": _now(),
+                            "timestamp": utc_now(),
                             "author": event.author,
                             "type": "text",
                             "content": text,
@@ -371,10 +371,10 @@ async def _stream_step_events(
                         pending_tool_calls[fc.name] = {
                             "name": fc.name,
                             "args_summary": str(dict(fc.args or {}))[:300],
-                            "start_time": _now(),
+                            "start_time": utc_now(),
                         }
                         entry = {
-                            "timestamp": _now(),
+                            "timestamp": utc_now(),
                             "author": event.author,
                             "type": "function_call",
                             "content": f"{fc.name}({str(dict(fc.args or {}))[:500]})",
@@ -387,14 +387,14 @@ async def _stream_step_events(
                         for artifact_path in collect_artifact_paths(response):
                             _append_unique(artifact_paths, artifact_path)
 
-                        record = pending_tool_calls.pop(fr.name, {"name": fr.name, "start_time": _now()})
+                        record = pending_tool_calls.pop(fr.name, {"name": fr.name, "start_time": utc_now()})
                         record["result_summary"] = str(fr.response)[:300]
-                        record["end_time"] = _now()
+                        record["end_time"] = utc_now()
                         record["artifacts"] = collect_artifact_paths(response)
                         event_log["tool_calls"].append(record.copy())
                         await asyncio.to_thread(graph.log_tool_call, step_id, record)
                         entry = {
-                            "timestamp": _now(),
+                            "timestamp": utc_now(),
                             "author": event.author,
                             "type": "function_response",
                             "content": f"{fr.name} → {str(fr.response)[:500]}",
@@ -523,7 +523,7 @@ async def run_step_executor(
             graph_nodes[node_id]["status"] = "running"
             graph_nodes[node_id]["recovery"] = {
                 "status": "running",
-                "started_at": _now(),
+                "started_at": utc_now(),
             }
             tool_context.state["execution_graph"] = graph_state
 

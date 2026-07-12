@@ -13,6 +13,8 @@ from know_do_graph import (
     VerificationStatus,
 )
 
+from ..env_schema import REVIEW_TRIGGER_THRESHOLD
+
 ReviewStatusCallback = Callable[[str, dict[str, Any]], None]
 _pipeline_lock = threading.Lock()
 
@@ -41,7 +43,7 @@ def review_policy() -> ReviewPolicy:
 
 
 def review_threshold() -> int:
-    return int(os.environ.get("MATCREATOR_REVIEW_TRIGGER_THRESHOLD", "20"))
+    return REVIEW_TRIGGER_THRESHOLD.get()
 
 
 def normalize_review_model(model: str) -> str:
