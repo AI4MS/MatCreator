@@ -5,10 +5,12 @@ Converts raw structure data (xyz / extxyz / POSCAR / …) into deepmd/npy format
 and writes an input.json ready for ``dp --pt train`` with version-specific DPA4
 configuration.
 
-DPA4 is currently in early stage. This script targets the **neo** version by default.
-Future versions (air, plus, pro, …) will require their own matching model and parameters.
-Each model version has a one-to-one correspondence with its input.json — do not mix
-parameters across versions.
+DPA4-OMat24 provides five model variants: Nano, Mini, Neo, Air, Plus.
+Each variant has its own matching parameters — do NOT mix across variants.
+The ``--version`` flag selects the variant template (default: neo).
+
+Training steps are computed automatically from ``--epochs`` (default 50) and
+the training set size: ``numb_steps = epochs * n_train_frames`` (batch_size=1).
 
 DPA4 jobs run exclusively on the Bohrium platform — there is no local execution.
 
@@ -28,8 +30,8 @@ Execution (remote on Bohrium)
 -----------------------------
   cd <workdir>
 
-  # Finetune (--skip-neighbor-stat is required for train only):
-  dp --pt train input.json --skip-neighbor-stat --finetune <model_dir> > train_log 2>&1
+  # Finetune:
+  dp --pt train input.json --finetune <model.pt> > train_log 2>&1
 
   # Freeze:
   dp --pt freeze -c model.ckpt.pt -o frozen
@@ -37,8 +39,8 @@ Execution (remote on Bohrium)
   # Test (frozen model):
   dp --pt test -m frozen.pt2 -s <test_data_dir> -d result-test -l log-test
 
-  # Test (pretrained model directory — for zero-shot evaluation):
-  dp --pt test -m <model_dir> -s <test_data_dir> -d result-test -l log-test
+  # Test (pretrained checkpoint — for zero-shot evaluation):
+  dp --pt test -m <model.pt> -s <test_data_dir> -d result-test -l log-test
 
 Data conversion for dp test
 ----------------------------
@@ -93,56 +95,56 @@ ALL_TYPES: List[str] = [
 # ---------------------------------------------------------------------------
 # DPA4 version → input.json template mapping
 #
-# Each model version has its own matching parameters. Do NOT mix across versions.
-# To add a new version (e.g. "air"), add a new entry here with the correct template.
+# Each model variant has its own matching parameters. Do NOT mix across variants.
+# Architecture parameters come from the DPA4-OMat24 release (v20260704).
+# The descriptor / loss / optimizer / training sections are shared across all
+# variants; only the architecture dimensions and learning_rate differ.
 # ---------------------------------------------------------------------------
-_DPA4_TEMPLATES: Dict[str, Dict[str, Any]] = {
-    "neo": {
+
+_VARIANT_PARAMS: Dict[str, Dict[str, Any]] = {
+    #  variant       channels  lmax  n_blocks  so2_layers  n_focus  radial_so2_rank  start_lr
+    "nano": dict(channels=32, lmax=1, n_blocks=1, so2_layers=3, n_focus=1, radial_so2_rank=1, start_lr=5e-3),
+    "mini": dict(channels=32, lmax=2, n_blocks=2, so2_layers=3, n_focus=1, radial_so2_rank=1, start_lr=1e-3),
+    "neo":  dict(channels=32, lmax=3, n_blocks=2, so2_layers=3, n_focus=2, radial_so2_rank=1, start_lr=5e-4),
+    "air":  dict(channels=64, lmax=3, n_blocks=3, so2_layers=4, n_focus=1, radial_so2_rank=1, start_lr=4e-4),
+    "plus": dict(channels=64, lmax=4, n_blocks=4, so2_layers=4, n_focus=1, radial_so2_rank=2, start_lr=3e-4),
+}
+
+
+def _build_template(variant: str) -> Dict[str, Any]:
+    vp = _VARIANT_PARAMS[variant]
+    return {
         "model": {
             "type": "SeZM",
             "descriptor": {
                 "type": "SeZM",
-                "sel": 416,
+                "sel": 181,
                 "rcut": 6.0,
-                "env_exp": [7, 5],
-                "channels": 64,
+                "channels": vp["channels"],
                 "n_radial": 16,
-                "radial_mlp": [0],
                 "use_env_seed": True,
-                "random_gamma": True,
-                "lmax": 3,
+                "lmax": vp["lmax"],
                 "mmax": 1,
-                "n_blocks": 2,
-                "so2_layers": 3,
-                "so2_norm": False,
-                "so2_attn_res": "none",
+                "n_blocks": vp["n_blocks"],
+                "so2_layers": vp["so2_layers"],
                 "radial_so2_mode": "degree_channel",
-                "radial_so2_rank": 1,
-                "n_focus": 1,
+                "radial_so2_rank": vp["radial_so2_rank"],
+                "n_focus": vp["n_focus"],
                 "focus_dim": 0,
                 "n_atten_head": 1,
-                "atten_f_mix": False,
-                "atten_v_proj": False,
-                "atten_o_proj": False,
+                "message_node_so3": True,
                 "ffn_neurons": 0,
+                "ffn_so3_grid": True,
                 "grid_mlp": False,
+                "grid_branch": [0, 0, 1],
                 "ffn_blocks": 1,
-                "sandwich_norm": [False, True, True, False],
-                "mlp_bias": False,
-                "layer_scale": False,
-                "full_attn_res": "none",
-                "block_attn_res": "none",
-                "s2_activation": [False, True],
-                "lebedev_quadrature": True,
-                "activation_function": "silu",
-                "glu_activation": True,
+                "so3_readout": "mlp",
                 "use_amp": False,
                 "precision": "float32",
                 "seed": 42,
             },
             "fitting_net": {
                 "neuron": [0],
-                "activation_function": "silu",
                 "precision": "float32",
                 "seed": 42,
             },
@@ -151,9 +153,9 @@ _DPA4_TEMPLATES: Dict[str, Dict[str, Any]] = {
         },
         "learning_rate": {
             "type": "wsd",
-            "start_lr": 0.0007,
-            "stop_lr": 1e-06,
-            "warmup_steps": 780,
+            "start_lr": vp["start_lr"],
+            "stop_lr": 1e-6,
+            "warmup_ratio": 0.003,
             "warmup_start_factor": 0.2,
             "decay_phase_ratio": 0.65,
             "decay_type": "cosine",
@@ -171,15 +173,12 @@ _DPA4_TEMPLATES: Dict[str, Dict[str, Any]] = {
         },
         "optimizer": {
             "type": "HybridMuon",
-            "muon_mode": "slice",
-            "magma_muon": True,
-            "lr_adjust": 0.0,
             "weight_decay": 0.001,
         },
         "training": {
             "training_data": {
                 "systems": [],
-                "batch_size": "auto:128",
+                "batch_size": 1,
             },
             "numb_steps": 10000,
             "gradient_max_norm": 1.0,
@@ -193,11 +192,11 @@ _DPA4_TEMPLATES: Dict[str, Dict[str, Any]] = {
             "time_training": True,
             "seed": 42,
         },
-    },
-    # ── Future versions ──────────────────────────────────────────────────
-    # "air": { ... },   # TODO: add air-specific template when available
-    # "plus": { ... },  # TODO: add plus-specific template when available
-    # "pro": { ... },   # TODO: add pro-specific template when available
+    }
+
+
+_DPA4_TEMPLATES: Dict[str, Dict[str, Any]] = {
+    v: _build_template(v) for v in _VARIANT_PARAMS
 }
 
 AVAILABLE_VERSIONS = list(_DPA4_TEMPLATES.keys())
@@ -312,14 +311,10 @@ def _place_model(base_model: Path, workdir: Path, copy: bool) -> Path:
 
 def _apply_lr(cfg: Dict[str, Any], args) -> None:
     lr = cfg["learning_rate"]
-    lr["type"] = args.lr_type
-    lr["start_lr"] = args.start_lr
-    lr["stop_lr"] = args.stop_lr
-    if args.lr_type == "wsd":
-        lr["warmup_steps"] = args.warmup_steps
-        lr["warmup_start_factor"] = args.warmup_start_factor
-        lr["decay_phase_ratio"] = args.decay_phase_ratio
-        lr["decay_type"] = args.decay_type
+    if args.start_lr is not None:
+        lr["start_lr"] = args.start_lr
+    if args.stop_lr is not None:
+        lr["stop_lr"] = args.stop_lr
 
 
 def _apply_loss(cfg: Dict[str, Any], args) -> None:
@@ -394,10 +389,17 @@ def cmd_prepare_finetune(args) -> None:
     )
 
     cfg = _randomise_seeds(_DPA4_TEMPLATES[version])
-    cfg["training"]["numb_steps"] = args.numb_steps
+
+    # Compute numb_steps from epochs: numb_steps = epochs * n_train
+    # (batch_size=1 in template, so each step = 1 frame)
+    n_train = len(train_atoms)
+    numb_steps = args.epochs * n_train
+    cfg["training"]["numb_steps"] = numb_steps
+    logger.info("Epochs=%d, n_train=%d → numb_steps=%d", args.epochs, n_train, numb_steps)
+
     _apply_lr(cfg, args)
     _apply_loss(cfg, args)
-    cfg["model"]["type_map"] = args.type_map if args.type_map else ALL_TYPES
+    cfg["model"]["type_map"] = ALL_TYPES
     # Use train for training, test for validation during training
     _set_data(cfg, train_paths, test_paths, workdir)
 
@@ -406,7 +408,7 @@ def cmd_prepare_finetune(args) -> None:
     _write_input(workdir, cfg)
 
     exec_cmd = (
-        f"dp --pt train input.json --skip-neighbor-stat "
+        f"dp --pt train input.json "
         f"--finetune {model_dest.name} > train_log 2>&1"
     )
     exec_cmd += " && dp --pt freeze -c model.ckpt.pt -o frozen"
@@ -414,8 +416,8 @@ def cmd_prepare_finetune(args) -> None:
     if has_test:
         exec_cmd += " && dp --pt test -m frozen.pt2 -s test_data -d result-test -l log-test"
     _print_result(
-        workdir, "dpa4-finetune", exec_cmd, args.numb_steps,
-        model_dest.name, version, has_test,
+        workdir, "dpa4-finetune", exec_cmd, numb_steps,
+        model_dest.name, version, has_test, args.epochs,
     )
 
 
@@ -433,6 +435,7 @@ def _write_input(workdir: Path, cfg: Dict[str, Any]) -> None:
 def _print_result(
     workdir: Path, mode: str, exec_cmd: str, numb_steps: int,
     model_dir_name: str = "", version: str = "", has_test: bool = False,
+    num_epochs: int = 0,
 ) -> None:
     result = {
         "status": "prepared",
@@ -443,6 +446,8 @@ def _print_result(
         "execution_command": exec_cmd,
         "has_test_data": has_test,
     }
+    if num_epochs:
+        result["num_epochs"] = num_epochs
     if version:
         result["version"] = version
     if model_dir_name:
@@ -491,25 +496,16 @@ def _add_common(p: argparse.ArgumentParser) -> None:
         help="Output working directory (created if needed)",
     )
     p.add_argument(
-        "--numb_steps", type=int, default=10000, metavar="N",
-        help="Total training steps (default: 10000)",
+        "--epochs", type=int, default=50, metavar="N",
+        help="Target training epochs (default: 50). "
+             "numb_steps = epochs * n_train_frames (batch_size=1).",
     )
-    # Learning rate — WSD schedule for DPA4 neo
-    p.add_argument("--lr_type", default="wsd",
-                   help="Learning rate scheduler type (default: wsd)")
-    p.add_argument("--start_lr", type=float, default=0.0007,
-                   help="Starting learning rate (default: 0.0007)")
-    p.add_argument("--stop_lr", type=float, default=1e-6,
-                   help="Stopping learning rate (default: 1e-6)")
-    p.add_argument("--warmup_steps", type=int, default=780, metavar="N",
-                   help="WSD warmup steps (default: 780)")
-    p.add_argument("--warmup_start_factor", type=float, default=0.2,
-                   help="WSD warmup start factor (default: 0.2)")
-    p.add_argument("--decay_phase_ratio", type=float, default=0.65,
-                   help="WSD decay phase ratio (default: 0.65)")
-    p.add_argument("--decay_type", default="cosine",
-                   help="WSD decay type (default: cosine)")
-    # Loss — MAE for DPA4 neo
+    # Learning rate — cosine schedule (defaults from variant template)
+    p.add_argument("--start_lr", type=float, default=None,
+                   help="Starting learning rate (default: from variant template)")
+    p.add_argument("--stop_lr", type=float, default=None,
+                   help="Stopping learning rate (default: from variant template)")
+    # Loss — MAE (shared across all variants)
     p.add_argument("--loss_type", default="ener",
                    help="Loss function type (default: ener)")
     p.add_argument("--loss_func", default="mae",
@@ -567,12 +563,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     pf.add_argument(
-        "--type_map", nargs="+", default=None, metavar="ELEMENT",
-        help="Element type map (default: full periodic table)",
-    )
-    pf.add_argument(
         "--copy_model", action="store_true",
-        help="Copy the base model directory into workdir (always done for DPA4)",
+        help="Copy the base model checkpoint into workdir (always done for DPA4)",
     )
     _add_common(pf)
     pf.set_defaults(func=cmd_prepare_finetune)

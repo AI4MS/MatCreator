@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import json
+import logging
 import os
 import pty
 import re
@@ -37,14 +38,11 @@ import termios
 import threading
 import time
 from pathlib import Path
-from typing import List
+from typing import Any, List
 from urllib.parse import unquote
 
 import httpx
 import yaml
-
-from dotenv import dotenv_values
-from dotenv import set_key as dotenv_set_key
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -80,13 +78,25 @@ from matcreator.agents.cancellation import (  # noqa: E402
 )
 from matcreator.agents.graph_logger import AgentGraphLogger  # noqa: E402
 from matcreator.agents.session_log import build_session_log_export  # noqa: E402
-from matcreator.skill import ALL_SKILLS, PLANNING_SKILL_NAMES, refresh_skills, get_default_skill_names  # noqa: E402
+from matcreator.skill import (  # noqa: E402
+    ALL_SKILLS,
+    PLANNING_SKILL_NAMES,
+    _MODULE_SKILLS_ROOT,
+    _discover_skill_dirs,
+    _skill_dir_map,
+    get_skill_source,
+    official_skills_dir,
+    refresh_skills,
+    get_default_skill_names,
+)
 from matcreator.config import load_config, save_config, get_disabled_skills  # noqa: E402
 from matcreator.config import ENV_TO_YAML, YAML_TO_ENV, SENSITIVE_YAML_KEYS  # noqa: E402
-from matcreator.constants import GRAPH_AGENT_MODEL  # noqa: E402
+from matcreator.constants import GRAPH_AGENT_MODEL, KNOW_DO_GRAPH_DB  # noqa: E402
 from matcreator.knowledge.query import _get_kg  # noqa: E402
 from matcreator.knowledge.review import run_review_pipeline  # noqa: E402
 from matcreator.ports import get_adk_port, get_local_adk_command, get_web_port, get_worker_base_port  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="MatCreator Graph API", version="1.0.0")
 APP_NAME = "MatCreator"
@@ -98,7 +108,6 @@ _LOCAL_MATCREATOR_HOME = Path("~/.matcreator").expanduser()
 _MATCREATOR_HOME = _CONTROL_PLANE_HOME if _MATCREATOR_MODE == "server" else _LOCAL_MATCREATOR_HOME
 SESSION_DB_PATH = _MATCREATOR_HOME / ".adk" / "session.db"
 _ADK_DIR = _MATCREATOR_HOME / ".adk"
-ENV_PATH = _MATCREATOR_HOME / ".env"
 _USERS_DATA_ROOT = _SERVER_DATA_ROOT / "users"
 _USERS_HOST_ROOT = _SERVER_HOST_DATA_ROOT / "users"
 _WORKER_MATCREATOR_HOME = Path("/root/.matcreator")
@@ -112,13 +121,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+SUMMARIES_PATH = ROOT / "agents" / "MatCreator" / ".adk" / "session_summaries.json"
 _SENSITIVE_FIELDS = frozenset({"LLM_API_KEY", "BOHRIUM_PASSWORD"})
 _ENV_FIELDS = [
     "LLM_MODEL", "LLM_API_KEY", "LLM_BASE_URL", "EMBEDDING_MODEL",
+    "GRAPH_AGENT_MODEL", "REVIEW_AGENT_MODEL",
     "BOHRIUM_EMAIL", "BOHRIUM_PASSWORD", "BOHRIUM_PROJECT_ID",
     "BOHRIUM_VASP_IMAGE", "BOHRIUM_VASP_MACHINE",
     "BOHRIUM_DEEPMD_IMAGE", "BOHRIUM_DEEPMD_MACHINE", "DEEPMD_MODEL_PATH",
 ]
+_CUSTOM_ENV_CONFIG_KEY = "CUSTOM_ENV"
+_ENV_VALUE_MASK = "***"
+_USER_ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_PROTECTED_USER_ENV_KEYS = frozenset({
+    "HOME",
+    "PATH",
+    "PYTHONPATH",
+    "LD_LIBRARY_PATH",
+    "MATCREATOR_HOME",
+    "MATCREATOR_MODE",
+    "MATCREATOR_USER_ID",
+})
 
 _adk_process: subprocess.Popen | None = None
 _knowledge_review_lock = threading.Lock()
@@ -150,13 +173,6 @@ def _config_value_for_env_key(env_key: str) -> str:
     return "" if value is None else str(value)
 
 
-def _dotenv_value(env_key: str) -> str:
-    if not ENV_PATH.exists():
-        return ""
-    value = dotenv_values(ENV_PATH).get(env_key, "")
-    return "" if value is None else str(value)
-
-
 def _runtime_env_value(env_key: str) -> str:
     """Resolve a setting from the active runtime plus persisted UI settings."""
     mode = os.environ.get("MATCREATOR_MODE", "local")
@@ -164,16 +180,18 @@ def _runtime_env_value(env_key: str) -> str:
         value = (
             _config_value_for_env_key(env_key)
             or os.environ.get(env_key, "")
-            or _dotenv_value(env_key)
         )
     else:
-        value = _dotenv_value(env_key) or os.environ.get(env_key, "")
+        value = (
+            os.environ.get(env_key, "")
+            or _config_value_for_env_key(env_key)
+        )
     if value:
         return value
     legacy_key = _LEGACY_ENV_ALIASES.get(env_key)
     if not legacy_key:
         return ""
-    return _dotenv_value(legacy_key) or os.environ.get(legacy_key, "")
+    return os.environ.get(legacy_key, "")
 
 # ---------------------------------------------------------------------------
 # Server-mode worker management
@@ -191,6 +209,7 @@ _WORKER_IDLE_TIMEOUT_SECONDS = int(os.environ.get("MATCREATOR_WORKER_IDLE_TIMEOU
 _WORKER_MEM_LIMIT = os.environ.get("MATCREATOR_WORKER_MEM_LIMIT", "")
 _WORKER_CPUS = os.environ.get("MATCREATOR_WORKER_CPUS", "")
 _WORKER_PIDS_LIMIT = os.environ.get("MATCREATOR_WORKER_PIDS_LIMIT", "")
+_WORKER_SHARED_MOUNTS = os.environ.get("MATCREATOR_WORKER_SHARED_MOUNTS", "")
 _WORKSPACE_CLI_TIMEOUT_SECONDS = int(os.environ.get("MATCREATOR_WORKSPACE_CLI_TIMEOUT_SECONDS", "30"))
 _WORKSPACE_CLI_OUTPUT_LIMIT = int(os.environ.get("MATCREATOR_WORKSPACE_CLI_OUTPUT_LIMIT", "20000"))
 
@@ -214,6 +233,121 @@ def _user_matcreator_home(user_id: str, *, host: bool = False) -> Path:
     return root / _safe_user_dir_name(user_id) / ".matcreator"
 
 
+def _config_path_for_user(user_id: str = "") -> Path | None:
+    if _MATCREATOR_MODE != "server":
+        return None
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required in server mode")
+    return _user_matcreator_home(user_id) / "config.yaml"
+
+
+def _config_paths_for_user(user_id: str = "") -> list[Path]:
+    path = _config_path_for_user(user_id)
+    if path is None:
+        return []
+    paths = [path]
+    host_path = _user_matcreator_home(user_id, host=True) / "config.yaml"
+    if host_path != path:
+        paths.insert(0, host_path)
+    return paths
+
+
+def _load_config_for_user(user_id: str = "") -> dict[str, Any]:
+    paths = _config_paths_for_user(user_id)
+    if not paths:
+        return load_config()
+    path = next((candidate for candidate in paths if candidate.exists()), paths[0])
+    if not path.exists():
+        return {}
+    try:
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (yaml.YAMLError, OSError):
+        return {}
+
+
+def _save_config_for_user(config: dict[str, Any], user_id: str = "") -> None:
+    paths = _config_paths_for_user(user_id)
+    if not paths:
+        save_config(config)
+        return
+    rendered = yaml.dump(config, default_flow_style=False, allow_unicode=True)
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(rendered, encoding="utf-8")
+
+
+def _get_nested_config_value(config: dict[str, Any], dotted_key: str) -> str:
+    current: Any = config
+    parts = dotted_key.split(".")
+    for part in parts[:-1]:
+        if not isinstance(current, dict):
+            return ""
+        current = current.get(part, {})
+    if not isinstance(current, dict):
+        return ""
+    value = current.get(parts[-1], "")
+    return "" if value is None else str(value)
+
+
+def _set_nested_config_value(config: dict[str, Any], dotted_key: str, value: str) -> None:
+    current = config
+    parts = dotted_key.split(".")
+    for part in parts[:-1]:
+        next_value = current.setdefault(part, {})
+        if not isinstance(next_value, dict):
+            next_value = {}
+            current[part] = next_value
+        current = next_value
+    current[parts[-1]] = value
+
+
+def _is_sensitive_env_key(env_key: str) -> bool:
+    upper = env_key.upper()
+    return env_key in _SENSITIVE_FIELDS or any(
+        token in upper for token in ("API_KEY", "PASSWORD", "SECRET", "TOKEN", "CREDENTIAL")
+    )
+
+
+def _validate_user_env_key(env_key: str) -> None:
+    if not _USER_ENV_KEY_RE.fullmatch(env_key):
+        raise HTTPException(status_code=400, detail=f"Invalid environment variable name: {env_key}")
+    if env_key in _PROTECTED_USER_ENV_KEYS:
+        raise HTTPException(status_code=400, detail=f"Protected environment variable cannot be overridden: {env_key}")
+
+
+def _masked_env_value(env_key: str, value: str) -> str:
+    return _ENV_VALUE_MASK if (_is_sensitive_env_key(env_key) and value) else value
+
+
+def _custom_env_from_config(config: dict[str, Any]) -> dict[str, str]:
+    env_cfg = config.get("env", {})
+    if not isinstance(env_cfg, dict):
+        return {}
+    return {
+        str(key): "" if value is None else str(value)
+        for key, value in env_cfg.items()
+    }
+
+
+def _config_env_values(config: dict[str, Any]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for yaml_key, env_key in YAML_TO_ENV.items():
+        value = _get_nested_config_value(config, yaml_key)
+        if value:
+            values[env_key] = value
+    for env_key, value in _custom_env_from_config(config).items():
+        if not value or not _USER_ENV_KEY_RE.fullmatch(env_key) or env_key in _PROTECTED_USER_ENV_KEYS:
+            continue
+        values[env_key] = value
+    return values
+
+
+def _local_adk_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env.update(_config_env_values(load_config()))
+    return env
+
+
 def _user_adk_dir(user_id: str) -> Path:
     return _user_matcreator_home(user_id) / ".adk"
 
@@ -228,6 +362,37 @@ def _worker_target_url(user_id: str, port: int | None = None) -> str:
             raise RuntimeError("host-port worker routing requires a host port")
         return f"http://127.0.0.1:{port}"
     return f"http://{_worker_container_name(user_id)}:{get_adk_port()}"
+
+
+def _worker_shared_mounts() -> dict[str, dict[str, str]]:
+    """Parse optional extra worker bind mounts.
+
+    Format: ``host_path:container_path[:ro|rw]`` entries separated by commas.
+    Example: ``/srv/matcreator/share:/share:ro``.
+    """
+    mounts: dict[str, dict[str, str]] = {}
+    for item in _WORKER_SHARED_MOUNTS.split(","):
+        raw = item.strip()
+        if not raw:
+            continue
+        parts = raw.rsplit(":", 2)
+        if len(parts) == 2:
+            host_path, container_path = parts
+            mode = "ro"
+        elif len(parts) == 3 and parts[2] in {"ro", "rw"}:
+            host_path, container_path, mode = parts
+        else:
+            raise RuntimeError(
+                "Invalid MATCREATOR_WORKER_SHARED_MOUNTS entry. "
+                "Use host_path:container_path[:ro|rw]."
+            )
+        if not host_path or not container_path.startswith("/"):
+            raise RuntimeError(
+                "Invalid MATCREATOR_WORKER_SHARED_MOUNTS entry. "
+                "Host path is required and container path must be absolute."
+            )
+        mounts[str(Path(host_path).expanduser())] = {"bind": container_path, "mode": mode}
+    return mounts
 
 
 def _iter_session_db_paths(user_id: str | None = None):
@@ -287,8 +452,48 @@ def _next_free_port() -> int:
     return port
 
 
+def _worker_image_id(dc) -> str:
+    try:
+        return dc.images.get(_WORKER_IMAGE).id or ""
+    except Exception as exc:
+        logger.warning("Could not resolve worker image %s: %s", _WORKER_IMAGE, exc)
+        return ""
+
+
+def _container_image_id(container) -> str:
+    image = getattr(container, "image", None)
+    image_id = getattr(image, "id", "") or ""
+    if image_id:
+        return image_id
+    attrs = getattr(container, "attrs", {}) or {}
+    return str(attrs.get("Image") or "")
+
+
+def _worker_container_uses_current_image(dc, container) -> bool:
+    current_image_id = _worker_image_id(dc)
+    container_image_id = _container_image_id(container)
+    return bool(current_image_id and container_image_id and current_image_id == container_image_id)
+
+
+def _remove_worker_container(user_id: str, container=None) -> None:
+    try:
+        dc = _get_docker()
+        target = container or dc.containers.get(_worker_container_name(user_id))
+        target.remove(force=True)
+    except Exception as exc:
+        logger.warning("Failed to remove worker for user %s: %s", user_id, exc)
+    _worker_registry.pop(user_id, None)
+    _worker_ports.pop(user_id, None)
+    _worker_last_used.pop(user_id, None)
+
+
 def _worker_env_vars() -> dict[str, str]:
-    """Credentials to forward into each worker container."""
+    """Default environment to forward into each worker container.
+
+    In server mode this comes from the control-plane runtime first, then the
+    persistent control-plane config.yaml. Each worker may still override these
+    defaults from its mounted user config.yaml during agent startup.
+    """
     keys = [
         "LLM_MODEL", "LLM_API_KEY", "LLM_BASE_URL", "EMBEDDING_MODEL",
         "GRAPH_AGENT_MODEL", "REVIEW_AGENT_MODEL",
@@ -297,7 +502,12 @@ def _worker_env_vars() -> dict[str, str]:
         "BOHRIUM_DEEPMD_IMAGE", "BOHRIUM_DEEPMD_MACHINE", "DEEPMD_MODEL_PATH",
         "KDG_EMBED_MODEL", "HF_HUB_OFFLINE",
     ]
-    return {k: v for k in keys if (v := _runtime_env_value(k))}
+    env_vars = {k: v for k in keys if (v := _runtime_env_value(k))}
+    for key, value in _custom_env_from_config(load_config()).items():
+        if not value or not _USER_ENV_KEY_RE.fullmatch(key) or key in _PROTECTED_USER_ENV_KEYS:
+            continue
+        env_vars[key] = value
+    return env_vars
 
 
 def ensure_worker_running(user_id: str) -> str:
@@ -318,10 +528,13 @@ def ensure_worker_running(user_id: str) -> str:
             target = _worker_registry[user_id]
             try:
                 c = dc.containers.get(name)
-                if c.status != "running":
-                    c.start()
-                _worker_last_used[user_id] = time.time()
-                return target
+                if not _worker_container_uses_current_image(dc, c):
+                    _remove_worker_container(user_id, c)
+                else:
+                    if c.status != "running":
+                        c.start()
+                    _worker_last_used[user_id] = time.time()
+                    return target
             except _docker.errors.NotFound:
                 del _worker_registry[user_id]
                 _worker_ports.pop(user_id, None)
@@ -329,8 +542,11 @@ def ensure_worker_running(user_id: str) -> str:
         # Container might exist from a previous server start.
         try:
             c = dc.containers.get(name)
+            if not _worker_container_uses_current_image(dc, c):
+                _remove_worker_container(user_id, c)
+                c = None
             port = None
-            if _WORKER_CONNECT_MODE == "host-port":
+            if c is not None and _WORKER_CONNECT_MODE == "host-port":
                 bindings = c.ports.get(f"{get_adk_port()}/tcp") or []
                 if not bindings:
                     c.remove(force=True)
@@ -359,17 +575,19 @@ def ensure_worker_running(user_id: str) -> str:
         env_vars["MATCREATOR_USER_ID"] = user_id
 
         adk_port = get_adk_port()
+        volumes = {
+            str(user_home_host): {
+                "bind": str(_WORKER_MATCREATOR_HOME),
+                "mode": "rw",
+            },
+        }
+        volumes.update(_worker_shared_mounts())
         run_kwargs: dict = dict(
             image=_WORKER_IMAGE,
             command=["matcreator", "api-server", "--host", "0.0.0.0", "--port", str(adk_port)],
             name=name,
             environment=env_vars,
-            volumes={
-                str(user_home_host): {
-                    "bind": str(_WORKER_MATCREATOR_HOME),
-                    "mode": "rw",
-                },
-            },
+            volumes=volumes,
             detach=True,
             restart_policy={"Name": "unless-stopped"},
         )
@@ -405,15 +623,7 @@ def stop_worker(user_id: str) -> None:
 
 def remove_worker(user_id: str) -> None:
     """Stop and remove the worker container and clean up the registry."""
-    try:
-        import docker as _docker
-        dc = _get_docker()
-        dc.containers.get(_worker_container_name(user_id)).remove(force=True)
-    except Exception as exc:
-        logger.warning("Failed to remove worker for user %s: %s", user_id, exc)
-    _worker_registry.pop(user_id, None)
-    _worker_ports.pop(user_id, None)
-    _worker_last_used.pop(user_id, None)
+    _remove_worker_container(user_id)
 
 
 def _list_workers() -> list[dict]:
@@ -487,6 +697,151 @@ def _is_port_open(host: str = "127.0.0.1", port: int | None = None) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(0.5)
         return s.connect_ex((host, port)) == 0
+
+
+def _entry_value(value):
+    return value.value if hasattr(value, "value") else value
+
+
+def _entry_preview(content: str | None, *, limit: int = 280) -> str:
+    preview = " ".join((content or "").split())
+    if len(preview) <= limit:
+        return preview
+    return preview[: limit - 3].rstrip() + "..."
+
+
+def _json_ready(value):
+    if hasattr(value, "model_dump"):
+        return _json_ready(value.model_dump())
+    if hasattr(value, "value"):
+        return value.value
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(k): _json_ready(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, (set, tuple)):
+        return [_json_ready(item) for item in value]
+    return value
+
+
+def _load_skill_graph_payload(*, limit: int = 400) -> dict:
+    graph = _get_kg()
+    disabled_skills = set(get_disabled_skills())
+    default_skill_names = get_default_skill_names()
+    skill_dirs = _skill_dir_map()
+    workspace_skill_root = workspace_skills_dir().resolve()
+    nodes = []
+    included_ids: set[str] = set()
+    offset = 0
+    page_size = 200
+
+    while len(nodes) < limit:
+        page = graph.list(limit=page_size, offset=offset)
+        if not page:
+            break
+        for entry in page:
+            entry_type = _entry_value(entry.entry_type)
+            if entry_type == "memory":
+                continue
+            metadata = entry.metadata
+            metadata_payload = _json_ready(metadata)
+            skill_name = entry.title if "matcreator-skill" in entry.tags else None
+            skill_dir = skill_dirs.get(skill_name) if skill_name else None
+            if (
+                skill_name
+                and "matcreator-guide" not in entry.tags
+                and skill_dir is None
+            ):
+                continue
+            enabled = skill_name not in disabled_skills if skill_name else True
+            skill_path = str(skill_dir.resolve()) if skill_dir else None
+            source = get_skill_source(skill_name) if skill_name else None
+            removable = bool(
+                skill_name
+                and skill_dir is not None
+                and source
+                and source.editable
+                and skill_dir.resolve().is_relative_to(workspace_skill_root)
+            )
+            nodes.append(
+                {
+                    "id": entry.id,
+                    "label": entry.title,
+                    "title": entry.title,
+                    "slug": entry.slug,
+                    "skill_name": skill_name,
+                    "skill_path": skill_path,
+                    "source": source.name if source else None,
+                    "editable": bool(source and source.editable),
+                    "managed": bool(source and source.managed),
+                    "trusted": bool(source and source.trusted),
+                    "is_custom": bool(source and source.name in {"custom", "workspace"}),
+                    "removable": removable,
+                    "remove_requires_confirmation": bool(skill_name and source and source.managed),
+                    "enabled": enabled,
+                    "entry_type": entry_type,
+                    "content": entry.content,
+                    "content_preview": _entry_preview(entry.content),
+                    "tags": entry.tags,
+                    "aliases": entry.aliases,
+                    "internal_refs": entry.internal_refs,
+                    "scripts": _json_ready(entry.scripts),
+                    "assets": _json_ready(entry.assets),
+                    "metadata": metadata_payload,
+                    "verification_status": _entry_value(metadata.verification_status),
+                    "refinement_status": _entry_value(metadata.refinement_status),
+                    "usage_count": metadata.usage_count,
+                    "source_provenance": metadata.source_provenance,
+                    "trust_score": metadata.trust_score,
+                }
+            )
+            included_ids.add(entry.id)
+            if len(nodes) >= limit:
+                break
+        if len(page) < page_size:
+            break
+        offset += len(page)
+
+    edges = []
+    if included_ids and KNOW_DO_GRAPH_DB.exists():
+        placeholders = ",".join("?" for _ in included_ids)
+        params = [*included_ids, *included_ids]
+        try:
+            with sqlite3.connect(KNOW_DO_GRAPH_DB) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    f"""
+                    SELECT id, source_id, target_id, relation, weight
+                    FROM edges
+                    WHERE source_id IN ({placeholders})
+                      AND target_id IN ({placeholders})
+                    """,
+                    params,
+                ).fetchall()
+        except sqlite3.Error:
+            rows = []
+        edges = [
+            {
+                "id": row["id"],
+                "from": row["source_id"],
+                "to": row["target_id"],
+                "relation": row["relation"],
+                "weight": row["weight"],
+            }
+            for row in rows
+        ]
+
+    stats = graph.stats()
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "limit": limit,
+        "truncated": stats.get("nodes", len(nodes)) > len(nodes),
+        "total_nodes": stats.get("nodes", len(nodes)),
+        "total_edges": stats.get("edges", len(edges)),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -632,14 +987,21 @@ def _is_admin(user_id: str) -> bool:
     return user is not None and user["display_name"] in admin_names
 
 
-def _session_row_to_summary(row: sqlite3.Row) -> dict:
-    return {
+def _session_row_to_summary(row: sqlite3.Row, summaries: dict[str, dict] | None = None) -> dict:
+    result = {
         "id": row["id"],
         "appName": row["app_name"],
         "userId": row["user_id"],
         "createTime": row["create_time"],
         "lastUpdateTime": row["update_time"],
     }
+    if summaries is not None:
+        entry = summaries.get(row["id"], "")
+        if isinstance(entry, dict):
+            result["summary"] = entry.get("summary", "")
+        else:
+            result["summary"] = entry
+    return result
 
 
 def _query_session_summaries(user_id: str | None = None) -> list[dict]:
@@ -667,7 +1029,229 @@ def _query_session_summaries(user_id: str | None = None) -> list[dict]:
     except sqlite3.Error as exc:
         raise HTTPException(status_code=500, detail=f"Failed to read sessions: {exc}")
 
-    return [_session_row_to_summary(row) for row in rows]
+    summaries = _load_summaries()
+    return [_session_row_to_summary(row, summaries) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Session summaries (experimental)
+# ---------------------------------------------------------------------------
+
+import hashlib
+import tempfile
+
+
+def _summary_path_for_user(user_id: str | None = None) -> Path:
+    if _MATCREATOR_MODE == "server" and user_id:
+        return _user_adk_dir(user_id) / "session_summaries.json"
+    return SUMMARIES_PATH
+
+
+def _load_summaries(user_id: str | None = None) -> dict[str, dict]:
+    """Load session summaries from the JSON file.
+
+    Returns dict of {session_id: {"summary": str, "content_hash": str}}.
+    For backward compatibility, plain string values are also accepted.
+    """
+    summaries_path = _summary_path_for_user(user_id)
+    if not summaries_path.exists():
+        return {}
+    try:
+        data = json.loads(summaries_path.read_text(encoding="utf-8"))
+        # Normalize: support both old format (str) and new format (dict)
+        result = {}
+        for k, v in data.items():
+            if isinstance(v, str):
+                result[k] = {"summary": v, "content_hash": ""}
+            else:
+                result[k] = v
+        return result
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_summaries(data: dict[str, dict], user_id: str | None = None) -> None:
+    """Persist session summaries atomically via temp file + rename."""
+    summaries_path = _summary_path_for_user(user_id)
+    summaries_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(summaries_path.parent), suffix=".tmp", prefix="summaries_"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, str(summaries_path))
+    except Exception:
+        # Clean up temp file on failure
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _get_session_summary(session_id: str, user_id: str | None = None) -> str:
+    """Get summary text for a single session, or empty string."""
+    entry = _load_summaries(user_id).get(session_id)
+    if isinstance(entry, dict):
+        return entry.get("summary", "")
+    return ""
+
+
+def _fetch_first_user_message(session_id: str, user_id: str | None = None) -> str:
+    """Read the first user message text from the session DB."""
+    session_db_path = next((db for _, db in _iter_session_db_paths(user_id)), None)
+    if not session_db_path or not session_db_path.exists():
+        return ""
+    try:
+        with sqlite3.connect(session_db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            if _MATCREATOR_MODE == "server" and user_id:
+                rows = conn.execute(
+                    """
+                    SELECT event_data FROM events
+                    WHERE app_name = ? AND user_id = ? AND session_id = ?
+                    ORDER BY timestamp ASC
+                    """,
+                    (APP_NAME, user_id, session_id),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT event_data FROM events
+                    WHERE app_name = ? AND session_id = ?
+                    ORDER BY timestamp ASC
+                    """,
+                    (APP_NAME, session_id),
+                ).fetchall()
+    except sqlite3.Error:
+        return ""
+
+    for row in rows:
+        event = _load_json_field(row["event_data"], {})
+        if event.get("author") != "user":
+            continue
+        parts = event.get("content", {}).get("parts", [])
+        text = " ".join(p.get("text", "") for p in parts if isinstance(p, dict) and p.get("text"))
+        if text.strip():
+            return text.strip()
+    return ""
+
+
+_SUMMARIZE_PROMPT = (
+    "请用一句简洁的中文（不超过30个字）总结以下对话的核心内容。"
+    "只输出总结本身，不要任何前缀、解释或标点符号。不要使用句号、逗号、感叹号等任何标点。\n\n"
+    "对话内容：\n{text}"
+)
+
+_SUMMARIZE_PROMPT_EN = (
+    "Summarize the following conversation in a concise English phrase (no more than 6 words). "
+    "Output only the summary itself, no prefixes, no explanations, no punctuation whatsoever "
+    "(no periods, commas, exclamation marks, colons, semicolons, or any other punctuation).\n\n"
+    "Conversation:\n{text}"
+)
+
+
+def _is_primarily_english(text: str) -> bool:
+    """Return True if the majority of non-whitespace characters are ASCII letters."""
+    alpha = [c for c in text.strip()[:500] if c.isalpha()]
+    if not alpha:
+        return False
+    return sum(1 for c in alpha if c.isascii()) / len(alpha) > 0.5
+
+
+def _llm_config() -> tuple[str, str | None, str | None]:
+    """Resolve LLM config from env vars/config.yaml.
+
+    Returns None for api_key/base_url when not explicitly set, so litellm
+    can use its built-in provider detection (e.g. MINIMAX_API_KEY for minimax/).
+    """
+    model = _runtime_env_value("LLM_MODEL")
+    api_key = _runtime_env_value("LLM_API_KEY") or None
+    base_url = _runtime_env_value("LLM_BASE_URL") or None
+    return model, api_key, base_url
+
+
+@app.post("/api/sessions/{session_id}/summarize")
+async def summarize_session(
+    session_id: str,
+    user_id: str = Query(default="", description="Current user ID; required to scope server-mode sessions."),
+) -> JSONResponse:
+    """Generate a one-sentence summary from the session's first user message."""
+    # Fetch canonical first message from DB
+    scoped_user_id = user_id or None
+    first_msg = _fetch_first_user_message(session_id, scoped_user_id)
+    if not first_msg:
+        return JSONResponse({"summary": ""})
+
+    content_hash = hashlib.md5(first_msg.encode()).hexdigest()[:12]
+
+    # Return cached summary if content hash matches
+    summaries = _load_summaries(scoped_user_id)
+    cached = summaries.get(session_id)
+    if cached and isinstance(cached, dict) and cached.get("content_hash") == content_hash:
+        return JSONResponse({"summary": cached["summary"]})
+
+    # Call LLM to generate summary
+    summary = ""
+    try:
+        from litellm import acompletion
+
+        model, api_key, base_url = _llm_config()
+        prompt_template = _SUMMARIZE_PROMPT_EN if _is_primarily_english(first_msg) else _SUMMARIZE_PROMPT
+        prompt = prompt_template.format(text=first_msg[:2000])
+
+        response = await acompletion(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            api_key=api_key or None,
+            base_url=base_url or None,
+            temperature=0.3,
+            max_tokens=100,
+        )
+        raw = response.choices[0].message.content or ""
+        import unicodedata
+        summary = ''.join(c for c in raw if unicodedata.category(c)[0] != 'P').strip()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Session summary LLM call failed: %s", exc)
+        # Fallback: use truncated first message
+        summary = first_msg[:40] + ("…" if len(first_msg) > 40 else "")
+
+    # Persist with content hash (skip caching empty results so it retries next time)
+    if summary:
+        summaries[session_id] = {"summary": summary, "content_hash": content_hash}
+        _save_summaries(summaries, scoped_user_id)
+
+    return JSONResponse({"summary": summary})
+
+
+class UpdateSummaryBody(BaseModel):
+    summary: str
+
+
+@app.put("/api/sessions/{session_id}/summary")
+async def update_session_summary(
+    session_id: str,
+    body: UpdateSummaryBody,
+    user_id: str = Query(default="", description="Current user ID; required to scope server-mode sessions."),
+) -> JSONResponse:
+    """Manually set, override, or clear the summary for a session."""
+    text = body.summary.strip()
+    scoped_user_id = user_id or None
+
+    summaries = _load_summaries(scoped_user_id)
+    if not text:
+        # Clear summary
+        summaries.pop(session_id, None)
+        _save_summaries(summaries, scoped_user_id)
+        return JSONResponse({"summary": ""})
+
+    existing = summaries.get(session_id, {})
+    content_hash = existing.get("content_hash", "") if isinstance(existing, dict) else ""
+    summaries[session_id] = {"summary": text, "content_hash": content_hash}
+    _save_summaries(summaries, scoped_user_id)
+    return JSONResponse({"summary": text})
 
 
 def _query_session_summaries_server(user_id: str | None = None) -> list[dict]:
@@ -687,7 +1271,8 @@ def _query_session_summaries_server(user_id: str | None = None) -> list[dict]:
                     """,
                     (APP_NAME,),
                 ).fetchall()
-            results.extend(_session_row_to_summary(r) for r in rows)
+            summaries = _load_summaries(owner_id)
+            results.extend(_session_row_to_summary(r, summaries) for r in rows)
         except sqlite3.Error:
             continue
 
@@ -1170,6 +1755,19 @@ async def _worker_terminal_session(websocket: WebSocket, user_id: str) -> None:
 async def health_check():
     mode = os.environ.get("MATCREATOR_MODE", "local")
     return {"status": "ok", "mode": mode}
+
+
+@app.get("/api/skill-graph/data")
+async def get_skill_graph_data(
+    limit: int = Query(default=400, ge=1, le=1200),
+) -> JSONResponse:
+    try:
+        payload = await asyncio.to_thread(_load_skill_graph_payload, limit=limit)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return JSONResponse(payload)
+
+
 @app.on_event("startup")
 async def _on_startup() -> None:
     users_db.init_db()
@@ -1450,6 +2048,7 @@ async def get_user_session(user_id: str, session_id: str) -> JSONResponse:
         raise HTTPException(status_code=500, detail=f"Failed to read session: {exc}")
 
     summary = _session_row_to_summary(session)
+    summary["summary"] = _get_session_summary(session_id, user_id if _MATCREATOR_MODE == "server" else None)
     summary["state"] = _load_json_field(session["state"], {})
     events = [
         _load_json_field(row["event_data"], {})
@@ -1839,31 +2438,353 @@ async def cancel_individual_step(
     })
 
 
+def _skill_bundle_roots() -> list[Path]:
+    return [_MODULE_SKILLS_ROOT, official_skills_dir(), workspace_skills_dir(), Path.home() / ".matcreator" / "skills"]
+
+
+def _resolve_skill_dir(skill_name: str) -> Path:
+    if not _SKILL_NAME_RE.match(skill_name):
+        raise HTTPException(status_code=400, detail=f"Invalid skill name: '{skill_name}'.")
+    skill_dir = _skill_dir_map().get(skill_name)
+    if skill_dir is None:
+        raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found.")
+    resolved = skill_dir.resolve()
+    allowed = [root.expanduser().resolve() for root in _skill_bundle_roots()]
+    if not any(resolved.is_relative_to(root) for root in allowed):
+        raise HTTPException(status_code=403, detail="Skill path is outside editable skill roots.")
+    if not (resolved / "SKILL.md").is_file():
+        raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' has no SKILL.md.")
+    return resolved
+
+
+def _split_skill_md(text: str) -> tuple[dict, str]:
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) == 3:
+            try:
+                frontmatter = yaml.safe_load(parts[1]) or {}
+            except yaml.YAMLError as exc:
+                raise HTTPException(status_code=422, detail=f"Invalid SKILL.md frontmatter: {exc}")
+            if not isinstance(frontmatter, dict):
+                frontmatter = {}
+            return frontmatter, parts[2].lstrip("\n")
+    return {}, text
+
+
+def _compose_skill_md(frontmatter: dict, body: str) -> str:
+    dumped = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=False).strip()
+    return f"---\n{dumped}\n---\n{body.rstrip()}\n"
+
+
+def _skill_attachment_categories(skill_dir: Path) -> list[dict]:
+    categories = []
+    for folder in sorted(
+        (path for path in skill_dir.rglob("*") if path.is_dir() and not any(part.startswith(".") for part in path.relative_to(skill_dir).parts)),
+        key=lambda p: p.relative_to(skill_dir).as_posix(),
+    ):
+        if folder == skill_dir:
+            continue
+        files = []
+        for item in sorted(folder.iterdir(), key=lambda p: p.name):
+            if item.is_file():
+                stat = item.stat()
+                rel_path = item.relative_to(skill_dir).as_posix()
+                files.append({
+                    "path": rel_path,
+                    "name": item.name,
+                    "category": folder.relative_to(skill_dir).as_posix(),
+                    "size": stat.st_size,
+                })
+        categories.append({"name": folder.relative_to(skill_dir).as_posix(), "files": files})
+    return categories
+
+
+def _resolve_skill_relative_file(skill_dir: Path, relative_path: str) -> Path:
+    cleaned = relative_path.strip().lstrip("/")
+    if not cleaned or cleaned in {"SKILL.md", ".", ".."}:
+        raise HTTPException(status_code=400, detail="Invalid attachment path.")
+    target = (skill_dir / cleaned).resolve()
+    if not target.is_relative_to(skill_dir.resolve()) or target == skill_dir.resolve():
+        raise HTTPException(status_code=400, detail="Attachment path escapes the skill directory.")
+    return target
+
+
+def _sanitize_attachment_category(category: str) -> str:
+    cleaned = category.strip().strip("/")
+    if not cleaned or cleaned in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Attachment category is required.")
+    parts = [_safe_upload_filename(part) for part in cleaned.split("/") if part.strip()]
+    if not parts:
+        raise HTTPException(status_code=400, detail="Attachment category is required.")
+    return "/".join(parts)
+
+
+def _delete_skill_graph_entries(skill_name: str) -> int:
+    graph = _get_kg()
+    entry_ids = []
+    offset = 0
+    page_size = 200
+    while True:
+        page = graph.list(limit=page_size, offset=offset)
+        if not page:
+            break
+        for entry in page:
+            if entry.title == skill_name and "matcreator-skill" in entry.tags:
+                entry_ids.append(entry.id)
+        if len(page) < page_size:
+            break
+        offset += len(page)
+    deleted = sum(int(bool(graph.delete(entry_id))) for entry_id in entry_ids)
+    try:
+        graph.refresh()
+    except Exception:
+        pass
+    return deleted
+
+
+class SkillGraphEditBody(BaseModel):
+    content: str
+    description: str | None = None
+    entry_type: str | None = None
+    skill_level: str | None = None
+    tags: list[str] = []
+    dependent_skills: list[str] = []
+    metadata: dict | None = None
+
+
+class SkillGraphCreateBody(BaseModel):
+    name: str
+    description: str = ""
+    content: str = ""
+    entry_type: str = "capability"
+    skill_level: str = "L1"
+    tags: list[str] = []
+    dependent_skills: list[str] = []
+
+
+@app.post("/api/skill-graph/skills")
+async def create_skill_graph_skill(body: SkillGraphCreateBody) -> JSONResponse:
+    skill_name = body.name.strip()
+    if not _SKILL_NAME_RE.match(skill_name):
+        raise HTTPException(
+            status_code=422,
+            detail="Skill name must be lowercase alphanumeric with hyphens/underscores, starting with a letter or digit.",
+        )
+    if skill_name in {s.name for s in ALL_SKILLS} or skill_name in get_default_skill_names():
+        raise HTTPException(status_code=409, detail=f"Skill '{skill_name}' already exists.")
+
+    skill_dir = (workspace_skills_dir() / skill_name).resolve()
+    workspace_root = workspace_skills_dir().resolve()
+    if not skill_dir.is_relative_to(workspace_root):
+        raise HTTPException(status_code=400, detail="Invalid skill path.")
+    if skill_dir.exists():
+        raise HTTPException(status_code=409, detail=f"Skill folder already exists: {skill_name}")
+
+    frontmatter = {
+        "name": skill_name,
+        "description": body.description.strip() or f"Custom skill '{skill_name}'.",
+        "metadata": {
+            "entry_type": body.entry_type or "capability",
+            "skill_level": body.skill_level or "L1",
+            "tags": [str(tag).strip() for tag in body.tags if str(tag).strip()],
+            "dependent_skills": [
+                str(dep).strip()
+                for dep in body.dependent_skills
+                if str(dep).strip() and str(dep).strip() != skill_name
+            ],
+        },
+    }
+    content = _compose_skill_md(
+        frontmatter,
+        body.content.strip() or f"# {skill_name}\n\nDescribe how and when to use this skill.",
+    )
+    try:
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+        refresh_result = refresh_skills()
+    except OSError as exc:
+        shutil.rmtree(skill_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Failed to create skill: {exc}")
+    except Exception as exc:
+        shutil.rmtree(skill_dir, ignore_errors=True)
+        raise HTTPException(status_code=422, detail=f"Skill was written but failed to load: {exc}")
+    return JSONResponse({"status": "ok", "skill_name": skill_name, "path": str(skill_dir), "refresh": refresh_result})
+
+
+@app.delete("/api/skill-graph/skills/{skill_name}")
+async def delete_skill_graph_skill(skill_name: str) -> JSONResponse:
+    if not _SKILL_NAME_RE.match(skill_name):
+        raise HTTPException(status_code=400, detail=f"Invalid skill name: '{skill_name}'.")
+    skill_dir = _resolve_skill_dir(skill_name)
+    allowed_roots = [_MODULE_SKILLS_ROOT.resolve(), workspace_skills_dir().resolve()]
+    if not any(skill_dir.is_relative_to(root) for root in allowed_roots):
+        raise HTTPException(status_code=400, detail="This skill root cannot be removed from the graph UI.")
+    try:
+        shutil.rmtree(skill_dir)
+        deleted_graph_nodes = _delete_skill_graph_entries(skill_name)
+        refresh_result = refresh_skills()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to remove skill: {exc}")
+    return JSONResponse({
+        "status": "ok",
+        "deleted": skill_name,
+        "deleted_graph_nodes": deleted_graph_nodes,
+        "refresh": refresh_result,
+    })
+
+
+@app.get("/api/skill-graph/skills/{skill_name}/edit")
+async def get_skill_graph_skill_edit(skill_name: str) -> JSONResponse:
+    skill_dir = _resolve_skill_dir(skill_name)
+    text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    frontmatter, body = _split_skill_md(text)
+    metadata = dict(frontmatter.get("metadata") or {})
+    known_skills = sorted({s.name for s in ALL_SKILLS if s.name != skill_name})
+    return JSONResponse({
+        "status": "ok",
+        "skill_name": skill_name,
+        "path": str(skill_dir),
+        "frontmatter": _json_ready(frontmatter),
+        "content": body,
+        "description": frontmatter.get("description", ""),
+        "entry_type": metadata.get("entry_type") or metadata.get("type") or "capability",
+        "skill_level": metadata.get("skill_level") or "L1",
+        "tags": metadata.get("tags") or [],
+        "dependent_skills": metadata.get("dependent_skills") or [],
+        "metadata": _json_ready(metadata),
+        "attachments": _skill_attachment_categories(skill_dir),
+        "available_skills": known_skills,
+        "entry_types": [
+            "capability",
+            "procedure",
+            "workflow",
+            "tool",
+            "repository",
+            "environment",
+            "dependency",
+            "data",
+            "analytical",
+            "heuristic",
+            "constraint",
+            "generic",
+        ],
+        "skill_levels": ["L1", "L2", "L3", "L4"],
+    })
+
+
+@app.put("/api/skill-graph/skills/{skill_name}/edit")
+async def update_skill_graph_skill_edit(skill_name: str, body: SkillGraphEditBody) -> JSONResponse:
+    skill_dir = _resolve_skill_dir(skill_name)
+    skill_md = skill_dir / "SKILL.md"
+    frontmatter, _ = _split_skill_md(skill_md.read_text(encoding="utf-8"))
+    frontmatter["name"] = skill_name
+    if body.description is not None:
+        frontmatter["description"] = body.description.strip()
+    metadata = dict(frontmatter.get("metadata") or {})
+    metadata.update(body.metadata or {})
+    if body.entry_type:
+        metadata["entry_type"] = body.entry_type
+        metadata.pop("type", None)
+    if body.skill_level:
+        metadata["skill_level"] = body.skill_level
+    metadata["tags"] = [str(tag).strip() for tag in body.tags if str(tag).strip()]
+    metadata["dependent_skills"] = [
+        str(dep).strip()
+        for dep in body.dependent_skills
+        if str(dep).strip() and str(dep).strip() != skill_name
+    ]
+    frontmatter["metadata"] = metadata
+    content = _compose_skill_md(frontmatter, body.content)
+    _validate_skill_md_name(content.encode("utf-8"), skill_name)
+    try:
+        skill_md.write_text(content, encoding="utf-8")
+        refresh_result = refresh_skills()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save skill: {exc}")
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Skill saved but failed to reload: {exc}")
+    return JSONResponse({"status": "ok", "skill_name": skill_name, "refresh": refresh_result})
+
+
+@app.post("/api/skill-graph/skills/{skill_name}/attachments")
+async def upload_skill_graph_attachment(
+    skill_name: str,
+    category: str = Form(...),
+    files: List[UploadFile] = File(default=[]),
+) -> JSONResponse:
+    skill_dir = _resolve_skill_dir(skill_name)
+    category_path = _sanitize_attachment_category(category)
+    upload_dir = (skill_dir / category_path).resolve()
+    if not upload_dir.is_relative_to(skill_dir.resolve()):
+        raise HTTPException(status_code=400, detail="Attachment category escapes the skill directory.")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    written = []
+    try:
+        for file in files:
+            if not file.filename:
+                continue
+            safe_name = _safe_upload_filename(file.filename)
+            target = _available_upload_path(upload_dir, safe_name)
+            target.write_bytes(await file.read())
+            written.append(str(target.relative_to(skill_dir)))
+        refresh_result = refresh_skills()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to upload attachment: {exc}")
+    finally:
+        for file in files:
+            await file.close()
+    return JSONResponse({"status": "ok", "skill_name": skill_name, "files": written, "refresh": refresh_result})
+
+
+@app.delete("/api/skill-graph/skills/{skill_name}/attachments")
+async def delete_skill_graph_attachment(skill_name: str, path: str = Query(...)) -> JSONResponse:
+    skill_dir = _resolve_skill_dir(skill_name)
+    target = _resolve_skill_relative_file(skill_dir, unquote(path))
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Attachment not found.")
+    try:
+        target.unlink()
+        parent = target.parent
+        while parent != skill_dir and not any(parent.iterdir()):
+            parent.rmdir()
+            parent = parent.parent
+        refresh_result = refresh_skills()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to delete attachment: {exc}")
+    return JSONResponse({"status": "ok", "skill_name": skill_name, "deleted": path, "refresh": refresh_result})
+
+
 @app.get("/api/skills")
-async def list_skills() -> JSONResponse:
+async def list_skills(user_id: str = Query(default="")) -> JSONResponse:
     """Return all loaded skills with their planning_enabled status and parent skill (if any)."""
     from matcreator.skill import _MODULE_SKILLS_ROOT, _discover_skill_dirs  # noqa: PLC0415
 
     parent_map: dict[str, str] = {}
-    for root in [_MODULE_SKILLS_ROOT, workspace_skills_dir()]:
+    for root in [_MODULE_SKILLS_ROOT, official_skills_dir(), workspace_skills_dir()]:
         for path in _discover_skill_dirs(root):
             parent_skill_md = path.parent / "SKILL.md"
             if parent_skill_md.is_file():
                 parent_map[path.name] = path.parent.name
 
     default_skill_names = get_default_skill_names()
-    disabled_skills = set(get_disabled_skills())
-    skills = [
-        {
+    config = _load_config_for_user(user_id)
+    planning_skills = set((config.get("planning") or {}).get("extra_skills") or [])
+    disabled_skills = set((config.get("skills") or {}).get("disabled") or [])
+    skills = []
+    for s in sorted(ALL_SKILLS, key=lambda s: s.name):
+        source = get_skill_source(s.name)
+        skills.append({
             "name": s.name,
             "description": s.description or "",
-            "planning_enabled": s.name in PLANNING_SKILL_NAMES,
+            "planning_enabled": s.name in PLANNING_SKILL_NAMES or s.name in planning_skills,
             "enabled": s.name not in disabled_skills,
             "parent": parent_map.get(s.name),
-            "is_custom": s.name not in default_skill_names,
-        }
-        for s in sorted(ALL_SKILLS, key=lambda s: s.name)
-    ]
+            "source": source.name if source else None,
+            "editable": bool(source and source.editable),
+            "managed": bool(source and source.managed),
+            "trusted": bool(source and source.trusted),
+            "is_custom": bool(source and source.name in {"custom", "workspace"}),
+        })
     return JSONResponse(skills)
 
 
@@ -1992,9 +2913,9 @@ async def delete_custom_skill(skill_name: str) -> JSONResponse:
 
 
 @app.get("/api/settings")
-async def get_settings() -> JSONResponse:
+async def get_settings(user_id: str = Query(default="")) -> JSONResponse:
     """Return the current user config."""
-    return JSONResponse(load_config())
+    return JSONResponse(_load_config_for_user(user_id))
 
 
 class SettingsBody(BaseModel):
@@ -2002,12 +2923,13 @@ class SettingsBody(BaseModel):
     user: dict | None = None
     skills: dict | None = None
     workspace: dict | None = None
+    llm: dict | None = None
 
 
 @app.put("/api/settings")
-async def update_settings(body: SettingsBody) -> JSONResponse:
+async def update_settings(body: SettingsBody, user_id: str = Query(default="")) -> JSONResponse:
     """Merge *body* into the config, persist it, and reload skills."""
-    config = load_config()
+    config = _load_config_for_user(user_id)
     if body.planning is not None:
         config.setdefault("planning", {}).update(body.planning)
     if body.user is not None:
@@ -2016,7 +2938,9 @@ async def update_settings(body: SettingsBody) -> JSONResponse:
         config.setdefault("skills", {}).update(body.skills)
     if body.workspace is not None:
         config.setdefault("workspace", {}).update(body.workspace)
-    save_config(config)
+    if body.llm is not None:
+        config.setdefault("llm", {}).update(body.llm)
+    _save_config_for_user(config, user_id)
     try:
         refresh_skills()
     except Exception as exc:
@@ -2028,77 +2952,117 @@ async def update_settings(body: SettingsBody) -> JSONResponse:
 
 
 @app.get("/api/env-config")
-async def get_env_config() -> JSONResponse:
-    """Return current LLM/compute configuration, masking sensitive fields.
+async def get_env_config(user_id: str = Query(default="")) -> JSONResponse:
+    """Return current LLM/custom environment overrides, masking sensitive fields.
 
-    In local mode, values come from ~/.matcreator/config.yaml (with .env as
-    fallback). In server mode, values come from the .env file as before.
+    In local mode, values come from ~/.matcreator/config.yaml with process env
+    fallback. In server mode, values come from the user's mounted config.yaml;
+    deployment defaults are intentionally not returned.
     """
     mode = os.environ.get("MATCREATOR_MODE", "local")
     result: dict[str, str] = {}
 
+    config = _load_config_for_user(user_id)
+
     if mode == "local":
-        from matcreator.config import get_config_value
         for env_key in _ENV_FIELDS:
             yaml_key = ENV_TO_YAML.get(env_key)
             if yaml_key:
-                val = get_config_value(yaml_key)
+                val = _get_nested_config_value(config, yaml_key)
             else:
-                val = dotenv_values(ENV_PATH).get(env_key, "") if ENV_PATH.exists() else ""
-            sensitive = yaml_key in SENSITIVE_YAML_KEYS if yaml_key else env_key in _SENSITIVE_FIELDS
-            result[env_key] = "***" if (sensitive and val) else val
+                val = ""
+            if not val:
+                val = os.environ.get(env_key, "")
+            result[env_key] = _masked_env_value(env_key, val)
     else:
-        values = dotenv_values(ENV_PATH) if ENV_PATH.exists() else {}
         for field in _ENV_FIELDS:
-            val = values.get(field, "")
-            result[field] = "***" if (field in _SENSITIVE_FIELDS and val) else val
+            yaml_key = ENV_TO_YAML.get(field)
+            val = _get_nested_config_value(config, yaml_key) if yaml_key else ""
+            result[field] = _masked_env_value(field, val)
+
+    result[_CUSTOM_ENV_CONFIG_KEY] = {
+        key: _masked_env_value(key, value)
+        for key, value in sorted(_custom_env_from_config(config).items())
+    }
 
     return JSONResponse(result)
 
 
 class EnvConfigBody(BaseModel):
-    values: dict[str, str]
+    values: dict[str, Any]
 
 
 @app.put("/api/env-config")
-async def update_env_config(body: EnvConfigBody) -> JSONResponse:
+async def update_env_config(body: EnvConfigBody, user_id: str = Query(default="")) -> JSONResponse:
     """Write updated configuration fields.
 
     In local mode, writes to ~/.matcreator/config.yaml.
-    In server mode, writes to agents/MatCreator/.env as before.
+    In server mode, writes to the user's mounted ~/.matcreator/config.yaml.
     """
     mode = os.environ.get("MATCREATOR_MODE", "local")
 
+    config = _load_config_for_user(user_id)
+    previous_custom_env = _custom_env_from_config(config)
+
+    for key, raw_value in body.values.items():
+        if key == _CUSTOM_ENV_CONFIG_KEY:
+            continue
+        value = "" if raw_value is None else str(raw_value)
+        if key not in _ENV_FIELDS:
+            continue
+        yaml_key = ENV_TO_YAML.get(key)
+        if yaml_key is None:
+            continue
+        sensitive = yaml_key in SENSITIVE_YAML_KEYS or _is_sensitive_env_key(key)
+        if sensitive and value == _ENV_VALUE_MASK:
+            continue
+        _set_nested_config_value(config, yaml_key, value)
+
+    custom_env_raw = body.values.get(_CUSTOM_ENV_CONFIG_KEY)
+    if isinstance(custom_env_raw, dict):
+        existing_custom_env = _custom_env_from_config(config)
+        next_custom_env: dict[str, str] = {}
+        for raw_key, raw_value in custom_env_raw.items():
+            env_key = str(raw_key).strip()
+            if not env_key:
+                continue
+            _validate_user_env_key(env_key)
+            value = "" if raw_value is None else str(raw_value)
+            if _is_sensitive_env_key(env_key) and value == _ENV_VALUE_MASK:
+                value = existing_custom_env.get(env_key, "")
+            if value:
+                next_custom_env[env_key] = value
+        if next_custom_env:
+            config["env"] = dict(sorted(next_custom_env.items()))
+        else:
+            config.pop("env", None)
+
+    _save_config_for_user(config, user_id)
+
     if mode == "local":
-        from matcreator.config import set_config_value
-        for key, value in body.values.items():
+        for key, raw_value in body.values.items():
+            if key == _CUSTOM_ENV_CONFIG_KEY:
+                continue
+            value = "" if raw_value is None else str(raw_value)
             if key not in _ENV_FIELDS:
                 continue
             yaml_key = ENV_TO_YAML.get(key)
             if yaml_key is None:
                 continue
             sensitive = yaml_key in SENSITIVE_YAML_KEYS
-            if sensitive and value == "***":
+            if sensitive and value == _ENV_VALUE_MASK:
                 continue
-            set_config_value(yaml_key, value)
             if value:
                 os.environ[key] = value
             else:
                 os.environ.pop(key, None)
-    else:
-        ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if not ENV_PATH.exists():
-            ENV_PATH.touch()
-        for key, value in body.values.items():
-            if key not in _ENV_FIELDS:
-                continue
-            if key in _SENSITIVE_FIELDS and value == "***":
-                continue
-            dotenv_set_key(str(ENV_PATH), key, value)
-            if value:
-                os.environ[key] = value
-            else:
-                os.environ.pop(key, None)
+        if isinstance(custom_env_raw, dict):
+            next_custom_env = _custom_env_from_config(config)
+            for env_key in previous_custom_env:
+                if env_key not in next_custom_env:
+                    os.environ.pop(env_key, None)
+            for env_key, value in _custom_env_from_config(config).items():
+                os.environ[env_key] = value
 
     return JSONResponse({"status": "ok"})
 
@@ -2116,17 +3080,9 @@ async def restart_backend(user_id: str = Query(default="")) -> JSONResponse:
         if not user_id:
             raise HTTPException(status_code=400, detail="user_id required in server mode")
         try:
-            import docker as _docker
-            dc = _get_docker()
-            name = _worker_container_name(user_id)
-            try:
-                c = dc.containers.get(name)
-                c.restart(timeout=15)
-            except _docker.errors.NotFound:
-                target = await asyncio.to_thread(ensure_worker_running, user_id)
-                return JSONResponse({"status": "created", "user_id": user_id, "target": target})
-            target = _worker_registry.get(user_id)
-            return JSONResponse({"status": "restarting", "user_id": user_id, "target": target})
+            await asyncio.to_thread(remove_worker, user_id)
+            target = await asyncio.to_thread(ensure_worker_running, user_id)
+            return JSONResponse({"status": "recreated", "user_id": user_id, "target": target})
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 
@@ -2139,6 +3095,7 @@ async def restart_backend(user_id: str = Query(default="")) -> JSONResponse:
             cwd=str(ROOT),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=_local_adk_env(),
         )
     except FileNotFoundError:
         raise HTTPException(status_code=500, detail="'matcreator' command not found in PATH")

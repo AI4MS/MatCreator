@@ -121,16 +121,20 @@ def count_unreviewed_durable_nodes(
 
 
 def has_reviewable_memory(graph: KnowDoGraph) -> bool:
-    memories = graph.search(
-        entry_type=EntryType.memory,
-        limit=100_000,
-        mode="keyword",
-    )
-    for entry in memories:
-        memory = entry.metadata.custom.get("memory", {})
-        if not memory.get("promoted", False) and memory.get("distillation_status") != "skipped":
-            return True
-    return False
+    offset = 0
+    while True:
+        entries = graph.list(limit=200, offset=offset)
+        if not entries:
+            return False
+        for entry in entries:
+            if entry.entry_type != EntryType.memory:
+                continue
+            memory = entry.metadata.custom.get("memory", {})
+            if not memory.get("promoted", False) and memory.get("distillation_status") != "skipped":
+                return True
+        if len(entries) < 200:
+            return False
+        offset += 200
 
 
 def _tag_results(phase: str, result: dict[str, Any]) -> list[dict[str, Any]]:

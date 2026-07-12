@@ -45,6 +45,33 @@ Use the detailed SKILL instructions here.
     )
 
 
+def _write_simple_skill(
+    skill_dir: Path,
+    *,
+    name: str,
+    entry_type: str = "capability",
+    skill_level: str = "L1",
+    dependent_skills: list[str] | None = None,
+) -> None:
+    skill_dir.mkdir(parents=True)
+    deps = dependent_skills or []
+    deps_yaml = "\n".join(f"    - {dep}" for dep in deps) or "    []"
+    (skill_dir / "SKILL.md").write_text(
+        f"""---
+name: {name}
+description: {name} description.
+metadata:
+  entry_type: {entry_type}
+  skill_level: {skill_level}
+  dependent_skills:
+{deps_yaml}
+---
+Content for {name}.
+""",
+        encoding="utf-8",
+    )
+
+
 def test_seed_skills_to_graph_stores_full_skill_body_and_native_attachments(
     tmp_path, monkeypatch
 ) -> None:
@@ -84,3 +111,44 @@ def test_seed_skills_to_graph_stores_full_skill_body_and_native_attachments(
     assert "docs/README.md" in context
     assert "Extra README context for operators." in context
     assert "scripts/tool.py" not in context
+
+
+def test_seed_skills_to_graph_attaches_l3_l4_nodes_for_progressive_retrieval(
+    tmp_path, monkeypatch
+) -> None:
+    skills_root = tmp_path / "skills"
+    _write_simple_skill(skills_root / "base-skill", name="base-skill")
+    _write_simple_skill(
+        skills_root / "useful-heuristic",
+        name="useful-heuristic",
+        entry_type="heuristic",
+        skill_level="L3",
+        dependent_skills=["base-skill"],
+    )
+    _write_simple_skill(
+        skills_root / "known-limitation",
+        name="known-limitation",
+        entry_type="constraint",
+        skill_level="L4",
+        dependent_skills=["base-skill"],
+    )
+
+    loaded_skills = [load_skill_from_dir(path) for path in sorted(skills_root.iterdir())]
+    graph = KnowDoGraph(tmp_path / "know-do.db")
+
+    monkeypatch.setattr(skill, "ALL_SKILLS", loaded_skills)
+    monkeypatch.setattr(skill, "_MODULE_SKILLS_ROOT", tmp_path / "empty-defaults")
+    monkeypatch.setattr(skill, "workspace_skills_dir", lambda: skills_root)
+    monkeypatch.setattr(guide, "ALL_GUIDES", [])
+    monkeypatch.setattr(query, "_get_kg", lambda: graph)
+
+    skill.seed_skills_to_graph()
+    base = next(entry for entry in graph.search("base-skill", tags=["matcreator-skill"], limit=5, mode="keyword") if entry.title == "base-skill")
+
+    attached = graph.count_attached(base.id)
+    assert attached["heuristics"] == 1
+    assert attached["constraints"] == 1
+
+    context = query.search_skill_context(base.id)
+    assert "useful-heuristic" in context
+    assert "known-limitation" in context

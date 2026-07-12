@@ -52,7 +52,7 @@ from typing import List, Optional
 
 import yaml
 from ase.data import atomic_masses, atomic_numbers
-from ase.io import read
+from ase.io import iread, read
 
 # ---------------------------------------------------------------------------
 # Config / env helpers
@@ -250,15 +250,12 @@ def cmd_generate_input(args) -> dict:
 
     # ── Read structures ────────────────────────────────────────────────────
     ensemble = args.ensemble.lower()
-    all_frames = list(read(str(args.structures), index=":"))
-
-    # Determine which frames to process
     if args.frame is None:
-        frame_indices = [0]
+        frame_iter = [(0, read(str(args.structures), index=0))]
     elif args.frame == -1:
-        frame_indices = list(range(len(all_frames)))
+        frame_iter = enumerate(iread(str(args.structures), index=":"))
     else:
-        frame_indices = [args.frame]
+        frame_iter = [(args.frame, read(str(args.structures), index=args.frame))]
 
     # ── Resolve head (same convention as ase-deepmd) ───────────────────────
     head = args.head
@@ -266,9 +263,7 @@ def cmd_generate_input(args) -> dict:
         head = None
 
     results = []
-    for idx in frame_indices:
-        atoms = all_frames[idx]
-
+    for idx, atoms in frame_iter:
         # Build per-frame output directory
         job_dir = work_dir / f"lammps_{ensemble}_{_job_id()}"
         job_dir.mkdir(parents=True, exist_ok=True)

@@ -30,6 +30,9 @@ Configuration Commands (matcreator config ...):
     get           Print a single configuration value.
     show          Print all current configuration settings.
 
+Skill Commands:
+    install official  Install/update corporation-maintained official skills from Git.
+
 Examples:
     matcreator web
     matcreator web --reload-agents --port 8080
@@ -43,6 +46,7 @@ Examples:
     matcreator graph neighbors <entry_id>
     matcreator knowledge seed
     matcreator knowledge query "DFT calculation"
+    matcreator install official --repo git@gitlab.example.com:group/matcreator-official-skills.git --ref main
     matcreator config set llm.api_key=sk-xxx
     matcreator config show
     MATCLAW_WORKSPACE=/data/ws matcreator run -p "hello"
@@ -65,12 +69,21 @@ import yaml
 import click
 
 from matcreator.ports import get_adk_host, get_adk_port
+from matcreator.config import apply_config_env_overrides
 
 
+_PRE_CONFIG_ENV = frozenset(os.environ.keys())
 _MATCREATOR_HOME = Path(os.environ.get("MATCREATOR_HOME", "~/.matcreator")).expanduser()
 _CONFIG_PATH = _MATCREATOR_HOME / "config.yaml"
 _DEFAULT_ADK_DIR = _MATCREATOR_HOME / ".adk"
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _apply_harness_config_env() -> None:
+    apply_config_env_overrides(
+        override_existing=os.environ.get("MATCREATOR_MODE", "local") == "server",
+        pre_env=_PRE_CONFIG_ENV,
+    )
 
 
 def _configure_logging(log_level: str) -> None:
@@ -113,6 +126,7 @@ def _start_adk_server(
     reload: bool = False,
 ) -> None:
     """Start the ADK server programmatically with controlled session storage."""
+    _apply_harness_config_env()
     if host is None:
         host = get_adk_host()
     if port is None:
@@ -338,6 +352,123 @@ def graph_export(ctx: click.Context) -> None:
     env = _matcreator_kdg_env()
     cmd = [_resolve_kdg_cli(), "graph", "export", *ctx.args]
     _run_with_env(cmd, env)
+
+
+# ---------------------------------------------------------------------------
+# Skill registry management
+# ---------------------------------------------------------------------------
+
+def _git(args: list[str], *, cwd: Path | None = None) -> str:
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=str(cwd) if cwd else None,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "git command failed").strip()
+        raise click.ClickException(detail)
+    return proc.stdout.strip()
+
+
+def _configured_official_repo() -> tuple[str, str]:
+    from matcreator.config import load_config
+
+    official_cfg = (load_config().get("skills") or {}).get("official") or {}
+    repo = os.environ.get("MATCREATOR_OFFICIAL_SKILLS_REPO") or official_cfg.get("repo") or ""
+    ref = os.environ.get("MATCREATOR_OFFICIAL_SKILLS_REF") or official_cfg.get("ref") or "main"
+    return str(repo).strip(), str(ref).strip() or "main"
+
+
+@main.group("install")
+def install_group():
+    """Install MatCreator managed skill bundles.
+
+    \b
+    Available commands:
+      official    Clone or update corporation-maintained official skills into
+                  ~/.matcreator/skills/official.
+
+    Run `matcreator install official --help` to see all installer arguments:
+    --repo, --ref, and --force.
+    """
+
+
+@install_group.command("official")
+@click.option(
+    "--repo",
+    default=None,
+    metavar="URL",
+    help=(
+        "Git repository URL for official skills. If omitted, uses "
+        "MATCREATOR_OFFICIAL_SKILLS_REPO or skills.official.repo in ~/.matcreator/config.yaml."
+    ),
+)
+@click.option(
+    "--ref",
+    "git_ref",
+    default=None,
+    metavar="REF",
+    help=(
+        "Branch, tag, or commit to install. If omitted, uses "
+        "MATCREATOR_OFFICIAL_SKILLS_REF or skills.official.ref in config.yaml; default: main."
+    ),
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Replace ~/.matcreator/skills/official if it exists but is not a git checkout.",
+)
+def install_official(repo: str | None, git_ref: str | None, force: bool) -> None:
+    """Install or update official skills.
+
+        \b
+    Destination:
+      ~/.matcreator/skills/official
+
+        \b
+    Arguments/options:
+      --repo URL   Git repository to clone or fetch from.
+      --ref REF    Branch, tag, or commit to checkout.
+      --force      Replace an existing non-git official directory.
+
+    Repository authentication is handled by Git itself, for example through SSH
+    keys or the user's configured credential helper.
+    """
+    from matcreator.skill import official_skills_dir, refresh_skills, _discover_skill_dirs
+
+    configured_repo, configured_ref = _configured_official_repo()
+    repo = (repo or configured_repo).strip()
+    git_ref = (git_ref or configured_ref).strip() or "main"
+    if not repo:
+        raise click.UsageError(
+            "Official skills repo is required. Pass --repo or set skills.official.repo in config.yaml."
+        )
+
+    target = official_skills_dir().expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() and not (target / ".git").is_dir():
+        if not force:
+            raise click.ClickException(
+                f"{target} exists but is not a git checkout. Re-run with --force to replace it."
+            )
+        shutil.rmtree(target)
+
+    if not target.exists():
+        click.echo(f"Cloning official skills from {repo} into {target}")
+        _git(["clone", repo, str(target)])
+    else:
+        click.echo(f"Updating official skills in {target}")
+    _git(["fetch", "--tags", "--prune", "origin", git_ref], cwd=target)
+    _git(["checkout", "--detach", "FETCH_HEAD"], cwd=target)
+
+    commit = _git(["rev-parse", "--short", "HEAD"], cwd=target)
+    skill_dirs = _discover_skill_dirs(target)
+    refresh_result = refresh_skills()
+    click.echo(f"Installed {len(skill_dirs)} official skills at {commit}.")
+    click.echo(f"Registry now has {refresh_result['count']} skills.")
 
 
 # ---------------------------------------------------------------------------
@@ -683,13 +814,17 @@ def knowledge_stats(workspace):
     from matcreator.knowledge.query import _get_kg
     graph = _get_kg()
     stats = graph.stats()
-    memories = list(iter_memory(graph))
+    memory_count = 0
+    unpromoted_count = 0
+    for memory in iter_memory(graph):
+        memory_count += 1
+        unpromoted_count += int(not memory.promoted)
     click.echo("Know-Do graph (all native nodes):")
     click.echo(f"  Nodes: {stats['nodes']}  Edges: {stats['edges']}")
     click.echo("MemGraph nodes:")
     click.echo(
-        f"  Entries: {len(memories)}  "
-        f"Unpromoted: {sum(not entry.promoted for entry in memories)}"
+        f"  Entries: {memory_count}  "
+        f"Unpromoted: {unpromoted_count}"
     )
 
 

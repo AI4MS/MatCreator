@@ -181,18 +181,28 @@ def add_memory(
 
 
 def iter_memory(graph: KnowDoGraph, *, include_promoted: bool = True) -> Iterable[MemEntry]:
-    sessions = {
-        entry.metadata.custom.get("memory", {}).get("session_id")
-        for entry in graph.search(
-            entry_type=EntryType.memory,
-            limit=100_000,
-            mode="keyword",
+    for entry in iter_entries(graph):
+        if entry.entry_type != EntryType.memory:
+            continue
+        memory = entry.metadata.custom.get("memory", {})
+        if not include_promoted and memory.get("promoted", False):
+            continue
+        session_id = memory.get("session_id")
+        if not session_id:
+            continue
+        yield MemEntry(
+            id=entry.id,
+            session_id=session_id,
+            content=entry.content,
+            tags=entry.tags,
+            source_entry_ids=memory.get("source_entry_ids") or [],
+            created_at=entry.metadata.timestamp,
+            success=memory.get("success"),
+            promoted=memory.get("promoted", False),
+            promotion_target_id=memory.get("promotion_target_id"),
+            source_format=memory.get("source_format", "manual"),
+            raw_source=memory.get("raw_source"),
         )
-    }
-    for session_id in sorted(session for session in sessions if session):
-        for memory in graph.memory(session_id).list():
-            if include_promoted or not memory.promoted:
-                yield memory
 
 
 def _legacy_rows(path: Path, category: str) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:

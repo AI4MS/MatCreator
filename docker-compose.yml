@@ -16,8 +16,6 @@ services:
       - ./agents/MatCreator/.workspace:/app/agents/MatCreator/.workspace
       - ./agents/MatCreator/.adk:/app/agents/MatCreator/.adk
       - ./logs:/app/logs
-    env_file:
-      - agents/MatCreator/.env
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${MATCREATOR_WEB_PORT:-8001}/api/health"]

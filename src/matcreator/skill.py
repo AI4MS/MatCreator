@@ -8,13 +8,15 @@ the guide system unchanged.
 
 
 import logging
+import os
+from dataclasses import dataclass
 from mimetypes import guess_type
 
 from google.adk.skills import load_skill_from_dir
 from google.adk.tools import skill_toolset
 from google.adk.tools.function_tool import FunctionTool
 from .workspace import workspace_skills_dir
-from .tools.workspace_tools import list_workspace_skills, run_skill_script
+from .tools.workspace_tools import run_skill_script
 from .config import get_disabled_skills, get_planning_skills
 from pathlib import Path
 
@@ -43,8 +45,24 @@ def _discover_skill_dirs(skills_root: Path) -> list[Path]:
     return sorted(skill_dirs, key=lambda path: path.relative_to(skills_root).as_posix())
 
 
+@dataclass(frozen=True)
+class SkillSource:
+    """Skill source metadata used by the loader and UI."""
+
+    name: str
+    root: Path
+    editable: bool
+    managed: bool
+    trusted: bool
+
+
+_MATCREATOR_HOME = Path(
+    os.environ.get("MATCREATOR_HOME", str(Path.home() / ".matcreator"))
+).expanduser()
 _MODULE_SKILLS_ROOT = Path(__file__).parent / "skills"
-_USER_SKILLS_ROOT = Path.home() / ".matcreator" / "skills"
+_USER_SKILLS_ROOT = _MATCREATOR_HOME / "skills"
+_OFFICIAL_SKILLS_ROOT = _USER_SKILLS_ROOT / "official"
+_RESERVED_USER_SKILL_DIRS = frozenset({"builtin", "official"})
 
 
 def user_skills_dir() -> Path:
@@ -52,13 +70,59 @@ def user_skills_dir() -> Path:
     return _USER_SKILLS_ROOT
 
 
+def official_skills_dir() -> Path:
+    """Return the corporation-maintained official skill root."""
+    return _OFFICIAL_SKILLS_ROOT
+
+
+def skill_sources() -> list[SkillSource]:
+    """Return skill sources in precedence order."""
+    return [
+        SkillSource("builtin", _MODULE_SKILLS_ROOT, editable=True, managed=True, trusted=True),
+        SkillSource("official", official_skills_dir(), editable=True, managed=True, trusted=True),
+        SkillSource("custom", user_skills_dir(), editable=True, managed=False, trusted=False),
+        SkillSource("workspace", workspace_skills_dir(), editable=True, managed=False, trusted=False),
+    ]
+
+
+def _discover_custom_skill_dirs(skills_root: Path) -> list[Path]:
+    """Discover user custom skills, excluding managed subdirectories."""
+    skill_dirs = []
+    for path in _discover_skill_dirs(skills_root):
+        try:
+            rel_parts = path.relative_to(skills_root).parts
+        except ValueError:
+            rel_parts = ()
+        if rel_parts and rel_parts[0] in _RESERVED_USER_SKILL_DIRS:
+            continue
+        skill_dirs.append(path)
+    return skill_dirs
+
+
+def _discover_skill_dirs_for_source(source: SkillSource) -> list[Path]:
+    if source.name == "custom":
+        return _discover_custom_skill_dirs(source.root)
+    return _discover_skill_dirs(source.root)
+
+
 def _skill_dir_map() -> dict[str, Path]:
     """Map loaded skill names to their backing directories."""
-    mapping: dict[str, Path] = {}
-    for root in [_MODULE_SKILLS_ROOT, user_skills_dir(), workspace_skills_dir()]:
-        for path in _discover_skill_dirs(root):
-            mapping.setdefault(path.name, path)
+    return {name: path for name, (path, _) in _skill_dir_source_map().items()}
+
+
+def _skill_dir_source_map() -> dict[str, tuple[Path, SkillSource]]:
+    """Map loaded skill names to backing directories and source metadata."""
+    mapping: dict[str, tuple[Path, SkillSource]] = {}
+    for source in skill_sources():
+        for path in _discover_skill_dirs_for_source(source):
+            mapping.setdefault(path.name, (path, source))
     return mapping
+
+
+def get_skill_source(skill_name: str) -> SkillSource | None:
+    """Return source metadata for a loaded skill name."""
+    item = _skill_dir_source_map().get(skill_name)
+    return item[1] if item else None
 
 
 def _language_for_path(path: str) -> str | None:
@@ -81,43 +145,39 @@ def get_default_skill_names() -> set[str]:
     return {p.name for p in _discover_skill_dirs(_MODULE_SKILLS_ROOT)}
 
 
+def get_official_skill_names() -> set[str]:
+    """Return the set of installed official skill names."""
+    return {p.name for p in _discover_skill_dirs(official_skills_dir())}
+
+
+def get_managed_skill_names() -> set[str]:
+    """Return skill names from managed builtin and official sources."""
+    return get_default_skill_names() | get_official_skill_names()
+
+
 def load_skills() -> list:
-    """Load default module skills, then user-global skills, then workspace custom skills.
+    """Load builtin, official, user-global custom, then workspace custom skills.
 
     Skills from later sources whose name collides with an earlier source are rejected
     with a warning.
     """
-    default_names: set[str] = set()
+    seen: dict[str, str] = {}
     skills = []
-    for path in _discover_skill_dirs(_MODULE_SKILLS_ROOT):
-        default_names.add(path.name)
-        try:
-            skills.append(load_skill_from_dir(path))
-        except Exception as exc:
-            logger.error("Failed to load default skill '%s', skipping: %s", path.name, exc)
-    for path in _discover_skill_dirs(user_skills_dir()):
-        if path.name in default_names:
-            logger.warning(
-                "User skill '%s' in ~/.matcreator/skills conflicts with a bundled skill and will be ignored.",
-                path.name,
-            )
-            continue
-        default_names.add(path.name)
-        try:
-            skills.append(load_skill_from_dir(path))
-        except Exception as exc:
-            logger.error("Failed to load user skill '%s', skipping: %s", path.name, exc)
-    for path in _discover_skill_dirs(workspace_skills_dir()):
-        if path.name in default_names:
-            logger.warning(
-                "Custom skill '%s' in workspace conflicts with a bundled or user skill and will be ignored.",
-                path.name,
-            )
-            continue
-        try:
-            skills.append(load_skill_from_dir(path))
-        except Exception as exc:
-            logger.error("Failed to load custom skill '%s', skipping: %s", path.name, exc)
+    for source in skill_sources():
+        for path in _discover_skill_dirs_for_source(source):
+            if path.name in seen:
+                logger.warning(
+                    "Skill '%s' in %s conflicts with %s and will be ignored.",
+                    path.name,
+                    source.name,
+                    seen[path.name],
+                )
+                continue
+            seen[path.name] = source.name
+            try:
+                skills.append(load_skill_from_dir(path))
+            except Exception as exc:
+                logger.error("Failed to load %s skill '%s', skipping: %s", source.name, path.name, exc)
     return skills
 
 
@@ -128,12 +188,14 @@ _PLANNING_CATEGORIES = frozenset({"concepts", "guides"})
 
 def _build_planning_skill_names() -> frozenset[str]:
     names: set[str] = set()
-    for root in [_MODULE_SKILLS_ROOT, user_skills_dir(), workspace_skills_dir()]:
-        for path in _discover_skill_dirs(root):
-            if path.parent.name in _PLANNING_CATEGORIES:
+    disabled = set(get_disabled_skills())
+    for source in skill_sources():
+        for path in _discover_skill_dirs_for_source(source):
+            if path.name not in disabled and path.parent.name in _PLANNING_CATEGORIES:
                 names.add(path.name)
     for name in get_planning_skills():
-        names.add(name)
+        if name not in disabled:
+            names.add(name)
     return frozenset(names)
 
 
@@ -282,12 +344,33 @@ def seed_skills_to_graph() -> dict:
                         internal_refs.append("README.md")
                 except OSError as exc:
                     logger.warning("Failed to read %s: %s", readme_path, exc)
+        frontmatter_metadata = skill.frontmatter.metadata or {}
+        entry_type_value = frontmatter_metadata.get("entry_type") or frontmatter_metadata.get("type")
+        entry_type = EntryType.capability
+        if entry_type_value:
+            try:
+                entry_type = EntryType(str(entry_type_value))
+            except ValueError:
+                logger.warning("Ignoring invalid entry_type for skill '%s': %s", skill.name, entry_type_value)
+        skill_level_value = frontmatter_metadata.get("skill_level")
+        skill_level = SkillLevel.L1
+        if skill_level_value:
+            try:
+                skill_level = SkillLevel(str(skill_level_value))
+            except ValueError:
+                logger.warning("Ignoring invalid skill_level for skill '%s': %s", skill.name, skill_level_value)
+        extra_tags = [
+            str(tag).strip()
+            for tag in frontmatter_metadata.get("tags", [])
+            if str(tag).strip()
+        ]
+        tags = list(dict.fromkeys(["matcreator-skill", "managed", *extra_tags]))
         node, created = upsert_entry(
             kg,
             title=skill.name,
             content=content,
-            entry_type=EntryType.capability,
-            tags=["matcreator-skill", "managed"],
+            entry_type=entry_type,
+            tags=tags,
             internal_refs=internal_refs,
             scripts=scripts,
             assets=assets,
@@ -295,7 +378,7 @@ def seed_skills_to_graph() -> dict:
                 source_provenance="SKILL.md",
                 refinement_status=RefinementStatus.validated,
                 verification_status=VerificationStatus.peer_reviewed,
-                skill_level=SkillLevel.L1,
+                skill_level=skill_level,
                 custom={"managed_by": "matcreator", "kind": "skill"},
             ),
         )
@@ -320,10 +403,19 @@ def seed_skills_to_graph() -> dict:
         )
         seeded += int(created)
 
-    # Create dependency edges from dependent_skills metadata
+    # Create edges from dependent_skills metadata. For L3/L4 nodes this field
+    # means "attached parent skills" so progressive retrieval can scope them.
     edges_created = 0
     for skill in ALL_SKILLS:
-        deps = (skill.frontmatter.metadata or {}).get("dependent_skills", [])
+        metadata = skill.frontmatter.metadata or {}
+        deps = metadata.get("dependent_skills", [])
+        entry_type_value = metadata.get("entry_type") or metadata.get("type")
+        skill_level_value = metadata.get("skill_level")
+        relation = EdgeRelation.dependency
+        if entry_type_value == "heuristic" or skill_level_value == "L3":
+            relation = EdgeRelation.heuristic_for
+        elif entry_type_value == "constraint" or skill_level_value == "L4":
+            relation = EdgeRelation.constraint_on
         src_id = skill_node_ids.get(skill.name)
         for dep_name in deps:
             tgt_id = skill_node_ids.get(dep_name)
@@ -333,7 +425,7 @@ def seed_skills_to_graph() -> dict:
                         kg,
                         src_id,
                         tgt_id,
-                        relation=EdgeRelation.dependency,
+                        relation=relation,
                     )
                 )
             else:

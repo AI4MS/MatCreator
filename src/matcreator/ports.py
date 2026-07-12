@@ -8,9 +8,10 @@ called, making the module easy to test without starting any services.
 
 Config file integration
 -----------------------
-The config file is read from ``~/.matcreator/config.yaml`` by default.  Set the
-``MATCREATOR_HOME`` environment variable to point at a different directory (the file
-is assumed to be named ``config.yaml`` inside that directory).
+The config file is read from ``MATCREATOR_CONFIG_PATH`` when set. Otherwise it
+is read from ``~/.matcreator/config.yaml`` by default. Set ``MATCREATOR_HOME``
+to point at a different directory (the file is assumed to be named
+``config.yaml`` inside that directory).
 
 The ``ports`` section of the YAML file is read:
 
@@ -83,9 +84,13 @@ _LEGACY_ENV_MAP: dict[str, str] = {
 def _get_config_path() -> str:
     """Return the path to the YAML config file.
 
-    Uses ``MATCREATOR_HOME`` env var if set and non-empty, otherwise defaults to
-    ``~/.matcreator/config.yaml``.
+    Uses ``MATCREATOR_CONFIG_PATH`` when set. Otherwise uses
+    ``MATCREATOR_HOME/config.yaml`` if ``MATCREATOR_HOME`` is set and non-empty,
+    then defaults to ``~/.matcreator/config.yaml``.
     """
+    config_path = os.environ.get("MATCREATOR_CONFIG_PATH", "").strip()
+    if config_path:
+        return os.path.expanduser(config_path)
     matcreator_home = os.environ.get("MATCREATOR_HOME", "").strip()
     if matcreator_home:
         return os.path.join(matcreator_home, "config.yaml")

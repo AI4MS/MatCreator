@@ -25,7 +25,9 @@ COPY . .
 RUN cd web/vite-frontend && npm run build
 
 # Install debian dependencies
-RUN apt-get update && apt-get install -y procps && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    procps tar unzip vim \
+    && rm -rf /var/lib/apt/lists/*
 
 # Optional: bake the repo-local VASP POTCAR library into the image and configure pymatgen.
 # Uncomment these lines only if your deployment is allowed to package POTCAR files in the image.

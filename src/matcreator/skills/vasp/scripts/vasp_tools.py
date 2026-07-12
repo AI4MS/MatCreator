@@ -48,7 +48,7 @@ import dpdata
 import numpy as np
 import yaml
 from ase import Atoms
-from ase.io import read, write
+from ase.io import iread, read, write
 from pymatgen.core import Element, Structure
 from pymatgen.io.vasp import Kpoints, Outcar, Poscar, Potcar, VaspInput, Vasprun
 
@@ -232,14 +232,15 @@ def _parse_structures(structure_path: str, frames: Optional[List[int]]) -> List[
     """
     path = Path(structure_path)
     if path.suffix.lower() == ".vasp":
-        atoms_list = [read(structure_path, format="vasp")]
+        atoms_iter = [(0, read(structure_path, format="vasp"))]
     else:
-        atoms_list = list(read(structure_path, index=":", format="extxyz"))
+        atoms_iter = enumerate(iread(structure_path, index=":", format="extxyz"))
+    selected = set(frames) if frames is not None else None
     tmp_dir = Path(tempfile.mkdtemp())
     structs: List[Structure] = []
     try:
-        for idx, atoms in enumerate(atoms_list):
-            if frames is not None and idx not in frames:
+        for idx, atoms in atoms_iter:
+            if selected is not None and idx not in selected:
                 continue
             cif_path = tmp_dir / f"frame_{idx:04d}.cif"
             write(str(cif_path), atoms, format="cif")

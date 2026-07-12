@@ -22,7 +22,79 @@ Workers are disposable. User data persists because it is mounted from the host.
 
 1. Docker Engine and Docker Compose plugin.
 2. A built MatCreator image.
-3. Shared model and compute credentials available to the deployment.
+3. Server defaults in a config file. By default, server mode uses `./config.yaml` from the repository root.
+
+## Server Defaults
+
+Server-wide MatCreator settings are read from a host config file mounted into
+the control plane. By default, the host file is:
+
+```text
+./config.yaml
+```
+
+Override it by setting:
+
+```bash
+export MATCREATOR_HOST_CONFIG_PATH=/path/to/config.yaml
+```
+
+Inside the control-plane container, the selected file is mounted as:
+
+```text
+/app/config.yaml
+```
+
+and the container receives:
+
+```text
+MATCREATOR_CONFIG_PATH=/app/config.yaml
+```
+
+Create it before starting the service:
+
+```bash
+touch config.yaml
+$EDITOR config.yaml
+```
+
+Example:
+
+```yaml
+llm:
+  model: openai/qwen3-plus
+  api_key: sk-your-server-default-key
+  base_url: https://your-compatible-api/v1
+  embedding_model: openai/text-embedding-v3
+  graph_agent_model: openai/qwen3-plus
+  review_agent_model: openai/qwen3-plus
+  executor_cards:
+    default: standard
+    cards:
+      standard:
+        model: openai/qwen3-plus
+        description: Default executor model for routine tool use.
+        skills:
+          - filesystem
+          - python
+        cost_tier: medium
+        latency_tier: medium
+
+env:
+  MP_API_KEY: your-default-materials-project-key
+```
+
+These defaults are injected into newly created worker containers. Each user can
+override them from the frontend settings UI or by editing that user's mounted
+config file:
+
+```text
+server-data/users/<user_id>/.matcreator/config.yaml
+```
+
+Environment variables are no longer read from `agents/MatCreator/.env` for
+MatCreator application settings. Use process environment variables only for
+deployment/runtime knobs such as ports, data roots, and worker limits.
 
 ## Quick Start
 
@@ -32,6 +104,7 @@ From the repository root:
 docker compose build
 
 export MATCREATOR_HOST_DATA_ROOT="$(pwd)/server-data"
+touch config.yaml
 docker compose -f docker-compose.server.yml up -d
 ```
 
@@ -48,12 +121,11 @@ Register a user and log in. The first login or register request starts a dedicat
 With `MATCREATOR_HOST_DATA_ROOT="$(pwd)/server-data"`:
 
 ```text
+config.yaml
 server-data/
   control-plane/
     .matcreator/
       users.db
-      config.yaml
-      .env
   users/
     <user_id>/
       .matcreator/
@@ -95,10 +167,16 @@ docker compose -f docker-compose.server.yml up -d
 
 ## Useful Commands
 
-List services and workers:
+List Compose services:
 
 ```bash
-docker ps --filter "name=matcreator"
+docker compose -f docker-compose.server.yml ps
+```
+
+List workers:
+
+```bash
+docker ps -a --filter "name=matcreator-worker-"
 ```
 
 Read control-plane logs:
@@ -119,11 +197,64 @@ Enter a worker shell:
 docker exec -it matcreator-worker-<user_id> bash
 ```
 
+Rebuild and redeploy after code changes:
+
+```bash
+docker build -t matcreator:latest .
+docker compose -f docker-compose.server.yml up -d --force-recreate control-plane proxy
+```
+
+Worker containers are recreated automatically when the control plane detects
+that their image ID differs from the current `matcreator:latest`. To force all
+workers to be recreated immediately:
+
+```bash
+docker ps -a --filter "name=matcreator-worker-" --format "{{.Names}}" | xargs -r docker rm -f
+```
+
+## Stop the Service
+
+Stop and remove the Compose-managed services:
+
+```bash
+docker compose -f docker-compose.server.yml down
+```
+
+Dynamically created workers are not Compose services, so remove them separately:
+
+```bash
+docker ps -a --filter "name=matcreator-worker-" --format "{{.Names}}" | xargs -r docker rm -f
+```
+
+Persistent data remains under `server-data/`. Remove it only if you want to
+delete all users, sessions, workspaces, and server defaults:
+
+```bash
+rm -rf server-data
+```
+
 ## Security Notes
 
 - Mounting `/var/run/docker.sock` gives the control plane high host privileges.
 - Use HTTPS for real deployments. The included nginx config is plain HTTP for local or internal-server setup.
 - Back up `MATCREATOR_HOST_DATA_ROOT`; worker containers should be considered replaceable.
+
+## Shared Worker Mounts
+
+Set `MATCREATOR_WORKER_SHARED_MOUNTS` to bind host directories into every worker
+container. Entries use `host_path:container_path[:ro|rw]` and are separated by
+commas.
+
+Example: expose a repository-local `./share` directory inside workers as
+read-only `/share`:
+
+```bash
+mkdir -p share
+export MATCREATOR_WORKER_SHARED_MOUNTS="$(pwd)/share:/share:ro"
+docker compose -f docker-compose.server.yml up -d
+```
+
+The host path must be visible to the Docker daemon.
 
 ## Configurable Ports
 

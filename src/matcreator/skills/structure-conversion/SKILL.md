@@ -1,17 +1,20 @@
 ---
 name: structure-conversion
-description: Convert crystal structure files between extxyz and CIF, including splitting multi-frame extxyz into per-frame CIF files.
+description: Convert crystal structure files between extxyz and CIF, including splitting
+  multi-frame extxyz into per-frame CIF files.
 metadata:
   tools:
-    - run_python_file
+  - run_python_file
   tags:
-    - structure
-    - conversion
-    - extxyz
-    - cif
-    - ASE
+  - structure
+  - conversion
+  - extxyz
+  - cif
+  - ASE
+  entry_type: capability
+  skill_level: L1
+  dependent_skills: []
 ---
-
 ## Overview
 
 Use the CLI script `structure_conversion_tools.py` (located alongside this file) to convert structure files between `extxyz` and `cif`. It mirrors the behavior of the former `ase_structure_convert_tool` and is especially useful for turning MatterGen multi-frame `extxyz` outputs into per-frame `cif` files.

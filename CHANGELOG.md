@@ -2,6 +2,83 @@
 
 <!-- version list -->
 
+## v2.9.0 (2026-07-11)
+
+### Bug Fixes
+
+- Improve server frontend
+  ([`de70f88`](https://github.com/AI4MS/MatCreator/commit/de70f88ca7bb6ddfb7dbcc281ac92a9ea45a6611))
+
+### Features
+
+- Streamline server mode
+  ([`1f1203c`](https://github.com/AI4MS/MatCreator/commit/1f1203c173fb405f1b4bfca4ad52b8eeec193748))
+
+
+## v2.8.0 (2026-07-08)
+
+### Bug Fixes
+
+- **ui**: Widen session-summary-header max-width to reduce title truncation
+  ([`6f67cec`](https://github.com/AI4MS/MatCreator/commit/6f67cec8495455715825deeca7df9f7040dfebbb))
+
+### Features
+
+- Change title place and session naming
+  ([`ea8bd8a`](https://github.com/AI4MS/MatCreator/commit/ea8bd8a938933f0ee473d4b8781e7d81262d7e93))
+
+- **dpa4**: Update skill and prepare script for DPA4-OMat24 v20260704
+  ([`ec91869`](https://github.com/AI4MS/MatCreator/commit/ec91869a7cb0e0dbc4208f1b6a0edd1bd42ae631))
+
+- **session-summary**: Add experimental session summary feature
+  ([`f462858`](https://github.com/AI4MS/MatCreator/commit/f46285899241db721ebc33be7bab2747ea23820a))
+
+- **session-summary**: Relocate banner to top of chat card with slide-down typewriter animation
+  ([`4d69234`](https://github.com/AI4MS/MatCreator/commit/4d69234a48617da08d5604d3d0951f27d5f055a3))
+
+
+## v2.7.1 (2026-07-07)
+
+### Bug Fixes
+
+- Support official skill installation
+  ([`1a59f28`](https://github.com/AI4MS/MatCreator/commit/1a59f2813cb347bbd09bb3ae88519613e9dccd1a))
+
+### Chores
+
+- Update README
+  ([`566012b`](https://github.com/AI4MS/MatCreator/commit/566012bffee6c4eca6e095a538f23b1e8fb218ac))
+
+- Update UI
+  ([`fb854e9`](https://github.com/AI4MS/MatCreator/commit/fb854e9e5ed60e928552e498ef75bf7829cb120a))
+
+
+## v2.7.0 (2026-07-06)
+
+### Features
+
+- Add/delete skill nodes (later shoulde be a 'dev' or 'admin' feature.)
+  ([`08e1d57`](https://github.com/AI4MS/MatCreator/commit/08e1d57720f08045d48b3dd9b534f8bb09ee8fe2))
+
+- Better l3/l4 node adding
+  ([`f17bcbb`](https://github.com/AI4MS/MatCreator/commit/f17bcbbcd0671e8a977179f153fc5c974f859112))
+
+- Edit skills in frontend
+  ([`15f17ca`](https://github.com/AI4MS/MatCreator/commit/15f17ca196a103cdd8e0c63ede935b568be8cb33))
+
+- Inner rendering of skill graph
+  ([`2475f82`](https://github.com/AI4MS/MatCreator/commit/2475f82c1c0ded24e52932365cc468db3183f296))
+
+- Remove edge names
+  ([`9c3b9ce`](https://github.com/AI4MS/MatCreator/commit/9c3b9cefc72c7f778db2901988b71316f4278627))
+
+- Skill graph rendering
+  ([`e43e8a1`](https://github.com/AI4MS/MatCreator/commit/e43e8a187270fe4d23a11e86175613c9ba32921d))
+
+- Transparent "disabled nodes"
+  ([`21eced6`](https://github.com/AI4MS/MatCreator/commit/21eced639dd6b8558ee2325f946a3fdd7fe16f04))
+
+
 ## v2.6.0 (2026-07-02)
 
 ### Bug Fixes

@@ -68,7 +68,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import yaml
-from ase.io import read, write
+from ase.io import iread, read, write
 
 # ---------------------------------------------------------------------------
 # Config / env helpers
@@ -78,6 +78,13 @@ _SCRIPT_DIR = Path(__file__).parent
 _DEFAULT_CONFIG = _SCRIPT_DIR / "config.yaml"
 _MODEL_FILENAME = "model.pt"   # name used inside every job directory
 _FROZEN_MODEL_FILENAME = "frozen_model.pth"
+
+
+def _iter_selected_frames(structures: str, frames: Optional[List[int]] = None):
+    selected = set(frames) if frames else None
+    for frame_idx, atoms in enumerate(iread(str(structures), index=":")):
+        if selected is None or frame_idx in selected:
+            yield frame_idx, atoms
 
 
 def _load_config(config_path: Path) -> dict:
@@ -152,10 +159,6 @@ def cmd_prepare_md(args) -> dict:
                 "or set ASE_DEEPMD_MODEL_PATH in .env."
             )
 
-    frames = list(read(str(args.structures), index=":"))
-    if args.frames:
-        frames = [frames[i] for i in args.frames]
-
     # One batch directory per prepare_md call — model and runner are copied here once.
     batch_dir = work_dir / _job_id()
     batch_dir.mkdir(parents=True, exist_ok=True)
@@ -174,7 +177,7 @@ def cmd_prepare_md(args) -> dict:
     shutil.copy2(str(_SCRIPT_DIR / "run_ase_job.py"), str(batch_dir / "run_ase_job.py"))
 
     calc_dirs: List[str] = []
-    for frame_idx, atoms in enumerate(frames):
+    for frame_idx, atoms in _iter_selected_frames(args.structures, args.frames):
         job_dir = batch_dir / f"md_{_job_id()}"
         job_dir.mkdir(parents=True, exist_ok=True)
 
@@ -244,10 +247,6 @@ def cmd_prepare_relax(args) -> dict:
                 "or set ASE_DEEPMD_MODEL_PATH in .env."
             )
 
-    frames = list(read(str(args.structures), index=":"))
-    if args.frames:
-        frames = [frames[i] for i in args.frames]
-
     # One batch directory per prepare_relax call — model and runner are copied here once.
     batch_dir = work_dir / _job_id()
     batch_dir.mkdir(parents=True, exist_ok=True)
@@ -266,7 +265,7 @@ def cmd_prepare_relax(args) -> dict:
     shutil.copy2(str(_SCRIPT_DIR / "run_ase_job.py"), str(batch_dir / "run_ase_job.py"))
 
     calc_dirs: List[str] = []
-    for atoms in frames:
+    for _, atoms in _iter_selected_frames(args.structures, args.frames):
         job_dir = batch_dir / f"relax_{_job_id()}"
         job_dir.mkdir(parents=True, exist_ok=True)
 
@@ -304,8 +303,11 @@ def cmd_prepare_relax(args) -> dict:
 def cmd_collect_md(args) -> dict:
     """Concatenate trajectory extxyz files from all completed MD job directories."""
     calc_dirs = [Path(d) for d in args.calc_dirs]
-    all_frames = []
     job_summaries = []
+    total_frames = 0
+    output_dir = Path(args.output_dir) if args.output_dir else calc_dirs[0].parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = str(output_dir / f"md_collected_{_job_id()}.extxyz")
 
     for calc_dir in calc_dirs:
         status_file = calc_dir / "status.json"
@@ -325,13 +327,12 @@ def cmd_collect_md(args) -> dict:
         frames_count = 0
         for traj_file in traj_files:
             try:
-                frames = list(read(str(traj_file), index=":"))
-                # Tag each frame with source info
-                for frame in frames:
+                for frame in iread(str(traj_file), index=":"):
                     frame.info["source_dir"] = str(calc_dir)
                     frame.info["source_traj"] = traj_file.name
-                all_frames.extend(frames)
-                frames_count += len(frames)
+                    write(output_path, frame, format="extxyz", append=total_frames > 0)
+                    frames_count += 1
+                    total_frames += 1
             except Exception as exc:
                 job_summaries.append({
                     "calc_dir": str(calc_dir),
@@ -347,17 +348,10 @@ def cmd_collect_md(args) -> dict:
             "frames_collected": frames_count,
         })
 
-    output_path = None
-    if all_frames:
-        output_dir = Path(args.output_dir) if args.output_dir else calc_dirs[0].parent
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = str(output_dir / f"md_collected_{_job_id()}.extxyz")
-        write(output_path, all_frames, format="extxyz")
-
     return {
         "status": "success",
-        "total_frames": len(all_frames),
-        "output_file": output_path,
+        "total_frames": total_frames,
+        "output_file": output_path if total_frames else None,
         "jobs": job_summaries,
     }
 

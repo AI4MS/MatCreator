@@ -300,3 +300,18 @@ def test_config_path_from_matcreator_home(tmp_path: Path, monkeypatch) -> None:
     assert config.web == 8301
     # Fields not in config fall back to defaults
     assert config.frontend == 5173
+
+
+def test_config_path_env_overrides_matcreator_home(tmp_path: Path, monkeypatch) -> None:
+    """MATCREATOR_CONFIG_PATH points directly at the config file."""
+    clear_port_env_vars(monkeypatch)
+    matcreator_home = tmp_path / "home"
+    config_path = tmp_path / "service-config.yaml"
+    monkeypatch.setenv("MATCREATOR_HOME", str(matcreator_home))
+    monkeypatch.setenv("MATCREATOR_CONFIG_PATH", str(config_path))
+    config_path.write_text(
+        yaml.dump({"ports": {"web": 8302}}, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+    assert get_web_port() == 8302

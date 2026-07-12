@@ -1,55 +1,62 @@
 """User-level persistent configuration for MatCreator.
 
-Config is stored at ~/.matcreator/config.yaml and controls runtime behaviour.
+Config is stored at ``MATCREATOR_CONFIG_PATH`` when set, otherwise at
+``~/.matcreator/config.yaml`` (or ``MATCREATOR_HOME/config.yaml`` when
+``MATCREATOR_HOME`` is set), and controls runtime behaviour.
 
 Supported sections:
 
-  llm:
+llm:
     model: openai/qwen3-plus
     api_key: sk-...
     base_url: https://...
     embedding_model: text-embedding-v4
     graph_agent_model: ...   # optional override
     review_agent_model: ...  # optional override
-        executor_cards:
-            default: balanced
-            cards:
-                balanced:
-                    model: openai/qwen3-plus
-                    description: General executor model for routine tool use.
-                    skills: [filesystem, python]
-                    cost_tier: medium
-                    latency_tier: medium
+    executor_cards:
+        default: balanced
+        cards:
+            balanced:
+                model: openai/qwen3-plus
+                description: General executor model for routine tool use.
+                skills: [filesystem, python]
+                cost_tier: medium
+                latency_tier: medium
 
-  bohrium:
+bohrium:
     email: user@example.com
     password: ...
     project_id: 12345
 
-  compute:
+compute:
     vasp_image: registry.dp.tech/...
     vasp_machine: c16_m32_cpu
     deepmd_image: registry.dp.tech/...
     deepmd_machine: c8_m32_gpu
     deepmd_model_path: /path/to/model.pt
 
-  planning:
+planning:
     extra_skills: [...]
 
-  skills:
+skills:
     disabled: [...]
+
+env:
+    MP_API_KEY: ...
+    BOHRIUM_USERNAME: ...
 """
 
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 _MATCREATOR_HOME = Path(os.environ.get("MATCREATOR_HOME", str(Path.home() / ".matcreator"))).expanduser()
-_CONFIG_PATH = _MATCREATOR_HOME / "config.yaml"
+_CONFIG_PATH = Path(os.environ.get("MATCREATOR_CONFIG_PATH", str(_MATCREATOR_HOME / "config.yaml"))).expanduser()
 
 # Mapping from config.yaml dotted keys to environment variable names.
 # Used by constants.py (loading) and CLI (set/get) and web API (env-config).
@@ -74,6 +81,16 @@ ENV_TO_YAML: dict[str, str] = {v: k for k, v in YAML_TO_ENV.items()}
 
 # Fields whose values should be masked when displayed.
 SENSITIVE_YAML_KEYS = frozenset({"llm.api_key", "bohrium.password"})
+_USER_ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_PROTECTED_USER_ENV_KEYS = frozenset({
+    "HOME",
+    "PATH",
+    "PYTHONPATH",
+    "LD_LIBRARY_PATH",
+    "MATCREATOR_HOME",
+    "MATCREATOR_MODE",
+    "MATCREATOR_USER_ID",
+})
 
 
 def load_config() -> dict[str, Any]:
@@ -87,7 +104,7 @@ def load_config() -> dict[str, Any]:
 
 
 def load_llm_cards_config() -> dict[str, Any]:
-    """Return executor LLM-card config from ~/.matcreator/config.yaml."""
+    """Return executor LLM-card config from the active MatCreator config."""
     cfg = load_config()
     llm_cfg = cfg.get("llm")
     if isinstance(llm_cfg, dict) and isinstance(llm_cfg.get("executor_cards"), dict):
@@ -139,6 +156,45 @@ def get_bohrium_config() -> dict[str, Any]:
 
 def get_compute_config() -> dict[str, str]:
     return load_config().get("compute", {})
+
+
+def get_env_overrides() -> dict[str, str]:
+    """Return user-configured environment variable overrides."""
+    env_cfg = load_config().get("env", {})
+    if not isinstance(env_cfg, dict):
+        return {}
+    return {
+        str(key): "" if value is None else str(value)
+        for key, value in env_cfg.items()
+    }
+
+
+def apply_config_env_overrides(
+    *,
+    override_existing: bool = False,
+    pre_env: set[str] | frozenset[str] | None = None,
+) -> None:
+    """Apply config.yaml LLM/compute/env values to ``os.environ``.
+
+    ``pre_env`` is the set of variables that were explicit before config files
+    were loaded. In local mode callers should preserve those explicit values;
+    in server workers callers can set ``override_existing`` so mounted user
+    config overrides injected deployment defaults.
+    """
+    explicit_env = pre_env if pre_env is not None else frozenset(os.environ.keys())
+
+    for yaml_key, env_key in YAML_TO_ENV.items():
+        value = get_config_value(yaml_key)
+        if value and (override_existing or env_key not in explicit_env):
+            os.environ[env_key] = value
+
+    for env_key, value in get_env_overrides().items():
+        if not value:
+            continue
+        if not _USER_ENV_KEY_RE.fullmatch(env_key) or env_key in _PROTECTED_USER_ENV_KEYS:
+            continue
+        if override_existing or env_key not in explicit_env:
+            os.environ[env_key] = value
 
 
 def get_planning_skills() -> list[str]:

@@ -1,6 +1,6 @@
 ---
 name: dpa4
-description: DPA4 (SeZM) finetuning skill — finetuning only, remote on Bohrium. All training labels and benchmarks must come from DFT; the pretrained model is for MD exploration only.
+description: DPA4 (SeZM) finetuning skill — finetuning and inference, remote on Bohrium. All training labels and benchmarks must come from DFT; the pretrained model is for MD exploration and inference only.
 metadata:
   tools:
     - run_bash
@@ -25,18 +25,100 @@ metadata:
 
 # DPA4 Skill
 
-DPA4 (SeZM-type descriptor) **finetuning only** skill, targeting the **neo** version.
-Future versions (air, plus, pro) will ship their own model and parameters — do not mix
-across versions.
+DPA4 (SeZM-type descriptor) skill for **finetuning and inference**, built on the
+[OMat24](https://www.aissquare.com/models/detail?pageType=models&name=DPA4-OMat24&id=423)
+pretrained models. PyTorch only; the freeze output is `.pt2` (AOTInductor), not
+TorchScript `.pb`.
+
+> **All DPA4 training, inference (dp test / dp freeze), and LAMMPS MD tasks MUST
+> run on Bohrium (remote).** Local execution is not supported.
 
 **Two phases:**
 
 | Phase | Tool | Where |
 |---|---|---|
 | **Prepare** | `dpa4_prepare.py` | always local |
-| **Execute** | `dp` CLI | **remote only** via Bohrium (`bohrium` skill preferred, `dpdisp` fallback) |
+| **Execute** | `dp` CLI / `lmp` | **remote only** via Bohrium (`bohrium` skill preferred, `dpdisp` fallback) |
 
 Run the prepare script via `run_skill_script(skill_name="dpa4", script_name="dpa4_prepare.py", args="...")`.
+
+---
+
+## Model Variants
+
+DPA4-OMat24 provides five model sizes. Each variant has its own checkpoint (`.pt`)
+and training configuration (`.json`). **Do NOT mix parameters across variants.**
+
+| Variant | Parameters | lmax | channels | n_blocks | n_focus |
+|---|---|---|---|---|---|
+| **DPA4-Nano** | 337,861 (0.3 M) | 1 | 32 | 1 | 1 |
+| **DPA4-Mini** | 655,504 (0.7 M) | 2 | 32 | 2 | 1 |
+| **DPA4-Neo** | 1,125,372 (1.1 M) | 3 | 32 | 2 | 2 |
+| **DPA4-Air** | 5,148,611 (5.1 M) | 3 | 64 | 3 | 1 |
+| **DPA4-Plus** | 8,849,376 (8.8 M) | 4 | 64 | 4 | 1 |
+
+Shared settings across all variants:
+
+| Parameter | Value |
+|---|---|
+| Backend | PyTorch only |
+| Precision | float32 |
+| Elements | Full periodic table (H–Og) |
+| Cutoff radius | 6.0 Å |
+| Radial basis | `bessel`, 16 functions |
+| Loss | MAE: `pref_e=20`, `pref_f=20`, `pref_v=5` |
+| Optimizer | HybridMuon (`weight_decay=0.001`) |
+
+**Released files** (per variant):
+
+| File | Description |
+|---|---|
+| `DPA4-<Variant>-OMat24-<version>.pt` | Model checkpoint (base for finetune/freeze) |
+| `DPA4-<Variant>-OMat24-<version>.json` | Training configuration (input.json template) |
+
+### Variant selection guidance
+
+| Use case | Recommended variant |
+|---|---|
+| Quick exploration / prototyping | Nano or Mini |
+| General-purpose finetuning | **Neo** (default) |
+| Higher accuracy, larger systems | Air |
+| Best accuracy, production runs | Plus |
+
+> **Note:** `dpa4_prepare.py` ships templates for all five variants (nano, mini, neo,
+> air, plus). The `--version` flag selects the template. Default is `neo`.
+
+---
+
+## Model Download
+
+Set `BOHRIUM_DPA4_MODEL` to the path of a pre-downloaded `.pt` checkpoint. If the
+variable is **not set**, the agent should download the appropriate checkpoint from
+the links below.
+
+**Latest release (v20260704):**
+
+| File | Link |
+|---|---|
+| `DPA4-Nano-OMat24-v20260704.pt` | [Download](https://store.aissquare.com/models/9293690b-6758-425b-ac8c-74a6cb53235a/DPA4-Nano-OMat24-v20260704.pt) |
+| `DPA4-Mini-OMat24-v20260704.pt` | [Download](https://store.aissquare.com/models/9293690b-6758-425b-ac8c-74a6cb53235a/DPA4-Mini-OMat24-v20260704.pt) |
+| `DPA4-Neo-OMat24-v20260704.pt` | [Download](https://store.aissquare.com/models/9293690b-6758-425b-ac8c-74a6cb53235a/DPA4-Neo-OMat24-v20260704.pt) |
+| `DPA4-Air-OMat24-v20260704.pt` | [Download](https://store.aissquare.com/models/9293690b-6758-425b-ac8c-74a6cb53235a/DPA4-Air-OMat24-v20260704.pt) |
+| `DPA4-Plus-OMat24-v20260704.pt` | [Download](https://store.aissquare.com/models/9293690b-6758-425b-ac8c-74a6cb53235a/DPA4-Plus-OMat24-v20260704.pt) |
+
+Corresponding JSON configs:
+
+| File | Link |
+|---|---|
+| `DPA4-Nano-OMat24-v20260704.json` | [Download](https://store.aissquare.com/models/9293690b-6758-425b-ac8c-74a6cb53235a/DPA4-Nano-OMat24-v20260704.json) |
+| `DPA4-Mini-OMat24-v20260704.json` | [Download](https://store.aissquare.com/models/9293690b-6758-425b-ac8c-74a6cb53235a/DPA4-Mini-OMat24-v20260704.json) |
+| `DPA4-Neo-OMat24-v20260704.json` | [Download](https://store.aissquare.com/models/9293690b-6758-425b-ac8c-74a6cb53235a/DPA4-Neo-OMat24-v20260704.json) |
+| `DPA4-Air-OMat24-v20260704.json` | [Download](https://store.aissquare.com/models/9293690b-6758-425b-ac8c-74a6cb53235a/DPA4-Air-OMat24-v20260704.json) |
+| `DPA4-Plus-OMat24-v20260704.json` | [Download](https://store.aissquare.com/models/9293690b-6758-425b-ac8c-74a6cb53235a/DPA4-Plus-OMat24-v20260704.json) |
+
+Model page: <https://www.aissquare.com/models/detail?pageType=models&name=DPA4-OMat24&id=423>
+
+When downloading, use the **Neo** variant by default unless the user specifies otherwise.
 
 ---
 
@@ -107,7 +189,7 @@ Follow Phases A–D below. EOS benchmark is used for evaluation (no test set ava
    | Duration | **5 ps** | Total simulation time |
    | Output frames | **100** | Number of structures to retain |
 
-   > **⚠️ CRITICAL:** Always use **NPT ensemble** for MD sampling. If the NPT simulation
+   > **CRITICAL:** Always use **NPT ensemble** for MD sampling. If the NPT simulation
    > fails or encounters errors, the agent MUST attempt to fix the simulation code to make
    > NPT work. **NEVER switch to a different ensemble** (e.g., NVT, NVE) without explicit
    > user approval. The agent should debug and resolve NPT issues, not avoid them.
@@ -149,7 +231,7 @@ run_skill_script(
 )
 ```
 
-> **⚠️ CRITICAL:** Always run entropy-based selection BEFORE DFT labeling. Never send
+> **CRITICAL:** Always run entropy-based selection BEFORE DFT labeling. Never send
 > all 100 MD frames directly to DFT — use the selected 30 structures instead.
 
 **Step 2: DFT labeling**
@@ -161,12 +243,16 @@ force, and virial labels.
 - See `concepts/dft-calculation` for guidance on choosing a DFT code.
 - Job submission is handled by the `bohrium` skill (preferred) or `dpdisp` skill (fallback).
 
-**Frame budget & training steps (no user dataset):**
+**Frame budget & training epochs (no user dataset):**
 
-| System type | Max DFT frames | Training steps | Warmup steps | Train/Test split |
-|---|---|---|---|---|
-| Simple | **30** | **3 000** | **230** | All for training |
-| Complex | **100** | **10 000** | **780** | **9:1** (90 train / 10 test) |
+| System type | Max DFT frames | Epochs | Train/Test split |
+|---|---|---|---|
+| Simple | **30** | **50** | All for training |
+| Complex | **100** | **50** | **9:1** (90 train / 10 test) |
+
+> Training steps are computed automatically:
+> `numb_steps = epochs × n_train_frames` (batch_size=1).
+> 30 frames × 50 epochs = 1500 steps; 90 frames × 50 epochs = 4500 steps.
 
 > **Simple systems (no dataset):** All 30 frames go to training — no test phase.
 > Evaluation is done via EOS benchmark (Phase C).
@@ -206,21 +292,21 @@ run an EOS benchmark to compare pretrained vs finetuned models against DFT groun
    run_skill_script(
        skill_name="dpa4",
        script_name="dpa4_prepare.py",
-       args="prepare-finetune --workdir ./finetune_001 --train_data dft_data.extxyz --base_model /path/to/dpa4_model --numb_steps 3000 --warmup_steps 230"
+       args="prepare-finetune --workdir ./finetune_001 --train_data dft_data.extxyz --base_model /path/to/dpa4_model.pt --epochs 50"
    )
 
    # No user dataset (complex): 100 frames → 90 train / 10 test (9:1 split)
    run_skill_script(
        skill_name="dpa4",
        script_name="dpa4_prepare.py",
-       args="prepare-finetune --workdir ./finetune_001 --train_data dft_data.extxyz --base_model /path/to/dpa4_model --numb_steps 10000 --warmup_steps 780 --max_train_frames 90"
+       args="prepare-finetune --workdir ./finetune_001 --train_data dft_data.extxyz --base_model /path/to/dpa4_model.pt --epochs 50 --max_train_frames 90"
    )
 
    # User has dataset: entropy-selected 100 frames for training, rest for test
    run_skill_script(
        skill_name="dpa4",
        script_name="dpa4_prepare.py",
-       args="prepare-finetune --workdir ./finetune_001 --train_data selected_100.extxyz --base_model /path/to/dpa4_model --numb_steps 10000 --warmup_steps 780"
+       args="prepare-finetune --workdir ./finetune_001 --train_data selected_100.extxyz --base_model /path/to/dpa4_model.pt --epochs 50"
    )
    ```
 
@@ -239,6 +325,136 @@ run an EOS benchmark to compare pretrained vs finetuned models against DFT groun
 
 ---
 
+## Energy Bias Adjustment
+
+DFT energy labels differ between datasets by an arbitrary per-element constant. Before
+evaluating or simulating a system whose energy reference differs from OMat24, the
+per-element energy bias can be refit **without retraining** any network weights:
+
+```
+dp --pt change-bias DPA4-<Variant>-OMat24-<version>.pt -s /path/to/system
+```
+
+This updates only the energy shift and writes an adjusted checkpoint; the descriptor
+and fitting-net weights are unchanged. Use this when:
+- The user's DFT data uses a different pseudopotential or energy reference than OMat24.
+- You want to improve energy accuracy for a specific system before finetuning.
+- You need a quick energy correction without running a full finetune.
+
+---
+
+## Fine-tuning Guidance
+
+The released checkpoints serve as pretrained initializations for downstream tasks.
+
+### Key rules
+
+1. **Keep the `model` section unchanged** — descriptor, fitting net, and the
+   full-periodic-table `type_map` must not be modified. The type embeddings are
+   indexed by `type_map` and changing it breaks the model.
+
+2. **Replace only the training/validation data** with the downstream dataset.
+
+3. **Use a small learning rate** for finetuning — significantly lower than the
+   pretraining LR. The script applies variant-specific defaults automatically
+   (override with `--start_lr` if needed):
+
+   | Variant | Default start_lr (finetune) |
+   |---|---|
+   | Nano | 5e-3 |
+   | Mini | 1e-3 |
+   | Neo | 5e-4 |
+   | Air | 4e-4 |
+   | Plus | 3e-4 |
+
+   > The script's `--start_lr` default is `None`, which keeps the variant template's
+   > value. The LR schedule is WSD with `warmup_ratio=0.003`, `decay_phase_ratio=0.65`.
+
+4. **Finetune command:**
+   ```
+   dp --pt train input_finetune.json --finetune DPA4-<Variant>-OMat24-<version>.pt
+   ```
+
+### LoRA adapters
+
+DPA4/SeZM supports LoRA adapters for single-task fine-tuning. The best checkpoints
+fold the LoRA deltas back into the base weights, producing a plain DPA4/SeZM
+checkpoint suitable for deployment without any adapter overhead.
+
+---
+
+## Inference Deployment
+
+### Freeze to `.pt2`
+
+The frozen `.pt2` is an AOTInductor archive used for inference (ASE, LAMMPS).
+
+```
+dp --pt freeze -c DPA4-<Variant>-OMat24-<version>.pt -o frozen_model
+```
+
+The PyTorch backend detects DPA4/SeZM and writes `frozen_model.pt2`.
+
+> **The `.pt2` is target-specific** — it depends on host CPU/GPU, GPU compute
+> capability, and libtorch version. Freeze on the target machine rather than
+> reusing a `.pt2` across different hardware.
+
+### Inference precision environment variables
+
+**Precision is fixed at freeze time.** Set these before running `dp --pt freeze`:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `DP_TF32_INFER` | `0` (highest) | float32 matmul precision: `0` highest, `1` high, `2` medium. Keep `0` for MD and PES-smoothness-sensitive workflows. |
+| `DP_TRITON_INFER` | `0` | Fused Triton inference kernels (CUDA), cumulative: `0` off; `1` universal kernels; `2` adds table-tuned SO(2) value-path kernels; `3` adds fp16 tensor-core mixing GEMMs. Levels `0`–`2` keep full float32 accumulation; `3` gives large speedup with negligible accuracy impact. |
+
+Accepted boolean values: `1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off`.
+
+### Run with ASE
+
+```python
+from ase.io import read
+from deepmd.calculator import DP
+
+atoms = read("structure.cif")
+atoms.calc = DP(model="frozen_model.pt2")
+
+energy = atoms.get_potential_energy()
+forces = atoms.get_forces()
+stress = atoms.get_stress()
+```
+
+### Run in LAMMPS
+
+The frozen `.pt2` is used through `pair_style deepmd`:
+
+```
+units           metal
+atom_style      atomic
+atom_modify     map yes
+
+neighbor        2.0 bin
+read_data       system.lmp
+
+pair_style      deepmd frozen_model.pt2
+pair_coeff      * * O H
+```
+
+> **`atom_modify map yes` is required.** The `.pt2` graph inference relies on an
+> explicit ghost/periodic-image to local-atom map; the model fails fast without it.
+
+The element names after `pair_coeff * *` bind LAMMPS atom types to entries of the
+model's `type_map` in order (here types 1 and 2 to `O` and `H`). If omitted, the
+mapping falls back to the `type_map` stored in the `.pt2` metadata.
+
+**Multi-GPU (MPI) inference** uses the same `.pt2`. Launch one MPI rank per GPU:
+
+```
+CUDA_VISIBLE_DEVICES=0,1,2,3 mpirun -np 4 lmp -in in.lammps
+```
+
+---
+
 ## Environment variables
 
 DPA4 requires **all** standard Bohrium variables plus two DPA4-specific variables:
@@ -249,11 +465,14 @@ DPA4 requires **all** standard Bohrium variables plus two DPA4-specific variable
 | `BOHRIUM_PASSWORD` | Bohrium account password |
 | `BOHRIUM_PROJECT_ID` | Bohrium project ID (integer) |
 | `BOHRIUM_DPA4_MACHINE` | Machine/scass type for training, e.g. `1 * NVIDIA V100_32g` |
-| `BOHRIUM_DPA4_IMAGE` | Container image URI with DPA4-compatible deepmd-kit (e.g. `registry.dp.tech/dptech/dp/native/hub/custom_images/dpa4:260522-1779446700`) |
-| `BOHRIUM_DPA4_MODEL` | Path to the DPA4 pretrained model file |
+| `BOHRIUM_DPA4_IMAGE` | Container image URI with DPA4-compatible deepmd-kit. **Required.** |
+| `BOHRIUM_DPA4_MODEL` | Path to the DPA4 pretrained model checkpoint (`.pt` file) |
 
-> **Note:** The base model for DPA4 must be a **file** (not a directory).
-> The prepare script copies it into the workdir for remote submission.
+> **If `BOHRIUM_DPA4_IMAGE` is not set**, use the default image:
+> `registry.dp.tech/dptech/dp/native/prod-25997/deepmd-kit:3.2.0-dev`
+>
+> **If `BOHRIUM_DPA4_MODEL` is not set**, download the checkpoint from the
+> [Model Download](#model-download) section above. Default to the **Neo** variant.
 
 ---
 
@@ -270,7 +489,7 @@ Check `BOHRIUM_DPA4_MODEL` for the default pretrained model, or pass `--base_mod
 run_skill_script(
     skill_name="dpa4",
     script_name="dpa4_prepare.py",
-    args="prepare-finetune --workdir <workdir> --train_data file1.xyz [file2.xyz ...] --base_model /path/to/dpa4_model [--version neo] [--numb_steps 10000] [--warmup_steps 780] [--max_train_frames 100] [--type_map Fe Ni Cu ...] [--copy_model]"
+    args="prepare-finetune --workdir <workdir> --train_data file1.xyz [file2.xyz ...] --base_model /path/to/dpa4_model.pt [--version neo] [--epochs 50] [--max_train_frames 100] [--copy_model]"
 )
 ```
 
@@ -284,7 +503,7 @@ The `--max_train_frames` flag caps training frames; excess goes to `test_data/` 
 | `input.json` | Training configuration for `dp --pt train` (version-specific format) |
 | `train_data/` | deepmd/npy training split |
 | `test_data/` | deepmd/npy test split (only when `--max_train_frames` is set and data exceeds it) |
-| `<model>` | Copy of the DPA4 pretrained model file |
+| `<model>` | Copy of the DPA4 pretrained model checkpoint (`.pt` file) |
 
 > **Remote submission:** Include `test_data` in `forward_files` only when it exists.
 > The prepare script copies the model file into the workdir.
@@ -329,7 +548,7 @@ bohr job submit \
     --input_directory "./finetune_001/" \
     --job_group_id "$JOB_GROUP_ID" \
     --backward_files "model.ckpt.pt,frozen.pt2,lcurve.out,train_log" \
-    --command "dp --pt train input.json --skip-neighbor-stat --finetune <model> > train_log 2>&1 && dp --pt freeze -c model.ckpt.pt -o frozen"
+    --command "dp --pt train input.json --finetune <model> > train_log 2>&1 && dp --pt freeze -c model.ckpt.pt -o frozen"
 ```
 
 **Finetune + test (user has dataset):**
@@ -343,7 +562,7 @@ bohr job submit \
     --input_directory "./finetune_001/" \
     --job_group_id "$JOB_GROUP_ID" \
     --backward_files "model.ckpt.pt,frozen.pt2,lcurve.out,train_log,log-test,result-test*" \
-    --command "dp --pt train input.json --skip-neighbor-stat --finetune <model> > train_log 2>&1 && dp --pt freeze -c model.ckpt.pt -o frozen && dp --pt test -m frozen.pt2 -s test_data -d result-test -l log-test"
+    --command "dp --pt train input.json --finetune <model> > train_log 2>&1 && dp --pt freeze -c model.ckpt.pt -o frozen && dp --pt test -m frozen.pt2 -s test_data -d result-test -l log-test"
 ```
 
 ### Step 2b — Submit via dpdisp skill (fallback)
@@ -375,7 +594,7 @@ Use this method only when `bohr` CLI is unavailable or when targeting non-Bohriu
   "resources": { "group_size": 1 },
   "task_list": [
     {
-      "command": "dp --pt train input.json --skip-neighbor-stat --finetune <model> > train_log 2>&1 && dp --pt freeze -c model.ckpt.pt -o frozen",
+      "command": "dp --pt train input.json --finetune <model> > train_log 2>&1 && dp --pt freeze -c model.ckpt.pt -o frozen",
       "task_work_path": "./finetune_001",
       "forward_files": ["input.json", "train_data", "<model>"],
       "backward_files": ["model.ckpt.pt", "frozen.pt2", "lcurve.out", "train_log"]
@@ -393,7 +612,7 @@ Use this method only when `bohr` CLI is unavailable or when targeting non-Bohriu
   "resources": { "group_size": 1 },
   "task_list": [
     {
-      "command": "dp --pt train input.json --skip-neighbor-stat --finetune <model> > train_log 2>&1 && dp --pt freeze -c model.ckpt.pt -o frozen && dp --pt test -m frozen.pt2 -s test_data -d result-test -l log-test",
+      "command": "dp --pt train input.json --finetune <model> > train_log 2>&1 && dp --pt freeze -c model.ckpt.pt -o frozen && dp --pt test -m frozen.pt2 -s test_data -d result-test -l log-test",
       "task_work_path": "./finetune_001",
       "forward_files": ["input.json", "train_data", "test_data", "<model>"],
       "backward_files": ["model.ckpt.pt", "frozen.pt2", "lcurve.out", "train_log", "log-test", "result-test*"]
@@ -405,7 +624,7 @@ Use this method only when `bohr` CLI is unavailable or when targeting non-Bohriu
 > `<model>` is the base model name inside the workdir — the prepare script prints it as
 > `model_name` in its JSON output.
 
-> ⚠️ **CRITICAL — backward_files must include ALL outputs from the command chain.**
+> **CRITICAL — backward_files must include ALL outputs from the command chain.**
 > The `dp --pt freeze -c model.ckpt.pt -o frozen` step produces `frozen.pt2`.
 > **If `frozen.pt2` is missing from `backward_files`, the trained model will NOT be
 > downloaded from Bohrium — the finetuning result is permanently lost.**
@@ -435,38 +654,12 @@ tmux ls
 
 ---
 
-## DPA4 Command Reference
-
-DPA4 uses different flags compared to DPA-1/DPA-2.
-
-```bash
-# Finetune from a pretrained DPA4 model (--skip-neighbor-stat is required for train only)
-dp --pt train input.json --skip-neighbor-stat --finetune <model> > train_log 2>&1
-
-# Freeze the trained model
-dp --pt freeze -c model.ckpt.pt -o frozen
-
-# Test (frozen model)
-dp --pt test -m frozen.pt2 -s <test_data_dir> -d result-test -l log-test
-
-# Test (pretrained model directory — for standalone evaluation)
-dp --pt test -m <model> -s <test_data_dir> -d result-test -l log-test
-```
-
-Key differences from DPA-1/DPA-2:
-- `--skip-neighbor-stat` required for training only (not test/freeze)
-- No `--use-pretrain-script` or `--model-branch` flags
-- Freeze produces `frozen.pt2` (not `frozen_model.pb`)
-- Base model is a **file** (e.g. zip archive), not a directory
-
----
-
 ## Output files
 
 | File | Description |
 |---|---|
 | `model.ckpt.pt` | Saved PyTorch checkpoint |
-| `frozen.pt2` | Frozen model for inference |
+| `frozen.pt2` | Frozen AOTInductor model for inference |
 | `lcurve.out` | Training loss curve (step, energy MAE, force MAE, …) |
 | `train_log` | Training stdout/stderr |
 | `result-test*` | Test result files (per-frame energies, forces, virials) |
@@ -476,27 +669,32 @@ Key differences from DPA-1/DPA-2:
 
 ## Constraints
 
+**Environment & dependencies:**
 - `dpa4_prepare.py` requires `ase`, `dpdata`, and `numpy` in the local Python environment.
-- All input structures must be **DFT-labelled** (energy + forces). Unlabeled structures
-  raise an error during dpdata export.
-- Base model must be a **file** (not a directory). Model version and input parameters must
-  match exactly — do not mix across versions.
+- All `task_work_path` entries must share the same `work_base` (dpdispatcher requirement).
+
+**Data & model:**
+- All input structures must be **DFT-labelled** (energy + forces + virial). Unlabeled
+  structures raise an error during dpdata export.
+- Base model must be a `.pt` checkpoint file. Model variant and input parameters must
+  match exactly — do not mix across variants.
+- **`type_map` is fixed to the full periodic table (H–Og).** DPA4 uses type embeddings
+  indexed by this map; do NOT restrict to dataset elements.
 - `deepmd/npy` systems are written per chemical formula; use `--mixed_type` for variable
   composition within a single directory.
-- All `task_work_path` entries must share the same `work_base` (dpdispatcher requirement).
-- **MD sampling MUST use NPT ensemble** with default parameters: T=500 K, P=1 bar, duration=5 ps.
-  If NPT simulation fails, the agent MUST debug and fix the code to make NPT work.
-  **NEVER switch to NVT/NVE without explicit user approval.**
-- **Entropy-based structure selection is MANDATORY** in all paths:
-  - No dataset: select 30 structures from 100 MD frames for DFT labeling.
-  - User has dataset: select 100 structures for training; excess becomes test set.
-- **Frame budget & training steps (no user dataset):**
-  - Simple: 30 frames, 3 000 steps, warmup 230. All for training, no test.
-  - Complex: 100 frames, 10 000 steps, warmup 780. **9:1 split** (90 train / 10 test).
-- **User dataset:** entropy-select 100 frames for training; excess becomes test set.
-- **Atom count:** ~50 atoms/DFT structure. Simple systems may supercell; complex systems
-  (defects, dopants, surfaces, interfaces, transition states, high-entropy alloys) must NOT.
-- **EOS benchmark** is for **no-dataset path only** (simple systems). When the user has a
-  dataset, the test set replaces the EOS benchmark for evaluation.
-- **Evaluation always compares pretrained vs finetuned** — either via EOS curves (no dataset)
-  or via test-set MAE (user has dataset).
+
+**Workflow rules (details in the corresponding workflow sections):**
+- **MD sampling MUST use NPT ensemble** (Phase A step 4). Never switch to NVT/NVE
+  without explicit user approval.
+- **Entropy-based structure selection is MANDATORY** before DFT labeling (Phase A step 5 / Phase B).
+- **Frame budget:** Simple systems use 30 frames; complex systems use 100 frames
+  with 9:1 train/test split. All paths default to 50 epochs (Phase B).
+  Steps are auto-computed: `numb_steps = epochs × n_train` (batch_size=1).
+- **Atom count:** ~50 atoms/DFT structure. Complex systems must NOT be supercelled (Phase A step 6).
+- **EOS benchmark** is for no-dataset simple-system path only (Phase C).
+- **Evaluation always compares pretrained vs finetuned** (Phase D step 3).
+
+**Deployment:**
+- Frozen `.pt2` is target-specific — depends on host hardware and libtorch version.
+  Always freeze on the deployment target machine.
+- `atom_modify map yes` is required in LAMMPS input scripts when using `.pt2` models.
