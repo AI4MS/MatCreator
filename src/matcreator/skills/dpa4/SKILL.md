@@ -148,10 +148,13 @@ were computed by DFT (VASP, ABACUS, etc.), **not** by a pretrained ML model.
        args="filter-by-entropy user_dataset.extxyz --max-sel 100 --chunk-size 10"
    )
    ```
-   Remaining structures become the test set for evaluation.
+   This writes **two** files: `selected.extxyz` (the 100 training frames) and
+   `remaining.extxyz` (all unselected frames). **Keep `remaining.extxyz`** — it
+   is the test set for the Phase C pretrained-vs-finetuned comparison.
 
-2. Finetune DPA4, then run `dp test` on the test set with **both** the pretrained model
-   and the finetuned model. Compare and report the improvement (energy/force MAE reduction).
+2. Finetune DPA4, then run `dp test` on the test set (`remaining.extxyz`) with
+   **both** the pretrained model and the finetuned model. Compare and report the
+   improvement (energy/force MAE reduction).
 
 3. **Generate diagonal parity plots** for per-atom energy and forces on the test set
    for both pretrained and finetuned models.
@@ -199,8 +202,11 @@ diagonal parity plots of per-atom energy and forces.
    - Use the **frozen pretrained model** (`frozen_model.pt2`) **only for MD** to
      explore configuration space.
    - Use the `atomic-structure` skill to build and supercell structures (NOT for MD).
-   - **MD sampling tool priority:** `ase-deepmd` > `lammps`. Try `ase-deepmd` first;
-     if it fails repeatedly, switch to `lammps`. Never use `atomic-structure` for MD.
+   - **MD sampling tool:** `.pt2` is an AOTInductor archive loadable **only by
+     LAMMPS `pair_style deepmd`**. It is **NOT** compatible with `ase-deepmd`
+     (which needs a TorchScript `.pth`/`.pb`). Always use the `lammps` skill for
+     `.pt2` MD — do not waste time trying `ase-deepmd` first. Never use
+     `atomic-structure` for MD.
 
 5. **MD sampling parameters (NPT ensemble):**
    | Parameter | Default value | Description |
@@ -284,8 +290,9 @@ After DFT labeling, split the labelled data into training and test sets:
 > **Complex systems (no dataset):** 100 DFT frames → 90 training + 10 test (9:1 split).
 > Run `dp test` on the 10-frame test set, output diagonal plots.
 >
-> **User has dataset:** Use entropy-selected 100 frames for training; excess frames
-> become the test set. Output diagonal plots in Phase C.
+> **User has dataset:** The 100 entropy-selected frames (in `selected.extxyz`) are
+> used **entirely for training**; the unselected frames (`remaining.extxyz` from
+> `filter-by-entropy`) become the test set. Output diagonal plots in Phase C.
 
 #### Phase C — Finetune & evaluate
 
@@ -308,20 +315,74 @@ After DFT labeling, split the labelled data into training and test sets:
        args="prepare-finetune --workdir ./finetune_001 --train_data dft_data.extxyz --base_model /path/to/dpa4_model.pt --epochs 50 --max_train_frames 90"
    )
 
-   # User has dataset: entropy-selected 100 frames for training, rest for test
+   # User has dataset: entropy-selected 100 frames for training (selected.extxyz),
+   # unselected frames for test (remaining.extxyz from filter-by-entropy).
+   # No --max_train_frames → all 100 go to training; test_data is built separately.
    run_skill_script(
        skill_name="dpa4",
        script_name="dpa4_prepare.py",
-       args="prepare-finetune --workdir ./finetune_001 --train_data selected_100.extxyz --base_model /path/to/dpa4_model.pt --epochs 50"
+       args="prepare-finetune --workdir ./finetune_001 --train_data selected.extxyz --base_model /path/to/dpa4_model.pt --epochs 50"
+   )
+   # Build test_data/ from the unselected frames so the single-submission
+   # command chain below (dp --pt test -s test_data) runs for this path too.
+   run_skill_script(
+       skill_name="dpa4",
+       script_name="dpa4_prepare.py",
+       args="convert-data --data remaining.extxyz --outdir ./finetune_001/test_data"
    )
    ```
 
 2. Submit finetune job on Bohrium via the `bohrium` skill.
    - All paths now have test data: include `test_data` in `forward_files`, run `dp test` after training.
 
-3. **Evaluate:**
-   Run `dp test` on the test set with **both** the pretrained model and the finetuned model.
-   All paths must produce **diagonal parity plots** of per-atom energy and forces:
+   > **Phase C evaluation is "pretrained vs finetuned" — a single submission must
+   > produce BOTH sets of test results.** Use the complete chain below; do NOT
+   > split into multiple submissions, and do NOT omit any `backward_files` entry.
+
+#### Complete submission template (finetune + compare-with-pretrained)
+
+> **Copy this `command` and `backward_files` verbatim** (only substituting
+> `<model>`). This is the one-shot command chain that performs Phase C step 3's
+> mandatory pretrained-vs-finetuned comparison. Do **not** reassemble it.
+
+   **`command`** (single chained job — all five steps run in one Bohrium task):
+
+   ```bash
+   dp --pt freeze -c <model> -o frozen_pretrained && \
+   dp --pt train input.json --finetune <model> > train_log 2>&1 && \
+   dp --pt freeze -c model.ckpt.pt -o frozen && \
+   dp --pt test -m frozen.pt2 -s test_data -d result-test -l log-test && \
+   dp --pt test -m frozen_pretrained.pt2 -s test_data -d result-test-pretrained -l log-test-pretrained
+   ```
+
+   **`backward_files`** — MUST contain every file produced by the chain above:
+
+   ```
+   model.ckpt.pt,frozen.pt2,frozen_pretrained.pt2,lcurve.out,train_log,log-test,result-test*,log-test-pretrained,result-test-pretrained*
+   ```
+
+   | Command step | Output file(s) | Purpose |
+   |---|---|---|
+   | `freeze -c <model> -o frozen_pretrained` | `frozen_pretrained.pt2` | Pretrained model frozen (comparison baseline) |
+   | `train --finetune <model>` | `model.ckpt.pt`, `lcurve.out`, `train_log` | Finetune training artifacts |
+   | `freeze -c model.ckpt.pt -o frozen` | `frozen.pt2` | Finetuned model frozen (final model) |
+   | `test -m frozen.pt2` | `result-test*`, `log-test` | Finetuned model test results |
+   | `test -m frozen_pretrained.pt2` | `result-test-pretrained*`, `log-test-pretrained` | Pretrained model test results (comparison) |
+
+   > `<model>` is the base model filename inside the workdir (e.g.
+   > `DPA4-Neo-OMat24-v20260704.pt`) — `dpa4_prepare.py` prints it as `model_name`.
+   >
+   > **If any entry is missing from `backward_files`, that result file is NOT
+   > downloaded from Bohrium and the comparison plots cannot be generated —
+   > forcing a wasteful re-submission.** Walk through each `&&` segment and verify
+   > its outputs are listed before submitting.
+
+   After the job finishes and results download, proceed to step 3.
+
+3. **Evaluate (plot from the downloaded test results):**
+   Both `result-test*` (finetuned) and `result-test-pretrained*` (pretrained)
+   are now local. Generate **diagonal parity plots** of per-atom energy and
+   forces for each model on the test set and report the MAE comparison:
 
    - **User has dataset:** Plot per-atom energy and forces for both pretrained and finetuned
      models on the test set. Report MAE comparison and improvement.
@@ -541,50 +602,55 @@ The command prints a JSON result with `system_dirs` and `dp_test_commands`.
 
 > Use the **fresh workdir** generated by `dpa4_prepare.py`. Do NOT point to old directories.
 
-### Step 2a — Submit via bohrium skill (preferred)
+### Step 2a — Submit via the bohrium skill (dpdispatcher API)
 
-Create a job group and submit via `bohr` CLI. Adjust `--command` and `--backward_files`
-for your job type (finetune only vs finetune + test).
+> **Do NOT use a `bohr` CLI** — the `bohr` executable on this platform is
+> bohr.io, not the Bohrium CLI. Always submit through dpdispatcher. See the
+> `bohrium` skill and
+> [bohrium/references/dpdispatcher.md](../bohrium/references/dpdispatcher.md)
+> for the canonical `submission.json` schema, polling, and download.
 
+Create a `submission.template.json` with `work_base` set to the fresh workdir,
+`scass_type` = `${BOHRIUM_DPA4_MACHINE}`, `image_name` =
+`${BOHRIUM_DPA4_IMAGE}`, `job_name` = `${JOB_NAME}` (e.g.
+`dpa4-finetune-neo` — see the naming convention in
+[bohrium/references/dpdispatcher.md](../bohrium/references/dpdispatcher.md#job-naming-mandatory)),
+and a `task_list` entry whose:
+
+- `forward_files` includes `input.json`, the base model, and `train_data/`
+  (plus `test_data/` when it exists).
+- `backward_files` includes **at minimum** `model.ckpt.pt`, `frozen.pt2`,
+  `lcurve.out`, `train_log` (plus `log-test`, `result-test*` when testing).
+
+**Finetune only (no test data)** — `command`:
 ```bash
-JOB_GROUP_ID=$(bohr job_group create -n "dpa4-finetune" -p "$BOHRIUM_PROJECT_ID" | grep -oP '\d+')
-echo "$JOB_GROUP_ID" > .bohrium_job_group_id
-
-# Finetune only (no test data)
-bohr job submit \
-    --project_id "$BOHRIUM_PROJECT_ID" \
-    --job_name "dpa4-finetune-001" \
-    --machine_type "$BOHRIUM_DPA4_MACHINE" \
-    --image_address "$BOHRIUM_DPA4_IMAGE" \
-    --input_directory "./finetune_001/" \
-    --job_group_id "$JOB_GROUP_ID" \
-    --backward_files "model.ckpt.pt,frozen.pt2,lcurve.out,train_log" \
-    --command "dp --pt train input.json --finetune <model> > train_log 2>&1 && dp --pt freeze -c model.ckpt.pt -o frozen"
+dp --pt train input.json --finetune <model> > train_log 2>&1 && dp --pt freeze -c model.ckpt.pt -o frozen
 ```
+`backward_files`: `model.ckpt.pt,frozen.pt2,lcurve.out,train_log`
 
-**Finetune + test (user has dataset):**
-
-```bash
-bohr job submit \
-    --project_id "$BOHRIUM_PROJECT_ID" \
-    --job_name "dpa4-finetune-test" \
-    --machine_type "$BOHRIUM_DPA4_MACHINE" \
-    --image_address "$BOHRIUM_DPA4_IMAGE" \
-    --input_directory "./finetune_001/" \
-    --job_group_id "$JOB_GROUP_ID" \
-    --backward_files "model.ckpt.pt,frozen.pt2,lcurve.out,train_log,log-test,result-test*" \
-    --command "dp --pt train input.json --finetune <model> > train_log 2>&1 && dp --pt freeze -c model.ckpt.pt -o frozen && dp --pt test -m frozen.pt2 -s test_data -d result-test -l log-test"
-```
+**Finetune + compare-with-pretrained (Phase C mandatory evaluation)** — use the
+**complete chain and `backward_files` in the [Phase C submission
+template](#complete-submission-template-finetune--compare-with-pretrained)**
+above. Do **not** use the partial finetune+test example here — it omits the
+pretrained-model freeze/test steps and their output files, which would force a
+re-submission to obtain the comparison plots.
 
 > `<model>` is the base model name inside the workdir — the prepare script prints it as
 > `model_name` in its JSON output.
 
-> **CRITICAL — backward_files must include ALL outputs from the command chain.**
-> The `dp --pt freeze -c model.ckpt.pt -o frozen` step produces `frozen.pt2`.
-> **If `frozen.pt2` is missing from `backward_files`, the trained model will NOT be
-> downloaded from Bohrium — the finetuning result is permanently lost.**
-> Always verify `backward_files` contains at least: `model.ckpt.pt`, `frozen.pt2`,
-> `lcurve.out`, `train_log` (plus test outputs when applicable).
+Submit + wait via the dpdispatcher Python API (blocks until done, downloads
+results):
+```python
+from dpdispatcher import Submission
+sub = Submission.submission_from_json("submission.json")
+sub.run_submission(check_interval=30)
+```
+
+> **CRITICAL — `backward_files` must include ALL outputs of the command chain.**
+> Walk through each `&&` segment and list every file it writes; any missing
+> entry is **not** downloaded from Bohrium and is lost when the job is cleaned
+> up. The Phase C template above is the authoritative `command`+`backward_files`
+> pair for evaluation runs.
 
 ---
 

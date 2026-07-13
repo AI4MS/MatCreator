@@ -1,4 +1,7 @@
-# Example submission.json for moldyn
+# Example submission.json for mattersim finetune
+
+Set `JOB_NAME` before substituting (e.g. `export JOB_NAME="mattersim-finetune-CuAu"`).
+See the naming convention in [bohrium/references/dpdispatcher.md](../../bohrium/references/dpdispatcher.md#job-naming-mandatory).
 
 ```json
 {
@@ -13,6 +16,7 @@
       "program_id": ${BOHRIUM_PROJECT_ID},
       "input_data": {
         "job_type": "container",
+        "job_name": "${JOB_NAME}",
         "log_file": "log",
         "scass_type": "${BOHRIUM_MAT_MACHINE}",
         "platform": "ali",

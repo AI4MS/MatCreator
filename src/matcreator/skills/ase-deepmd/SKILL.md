@@ -18,6 +18,12 @@ metadata:
 
 # ASE / DeePMD Skill
 
+> **Model format:** this skill loads a model via the ASE `DP` calculator, which
+> expects a **TorchScript** checkpoint (`.pth`/`.pb`). It does **NOT** support
+> `.pt2` (AOTInductor) models — those are loadable only by LAMMPS
+> `pair_style deepmd`. If you have a `.pt2` (e.g. a frozen DPA4 model), use the
+> `lammps` skill instead; do **not** attempt `ase-deepmd` with a `.pt2`.
+
 Two scripts handle ASE/DeePMD-specific work; submission is delegated to the `bohrium` skill:
 
 | Script | Role |

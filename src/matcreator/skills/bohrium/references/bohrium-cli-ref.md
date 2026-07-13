@@ -1,5 +1,13 @@
 # Bohrium CLI Reference
 
+> **⚠️ DEPRECATED / NON-FUNCTIONAL ON THIS PLATFORM.** The `bohr` executable
+> available here is [bohr.io](https://bohr.io) (a static-site deploy tool), **not**
+> the Bohrium compute CLI. The `bohr job *` / `bohr job_group *` commands below
+> **do not exist** and will fail. Use the **dpdispatcher** Python API instead — see
+> [dpdispatcher.md](dpdispatcher.md) and the `bohrium` skill.
+>
+> This file is kept only as a parameter reference for users who have a genuine
+> Bohrium CLI installed elsewhere. Do **not** run these commands on this machine.
 
 ## Job Submit
 

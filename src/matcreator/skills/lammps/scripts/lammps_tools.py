@@ -181,7 +181,7 @@ def _generate_lammps_input(input_path: Path, model_path: str,
 
     if ensemble == "npt":
         fix_line = (f"fix             1 all npt temp {temp} {temp} 0.1 "
-                    f"aniso {pres} {pres} 0.5")
+                    f"iso {pres} {pres} 0.5")
     elif ensemble == "nve":
         fix_line = "fix             1 all nve"
     else:

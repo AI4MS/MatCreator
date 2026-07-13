@@ -66,6 +66,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from ase.atoms import Atoms
+from ase.calculators.singlepoint import SinglePointCalculator
 from ase.io import read
 import dpdata
 
@@ -326,10 +327,34 @@ AVAILABLE_VERSIONS = list(_DPA4_TEMPLATES.keys())
 # Data utilities
 # ---------------------------------------------------------------------------
 
+def _attach_singlepoint(atoms: Atoms) -> Atoms:
+    """Attach a SinglePointCalculator from info/arrays if no calc is set.
+
+    ASE's extxyz reader sometimes leaves energy/forces/virial in atoms.info /
+    atoms.arrays without a calculator. dpa4_prepare and dpdata both expect a
+    calculator (get_potential_energy / get_forces), so normalise here.
+    """
+    if atoms.calc is not None:
+        return atoms
+    results: Dict[str, Any] = {}
+    if "energy" in atoms.info:
+        results["energy"] = atoms.info["energy"]
+    if "forces" in atoms.arrays:
+        results["forces"] = atoms.arrays["forces"]
+    if "virial" in atoms.info:
+        results["stress"] = -np.array(atoms.info["virial"]).reshape(3, 3) / max(
+            atoms.get_volume(), 1e-12
+        )
+    if results:
+        atoms.calc = SinglePointCalculator(atoms, **results)
+    return atoms
+
+
 def _load_atoms(paths: List[Path]) -> List[Atoms]:
     frames: List[Atoms] = []
     for p in paths:
         frames.extend(read(str(p), index=":"))
+    frames = [_attach_singlepoint(a) for a in frames]
     logger.info("Loaded %d frames from %d file(s)", len(frames), len(paths))
     return frames
 
@@ -356,16 +381,42 @@ def _split(
     return train, valid
 
 
+def _get_label(atoms: Atoms, key: str, info_key: str, calc_key: str):
+    """Read a DFT label from atoms.info, atoms.arrays, or the attached calculator.
+
+    ASE extxyz files written by different tools store labels inconsistently:
+      - energy  -> atoms.info['energy']  OR  calc.results['energy']
+      - forces  -> atoms.arrays['forces'] OR  calc.results['forces']
+      - virial  -> atoms.info['virial']   OR  calc.results['stress']*(-V)
+    SinglePointCalculator-backed frames expose them through get_*() too.
+    This helper unifies all sources so any DFT-labelled extxyz is accepted.
+    """
+    if key in atoms.arrays:
+        return atoms.arrays[key]
+    if info_key in atoms.info:
+        return atoms.info[info_key]
+    calc = atoms.calc
+    if calc is not None and calc_key in calc.results:
+        val = calc.results[calc_key]
+        if calc_key == "stress" and "virial" not in atoms.info and "virial" not in atoms.arrays:
+            vol = atoms.get_volume()
+            val = -np.array(val).reshape(3, 3) * vol if vol > 0 else np.zeros((3, 3))
+        return val
+    raise ValueError(
+        f"Required DFT label '{calc_key}' not found in atoms.info, atoms.arrays, "
+        f"or attached calculator. Ensure the structure is DFT-labelled "
+        f"(energy + forces + virial)."
+    )
+
+
 def _ase_to_labeled(atoms: Atoms) -> dpdata.LabeledSystem:
     symbols = atoms.get_chemical_symbols()
     names = list(dict.fromkeys(symbols))
     numbs = [symbols.count(n) for n in names]
     types = np.array([names.index(s) for s in symbols], dtype=int)
-    if "virial" not in atoms.arrays:
-        raise ValueError(
-            "Virial data is required but not found in structure. "
-            "All structures must have energy, forces, and virial labels from DFT."
-        )
+    energy = float(_get_label(atoms, "energy", "energy", "energy"))
+    forces = np.array(_get_label(atoms, "forces", "forces", "forces"), dtype=float)
+    virial = np.array(_get_label(atoms, "virial", "virial", "stress"), dtype=float).reshape(3, 3)
     data: Dict[str, Any] = {
         "atom_names": names,
         "atom_numbs": numbs,
@@ -374,9 +425,9 @@ def _ase_to_labeled(atoms: Atoms) -> dpdata.LabeledSystem:
         "coords": np.array([atoms.get_positions()]),
         "orig": np.zeros(3),
         "nopbc": not np.any(atoms.get_pbc()),
-        "energies": np.array([atoms.get_potential_energy()]),
-        "forces": np.array([atoms.get_forces()]),
-        "virial": np.array([atoms.arrays["virial"]]),
+        "energies": np.array([energy]),
+        "forces": np.array([forces]),
+        "virial": np.array([virial]),
     }
     return dpdata.LabeledSystem.from_dict({"data": data})
 

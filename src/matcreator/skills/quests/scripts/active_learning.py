@@ -70,7 +70,7 @@ def _h_filter_cpu(
     num_ref = len(dset_confs)
     if len(dset_confs) == 0:
         if chunk_size >= len(iter_confs):
-            return iter_confs, {"num_confs": len(iter_confs)}
+            return iter_confs, [], {"num_confs": len(iter_confs)}
         random.shuffle(iter_confs)
         dset_confs = iter_confs[:chunk_size]
         iter_confs = iter_confs[chunk_size:]
@@ -133,7 +133,8 @@ def _h_filter_cpu(
         if dH < 1e-2:
             break
 
-    return dset_confs[num_ref:], result
+    remaining = [iter_confs[i] for i in range(len(iter_confs)) if i not in indices]
+    return dset_confs[num_ref:], remaining, result
 
 
 def _h_filter_gpu(
@@ -155,7 +156,7 @@ def _h_filter_gpu(
     num_ref = len(dset_confs)
     if len(dset_confs) == 0:
         if chunk_size >= len(iter_confs):
-            return iter_confs, {"num_confs": len(iter_confs)}
+            return iter_confs, [], {"num_confs": len(iter_confs)}
         random.shuffle(iter_confs)
         dset_confs = iter_confs[:chunk_size]
         iter_confs = iter_confs[chunk_size:]
@@ -221,7 +222,8 @@ def _h_filter_gpu(
         if dH < 1e-2:
             break
 
-    return dset_confs[num_ref:], result
+    remaining = [iter_confs[i] for i in range(len(iter_confs)) if i not in indices]
+    return dset_confs[num_ref:], remaining, result
 
 
 def filter_by_entropy_impl(
@@ -258,11 +260,11 @@ def filter_by_entropy_impl(
         )
         try:
             import torch  # noqa: F401
-            select_atoms, select_result = _h_filter_gpu(
+            select_atoms, remaining_atoms, select_result = _h_filter_gpu(
                 iter_confs_atoms, dset_confs, **common_kwargs
             )
         except ImportError:
-            select_atoms, select_result = _h_filter_cpu(
+            select_atoms, remaining_atoms, select_result = _h_filter_cpu(
                 iter_confs_atoms, dset_confs, **common_kwargs
             )
 
@@ -271,10 +273,19 @@ def filter_by_entropy_impl(
         out_path = work_path / "selected.extxyz"
         write(out_path, select_atoms)
 
+        remaining_path = ""
+        if remaining_atoms:
+            remaining_path = work_path / "remaining.extxyz"
+            write(remaining_path, remaining_atoms)
+            remaining_path = str(remaining_path.resolve())
+
         return {
             "status": "success",
             "message": "Filter by entropy completed.",
             "selected_atoms": str(out_path.resolve()),
+            "remaining_atoms": remaining_path,
+            "num_selected": len(select_atoms),
+            "num_remaining": len(remaining_atoms),
             "entropy": select_result,
         }
     except Exception as exc:

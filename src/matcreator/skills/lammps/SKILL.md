@@ -52,7 +52,12 @@ metadata:
    Do NOT ask whether LAMMPS is installed — it is. Use `BOHRIUM_DEEPMD_IMAGE`
    (the same env var as the `deepmd` skill) as the container image.
 
-4. **Never present this as a plan to be confirmed.** If the user asks for a
+4. **Always generate `conf.lmp` with `lammps_tools.py generate_input`.** It
+   writes a complete LAMMPS data file including the `Masses` section. Do **NOT**
+   use `ase.io.write(..., format="lammps-data")` directly — ASE's writer omits
+   `Masses`, and LAMMPS aborts with a data-file error.
+
+5. **Never present this as a plan to be confirmed.** If the user asks for a
    LAMMPS MD simulation, execute immediately: generate input → submit → collect.
 
 ---
@@ -158,7 +163,7 @@ timestep        0.001
 thermo          100
 thermo_style    custom step pe ke etotal temp press vol
 
-fix             1 all npt temp 300.0 300.0 0.1 aniso 1.0 1.0 0.5   # pressure in bar
+fix             1 all npt temp 300.0 300.0 0.1 iso 1.0 1.0 0.5   # pressure in bar
 dump            1 all custom 10000 traj.dump id type xu yu zu
 dump_modify     1 sort id
 

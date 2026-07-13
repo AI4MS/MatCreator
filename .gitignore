@@ -238,3 +238,6 @@ POT_GGA_PAW_PBE/
 # Front end
 web/vite-frontend/dist/
 web/vite-frontend/node_modules/
+
+# Skill script runtime artifacts (entropy filtering, result collection, etc.)
+[0-9]*.*.*/

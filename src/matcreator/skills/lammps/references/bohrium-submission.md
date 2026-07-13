@@ -28,6 +28,7 @@
       "program_id": ${BOHRIUM_PROJECT_ID},
       "input_data": {
         "job_type": "container",
+        "job_name": "${JOB_NAME}",
         "log_file": "log",
         "scass_type": "${BOHRIUM_DEEPMD_MACHINE}",
         "platform": "ali",
@@ -50,9 +51,11 @@
 ## Submission flow
 
 1. Generate `submission.template.json` as above, using `${VARNAME}` for environment variables.
-2. Substitute variables:
+2. Export `JOB_NAME` (see the convention in
+   [bohrium/references/dpdispatcher.md](../../bohrium/references/dpdispatcher.md#job-naming-mandatory)),
+   e.g. `export JOB_NAME="lammps-npt-Al-500K"`, then substitute:
    ```bash
-   envsubst '${BOHRIUM_EMAIL} ${BOHRIUM_PASSWORD} ${BOHRIUM_PROJECT_ID} ${BOHRIUM_DEEPMD_MACHINE} ${BOHRIUM_DEEPMD_IMAGE}' \
+   envsubst '${BOHRIUM_EMAIL} ${BOHRIUM_PASSWORD} ${BOHRIUM_PROJECT_ID} ${BOHRIUM_DEEPMD_MACHINE} ${BOHRIUM_DEEPMD_IMAGE} ${JOB_NAME}' \
        < submission.template.json > submission.json
    ```
 3. Validate and submit:

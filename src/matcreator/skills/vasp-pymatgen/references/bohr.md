@@ -1,6 +1,10 @@
-# VASP Bohrium Submission Reference (bohr CLI)
+# VASP Bohrium Submission Reference (dpdispatcher)
 
-See the `bohrium` skill for general `bohr` CLI usage (login, project ID, machine types, monitoring).
+> **Do NOT use a `bohr` CLI** — the `bohr` executable on this platform is
+> bohr.io, not the Bohrium CLI. Submit through dpdispatcher. See the `bohrium`
+> skill and [bohrium/references/dpdispatcher.md](../../bohrium/references/dpdispatcher.md)
+> for the canonical `submission.json` schema, polling, and download.
+
 This file covers only **VASP-specific** parameters.
 
 ## VASP-specific environment variable
@@ -8,10 +12,10 @@ This file covers only **VASP-specific** parameters.
 | Variable | Description | Example |
 |---|---|---|
 | `BOHRIUM_VASP_IMAGE` | Docker image URI for VASP | `registry.dp.tech/dptech/vasp:5.4.4` |
+| `BOHRIUM_VASP_MACHINE` | `scass_type`, e.g. `c32_m64_cpu` | — |
 
-All other Bohrium parameters (`BOHRIUM_PROJECT_ID`, machine type) are general and not VASP-specific.
-
-* Check `BOHRIUM_VASP_IMAGE` and `BOHRIUM_PROJECT_ID` in environment.
+All other Bohrium variables (`BOHRIUM_EMAIL`, `BOHRIUM_PASSWORD`,
+`BOHRIUM_PROJECT_ID`) are shared with the `bohrium` skill.
 
 ## VASP run command
 
@@ -19,57 +23,112 @@ All other Bohrium parameters (`BOHRIUM_PROJECT_ID`, machine type) are general an
 export FI_PROVIDER=tcp && source /opt/intel/oneapi/setvars.sh && mpirun -np <N_CORES> vasp_std > log 2> err
 ```
 
-> **⚠️ CRITICAL:** `export FI_PROVIDER=tcp` is **MANDATORY** for VASP jobs on Bohrium.
-> Without this setting, MPI communication will fail with fabric errors, wasting
-> significant compute time and credits. Always include this before `source setvars.sh`.
+> **⚠️ CRITICAL:** `export FI_PROVIDER=tcp` is **MANDATORY** for VASP jobs on
+> Bohrium. Without it, MPI communication fails with fabric errors, wasting
+> compute time and credits. Always include it before `source setvars.sh`.
 
-Always match the `<N_CORES>` count to the machine's core count.
-
-
+Match `<N_CORES>` to the machine's core count.
 
 ## Choosing CPU machines
 
-You can check available machine type using `bohr` CLI
-
 Choose based on system size:
-- **Small systems (a few atoms)**: `c16_m32_cpu` is efficient — good balance of cores and memory
-- **Medium systems (10-50 atoms)**: `c32_m64_cpu` for better parallelization
-- **Large systems or k-point-heavy calculations**: `c32_m64_cpu` or larger if available
+- **Small systems (a few atoms)**: `c16_m32_cpu` — good balance of cores and memory
+- **Medium systems (10–50 atoms)**: `c32_m64_cpu` for better parallelization
+- **Large systems or k-point-heavy calculations**: `c32_m64_cpu` or larger
 
+Set `NCORE` in the INCAR to ≈ √(number of cores) for optimal performance.
 
-In most cases, set `NCORES` in the INCAR to 4 - approx SQRT(number of cores) for optimal performance.
+## submission.template.json (VASP single-point)
 
+```json
+{
+  "work_base": "<calc_dir>",
+  "machine": {
+    "batch_type": "Bohrium",
+    "context_type": "BohriumContext",
+    "local_root": ".",
+    "remote_profile": {
+      "email": "${BOHRIUM_EMAIL}",
+      "password": "${BOHRIUM_PASSWORD}",
+      "program_id": ${BOHRIUM_PROJECT_ID},
+      "input_data": {
+        "job_type": "container",
+        "job_name": "${JOB_NAME}",
+        "log_file": "log",
+        "scass_type": "${BOHRIUM_VASP_MACHINE}",
+        "platform": "ali",
+        "image_name": "${BOHRIUM_VASP_IMAGE}"
+      }
+    }
+  },
+  "resources": { "group_size": 1 },
+  "task_list": [
+    {
+      "command": "export FI_PROVIDER=tcp && source /opt/intel/oneapi/setvars.sh && mpirun -np 32 vasp_std > log 2> err",
+      "task_work_path": ".",
+      "forward_files": ["INCAR", "POSCAR", "KPOINTS", "POTCAR"],
+      "backward_files": ["OUTCAR", "vasprun.xml", "CONTCAR", "log", "err"]
+    }
+  ]
+}
+```
 
-## Single job workflow
-Submit — return a Job ID
+## Batch submission (many DFT single-points)
+
+For 50+ DFT label calculations, list each structure as a separate task in one
+`submission.json` `task_list` (shared INCAR/KPOINTS template via
+`forward_common_files`). This submits under one job group — far fewer API calls
+than per-task submission.
+
 ```bash
-bohr job submit \
-  --project_id "$BOHRIUM_PROJECT_ID" \
-  --job_name "vasp-relax-Al" \
-  --machine_type "c32_m64_cpu" \
-  --image_address "$BOHRIUM_VASP_IMAGE" \
-  --input_directory "./vasp-relax-Al-example" \
-  --command "export FI_PROVIDER=tcp && source /opt/intel/oneapi/setvars.sh && mpirun -np 32 vasp_std"
+envsubst '${BOHRIUM_EMAIL} ${BOHRIUM_PASSWORD} ${BOHRIUM_PROJECT_ID} ${BOHRIUM_VASP_MACHINE} ${BOHRIUM_VASP_IMAGE} ${JOB_NAME}' \
 ```
 
-Monitor (Download log files for Job IDs )
-```bash
-bohr job log --job_id "$JOB_ID"
+Export `JOB_NAME` before substituting, following the convention in
+[bohrium/references/dpdispatcher.md](../../bohrium/references/dpdispatcher.md#job-naming-mandatory):
+e.g. `export JOB_NAME="vasp-scf-Al2O3-50frames"` for a 50-frame SCF label batch.
+    < submission.template.json > submission.json
 ```
 
-Download results
+```python
+from dpdispatcher import Submission
+sub = Submission.submission_from_json("submission.json")
+sub.run_submission(check_interval=30)   # upload → submit → poll → download
 ```
-bohr job download -j 1234 -j 2345 -o /opt
-# Download the out files for Job IDs 1234 and 2345 and save them to the local /opt directory
-```
-
-## Bathc job workflow
-Create a job group, and then submit jobs to that group. See the `bohrium` skill for more details.
 
 ## Handling failed jobs
-Check job log with:  
-```bash
-# Inspect logs
-bohr job log --job_id <JOB_ID> 
+
+Recover the submission and inspect a failed task's `log`/`err` (downloaded into
+its `task_work_path`):
+
+```python
+from dpdispatcher import Submission
+sub = Submission.submission_from_json("submission.json")
+sub.check_all_finished()   # True once all terminal
+sub.download_jobs()
 ```
-Modify the setting, then simply submit again. 
+
+Modify the INCAR/settings, write a fresh `submission.json`, and re-submit.
+
+---
+
+## DFT label collection → extxyz (do this immediately after DFT)
+
+When DFT results feed downstream finetuning (e.g. the `dpa4` / `deepmd` skills),
+**convert results to a labelled extxyz immediately** rather than deferring it.
+A labelled extxyz stores, per frame:
+
+| Label | ASE location | Notes |
+|---|---|---|
+| `energy` | `atoms.info["energy"]` | total DFT energy (eV) |
+| `forces` | `atoms.arrays["forces"]` | per-atom forces (eV/Å) |
+| `virial` | `atoms.info["virial"]` | 3×3 stress×volume (eV) |
+
+`vasp_tools.py collect_results` already writes these fields. The `dpa4` and
+`deepmd` prepare scripts read them back (with a `SinglePointCalculator`
+fallback), so a freshly-collected `scf_result.extxyz` can be passed straight to
+`prepare-finetune` / `convert-data` without manual reformatting.
+
+> **Do not** leave DFT labels sitting only in a calculator's `calc.results`
+> without also writing them to a standard extxyz — re-reading such frames later
+> triggers "energy not found" errors in the prepare scripts.

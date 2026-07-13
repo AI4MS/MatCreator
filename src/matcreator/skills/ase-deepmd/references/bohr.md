@@ -1,7 +1,13 @@
 # ASE / DeePMD Bohrium Submission Reference
 
-See the `bohrium` skill for general Bohrium usage: login, project ID discovery, machine availability, job monitoring, and result download.
-This file covers only **ASE / DeePMD-specific** submission details.
+> **Do NOT use a `bohr` CLI** — the `bohr` executable on this platform is
+> bohr.io, not the Bohrium CLI. All submission/polling/download goes through
+> dpdispatcher (the `bohrium` skill). This file already uses the dpdispatcher
+> `submission.json` schema; ignore any `bohr *` commands elsewhere.
+
+See the `bohrium` skill and [bohrium/references/dpdispatcher.md](../../bohrium/references/dpdispatcher.md)
+for the canonical submission schema, polling, and download. This file covers
+only **ASE / DeePMD-specific** submission details.
 
 ## ASE / DeePMD-specific environment variables
 
@@ -17,8 +23,7 @@ Check required values before preparing a large batch:
 
 ```bash
 python ase_deepmd_tools.py show_model_path
-bohr project list --json
-bohr node list
+# machine types are read from the bohrium skill's reference table — no `bohr node list`
 ```
 
 ## Submission workflow
@@ -48,6 +53,7 @@ Use the returned `batch_dir` as `work_base`. Use each job directory basename as 
       "program_id": ${BOHRIUM_PROJECT_ID},
       "input_data": {
         "job_type": "container",
+        "job_name": "${JOB_NAME}",
         "log_file": "log",
         "scass_type": "${BOHRIUM_DEEPMD_ASE_MACHINE}",
         "platform": "ali",
@@ -118,7 +124,7 @@ Use the same `submission.template.json` structure as MD jobs. Replace each task 
 ## Substitute, validate, and submit
 
 ```bash
-envsubst '${BOHRIUM_EMAIL} ${BOHRIUM_PASSWORD} ${BOHRIUM_PROJECT_ID} ${BOHRIUM_DEEPMD_ASE_MACHINE} ${BOHRIUM_DEEPMD_ASE_IMAGE}' \
+envsubst '${BOHRIUM_EMAIL} ${BOHRIUM_PASSWORD} ${BOHRIUM_PROJECT_ID} ${BOHRIUM_DEEPMD_ASE_MACHINE} ${BOHRIUM_DEEPMD_ASE_IMAGE} ${JOB_NAME}' \
     < submission.template.json > submission.json
 
 uv run -m json.tool submission.json >/dev/null
@@ -128,7 +134,18 @@ uvx --from dpdispatcher --with oss2 dpdisp submit submission.json
 
 ## Monitoring and result download
 
-Use the `bohrium` skill for general monitoring and download commands. For dpdispatcher submissions, check generated job metadata and logs in the working directory first, then use the Bohrium job or job group IDs with `bohr job log`, `bohr job download`, or `bohr job_group download` as appropriate.
+Prefer the dpdispatcher Python API for monitoring and download (the `bohr` CLI
+is **not** available on this platform):
+
+```python
+from dpdispatcher import Submission
+sub = Submission.submission_from_json("submission.json")
+if sub.check_all_finished():
+    sub.download_jobs()
+```
+
+`run_submission` (see the `bohrium` skill) already polls and downloads in one
+call. Job metadata and logs land in the working directory.
 
 After results are available locally, collect them with the ASE / DeePMD tool:
 
@@ -139,10 +156,13 @@ python ase_deepmd_tools.py collect_relax --calc_dirs /tmp/ase_deepmd_jobs/relax_
 
 ## Handling failed jobs
 
-Inspect `status.json`, `log`, and `err` in the downloaded task directory. Download Bohrium logs if needed:
+Inspect `status.json`, `log`, and `err` in the downloaded task directory. If
+results were not downloaded, recover the submission and download again:
 
-```bash
-bohr job log --job_id <JOB_ID>
+```python
+from dpdispatcher import Submission
+sub = Submission.submission_from_json("submission.json")
+sub.download_jobs()
 ```
 
 Modify the input, image, machine type, or model path, then prepare or submit again.

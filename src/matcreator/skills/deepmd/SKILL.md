@@ -215,19 +215,26 @@ dp --pt compress -i model.ckpt.pt -o model_compressed.pt
 
 ---
 
-## Remote execution via the bohrium skill (preferred)
+## Remote execution via the bohrium skill (dpdispatcher API)
 
-The primary submission method uses the `bohrium` skill (`bohr` CLI).
+> **Do NOT use a `bohr` CLI** — the `bohr` executable on this platform is
+> bohr.io, not the Bohrium CLI. Always submit through dpdispatcher. See the
+> `bohrium` skill and
+> [bohrium/references/dpdispatcher.md](../bohrium/references/dpdispatcher.md)
+> for the canonical `submission.json` schema, polling, and download.
 
 ### Environment variables
 
 | Variable | Description |
 |---|---|
+| `BOHRIUM_EMAIL` | Bohrium account e-mail |
+| `BOHRIUM_PASSWORD` | Bohrium account password |
 | `BOHRIUM_PROJECT_ID` | Bohrium project ID (integer) |
 | `BOHRIUM_DEEPMD_MACHINE` | Machine type for training, e.g. `1 * NVIDIA V100_32g` |
 | `BOHRIUM_DEEPMD_IMAGE` | Container image URI with deepmd-kit installed, e.g. `registry.dp.tech/dptech/deepmd-kit:3.1.3` |
 
-Authentication is handled via `bohr login` (credentials stored in `~/.bohrium/credentials.yaml`).
+Authentication uses **email + password only**. Do not attempt JWT / OpenAPI
+token flows — they return 401.
 
 ### Step 1 — Prepare locally
 
@@ -241,83 +248,53 @@ run_skill_script(
 )
 ```
 
-### Step 2 — Create a job group and submit
+### Step 2 — Write submission.json & submit
+
+Build a `submission.template.json` with `work_base` = the workdir,
+`scass_type` = `${BOHRIUM_DEEPMD_MACHINE}`, `image_name` =
+`${BOHRIUM_DEEPMD_IMAGE}`, `job_name` = `${JOB_NAME}` (e.g.
+`deepmd-train-CuAu` — see the naming convention in
+[bohrium/references/dpdispatcher.md](../bohrium/references/dpdispatcher.md#job-naming-mandatory)),
+and a `task_list` entry whose `forward_files`
+includes `input.json` (+ the base model + `train_data/`), and whose
+`backward_files` includes `model.ckpt.pt`, `lcurve.out`, `log`, `err`.
+
+`command` per job type:
+
+| Job type | command |
+|---|---|
+| Train from scratch | `dp --pt train input.json` |
+| Finetune (single-task) | `dp --pt train input.json --finetune DPA2.pt --use-pretrain-script --model-branch Omat24` |
+| Finetune (multi-task) | `dp --pt train input.json --finetune DPA2.pt --use-pretrain-script` |
+
+Substitute env vars and submit + wait via the dpdispatcher Python API:
 
 ```bash
-# Create a job group for tracking
-JOB_GROUP_ID=$(bohr job_group create -n "deepmd-train" -p "$BOHRIUM_PROJECT_ID" | grep -oP '\d+')
-echo "$JOB_GROUP_ID" > .bohrium_job_group_id
-
-# Submit — adjust --command and --backward_files for your job type
-bohr job submit \
-    --project_id "$BOHRIUM_PROJECT_ID" \
-    --job_name "deepmd-train-001" \
-    --machine_type "$BOHRIUM_DEEPMD_MACHINE" \
-    --image_address "$BOHRIUM_DEEPMD_IMAGE" \
-    --input_directory "./train_001/" \
-    --job_group_id "$JOB_GROUP_ID" \
-    --backward_files "model.ckpt.pt,lcurve.out,log,err" \
-    --command "dp --pt train input.json"
+envsubst '${BOHRIUM_EMAIL} ${BOHRIUM_PASSWORD} ${BOHRIUM_PROJECT_ID} ${BOHRIUM_DEEPMD_MACHINE} ${BOHRIUM_DEEPMD_IMAGE} ${JOB_NAME}' \
+    < submission.template.json > submission.json
 ```
 
-**Finetuning (single-task):**
-
-```bash
-bohr job submit \
-    --project_id "$BOHRIUM_PROJECT_ID" \
-    --job_name "deepmd-finetune-001" \
-    --machine_type "$BOHRIUM_DEEPMD_MACHINE" \
-    --image_address "$BOHRIUM_DEEPMD_IMAGE" \
-    --input_directory "./train_001/" \
-    --job_group_id "$JOB_GROUP_ID" \
-    --backward_files "model.ckpt.pt,input.json,lcurve.out,log,err" \
-    --command "dp --pt train input.json --finetune DPA2.pt --use-pretrain-script --model-branch Omat24"
+```python
+from dpdispatcher import Submission
+sub = Submission.submission_from_json("submission.json")
+sub.run_submission(check_interval=30)   # upload → submit → poll → download
 ```
 
-**Finetuning (multi-task):**
+### Step 3 — Recover / poll after a session reset
 
-```bash
-bohr job submit \
-    --project_id "$BOHRIUM_PROJECT_ID" \
-    --job_name "deepmd-finetune-mt" \
-    --machine_type "$BOHRIUM_DEEPMD_MACHINE" \
-    --image_address "$BOHRIUM_DEEPMD_IMAGE" \
-    --input_directory "./train_001/" \
-    --job_group_id "$JOB_GROUP_ID" \
-    --backward_files "model.ckpt.pt,input.json,lcurve.out,log,err" \
-    --command "dp --pt train input.json --finetune DPA2.pt --use-pretrain-script"
+`run_submission` serializes the submission state next to `submission.json`. To
+resume polling from any later session (do not re-submit):
+
+```python
+from dpdispatcher import Submission
+sub = Submission.submission_from_json("submission.json")
+if sub.check_all_finished():
+    sub.download_jobs()
 ```
 
-### Step 3 — Monitor and download results
-
-```bash
-# Persist job group ID (already done in step 2, but re-read if session restarted)
-GROUP_ID=$(cat .bohrium_job_group_id)
-
-# Poll until all jobs reach terminal state
-while true; do
-    OUTPUT=$(timeout 120 bohr job list -j "$GROUP_ID" --json 2>/dev/null)
-    TOTAL=$(echo "$OUTPUT" | jq 'length')
-    DONE=$(echo "$OUTPUT" | jq '[.[] | select(.status == "Finished" or .status == "Failed" or .status == "Cancelled" or .status == "Terminated")] | length')
-    FAILED=$(echo "$OUTPUT" | jq '[.[] | select(.status == "Failed" or .status == "Cancelled" or .status == "Terminated")] | length')
-    echo "[$(date '+%H:%M:%S')] $DONE/$TOTAL jobs done, $FAILED failed"
-    if [ "$DONE" -eq "$TOTAL" ] && [ "$TOTAL" -gt 0 ]; then
-        [ "$FAILED" -gt 0 ] && echo "$FAILED job(s) failed!" && break
-        echo "All $TOTAL jobs finished successfully!" && break
-    fi
-    sleep 60
-done
-
-# Download all results
-bohr job_group download -j "$GROUP_ID" -o ./output/
-```
-
-For long-running training jobs, wrap the submission + polling in `tmux`:
-
-```bash
-tmux new-session -d -s deepmd_train "bash -c '...submit+poll commands...'"
-tmux ls
-```
+> **Polling primitives:** `Submission.check_all_finished()` (non-blocking) and
+> `Submission.run_submission()` (blocking). Do not invent `job_status()`; do
+> not call the internal `get_job_detail` directly.
 
 ---
 
