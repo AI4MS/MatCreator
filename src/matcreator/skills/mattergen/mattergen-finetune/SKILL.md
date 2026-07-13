@@ -141,7 +141,7 @@ cd "$workdir"
 
 ## Finetuning on Bohrium
 
-When submitting MatterGen jobs to Bohrium through `dpdisp`, Bohrium-specific submission settings, including authentication, project, image, and machine type, can be read from environment variables such as 'BOHRIUM_MAT_IMAGE' and 'BOHRIUM_MAT_MACHINE'. For the `dpdisp` submission procedure, refer to the `dpdisp` skill documentation.
+When submitting MatterGen jobs to Bohrium through the `bohrium` skill, Bohrium-specific submission settings, including authentication, project, image, and machine type, can be read from environment variables such as `BOHRIUM_MAT_IMAGE` and `BOHRIUM_MAT_MACHINE`.
 
 - When using Bohrium, you must use model_path; pretrained_name cannot be used.
 - When using Bohrium, `forward_files` should include the pretrained model directory. The local pretrained model path can be obtained from the environment variable `mattergen_model`, with one folder per pretrained model name, such as `mattergen_base`. If the target property is already covered by an existing pretrained property model, you can also finetune from that pretrained property model.

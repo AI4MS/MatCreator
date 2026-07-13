@@ -82,6 +82,3 @@ For the full submission template and environment variables for VASP job on bohri
 ```
 load_skill_resource(skill_name="vasp-pymatgen", path="references/bohr.md")
 ```
-
-### `dpdisp` skill (Not recommended for Bohrium users)
-Submission is handled by the `dpdisp` skill (DPDispatcher), which supports Both Bohrium and standard Slurm/HPC clusters. See the `dpdisp` skill documentation for full details and schema.

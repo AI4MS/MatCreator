@@ -29,7 +29,7 @@ Common upstream checkpoint names include:
 
 Invocation note:
 - For local execution, it is fine to use an explicit environment-prefixed path such as `"${MATTERGEN_ENV}/bin/mattergen-generate"` when you need to pin the executable.
-- For remote submission through `dpdisp`, use the CLI name directly in the task command, such as `mattergen-generate`, `mattergen-evaluate`, `mattergen-finetune`, or `mattergen-train`. Do not prepend `${MATTERGEN_ENV}/bin/` or any local environment path, because the command should resolve inside the remote runtime environment.
+- For remote submission through the `bohrium` skill, use the CLI name directly in the task command, such as `mattergen-generate`, `mattergen-evaluate`, `mattergen-finetune`, or `mattergen-train`. Do not prepend `${MATTERGEN_ENV}/bin/` or any local environment path, because the command should resolve inside the remote runtime environment.
 
 Parameter rule:
 - If `--pretrained-name mattergen_base` is used, `--properties-to-condition-on` is optional and generation can be unconditional.
@@ -87,7 +87,7 @@ Report at minimum:
 
 ## Generation on Bohrium
 
-When submitting MatterGen jobs to Bohrium through `dpdisp`, Bohrium-specific submission settings, including authentication, project, image, and machine type, can be read from environment variables such as 'BOHRIUM_MAT_IMAGE' and 'BOHRIUM_MAT_MACHINE'. For the `dpdisp` submission procedure, refer to the `dpdisp` skill documentation.
+When submitting MatterGen jobs to Bohrium through the `bohrium` skill, Bohrium-specific submission settings, including authentication, project, image, and machine type, can be read from environment variables such as `BOHRIUM_MAT_IMAGE` and `BOHRIUM_MAT_MACHINE`.
 
 -  When using Bohrium, `forward_files` should include the pretrained model directory. The local pretrained model path can be obtained from the environment variable `mattergen_model`, with one folder per pretrained model name, such as `mattergen_base`. Users can also specify the model path.
 - `backward_files` should include the generated result path so outputs are retrieved, for example the generation output directory.

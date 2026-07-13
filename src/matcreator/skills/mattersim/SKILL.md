@@ -117,7 +117,7 @@ Notes
 
 Perform structure optimization and molecular dynamics simulations on Bohrium platform using MatterSim.
 
-When submitting MatterGen jobs to Bohrium through `dpdisp`, the image and machine required by MatterSim are obtained from the environment variables `BOHRIUM_MAT_IMAGE` and `BOHRIUM_MAT_MACHINE`. For the `dpdisp` submission procedure, refer to the `dpdisp` skill documentation.
+When submitting MatterSim jobs to Bohrium through the `bohrium` skill, the image and machine required by MatterSim are obtained from the environment variables `BOHRIUM_MAT_IMAGE` and `BOHRIUM_MAT_MACHINE`.
 
 ### Batch relaxation
 

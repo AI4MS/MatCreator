@@ -1,12 +1,11 @@
 ---
 name: deepmd
-description: DeePMD-kit training, finetuning, testing, and model inspection skill. Use this skill whenever training or finetuning a Deep Potential (DP / DPA-1 / DPA-2) model, running model tests, or inspecting model parameters. Training is split into a preparation phase (data conversion + input.json generation, always local) and an execution phase (dp CLI commands, local or via bohrium skill on Bohrium cloud, with dpdisp as fallback).
+description: DeePMD-kit training, finetuning, testing, and model inspection skill. Use this skill whenever training or finetuning a Deep Potential (DP / DPA-1 / DPA-2) model, running model tests, or inspecting model parameters. Training is split into a preparation phase (data conversion + input.json generation, always local) and an execution phase (dp CLI commands, local or via bohrium skill on Bohrium cloud).
 metadata:
   tools:
     - run_bash
   dependent_skills:
     - bohrium
-    - dpdisp
   tags:
     - deepmd
     - dpa
@@ -218,9 +217,7 @@ dp --pt compress -i model.ckpt.pt -o model_compressed.pt
 
 ## Remote execution via the bohrium skill (preferred)
 
-The primary submission method uses the `bohrium` skill (`bohr` CLI). It is simpler and more
-stable than the dpdisp-based workflow. Use dpdisp only when `bohr` CLI is unavailable or
-when targeting non-Bohrium backends (Slurm, PBS, etc.).
+The primary submission method uses the `bohrium` skill (`bohr` CLI).
 
 ### Environment variables
 
@@ -324,65 +321,6 @@ tmux ls
 
 ---
 
-## Remote execution via the dpdisp skill (fallback)
-
-Use this method only when `bohr` CLI is unavailable or when targeting non-Bohrium backends
-(Slurm, PBS, LSF). See the `dpdisp` skill for full documentation.
-
-### Step 1 — Prepare locally (same as above)
-
-### Step 2 — Generate submission.template.json
-
-```json
-{
-  "work_base": ".",
-  "machine": {
-    "batch_type": "Bohrium",
-    "context_type": "BohriumContext",
-    "local_root": ".",
-    "remote_profile": {
-      "email": "${BOHRIUM_EMAIL}",
-      "password": "${BOHRIUM_PASSWORD}",
-      "program_id": ${BOHRIUM_PROJECT_ID},
-      "input_data": {
-        "job_type": "container",
-        "log_file": "log",
-        "scass_type": "${BOHRIUM_DEEPMD_MACHINE}",
-        "platform": "ali",
-        "image_name": "${BOHRIUM_DEEPMD_IMAGE}"
-      }
-    }
-  },
-  "resources": { "group_size": 1 },
-  "task_list": [
-    {
-      "command": "dp --pt train input.json",
-      "task_work_path": "./train_001",
-      "forward_files": ["input.json", "train_data", "valid_data"],
-      "backward_files": ["model.ckpt.pt", "lcurve.out", "log", "err"]
-    }
-  ]
-}
-```
-
-For finetuning, add the model file to `forward_files` and adjust the command (see bohrium
-section above for the exact commands).
-
-### Step 3 — Substitute, validate, and submit
-
-```bash
-envsubst '${BOHRIUM_EMAIL} ${BOHRIUM_PASSWORD} ${BOHRIUM_PROJECT_ID} ${BOHRIUM_DEEPMD_MACHINE} ${BOHRIUM_DEEPMD_IMAGE}' \
-    < submission.template.json > submission.json
-
-uv run -m json.tool submission.json >/dev/null
-uvx --with dpdispatcher dargs check -f dpdispatcher.entrypoints.submit.submission_args submission.json
-
-# Always use --with oss2 for Bohrium jobs
-uvx --from dpdispatcher --with oss2 dpdisp submit submission.json
-```
-
----
-
 ## Constraints
 
 - `deepmd_prepare.py` requires `ase`, `dpdata`, and `numpy` in the local Python environment.
@@ -392,4 +330,4 @@ uvx --from dpdispatcher --with oss2 dpdisp submit submission.json
 - `deepmd/npy` systems are written per chemical formula; use `--mixed_type` to allow
   variable composition within a single directory.
 - All `task_work_path` entries in `submission.json` must share the same `work_base` directory
-  (dpdispatcher requirement — see `dpdisp` skill documentation).
+  (dpdispatcher requirement).

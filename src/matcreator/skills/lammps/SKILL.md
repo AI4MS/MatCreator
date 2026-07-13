@@ -18,7 +18,6 @@ metadata:
     - load_skill_resource
   dependent_skills:
     - bohrium
-    - dpdisp
   tags:
     - lammps
     - deepmd
@@ -63,8 +62,7 @@ metadata:
 | Component | Role |
 |---|---|
 | `lammps_tools.py` | Generate `in.lammps` + `conf.lmp`; collect results |
-| `bohrium` skill | Submit job directories to Bohrium (recommended) |
-| `dpdisp` skill | Submit to Slurm/HPC clusters (alternative) |
+| `bohrium` skill | Submit job directories to Bohrium |
 
 Every command prints JSON to stdout and exits 0 on success, 1 on error.
 
