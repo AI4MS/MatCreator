@@ -188,6 +188,7 @@ def load_skills() -> list:
 ALL_SKILLS = load_skills()
 
 _PLANNING_CATEGORIES = frozenset({"concepts", "guides"})
+_DEFAULT_PLANNING_SKILLS = frozenset({"dpa4"})
 
 
 def _build_planning_skill_names() -> frozenset[str]:
@@ -197,6 +198,9 @@ def _build_planning_skill_names() -> frozenset[str]:
         for path in _discover_skill_dirs_for_source(source):
             if path.name not in disabled and path.parent.name in _PLANNING_CATEGORIES:
                 names.add(path.name)
+    for name in _DEFAULT_PLANNING_SKILLS:
+        if name not in disabled:
+            names.add(name)
     for name in get_planning_skills():
         if name not in disabled:
             names.add(name)

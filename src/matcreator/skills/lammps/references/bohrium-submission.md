@@ -62,16 +62,6 @@
    uvx --from dpdispatcher --with oss2 dpdisp submit submission.json
    ```
 
-> **Note:** Always use `--with oss2` for Bohrium jobs. `oss2` (Aliyun OSS SDK) is required by `BohriumContext` but is not bundled with dpdispatcher in uvx isolated environments.
-
-For long-running MD jobs, wrap in `tmux`:
-
-```bash
-tmux new-session -d -s lammps_md \
-    "uvx --from dpdispatcher --with oss2 dpdisp submit submission.json"
-tmux ls
-```
-
 ## Multi-job submission (all frames)
 
 When `--frame -1` produces multiple job directories, submit each independently with `work_base` set to the individual `job_dir`, or list each as a separate task in `task_list`.

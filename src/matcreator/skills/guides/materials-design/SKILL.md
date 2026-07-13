@@ -11,7 +11,7 @@ metadata:
     - structure-conversion
     - mattersim
     - cgcnn-predictor
-    - vasp
+    - vasp-pymatgen
   tags:
     - materials-design
     - inverse-design

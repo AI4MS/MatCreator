@@ -1,6 +1,6 @@
 ---
 name: ase-deepmd
-description: Skills for running ASE molecular dynamics (MD) and structure optimisation using a DeePMD interatomic potential — input preparation, remote batch submission via bohrium skill (preferred) or dpdisp (fallback), and result collection.
+description: Skills for running ASE molecular dynamics (MD) and structure optimisation using a DeePMD interatomic potential — input preparation, remote batch submission via bohrium skill, and result collection.
 metadata:
   tools:
     - run_bash

@@ -6,8 +6,6 @@ metadata:
     - run_bash
   dependent_skills:
     - bohrium
-    - dpdisp
-    - vasp
     - vasp-pymatgen
     - abacus
     - atomic-structure
@@ -38,7 +36,7 @@ TorchScript `.pb`.
 | Phase | Tool | Where |
 |---|---|---|
 | **Prepare** | `dpa4_prepare.py` | always local |
-| **Execute** | `dp` CLI / `lmp` | **remote only** via Bohrium (`bohrium` skill preferred, `dpdisp` fallback) |
+| **Execute** | `dp` CLI / `lmp` | **remote only** via Bohrium (`bohrium` skill) |
 
 Run the prepare script via `run_skill_script(skill_name="dpa4", script_name="dpa4_prepare.py", args="...")`.
 
@@ -155,11 +153,13 @@ were computed by DFT (VASP, ABACUS, etc.), **not** by a pretrained ML model.
 2. Finetune DPA4, then run `dp test` on the test set with **both** the pretrained model
    and the finetuned model. Compare and report the improvement (energy/force MAE reduction).
 
-3. No EOS benchmark needed — the test set already provides direct comparison.
+3. **Generate diagonal parity plots** for per-atom energy and forces on the test set
+   for both pretrained and finetuned models.
 
 **If the user has NO DFT-labelled dataset:**
 
-Follow Phases A–D below. EOS benchmark is used for evaluation (no test set available).
+Follow Phases A–C below. All paths produce a DFT-labelled test set and end with
+diagonal parity plots of per-atom energy and forces.
 
 ---
 
@@ -174,13 +174,35 @@ Follow Phases A–D below. EOS benchmark is used for evaluation (no test set ava
    If yes, use the user's structures as the starting point. If no, generate them
    using the `atomic-structure` skill (or `matcraft-kit` for surfaces/defects).
 
-3. **Generate candidate structures** for MD exploration:
-   - Use the pretrained model **only for MD** to explore configuration space.
+3. **Freeze the pretrained model for MD** — The pretrained `.pt` checkpoint cannot
+   be used directly for MD simulation; it must first be frozen to `.pt2` on the
+   DPA4 image on Bohrium:
+
+   ```bash
+   # Precision and performance settings for V100 (no TF32, strong fp16 tensor cores)
+   export DP_TF32_INFER=0     # V100 has no TF32; setting is a no-op, keep for portability
+   export DP_TRITON_INFER=3   # enables fp16 tensor-core GEMMs — large speedup, negligible accuracy impact
+
+   dp --pt freeze -c DPA4-<Variant>-OMat24-<version>.pt -o frozen_model
+   ```
+
+   This produces `frozen_model.pt2` — a target-specific AOTInductor archive. The
+   freeze **MUST** happen remotely on Bohrium using the DPA4 image; the `.pt2`
+   depends on the host CPU/GPU and libtorch version.
+
+   > **Model priority:** The frozen pretrained model (`frozen_model.pt2`) takes
+   > priority for MD exploration. Do NOT let other skills rename or overwrite it.
+    > It is the authoritative model for MD, distinct from the finetuned `frozen.pt2`
+    > produced later in Phase C.
+
+4. **Generate candidate structures** for MD exploration:
+   - Use the **frozen pretrained model** (`frozen_model.pt2`) **only for MD** to
+     explore configuration space.
    - Use the `atomic-structure` skill to build and supercell structures (NOT for MD).
    - **MD sampling tool priority:** `ase-deepmd` > `lammps`. Try `ase-deepmd` first;
      if it fails repeatedly, switch to `lammps`. Never use `atomic-structure` for MD.
 
-4. **MD sampling parameters (NPT ensemble):**
+5. **MD sampling parameters (NPT ensemble):**
    | Parameter | Default value | Description |
    |---|---|---|
    | Ensemble | **NPT** | NPT ensemble is mandatory for MD sampling |
@@ -194,19 +216,33 @@ Follow Phases A–D below. EOS benchmark is used for evaluation (no test set ava
    > NPT work. **NEVER switch to a different ensemble** (e.g., NVT, NVE) without explicit
    > user approval. The agent should debug and resolve NPT issues, not avoid them.
 
-5. **Entropy-based structure selection:**
-   After MD sampling, use entropy-based filtering to select **30 diverse structures**
+6. **Entropy-based structure selection:**
+   After MD sampling, use entropy-based filtering to select diverse structures
    from the 100 MD frames before DFT labeling:
+
+   | System type | Select frames | Purpose |
+   |---|---|---|
+   | Simple | **50** | 30 for training, 20 for testing |
+   | Complex | **100** (all) | 90 for training, 10 for testing |
+
    ```
+   # Simple systems
    run_skill_script(
        skill_name="quests",
        script_name="active_learning.py",
-       args="filter-by-entropy md_trajectory.extxyz --max-sel 30 --chunk-size 10"
+       args="filter-by-entropy md_trajectory.extxyz --max-sel 50 --chunk-size 10"
+   )
+
+   # Complex systems
+   run_skill_script(
+       skill_name="quests",
+       script_name="active_learning.py",
+       args="filter-by-entropy md_trajectory.extxyz --max-sel 100 --chunk-size 10"
    )
    ```
    This reduces DFT computational cost while maintaining structural diversity.
 
-6. **Atom count rules for DFT calculations:**
+7. **Atom count rules for DFT calculations:**
    | System type | Supercell? | Target atoms |
    |---|---|---|
    | Simple (bulk, alloy) | Yes, if needed | ~50 atoms |
@@ -215,87 +251,57 @@ Follow Phases A–D below. EOS benchmark is used for evaluation (no test set ava
    > Keep each DFT structure at roughly **50 atoms** when possible. For complex systems,
    > do NOT supercell — use the original cell as-is.
 
-#### Phase B — Entropy-based structure selection & DFT labeling
+#### Phase B — DFT labeling & train/test split
 
-**Step 1: Entropy-based structure selection (MANDATORY)**
+**Step 1: DFT labeling**
 
-Before DFT labeling, use entropy-based filtering to select **30 diverse structures**
-from the 100 MD frames. This reduces DFT computational cost while maintaining
-structural diversity.
+Run DFT single-point calculations on the **entropy-selected structures** (50 for simple,
+100 for complex) from Phase A to obtain energy, force, and virial labels.
 
-```
-run_skill_script(
-    skill_name="quests",
-    script_name="active_learning.py",
-    args="filter-by-entropy md_trajectory.extxyz --max-sel 30 --chunk-size 10"
-)
-```
-
-> **CRITICAL:** Always run entropy-based selection BEFORE DFT labeling. Never send
-> all 100 MD frames directly to DFT — use the selected 30 structures instead.
-
-**Step 2: DFT labeling**
-
-Run DFT single-point calculations on the **selected 30 structures** to obtain energy,
-force, and virial labels.
-
-- Use the `vasp` or `abacus` skill for DFT input preparation and execution.
+- Use the `vasp-pymatgen` or `abacus` skill for DFT input preparation and execution.
 - See `concepts/dft-calculation` for guidance on choosing a DFT code.
-- Job submission is handled by the `bohrium` skill (preferred) or `dpdisp` skill (fallback).
+- Job submission is handled by the `bohrium` skill.
 
-**Frame budget & training epochs (no user dataset):**
+> **CRITICAL:** The entropy-based selection already happened in Phase A step 6.
+> Do NOT run entropy selection again here — send the selected structures directly to DFT.
 
-| System type | Max DFT frames | Epochs | Train/Test split |
-|---|---|---|---|
-| Simple | **30** | **50** | All for training |
-| Complex | **100** | **50** | **9:1** (90 train / 10 test) |
+**Step 2: Train/test split**
+
+After DFT labeling, split the labelled data into training and test sets:
+
+| System type | DFT frames | Train | Test | Epochs |
+|---|---|---|---|---|
+| Simple | **50** | **30** | **20** | 50 |
+| Complex | **100** | **90** | **10** | 50 |
 
 > Training steps are computed automatically:
 > `numb_steps = epochs × n_train_frames` (batch_size=1).
-> 30 frames × 50 epochs = 1500 steps; 90 frames × 50 epochs = 4500 steps.
+> Simple: 30 × 50 = 1500 steps; Complex: 90 × 50 = 4500 steps.
 
-> **Simple systems (no dataset):** All 30 frames go to training — no test phase.
-> Evaluation is done via EOS benchmark (Phase C).
+> **Simple systems (no dataset):** 50 DFT frames → 30 training + 20 test.
+> Diagonal parity plots on the 20-frame test set are the primary evaluation (Phase C).
 >
-> **Complex systems (no dataset):** Split 100 DFT frames into 90 training / 10 test
-> using a 9:1 ratio. Run `dp test` on the test set to evaluate.
+> **Complex systems (no dataset):** 100 DFT frames → 90 training + 10 test (9:1 split).
+> Run `dp test` on the 10-frame test set, output diagonal plots.
 >
 > **User has dataset:** Use entropy-selected 100 frames for training; excess frames
-> become the test set.
+> become the test set. Output diagonal plots in Phase C.
 
-#### Phase C — EOS benchmark (no-dataset path, simple systems only)
-
-When the user has **no dataset**, there is no test set to evaluate against. Instead,
-run an EOS benchmark to compare pretrained vs finetuned models against DFT ground truth.
-
-> **Only for simple systems and only when the user has no dataset.**
-> If the user has a dataset, skip this phase — the test set provides direct comparison.
-
-1. **DFT relaxation** — relax the unit cell to find the ground-state structure.
-2. **Generate deformed structures** — create 11 structures with volumes from −5% to +5%
-   of the equilibrium volume (uniform spacing).
-3. **DFT single-point** — compute energy for all 11 structures.
-4. **Model prediction** — predict energies for the same 11 structures using both the
-   pretrained model and the finetuned model.
-5. **Compare** — plot E(V) curves: DFT (ground truth) vs pretrained vs finetuned.
-
-> Steps 1–3 can run **in parallel** with Phase B (dataset DFT labeling) to save time.
-
-#### Phase D — Finetune & evaluate
+#### Phase C — Finetune & evaluate
 
 > **Do NOT reuse any existing workdir.** Always run `dpa4_prepare.py` to create a fresh
 > workdir with the correct input.json, train/test split, and model copy.
 
 1. Prepare the finetune workdir:
    ```
-   # No user dataset (simple): 30 frames → all for training, no test
+   # No user dataset (simple): 50 DFT frames → 30 train / 20 test
    run_skill_script(
        skill_name="dpa4",
        script_name="dpa4_prepare.py",
-       args="prepare-finetune --workdir ./finetune_001 --train_data dft_data.extxyz --base_model /path/to/dpa4_model.pt --epochs 50"
+       args="prepare-finetune --workdir ./finetune_001 --train_data dft_data.extxyz --base_model /path/to/dpa4_model.pt --epochs 50 --max_train_frames 30"
    )
 
-   # No user dataset (complex): 100 frames → 90 train / 10 test (9:1 split)
+   # No user dataset (complex): 100 DFT frames → 90 train / 10 test (9:1 split)
    run_skill_script(
        skill_name="dpa4",
        script_name="dpa4_prepare.py",
@@ -310,18 +316,23 @@ run an EOS benchmark to compare pretrained vs finetuned models against DFT groun
    )
    ```
 
-2. Submit finetune job on Bohrium via the `bohrium` skill (preferred) or `dpdisp` skill (fallback).
-   - If test data exists: include `test_data` in `forward_files`, run `dp test` after training.
-   - If no test data: only `train_data` in `forward_files`, skip `dp test`.
+2. Submit finetune job on Bohrium via the `bohrium` skill.
+   - All paths now have test data: include `test_data` in `forward_files`, run `dp test` after training.
 
 3. **Evaluate:**
-   - **User has dataset:** Run `dp test` on the test set with **both** the pretrained
-     model and the finetuned model. Report the comparison:
-     - Pretrained: energy MAE = X, force MAE = Y
-     - Finetuned: energy MAE = X', force MAE = Y'
-     - Improvement: energy MAE reduced by Z%, force MAE reduced by W%
-   - **No dataset (simple):** Compare EOS curves (Phase C). Report DFT vs pretrained vs finetuned.
-   - **No dataset (complex):** Run `dp test` on the 10-frame test set. Report pretrained vs finetuned MAE.
+   Run `dp test` on the test set with **both** the pretrained model and the finetuned model.
+   All paths must produce **diagonal parity plots** of per-atom energy and forces:
+
+   - **User has dataset:** Plot per-atom energy and forces for both pretrained and finetuned
+     models on the test set. Report MAE comparison and improvement.
+   - **No dataset (simple):** 20-frame test set → plot per-atom energy and forces for both
+     models. Report MAE comparison.
+   - **No dataset (complex):** 10-frame test set → plot per-atom energy and forces for both
+     models. Report MAE comparison.
+
+   > **Diagonal parity plots are MANDATORY for every path.** Each plot shows DFT
+   > (x-axis) vs model prediction (y-axis) for per-atom energy and per-component forces.
+   > A perfect model lies on the diagonal y=x line.
 
 ---
 
@@ -565,62 +576,6 @@ bohr job submit \
     --command "dp --pt train input.json --finetune <model> > train_log 2>&1 && dp --pt freeze -c model.ckpt.pt -o frozen && dp --pt test -m frozen.pt2 -s test_data -d result-test -l log-test"
 ```
 
-### Step 2b — Submit via dpdisp skill (fallback)
-
-Use this method only when `bohr` CLI is unavailable or when targeting non-Bohrium backends.
-
-**Finetune only (no test data):**
-
-```json
-{
-  "work_base": ".",
-  "machine": {
-    "batch_type": "Bohrium",
-    "context_type": "BohriumContext",
-    "local_root": ".",
-    "remote_profile": {
-      "email": "${BOHRIUM_EMAIL}",
-      "password": "${BOHRIUM_PASSWORD}",
-      "program_id": ${BOHRIUM_PROJECT_ID},
-      "input_data": {
-        "job_type": "container",
-        "log_file": "train_log",
-        "scass_type": "${BOHRIUM_DPA4_MACHINE}",
-        "platform": "ali",
-        "image_name": "${BOHRIUM_DPA4_IMAGE}"
-      }
-    }
-  },
-  "resources": { "group_size": 1 },
-  "task_list": [
-    {
-      "command": "dp --pt train input.json --finetune <model> > train_log 2>&1 && dp --pt freeze -c model.ckpt.pt -o frozen",
-      "task_work_path": "./finetune_001",
-      "forward_files": ["input.json", "train_data", "<model>"],
-      "backward_files": ["model.ckpt.pt", "frozen.pt2", "lcurve.out", "train_log"]
-    }
-  ]
-}
-```
-
-**Finetune + test (user has dataset):**
-
-```json
-{
-  "work_base": ".",
-  "machine": { "..." : "..." },
-  "resources": { "group_size": 1 },
-  "task_list": [
-    {
-      "command": "dp --pt train input.json --finetune <model> > train_log 2>&1 && dp --pt freeze -c model.ckpt.pt -o frozen && dp --pt test -m frozen.pt2 -s test_data -d result-test -l log-test",
-      "task_work_path": "./finetune_001",
-      "forward_files": ["input.json", "train_data", "test_data", "<model>"],
-      "backward_files": ["model.ckpt.pt", "frozen.pt2", "lcurve.out", "train_log", "log-test", "result-test*"]
-    }
-  ]
-}
-```
-
 > `<model>` is the base model name inside the workdir — the prepare script prints it as
 > `model_name` in its JSON output.
 
@@ -630,27 +585,6 @@ Use this method only when `bohr` CLI is unavailable or when targeting non-Bohriu
 > downloaded from Bohrium — the finetuning result is permanently lost.**
 > Always verify `backward_files` contains at least: `model.ckpt.pt`, `frozen.pt2`,
 > `lcurve.out`, `train_log` (plus test outputs when applicable).
-
-### Step 3 — Substitute, validate, and submit (dpdisp only)
-
-```bash
-envsubst '${BOHRIUM_EMAIL} ${BOHRIUM_PASSWORD} ${BOHRIUM_PROJECT_ID} ${BOHRIUM_DPA4_MACHINE} ${BOHRIUM_DPA4_IMAGE}' \
-    < submission.template.json > submission.json
-
-uv run -m json.tool submission.json >/dev/null
-uvx --with dpdispatcher dargs check -f dpdispatcher.entrypoints.submit.submission_args submission.json
-
-# Always use --with oss2 for Bohrium jobs
-uvx --from dpdispatcher --with oss2 dpdisp submit submission.json
-```
-
-For long-running training jobs, wrap in `tmux` to survive SSH disconnects:
-
-```bash
-tmux new-session -d -s dpa4_train \
-    "uvx --from dpdispatcher --with oss2 dpdisp submit submission.json"
-tmux ls
-```
 
 ---
 
@@ -684,15 +618,16 @@ tmux ls
   composition within a single directory.
 
 **Workflow rules (details in the corresponding workflow sections):**
-- **MD sampling MUST use NPT ensemble** (Phase A step 4). Never switch to NVT/NVE
+- **MD sampling MUST use NPT ensemble** (Phase A step 5). Never switch to NVT/NVE
   without explicit user approval.
-- **Entropy-based structure selection is MANDATORY** before DFT labeling (Phase A step 5 / Phase B).
-- **Frame budget:** Simple systems use 30 frames; complex systems use 100 frames
-  with 9:1 train/test split. All paths default to 50 epochs (Phase B).
-  Steps are auto-computed: `numb_steps = epochs × n_train` (batch_size=1).
-- **Atom count:** ~50 atoms/DFT structure. Complex systems must NOT be supercelled (Phase A step 6).
-- **EOS benchmark** is for no-dataset simple-system path only (Phase C).
-- **Evaluation always compares pretrained vs finetuned** (Phase D step 3).
+- **Entropy-based structure selection is MANDATORY** before DFT labeling (Phase A step 6 / Phase B).
+- **Frame budget:** Simple systems use 50 DFT frames (30 train / 20 test); complex systems
+  use 100 frames with 9:1 train/test split (90 train / 10 test). All paths default to
+  50 epochs. Steps are auto-computed: `numb_steps = epochs × n_train` (batch_size=1).
+- **Atom count:** ~50 atoms/DFT structure. Complex systems must NOT be supercelled (Phase A step 7).
+- **Diagonal parity plots are MANDATORY** for all evaluation paths — per-atom energy
+  and forces on the test set for both pretrained and finetuned models (Phase C step 3).
+- **Evaluation always compares pretrained vs finetuned** (Phase C step 3).
 
 **Deployment:**
 - Frozen `.pt2` is target-specific — depends on host hardware and libtorch version.

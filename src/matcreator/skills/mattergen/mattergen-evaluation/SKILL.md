@@ -53,7 +53,7 @@ cd "$workdir"
 
 ## Evaluation With MatterSim on Bohrium
 
-When submitting MatterGen jobs to Bohrium through `dpdisp`, Bohrium-specific submission settings can be read from environment variables such as `BOHRIUM_MAT_IMAGE` and `BOHRIUM_MAT_MACHINE`. For the `dpdisp` submission procedure, refer to the `dpdisp` skill documentation.
+When submitting MatterGen jobs to Bohrium through the `bohrium` skill, Bohrium-specific submission settings can be read from environment variables such as `BOHRIUM_MAT_IMAGE` and `BOHRIUM_MAT_MACHINE`.
 
 
 Prepare a writable local job directory first:
