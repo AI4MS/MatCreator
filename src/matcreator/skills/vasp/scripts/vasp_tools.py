@@ -145,7 +145,7 @@ def _read_calculation_result(calc_type: str, calculate_path: str) -> dict:
 # ── config helpers ────────────────────────────────────────────────────────────
 
 _SCRIPT_DIR = Path(__file__).parent
-_DEFAULT_CONFIG = _SCRIPT_DIR.parent / "config.yaml"
+_DEFAULT_CONFIG = _SCRIPT_DIR.parent / "references" / "config.yaml"
 
 
 def _load_config(config_path: Path) -> dict:

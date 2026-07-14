@@ -48,7 +48,7 @@ _yaml_to_env: dict[str, str | None] = {
     "EMBEDDING_MODEL":      _llm_cfg.get("embedding_model"),
     "GRAPH_AGENT_MODEL":    _llm_cfg.get("graph_agent_model"),
     "REVIEW_AGENT_MODEL":   _llm_cfg.get("review_agent_model"),
-    "BOHRIUM_USERNAME":     _bohrium_cfg.get("email"),
+    "BOHRIUM_EMAIL":        _bohrium_cfg.get("email"),
     "BOHRIUM_PASSWORD":     _bohrium_cfg.get("password"),
     "BOHRIUM_PROJECT_ID":   str(_bohrium_cfg["project_id"]) if _bohrium_cfg.get("project_id") else None,
     "BOHRIUM_VASP_IMAGE":   _compute_cfg.get("vasp_image"),
@@ -92,7 +92,8 @@ LLM_MODEL: str = os.environ.get("LLM_MODEL", "")
 GRAPH_AGENT_MODEL: str = os.environ.get("GRAPH_AGENT_MODEL", LLM_MODEL)
 LLM_API_KEY: str = os.environ.get("LLM_API_KEY", "")
 LLM_BASE_URL: str = os.environ.get("LLM_BASE_URL", "")
-BOHRIUM_USERNAME: str = os.environ.get("BOHRIUM_USERNAME", "")
+BOHRIUM_EMAIL: str = os.environ.get("BOHRIUM_EMAIL", "")
+# BOHRIUM_USERNAME: str = os.environ.get("BOHRIUM_USERNAME", "")
 BOHRIUM_PASSWORD: str = os.environ.get("BOHRIUM_PASSWORD", "")
 BOHRIUM_PROJECT_ID: int | str = os.environ.get("BOHRIUM_PROJECT_ID", 00000)
 EXECUTION_ENABLE_WITHIN_INVOCATION_COMPACTION: str|int = os.environ.get("EXECUTION_ENABLE_WITHIN_INVOCATION_COMPACTION", 1)
