@@ -2,8 +2,11 @@ from pathlib import Path
 import logging
 
 from matcreator.llm_cards import LLMCard
-from matcreator.agents.execution_agent.step_executor import StepExecutorResult
-from matcreator.agents.execution_agent.step_executor import StepExecutorInput
+from matcreator.agents.execution_agent.step_executor import (
+    StepExecutorInput,
+    StepExecutorResult,
+    build_step_executor_agent,
+)
 from matcreator.agents.execution_agent.step_executor_runner import (
     _artifact_allowed_roots,
     _build_step_content,
@@ -237,3 +240,11 @@ def test_multimodal_card_accepts_adk_state_object_for_session_image_artifacts(tm
 
     assert input_images == [str(image_path)]
     assert len(content.parts) == 2
+
+
+def test_step_executor_retries_only_malformed_streamed_tool_arguments():
+    agent = build_step_executor_agent(LLMCard(name="test", model="openai/test"))
+
+    assert agent.retry_config is not None
+    assert agent.retry_config.max_attempts == 2
+    assert agent.retry_config.exceptions == ["JSONDecodeError"]
