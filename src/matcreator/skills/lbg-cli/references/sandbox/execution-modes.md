@@ -56,6 +56,7 @@ This is the safe sequence for any `--background` job whose outputs you actually 
 - **`--background` then immediate `kill` with no `files read` in between.** The remote command may have succeeded — you still lost its output. Always retrieve first.
 - **`--background --timeout 60` (or any finite value).** Setting a finite `--timeout` under `--background` kills the remote command at that boundary. The CLI prints a warning, but the job dies anyway. Pass `--timeout 0` (or omit `--timeout`) for true long-running work.
 - **Treating `terminal send` as a run-and-capture.** `send` returns only `sent_bytes` — the PTY's stdout is not echoed back. For "run a command, get its output" use `exec`. When the workload truly needs a TTY, redirect each command (`cmd > /tmp/out 2>&1\n`) and read the file with `files read`.
+- **Background script with multiple instances.** If the same background script is accidentally launched twice (e.g., due to a retry), both instances compete for the same frames and may corrupt output files. Guard against this with a lock file: `mkdir /workspace/.lock 2>/dev/null || { echo "Another instance running"; exit 1; }`.
 
 ## See also
 

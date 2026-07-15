@@ -17,6 +17,7 @@ sandbox through an agent; each row links to the deep doc.
 | 9 | **No user storage mounted** | Expecting your personal/share disk inside the sandbox; it isn't there | `sdbx create --mount-user-storage`. See [`lifecycle.md`](./lifecycle.md). |
 | 10 | `terminal send` has **no implicit newline and no stdout echo** | Treating `terminal send` as run-and-capture returns only `sent_bytes`, not the command output | For "run a command, get output" use `exec`. In a PTY, append `\n` and read the redirected file. See [`terminal.md`](./terminal.md). |
 | 11 | A template image with a mutable `:latest` tag is **rejected** by `template create` / `template update --image` | A template's image cache is keyed by the image tag; a `:latest` cannot be reused (old cache deleted, then rebuilt on every create/update), and sharing one `…:latest` across templates churns the cloud image-cache quota → other templates' **new** sandboxes fall back to a slow cold pull (can hit the create timeout) until the cache rebuilds | Point template images at an **immutable / unique tag** (a version, or the unique tag `image build` / `image commit` already produce). `image commit`/`build` also **warn** (non-fatal, `--name` is only the user-visible portion) when you name a new image `…latest`, so you don't mint one you can't use as a template base. See [`templates.md`](./templates.md) and [`images.md`](../images.md). |
+| 12 | `exec --background` scripts use `pgrep -f vasp_std` to check if a process is alive | When multiple batch scripts run concurrently, one script's `pgrep` matches **all** VASP processes across scripts → wait logic gets confused or exits prematurely | Use **PID files** for precise tracking: write `echo $! > /tmp/vasp.pid` after launch, check `kill -0 $(cat /tmp/vasp.pid)` for liveness. Do **not** use `pgrep -f` for per-instance process detection. |
 
 ## Quick checklist for an ML training run
 
@@ -41,9 +42,35 @@ lbg sdbx files read <id> /workspace/out/model.pt   --output ./model.pt
 lbg sdbx kill <id>
 ```
 
+## Quick checklist for batch / multi-frame computation
+
+```bash
+# 1. Detect CPUs
+NCPU=$(nproc --all)
+
+# 2. Create sandbox with timeout as safety net
+SANDBOX_ID=$(lbg sdbx create c32_m128_cpu --project-id <id> --timeout 14400 --json | jq -r '.sandbox_id')
+
+# 3. Upload inputs, run frames SERIALLY (VASP cannot run concurrent instances)
+for i in $(seq 0 9); do
+    lbg sdbx files write --source "frame_$i" "$SANDBOX_ID" /workspace/
+done
+lbg sdbx exec --background "$SANDBOX_ID" 'for d in /workspace/frame_*; do (cd "$d" && mpirun -np '"$NCPU"' vasp_std); done && touch /workspace/DONE'
+
+# 4. Poll for completion, retrieve, then kill
+# See lifecycle.md — Auto-cleanup patterns for the full workflow
+
+# 5. ALWAYS kill when done
+lbg sdbx kill "$SANDBOX_ID"
+```
+
+For true parallelism across frames, run multiple sandboxes — each
+sandbox runs one frame with all CPUs. See
+[`lifecycle.md`](./lifecycle.md) § Multi-sandbox parallel.
+
 ## See also
 
-- [`lifecycle.md`](./lifecycle.md) — timeout / billing / mount / kill semantics
+- [`lifecycle.md`](./lifecycle.md) — timeout / billing / mount / kill semantics, auto-cleanup patterns, multi-sandbox parallel, CPU utilization
 - [`execution-modes.md`](./execution-modes.md) — foreground vs background vs PTY, retrieve-before-kill SOP
 - [`files.md`](./files.md) — text vs bytes download
 - [`templates.md`](./templates.md) — disk size via `--extra-ephemeral-storage-gb`

@@ -52,3 +52,61 @@ This writes `INCAR`, `POSCAR`, `KPOINTS`, and `POTCAR` into the job directory.
 - Include `CHGCAR` in `backward_files` to retrieve it after the job
 - For SOC calculations, also include `WAVECAR` in both `forward_files` and `backward_files`
 - NCORE ≈ √(cores): 8 cores → 4, 16 cores → 4, 32 cores → 6
+
+## ⚠️ VASP 5.4.4 INCAR compatibility
+
+VASP 5.4.4 on Bohrium sandboxes (Intel MPI 2021.x + MKL 2022.x)
+segfaults (signal 11) near Iteration 1 when using `MPStaticSet` default
+parameters (`PREC=Accurate`, `ENCUT=520`, `ISMEAR=-5`, `ALGO=Fast`,
+`LREAL=False`).
+
+**This is NOT an MPI core-count issue.** Controlled-variable testing
+confirmed the segfault is triggered by the above INCAR parameter
+combination, independent of `mpirun -np`.
+
+**Recommended safe INCAR parameters (validated np=1~32):**
+
+```
+PREC   = Normal
+ENCUT  = 500
+ISYM   = 0
+EDIFF  = 1e-5
+LREAL  = Auto
+NPAR   = 4
+KPAR   = 1
+NELM   = 120
+NELMIN = 4
+ISIF   = 2
+ISMEAR = 0
+SIGMA  = 0.05
+IBRION = -1
+NSW    = 0
+LWAVE  = F
+LCHARG = F
+GGA    = PS
+```
+
+Override in `user_incar_settings`:
+
+```python
+safe_incar = {
+    "PREC": "Normal",
+    "ENCUT": 500,
+    "ISYM": 0,
+    "EDIFF": 1e-5,
+    "LREAL": "Auto",
+    "NPAR": 4,
+    "KPAR": 1,
+    "NELM": 120,
+    "NELMIN": 4,
+    "ISIF": 2,
+    "ISMEAR": 0,
+    "SIGMA": 0.05,
+    "IBRION": -1,
+    "NSW": 0,
+    "LWAVE": False,
+    "LCHARG": False,
+    "GGA": "PS",
+}
+vis = MPStaticSet(structure, user_incar_settings=safe_incar)
+```
