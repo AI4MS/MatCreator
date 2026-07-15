@@ -2,7 +2,7 @@ FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl bash \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
@@ -37,6 +37,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Run the bohrctl installation script if you need to submit jobs to a Bohr cluster. Uncomment the following line if you need it.
 # RUN curl -fsSL https://dp-public.oss-cn-beijing.aliyuncs.com/bohrctl/1.0.0/install_bohr_linux_curl.sh | bash
+
+# Optional: bake a curated skill directory into the image and use it as the
+# default module skill root for local/server startup. Alternatively, mount a
+# host skill directory at /app/custom-skills when starting the container.
+# COPY PATH_TO_SELECTED_SKILLS /app/custom-skills
+# ENV MATCREATOR_MODULE_SKILLS_ROOT=/app/custom-skills
 
 
 ENV PYTHONUNBUFFERED=1

@@ -92,6 +92,27 @@ config file:
 server-data/users/<user_id>/.matcreator/config.yaml
 ```
 
+To use a curated default skill bundle in server mode, set the module skill root
+as a deployment-level value. The path must be valid inside the control-plane and
+worker containers, for example a directory baked into the image:
+
+```bash
+export MATCREATOR_MODULE_SKILLS_ROOT=/app/selected-skills
+docker compose -f docker-compose.server.yml up -d
+```
+
+or in the server-wide `config.yaml`:
+
+```yaml
+skills:
+  module_root: /app/selected-skills
+```
+
+If the selected skills live on the host, mount that directory into the
+control-plane container and workers at the same container path, then set
+`MATCREATOR_MODULE_SKILLS_ROOT` to that container path. To bake them into the
+image instead, copy the directory in the Dockerfile and set the same `ENV` there.
+
 Environment variables are no longer read from `agents/MatCreator/.env` for
 MatCreator application settings. Use process environment variables only for
 deployment/runtime knobs such as ports, data roots, and worker limits.

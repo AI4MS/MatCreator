@@ -1,4 +1,5 @@
 import { defineConfig } from "vite";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
 
 // Configurable port variables
 const webPort = process.env.MATCREATOR_WEB_PORT || "8001";
@@ -18,6 +19,7 @@ function stripOrigin(proxy) {
 }
 
 export default defineConfig({
+  plugins: [svelte()],
   server: {
     port: frontendPort,
     strictPort: true,

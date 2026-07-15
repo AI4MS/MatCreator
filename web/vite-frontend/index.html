@@ -49,7 +49,7 @@
         <div class="graph-column" id="graph-column">
           <section class="card left-home-card">
             <div class="brand">
-              <div class="dot"></div>
+              <img class="brand-icon" src="/favicon.png" alt="MatCreator project icon">
               <div>
                 <div class="brand-title">MatCreator</div>
                 <div class="brand-sub">Plan · Execute · Review</div>
@@ -57,14 +57,15 @@
             </div>
           </section>
           <section class="card graph-card">
-            <div class="card-header">
-              <h2>Agent Graph</h2>
-              <span class="graph-status" id="graph-status">idle</span>
-            </div>
             <div class="graph-viewport" id="graph-viewport">
+              <h2 class="graph-panel-title">Agent Graph</h2>
               <div class="graph-surface" id="graph-surface">
                 <div id="agent-graph" class="graph-canvas"></div>
               </div>
+              <button class="plan-graph-thumbnail-btn hidden" id="plan-graph-toggle" type="button" title="Open roadmap" aria-label="Open roadmap" aria-pressed="false">
+                <span class="plan-graph-thumbnail-label">Roadmap</span>
+                <span class="plan-graph-thumbnail" id="plan-graph-thumbnail" aria-hidden="true"></span>
+              </button>
             </div>
           </section>
           <div
@@ -175,16 +176,6 @@
                         <button class="mode-btn" data-mode="normal" title="Plan first, then confirm before execution">Standard</button>
                         <button class="mode-btn" data-mode="bench" title="Plan first, then auto-confirm without waiting">Bench</button>
                       </div>
-                      <button class="composer-icon-btn" id="plan-graph-toggle" title="Toggle execution plan graph" aria-label="Toggle execution plan graph">
-                        <svg viewBox="0 0 24 24" aria-hidden="true">
-                          <circle cx="6" cy="7" r="2.4"></circle>
-                          <circle cx="18" cy="7" r="2.4"></circle>
-                          <circle cx="12" cy="17" r="2.4"></circle>
-                          <path d="M8.2 8.4 10.6 15"></path>
-                          <path d="M15.8 8.4 13.4 15"></path>
-                          <path d="M8.5 7h7"></path>
-                        </svg>
-                      </button>
                     </div>
                     <div class="quick-actions">
                       <button class="composer-pill" data-quick="yes" title="Approve the current plan">Approve</button>
@@ -251,11 +242,10 @@
             </div>
           </div>
 
-          <!-- Floating execution plan graph popup -->
+          <!-- Floating roadmap graph popup -->
           <div class="plan-graph-popup hidden" id="plan-graph-popup">
             <div class="plan-graph-popup-header">
-              <span class="plan-graph-popup-title">Execution Plan</span>
-              <span class="graph-status status-idle" id="plan-graph-status">idle</span>
+              <span class="plan-graph-popup-title">Roadmap</span>
               <div class="plan-graph-zoom-controls">
                 <button class="ghost plan-graph-zoom-btn" id="plan-graph-zoom-in" title="Zoom in">＋</button>
                 <button class="ghost plan-graph-zoom-btn" id="plan-graph-zoom-out" title="Zoom out">－</button>

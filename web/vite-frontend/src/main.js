@@ -1,9 +1,21 @@
 import { marked } from "marked";
-import { Network, DataSet } from "vis-network/standalone";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import * as $3Dmol from "3dmol";
+import { createLayoutController } from "./features/layout/resizers.js";
+import { createImageLightbox } from "./features/media/imageLightbox.js";
+import { classifyPath, createSessionFileTree } from "./features/session/fileTree.js";
+import {
+  compactRepeatedPrefixSnapshots,
+  mergeReplayedText,
+  upsertTimelineEvent,
+  upsertTimelineText,
+  upsertTimelineThought,
+} from "./features/chat/timeline.js";
+import { AgentGraphView, StepExecutionFeed } from "./features/graphs/AgentGraphView.js";
+import { ExecutionPlanView } from "./features/graphs/ExecutionPlanView.js";
+import { createSkillGraphController } from "./features/skills/SkillGraphController.js";
+import { createSettingsController } from "./features/settings/SettingsController.js";
 import "./style.css";
 
 // ---------------------------------------------------------------------------
@@ -58,8 +70,6 @@ const graphDetail = document.getElementById("graph-detail");
 const centerTabs = document.getElementById("center-tabs");
 const centerTabsScroll = document.getElementById("center-tabs-scroll");
 const centerTabPanels = document.getElementById("center-tab-panels");
-const graphResizer = document.getElementById("graph-resizer");
-const graphStatusEl = document.getElementById("graph-status");
 const loginModal = document.getElementById("login-modal");
 const loginInput = document.getElementById("login-input");
 const loginPassword = document.getElementById("login-password");
@@ -81,12 +91,6 @@ const logoutBtn = document.getElementById("logout-btn");
 const settingsLogoutBtn = document.getElementById("settings-logout-btn");
 const benchToggle = null; // removed — replaced by mode-selector
 const modeSelector = document.getElementById("mode-selector");
-const graphColumn       = document.getElementById("graph-column");
-const sidePanel         = document.getElementById("side-panel");
-const fileExplorerCol   = document.getElementById("file-explorer-col");
-const colResizerGraph   = document.getElementById("col-resizer-graph");
-const colResizerSide    = document.getElementById("col-resizer-side");
-const colResizerFiles   = document.getElementById("col-resizer-files");
 const sessionSummaryText = document.getElementById("session-summary-text");
 const chatTab = document.getElementById("tab-chat");
 const filesColToggleBtn = document.getElementById("files-col-toggle");
@@ -100,7 +104,36 @@ let workspaceTerminal = null;
 let workspaceTerminalFit = null;
 let workspaceTerminalSocket = null;
 const structureTabs = new Map();
-let skillGraphTab = null;
+let structureViewerModulePromise = null;
+let svelteRuntimePromise = null;
+
+const settingsController = createSettingsController({ state, applyLogin });
+
+const skillGraphController = createSkillGraphController({
+  state,
+  centerTabs,
+  centerTabPanels,
+  activateCenterTab,
+  renderMarkdown,
+});
+
+const { render: renderSessionFilesTree } = createSessionFileTree({
+  getSessionId: () => state.sessionId,
+  pathToApiUrl: (path) => pathToApiUrl(path),
+  openStructure: (item) => openViewer(item),
+  openFile: (file) => openFileViewer(file),
+});
+
+function loadStructureViewerModules() {
+  structureViewerModulePromise ||= import("./structure/StructureViewer.svelte");
+  svelteRuntimePromise ||= import("svelte");
+  return Promise.all([structureViewerModulePromise, svelteRuntimePromise]);
+}
+
+const scheduleStructureViewerPreload = window.requestIdleCallback
+  ? (callback) => window.requestIdleCallback(callback, { timeout: 2000 })
+  : (callback) => window.setTimeout(callback, 1000);
+scheduleStructureViewerPreload(() => void loadStructureViewerModules());
 
 function sessionTabTooltip(title) {
   return `${title || "Chat"}\nDouble-click to edit session name`;
@@ -124,6 +157,7 @@ function applyTheme(theme) {
   const nextTheme = theme === "light" ? "light" : "dark";
   state.theme = nextTheme;
   document.body.dataset.theme = nextTheme;
+  window.dispatchEvent(new CustomEvent("matcreator-theme-change", { detail: nextTheme }));
   themeToggle?.setAttribute("aria-pressed", String(nextTheme === "light"));
   themeToggle?.setAttribute("title", nextTheme === "light" ? "Toggle dark mode" : "Toggle light mode");
   themeToggle?.setAttribute("aria-label", nextTheme === "light" ? "Toggle dark mode" : "Toggle light mode");
@@ -144,1478 +178,48 @@ refreshKnowledgeReviewStatus();
 // Agent Graph Visualization
 // ---------------------------------------------------------------------------
 
-const NODE_COLORS = {
-  orchestrator: { bg: "#7C3AED", border: "#6D28D9", font: "#fff" },
-  planning:     { bg: "#3B82F6", border: "#2563EB", font: "#fff" },
-  execution:    { bg: "#10B981", border: "#059669", font: "#fff" },
-  tester:       { bg: "#F59E0B", border: "#D97706", font: "#1a1a1a" },
-  step:         { bg: "#374151", border: "#4B5563", font: "#e5e7eb" },
-};
-
-const STATUS_COLORS = {
-  running:          { bg: "#FBBF24", border: "#F59E0B", font: "#1a1a1a" },
-  success:          null,
-  failed:           { bg: "#EF4444", border: "#DC2626", font: "#fff" },
-  needs_replanning: { bg: "#F97316", border: "#EA580C", font: "#fff" },
-  idle:             { bg: "#374151", border: "#4B5563", font: "#9CA3AF" },
-};
-
-const MOBILE_LAYOUT_QUERY = window.matchMedia("(max-width: 900px)");
-const PANEL_HEIGHT_DEFAULTS = {};
-const PANEL_HEIGHT_BOUNDS = {};
-
-const COL_WIDTH_DEFAULTS = {
-  "graph-column": 360,
-  "side-panel": 320,
-};
-const COL_WIDTH_BOUNDS = {
-  "graph-column":      { min: 240, max: 600 },
-  "side-panel":        { min: 240, max: 520 },
-};
-
-class AgentGraphView {
-  constructor(containerId) {
-    this._container = document.getElementById(containerId);
-    this._surfaceEl = document.getElementById("graph-surface");
-    this._nodes = new DataSet([]);
-    this._edges = new DataSet([]);
-    this._network = null;
-    this._pollInterval = null;
-    this._didInitialFit = false;
-    this._pendingFit = true;
-    this._detailEl = document.getElementById("graph-detail");
-    this._detailClose = document.getElementById("graph-detail-close");
-    this._detailLabel = document.getElementById("detail-label");
-    this._detailStatus = document.getElementById("detail-status");
-    this._detailSummary = document.getElementById("detail-summary");
-    this._detailArtifacts = document.getElementById("detail-artifacts");
-    this._detailTiming = document.getElementById("detail-timing");
-    this._detailInput = document.getElementById("detail-input");
-    this._detailToolcalls = document.getElementById("detail-toolcalls");
-    this._detailToolcallsCount = document.getElementById("detail-toolcalls-count");
-    this._detailConversation = document.getElementById("detail-conversation");
-    this._nodeData = {};
-    this._activeDetailNodeId = null;
-    this._init();
-  }
-
-  _captureOpenToolCallKeys() {
-    const openKeys = new Set();
-    this._detailToolcalls?.querySelectorAll("details[data-toolcall-key][open]")?.forEach((el) => {
-      openKeys.add(el.getAttribute("data-toolcall-key"));
-    });
-    return openKeys;
-  }
-
-  _restoreOpenToolCallKeys(openKeys) {
-    if (!openKeys?.size) return;
-    this._detailToolcalls?.querySelectorAll("details[data-toolcall-key]")?.forEach((el) => {
-      el.open = openKeys.has(el.getAttribute("data-toolcall-key"));
-    });
-  }
-
-  _init() {
-    const options = {
-      layout: {
-        hierarchical: {
-          direction: "UD",
-          sortMethod: "directed",
-          nodeSpacing: 76,
-          levelSeparation: 86,
-          blockShifting: true,
-          edgeMinimization: true,
-        },
-      },
-      physics: { enabled: false },
-      edges: {
-        arrows: { to: { enabled: true, scaleFactor: 0.72 } },
-        color: { color: "#4B5563", highlight: "#9CA3AF" },
-        width: 2.4,
-        smooth: { type: "cubicBezier", forceDirection: "vertical" },
-      },
-      nodes: {
-        shape: "custom",
-        borderWidth: 2,
-        borderWidthSelected: 3,
-      },
-      interaction: {
-        hover: true,
-        tooltipDelay: 200,
-        dragNodes: true,
-        dragView: true,
-        zoomView: true,
-      },
-    };
-
-    this._network = new Network(
-      this._container,
-      { nodes: this._nodes, edges: this._edges },
-      options
-    );
-
-    this._network.on("selectNode", (params) => {
-      if (params.nodes.length) this._showDetail(params.nodes[0]);
-    });
-    this._network.on("deselectNode", () => this._hideDetail());
-    this._detailClose?.addEventListener("click", () => {
-      this._network.unselectAll();
-      this._hideDetail();
-    });
-  }
-
-  _nodeTooltip(raw) {
-    const lines = [
-      raw.label || raw.id,
-      `Status: ${raw.status || "unknown"}`,
-      `Type: ${raw.type || "step"}`,
-    ];
-    if (raw.summary) lines.push(`Summary: ${raw.summary}`);
-    if (raw.start_time) {
-      if (raw.end_time) {
-        const secs = ((new Date(raw.end_time) - new Date(raw.start_time)) / 1000).toFixed(1);
-        lines.push(`Duration: ${secs}s`);
-      } else {
-        lines.push("Duration: running");
-      }
-    }
-    return lines.join("\n");
-  }
-
-  _nodeBadge(raw) {
-    const stepNumber = raw.input && raw.input.step_number;
-    if (raw.type === "step" && stepNumber !== undefined && stepNumber !== null) {
-      return String(stepNumber).slice(0, 2);
-    }
-    const typeInitials = {
-      orchestrator: "O",
-      planning: "P",
-      execution: "E",
-      tester: "T",
-    };
-    if (typeInitials[raw.type]) return typeInitials[raw.type];
-    return String(raw.label || raw.id || "?").trim().charAt(0).toUpperCase() || "?";
-  }
-
-  _nodeRadius(raw) {
-    if (raw.type === "orchestrator") return 17;
-    if (raw.type === "planning") return 15;
-    return 13;
-  }
-
-  _nodeRenderer(raw, colors, badge, radius, isRunning) {
-    return ({ ctx, x, y, state }) => {
-      const selected = Boolean(state?.selected);
-      const hover = Boolean(state?.hover);
-      const drawRadius = radius + (selected ? 2 : hover ? 1 : 0);
-      const borderWidth = isRunning ? 2.5 : selected ? 3 : 2;
-
-      return {
-        drawNode: () => {
-          ctx.save();
-          ctx.beginPath();
-          ctx.arc(x, y, drawRadius, 0, Math.PI * 2);
-          ctx.fillStyle = hover || selected ? colors.border : colors.bg;
-          ctx.fill();
-          ctx.lineWidth = borderWidth;
-          ctx.strokeStyle = colors.border;
-          if (isRunning) ctx.setLineDash([4, 3]);
-          ctx.stroke();
-          ctx.setLineDash([]);
-
-          ctx.fillStyle = colors.font;
-          ctx.font = `800 ${badge.length > 1 ? 10.5 : 12}px Manrope, system-ui, sans-serif`;
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          const metrics = ctx.measureText(badge);
-          const opticalOffset = metrics.actualBoundingBoxLeft !== undefined
-            ? (metrics.actualBoundingBoxLeft - metrics.actualBoundingBoxRight) / 2
-            : 0;
-          ctx.fillText(badge, x + opticalOffset, y);
-          ctx.restore();
-        },
-        nodeDimensions: {
-          width: (drawRadius + borderWidth) * 2,
-          height: (drawRadius + borderWidth) * 2,
-        },
-      };
-    };
-  }
-
-  _visNode(raw) {
-    const typeColors = NODE_COLORS[raw.type] || NODE_COLORS.step;
-    const statusOverride = STATUS_COLORS[raw.status];
-    const colors = statusOverride || typeColors;
-    const isRunning = raw.status === "running";
-    const badge = this._nodeBadge(raw);
-    const radius = this._nodeRadius(raw);
-    return {
-      id: raw.id,
-      label: "",
-      shape: "custom",
-      color: {
-        background: colors.bg,
-        border: colors.border,
-        highlight: { background: colors.border, border: colors.border },
-      },
-      ctxRenderer: this._nodeRenderer(raw, colors, badge, radius, isRunning),
-      title: this._nodeTooltip(raw),
-    };
-  }
-
-  _computeLevels(rawNodes, edges) {
-    const nodeMap = Object.fromEntries(rawNodes.map(n => [n.id, n]));
-    const children = {};
-    const hasParent = new Set();
-    edges.forEach(e => {
-      (children[e.from] = children[e.from] || []).push(e.to);
-      hasParent.add(e.to);
-    });
-    const roots = rawNodes.map(n => n.id).filter(id => !hasParent.has(id));
-    const levels = {};
-
-    // Recursively assign levels. Among siblings, sort by start_time and
-    // increment the level each time a child starts after the previous group ends
-    // (sequential). Children whose time windows overlap stay at the same level
-    // (parallel).
-    function assign(id, minLevel) {
-      if (levels[id] !== undefined && levels[id] >= minLevel) return;
-      levels[id] = minLevel;
-
-      const currentType = nodeMap[id]?.type;
-      if (currentType === "orchestrator") {
-        (children[id] || []).forEach((kid) => assign(kid, 1));
-        return;
-      }
-      if (currentType === "planning") {
-        (children[id] || []).forEach((kid) => assign(kid, 2));
-        return;
-      }
-
-      const kids = (children[id] || []).slice().sort((a, b) => {
-        const ta = nodeMap[a]?.start_time ? new Date(nodeMap[a].start_time).getTime() : Infinity;
-        const tb = nodeMap[b]?.start_time ? new Date(nodeMap[b].start_time).getTime() : Infinity;
-        return ta - tb;
-      });
-
-      let nextLevel = minLevel + 1;
-      let groupEndTime = null; // latest end_time seen in the current parallel group
-
-      for (const kid of kids) {
-        const kidStart = nodeMap[kid]?.start_time ? new Date(nodeMap[kid].start_time).getTime() : null;
-        const kidEnd   = nodeMap[kid]?.end_time   ? new Date(nodeMap[kid].end_time).getTime()   : null;
-
-        if (groupEndTime !== null && kidStart !== null && kidStart >= groupEndTime) {
-          // This child starts after the previous group ended — sequential, new level
-          nextLevel++;
-          groupEndTime = kidEnd;
-        } else {
-          // Concurrent with previous group (or no timing info) — extend group window
-          if (groupEndTime === null || (kidEnd !== null && kidEnd > groupEndTime)) {
-            groupEndTime = kidEnd;
-          }
-        }
-
-        assign(kid, nextLevel);
-      }
-    }
-
-    roots.forEach(r => assign(r, 0));
-    return levels;
-  }
-
-  _buildDisplayEdges(rawNodes, edges) {
-    const nodeMap = Object.fromEntries(rawNodes.map((n) => [n.id, n]));
-    const phaseTypes = new Set(["planning", "execution", "tester"]);
-    const displayEdges = [];
-    const phaseNodes = rawNodes
-      .filter((n) => n.parent_id === "orchestrator" && phaseTypes.has(n.type))
-      .sort((a, b) => {
-        const ta = a.start_time ? new Date(a.start_time).getTime() : Infinity;
-        const tb = b.start_time ? new Date(b.start_time).getTime() : Infinity;
-        return ta - tb;
-      });
-
-    const planningNodes = phaseNodes.filter((n) => n.type === "planning");
-    const childPhaseNodes = phaseNodes.filter((n) => n.type !== "planning");
-
-    planningNodes.forEach((planning) => {
-      displayEdges.push({
-        id: `phase__orchestrator__${planning.id}`,
-        from: "orchestrator",
-        to: planning.id,
-      });
-    });
-
-    childPhaseNodes.forEach((node) => {
-      let parentPlanning = null;
-      const nodeStart = node.start_time ? new Date(node.start_time).getTime() : Infinity;
-
-      for (const planning of planningNodes) {
-        const planningStart = planning.start_time ? new Date(planning.start_time).getTime() : -Infinity;
-        if (planningStart <= nodeStart) {
-          parentPlanning = planning;
-        } else {
-          break;
-        }
-      }
-
-      displayEdges.push({
-        id: `phase__${(parentPlanning || { id: "orchestrator" }).id}__${node.id}`,
-        from: parentPlanning ? parentPlanning.id : "orchestrator",
-        to: node.id,
-      });
-    });
-
-    (edges || []).forEach((edge) => {
-      const fromNode = nodeMap[edge.from];
-      const toNode = nodeMap[edge.to];
-      if (!fromNode || !toNode) return;
-
-      const isTopLevelPhaseEdge =
-        edge.from === "orchestrator" &&
-        toNode.parent_id === "orchestrator" &&
-        phaseTypes.has(toNode.type);
-
-      if (isTopLevelPhaseEdge) return;
-
-      displayEdges.push({
-        id: edge.id || `${edge.from}__${edge.to}`,
-        from: edge.from,
-        to: edge.to,
-      });
-    });
-
-    return displayEdges;
-  }
-
-  _resizeSurface() {
-    if (!this._surfaceEl || !graphViewport) return;
-
-    // Match the canvas to the visible viewport exactly; larger off-screen
-    // surfaces make fit() center against hidden space instead of the panel.
-    const targetWidth = Math.max(1, Math.round(graphViewport.clientWidth || 1));
-    const targetHeight = Math.max(1, Math.round(graphViewport.clientHeight || 1));
-    this._surfaceEl.style.width = `${targetWidth}px`;
-    this._surfaceEl.style.height = `${targetHeight}px`;
-  }
-
-  _fitGraph() {
-    if (!this._network || this._nodes.length === 0) return;
-    requestAnimationFrame(() => {
-      if (!this._network || this._nodes.length === 0) return;
-      this._network.redraw();
-      this._network.fit({ animation: { duration: 300, easingFunction: "easeInOutQuad" } });
-      this._didInitialFit = true;
-      this._pendingFit = false;
-    });
-  }
-
-  update(graphData) {
-    if (!graphData || typeof graphData.nodes !== "object") return;
-
-    const prevNodeIds = new Set(this._nodes.getIds());
-    const prevEdgeIds = new Set(this._edges.getIds());
-    const rawNodes = Object.values(graphData.nodes);
-    this._nodeData = graphData.nodes;
-    stepExecutionFeed.update(graphData);
-    const displayEdges = this._buildDisplayEdges(rawNodes, graphData.edges || []);
-    const levels = this._computeLevels(rawNodes, displayEdges);
-    this._resizeSurface(levels);
-    const nextNodeIds = new Set(rawNodes.map((raw) => raw.id));
-    const nextEdgeIds = new Set(displayEdges.map((e) => e.id || `${e.from}__${e.to}`));
-    const topologyChanged =
-      prevNodeIds.size !== nextNodeIds.size ||
-      prevEdgeIds.size !== nextEdgeIds.size ||
-      [...nextNodeIds].some((id) => !prevNodeIds.has(id)) ||
-      [...nextEdgeIds].some((id) => !prevEdgeIds.has(id));
-
-    this._nodes.getIds().forEach((nodeId) => {
-      if (!nextNodeIds.has(nodeId)) this._nodes.remove(nodeId);
-    });
-
-    rawNodes.forEach((raw) => {
-      const vis = this._visNode(raw);
-      vis.level = levels[raw.id] ?? 0;
-      if (this._nodes.get(raw.id)) {
-        this._nodes.update(vis);
-      } else {
-        this._nodes.add(vis);
-      }
-    });
-
-    this._edges.getIds().forEach((edgeId) => {
-      if (!nextEdgeIds.has(edgeId)) this._edges.remove(edgeId);
-    });
-
-    const existingEdgeIds = new Set(this._edges.getIds());
-    displayEdges.forEach((e) => {
-      const edgeId = e.id || `${e.from}__${e.to}`;
-      if (!existingEdgeIds.has(edgeId)) {
-        this._edges.add({
-          id: edgeId,
-          from: e.from,
-          to: e.to,
-          hidden: false,
-          physics: false,
-          width: 2.4,
-          smooth: { type: "cubicBezier", forceDirection: "vertical" },
-        });
-      }
-    });
-
-    if (rawNodes.length > 0 && (topologyChanged || !this._didInitialFit || this._pendingFit)) {
-      this._fitGraph();
-    }
-
-    if (this._activeDetailNodeId) {
-      if (this._nodeData[this._activeDetailNodeId]) {
-        this._showDetail(this._activeDetailNodeId, { preserveScroll: true, scrollToStep: false });
-      } else {
-        this._hideDetail();
-      }
-    }
-  }
-
-  startPolling(sessionId) {
-    this._currentSessionId = sessionId;
-    this._setStatus("polling");
-    this._poll(sessionId);
-    this._pollInterval = setInterval(() => this._poll(sessionId), 2000);
-  }
-
-  stopPolling() {
-    if (this._pollInterval) {
-      clearInterval(this._pollInterval);
-      this._pollInterval = null;
-    }
-    this._setStatus("idle");
-  }
-
-  async _poll(sessionId) {
-    try {
-      const resp = await fetch(`/api/agent-graph/${sessionId}`);
-      if (!resp.ok) return;
-      const data = await resp.json();
-      if (sessionId !== this._currentSessionId) return;
-      this.update(data);
-    } catch (_) {
-      // silently ignore network errors during polling
-    }
-  }
-
-  reset() {
-    this._currentSessionId = null;
-    this._nodes.clear();
-    this._edges.clear();
-    this._nodeData = {};
-    this._didInitialFit = false;
-    this._pendingFit = true;
-    this._resizeSurface([], { 0: 1 });
-    this._hideDetail();
-    this._setStatus("idle");
-    this.stopPolling();
-  }
-
-  _setStatus(s) {
-    if (graphStatusEl) {
-      graphStatusEl.textContent = s;
-      graphStatusEl.className = `graph-status status-${s}`;
-    }
-  }
-
-  _showDetail(nodeId, options = {}) {
-    const raw = this._nodeData[nodeId];
-    if (!raw) return;
-    this._activeDetailNodeId = nodeId;
-    const preserveScroll = Boolean(options.preserveScroll);
-    const prevScrollTop = preserveScroll ? this._detailEl.scrollTop : 0;
-    const prevOpenToolCallKeys = preserveScroll ? this._captureOpenToolCallKeys() : new Set();
-    this._detailLabel.textContent = raw.label;
-    this._detailStatus.textContent = raw.status;
-    this._detailStatus.className = `badge badge-${raw.status}`;
-    this._detailSummary.textContent = raw.summary || "—";
-
-    // Timing
-    if (raw.start_time) {
-      const start = new Date(raw.start_time);
-      if (raw.end_time) {
-        const end = new Date(raw.end_time);
-        const secs = ((end - start) / 1000).toFixed(1);
-        this._detailTiming.textContent = `${secs}s`;
-      } else {
-        this._detailTiming.textContent = "running…";
-      }
-    } else {
-      this._detailTiming.textContent = "—";
-    }
-
-    // Stop-step button (only for running step nodes)
-    const actionsRow = document.getElementById("detail-actions-row");
-    const stopStepBtn = document.getElementById("detail-stop-step-btn");
-    const stepNumber = raw.input && raw.input.step_number;
-    if (raw.type === "step" && raw.status === "running" && stepNumber !== undefined && stepNumber !== null) {
-      stopStepBtn.disabled = false;
-      stopStepBtn.textContent = "Stop step";
-      stopStepBtn.onclick = async () => {
-        stopStepBtn.disabled = true;
-        stopStepBtn.textContent = "Stopping…";
-        await requestStepCancellation(stepNumber);
-      };
-      actionsRow.style.display = "";
-    } else {
-      actionsRow.style.display = "none";
-    }
-    this._detailArtifacts.innerHTML = "";
-    const arts = raw.artifacts || [];
-    if (arts.length) {
-      arts.forEach((a) => {
-        this._detailArtifacts.appendChild(createArtifactListItem(a));
-      });
-    } else {
-      const li = document.createElement("li");
-      li.textContent = "none";
-      this._detailArtifacts.appendChild(li);
-    }
-
-    // Input parameters
-    if (raw.input && Object.keys(raw.input).length) {
-      this._detailInput.textContent = JSON.stringify(raw.input, null, 2);
-      document.getElementById("detail-input-row").style.display = "";
-    } else {
-      document.getElementById("detail-input-row").style.display = "none";
-    }
-
-    // Tool calls
-    const toolCalls = raw.tool_calls || [];
-    this._detailToolcallsCount.textContent = toolCalls.length;
-    this._detailToolcalls.innerHTML = "";
-    if (toolCalls.length) {
-      toolCalls.forEach((tc) => {
-        const d = document.createElement("details");
-        d.className = "timeline-function-call";
-        d.setAttribute("data-toolcall-key", tc.id || `${tc.name}:${tc.start_time || ""}`);
-        const dur = tc.start_time && tc.end_time
-          ? ` (${((new Date(tc.end_time) - new Date(tc.start_time)) / 1000).toFixed(1)}s)`
-          : "";
-        const s = document.createElement("summary");
-        s.textContent = `🔧 ${tc.name}${dur}`;
-        d.appendChild(s);
-        if (tc.args_summary) {
-          d.appendChild(createJsonBlock(tc.args_summary));
-        }
-        if (tc.result_summary) {
-          const pre = createJsonBlock(`→ ${tc.result_summary}`);
-          pre.style.borderTop = "1px solid rgba(255,255,255,0.06)";
-          d.appendChild(pre);
-        }
-        getStructurePaths(tc).forEach((path) => {
-          d.appendChild(createStructureViewButton(path));
-        });
-        this._detailToolcalls.appendChild(d);
-      });
-      document.getElementById("detail-toolcalls-row").style.display = "";
-    } else {
-      document.getElementById("detail-toolcalls-row").style.display = "none";
-    }
-
-    // Conversation transcript is rendered live in the main chat step feed.
-    const conversation = raw.type === "step" ? [] : (raw.conversation || []);
-    this._detailConversation.innerHTML = "";
-    if (conversation.length) {
-      conversation.forEach((evt) => {
-        const d = document.createElement("details");
-        d.className = `timeline-${evt.type}`;
-        const s = document.createElement("summary");
-        const icon = evt.type === "thought" ? "💭" : evt.type === "text" ? "💬" : evt.type === "function_call" ? "🔧" : "↩";
-        s.textContent = `${icon} [${evt.author}] ${evt.type}`;
-        d.appendChild(s);
-        d.appendChild(createJsonBlock(evt.content));
-        this._detailConversation.appendChild(d);
-      });
-      document.getElementById("detail-conversation-row").style.display = "";
-    } else {
-      document.getElementById("detail-conversation-row").style.display = "none";
-    }
-
-    this._detailEl.classList.remove("hidden");
-    if (raw.type === "step" && options.scrollToStep !== false) stepExecutionFeed.highlight(raw.id);
-    syncPanelResizerVisibility();
-    if (preserveScroll) {
-      this._restoreOpenToolCallKeys(prevOpenToolCallKeys);
-      this._detailEl.scrollTop = prevScrollTop;
-    }
-  }
-
-  _hideDetail() {
-    this._activeDetailNodeId = null;
-    this._detailEl.classList.add("hidden");
-    syncPanelResizerVisibility();
-  }
-
-  notifyLayoutChanged() {
-    if (!this._network) return;
-    this._network.redraw();
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Step executor feed in the main chat window
-// ---------------------------------------------------------------------------
-
-class StepExecutionFeed {
-  constructor() {
-    this._cards = new Map();
-    this._userOpen = new Map();
-    this._nestedOpen = new Map();
-    this._highlightedId = null;
-    this._liveAnchorEl = null;
-    this._liveContainerEl = null;
-    this._liveStartedAt = null;
-    this._liveToolHostEl = null;
-    this._stepById = new Map();
-    this._childNodes = new Map();
-  }
-
-  reset() {
-    this._cards.clear();
-    this._userOpen.clear();
-    this._nestedOpen.clear();
-    this._highlightedId = null;
-    this._liveAnchorEl = null;
-    this._liveContainerEl = null;
-    this._liveStartedAt = null;
-    this._liveToolHostEl = null;
-    this._stepById = new Map();
-    this._childNodes = new Map();
-  }
-
-  startLiveTurn(anchorEl, startedAt = Date.now()) {
-    this._liveAnchorEl = anchorEl || null;
-    this._liveStartedAt = startedAt;
-    this._liveContainerEl = document.createElement("div");
-    this._liveContainerEl.className = "step-feed-live-region";
-    this._liveContainerEl.dataset.stepLiveRegion = "true";
-    this._liveToolHostEl = null;
-
-    if (anchorEl && anchorEl.parentNode === chatArea) {
-      chatArea.insertBefore(this._liveContainerEl, anchorEl.nextSibling);
-    } else {
-      chatArea.appendChild(this._liveContainerEl);
-    }
-
-    return this._liveContainerEl;
-  }
-
-  attachLiveToolHost(hostEl) {
-    if (!hostEl || this._liveToolHostEl === hostEl) return;
-    this._liveToolHostEl = hostEl;
-    for (const [nodeId, card] of this._cards.entries()) {
-      const node = this._stepById.get(nodeId);
-      if (node && !this.isRootStep(node)) continue;
-      if (card.dataset.stepStartTime !== undefined) {
-        hostEl.appendChild(card);
-      }
-    }
-  }
-
-  finishLiveTurn() {
-    this._liveAnchorEl = null;
-    this._liveContainerEl = null;
-    this._liveStartedAt = null;
-    this._liveToolHostEl = null;
-  }
-
-  update(graphData) {
-    if (!graphData || typeof graphData.nodes !== "object") return;
-    const liveContainer = this._activeLiveContainer();
-    const steps = Object.values(graphData.nodes)
-      .filter((node) => node.type === "step")
-      .filter((node) => !liveContainer || this._isLiveStep(node))
-      .sort((a, b) => {
-        const ta = a.start_time ? new Date(a.start_time).getTime() : Infinity;
-        const tb = b.start_time ? new Date(b.start_time).getTime() : Infinity;
-        return ta - tb;
-      });
-    this.setHierarchy(steps);
-    const rootSteps = steps.filter((node) => this.isRootStep(node));
-
-    const seen = new Set(steps.map((node) => node.id));
-    for (const nodeId of this._cards.keys()) {
-      if (!seen.has(nodeId)) {
-        this._cards.delete(nodeId);
-        this._nestedOpen.delete(nodeId);
-      }
-    }
-
-    const shouldStick = isChatNearBottom();
-    rootSteps.forEach((node) => this._upsert(node));
-    if (shouldStick) scrollToBottom();
-  }
-
-  setHierarchy(stepNodes) {
-    const steps = Array.isArray(stepNodes) ? stepNodes : [];
-    this._stepById = new Map(steps.map((node) => [node.id, node]));
-    this._childNodes = new Map();
-
-    steps.forEach((node) => {
-      if (!this._stepById.has(node.parent_id)) return;
-      const children = this._childNodes.get(node.parent_id) || [];
-      children.push(node);
-      this._childNodes.set(node.parent_id, children);
-    });
-
-    for (const children of this._childNodes.values()) {
-      children.sort((a, b) => this._stepSortTime(a) - this._stepSortTime(b));
-    }
-  }
-
-  isRootStep(node) {
-    return !this._stepById.has(node?.parent_id);
-  }
-
-  _activeLiveContainer() {
-    if (this._liveToolHostEl && document.body.contains(this._liveToolHostEl)) {
-      return this._liveToolHostEl;
-    }
-    return this._liveContainerEl && this._liveContainerEl.isConnected
-      ? this._liveContainerEl
-      : null;
-  }
-
-  _isLiveStep(node) {
-    if (!this._liveStartedAt) return true;
-    if (!node.start_time) return node.status === "running";
-    const startedAt = new Date(node.start_time).getTime();
-    return Number.isFinite(startedAt) && startedAt >= this._liveStartedAt - 2000;
-  }
-
-  highlight(nodeId) {
-    this._highlightedId = nodeId;
-    for (const [id, card] of this._cards.entries()) {
-      card.classList.toggle("step-feed-highlight", id === nodeId);
-    }
-    const card = this._cards.get(nodeId);
-    if (card) {
-      card.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      setTimeout(() => card.classList.remove("step-feed-highlight"), 1600);
-    }
-  }
-
-  _upsert(node) {
-    let outer = this._cards.get(node.id);
-    const nextSortTime = this._stepSortTime(node);
-    if (!outer || !chatArea.contains(outer)) {
-      outer = this._createCard(node);
-      this._cards.set(node.id, outer);
-      this._placeCard(outer, node);
-    } else if (state.isSending || outer.dataset.stepStartTime !== String(nextSortTime)) {
-      this._placeCard(outer, node);
-    }
-    this._renderCard(outer, node);
-  }
-
-  appendStatic(node, container = chatArea) {
-    let outer = this._cards.get(node.id);
-    if (!outer || !container.contains(outer)) {
-      outer = this._createCard(node);
-      this._cards.set(node.id, outer);
-    }
-    outer.dataset.stepStartTime = String(this._stepSortTime(node));
-    container.appendChild(outer);
-    this._renderCard(outer, node);
-    return outer;
-  }
-
-  _placeCard(outer, node) {
-    outer.classList.remove("step-feed-child-message");
-    const liveContainer = this._activeLiveContainer();
-    if (liveContainer) {
-      this._insertIntoLiveContainer(liveContainer, outer, node);
-      return;
-    }
-    if (state.isSending && this._liveContainerEl) {
-      this._insertIntoLiveContainer(this._liveContainerEl, outer, node);
-      return;
-    }
-    this._insertSorted(outer, node);
-  }
-
-  _stepSortTime(node) {
-    return node?.start_time ? new Date(node.start_time).getTime() : Infinity;
-  }
-
-  _upsertNested(node, container, ancestors) {
-    let outer = this._cards.get(node.id);
-    if (!outer) {
-      outer = this._createCard(node);
-      this._cards.set(node.id, outer);
-    }
-    outer.classList.add("step-feed-child-message");
-    this._insertIntoLiveContainer(container, outer, node);
-    this._renderCard(outer, node, ancestors);
-    return outer;
-  }
-
-  _insertIntoLiveContainer(container, outer, node) {
-    const newTime = this._stepSortTime(node);
-    outer.dataset.stepStartTime = String(newTime);
-
-    for (const el of [...container.children]) {
-      if (el === outer) continue;
-      if (!el.dataset.stepStartTime) continue;
-      if (newTime < Number(el.dataset.stepStartTime)) {
-        container.insertBefore(outer, el);
-        return;
-      }
-    }
-    container.appendChild(outer);
-  }
-
-  _insertSorted(outer, node) {
-    const newTime = this._stepSortTime(node);
-    outer.dataset.stepStartTime = String(newTime);
-
-    // Walk all chat children to find the right insertion point.
-    // - Step cards: compare by start_time, insert before the first later one.
-    // - User/agent messages: track as anchor, but reset when a step card is
-    //   found after them (so we insert after the most recent step card too).
-    const children = [...chatArea.children];
-    const liveAnchor = this._liveAnchorEl && chatArea.contains(this._liveAnchorEl)
-      ? this._liveAnchorEl
-      : null;
-    let insertAfter = liveAnchor; // element to insert after (null = before first child)
-    let passedLiveAnchor = !liveAnchor;
-
-    for (const el of children) {
-      if (el === outer) continue;
-      if (liveAnchor && !passedLiveAnchor) {
-        if (el === liveAnchor) passedLiveAnchor = true;
-        continue;
-      }
-
-      if (el.dataset.stepStartTime) {
-        const elTime = Number(el.dataset.stepStartTime);
-        if (newTime < elTime) {
-          // Found a later step card — insert before it
-          if (insertAfter) {
-            chatArea.insertBefore(outer, insertAfter.nextElementSibling);
-          } else {
-            chatArea.insertBefore(outer, el);
-          }
-          return;
-        }
-        // This step card is earlier — update anchor
-        insertAfter = el;
-      } else if (el.dataset.msgIndex !== undefined) {
-        // User/agent message — update anchor
-        insertAfter = el;
-      } else if (el.classList.contains("user-message")) {
-        // Live messages have no msgIndex until the session is reloaded.
-        insertAfter = el;
-      } else if (
-        insertAfter &&
-        el.classList.contains("agent-message") &&
-        !el.classList.contains("step-feed-message")
-      ) {
-        chatArea.insertBefore(outer, el);
-        return;
-      }
-    }
-
-    // No later step card found — insert after the last tracked element.
-    if (insertAfter) {
-      chatArea.insertBefore(outer, insertAfter.nextElementSibling);
-    } else {
-      chatArea.appendChild(outer);
-    }
-  }
-
-  _createCard(node) {
-    const outer = document.createElement("div");
-    outer.className = "message agent-message step-feed-message";
-    outer.dataset.stepNodeId = node.id;
-    outer.dataset.stepStartTime = node.start_time ? String(new Date(node.start_time).getTime()) : "";
-    outer.appendChild(createAgentAvatarEl());
-
-    const bubble = document.createElement("div");
-    bubble.className = "message-bubble step-feed-bubble";
-    const details = document.createElement("details");
-    details.className = "step-feed-details";
-    details.addEventListener("toggle", () => {
-      this._userOpen.set(node.id, details.open);
-    });
-    bubble.appendChild(details);
-    outer.appendChild(bubble);
-    return outer;
-  }
-
-  _wireNested(nodeId, key, details) {
-    let nodeState = this._nestedOpen.get(nodeId);
-    if (!nodeState) {
-      nodeState = new Map();
-      this._nestedOpen.set(nodeId, nodeState);
-    }
-    if (nodeState.has(key)) {
-      details.open = nodeState.get(key);
-    }
-    details.dataset.stepNestedKey = key;
-    details.addEventListener("toggle", (event) => {
-      if (event.target !== details) return;
-      nodeState.set(key, details.open);
-    });
-    return details;
-  }
-
-  _renderCard(outer, node, ancestors = new Set([node.id])) {
-    outer.dataset.stepNodeId = node.id;
-    outer.classList.toggle("step-feed-highlight", this._highlightedId === node.id);
-
-    const bubble = outer.querySelector(".step-feed-bubble");
-    bubble?.querySelector(":scope > .step-feed-child-section")?.remove();
-
-    const details = outer.querySelector(".step-feed-details");
-    const userChoice = this._userOpen.get(node.id);
-    details.open = userChoice === undefined ? node.status === "running" : userChoice;
-    details.innerHTML = "";
-
-    const summary = document.createElement("summary");
-    summary.className = "step-feed-summary";
-    const title = document.createElement("span");
-    title.className = "step-feed-title";
-    title.textContent = stepFeedTitle(node);
-    const badge = document.createElement("span");
-    badge.className = `badge badge-${node.status || "idle"}`;
-    badge.textContent = node.status || "idle";
-    const meta = document.createElement("span");
-    meta.className = "step-feed-meta";
-    meta.textContent = formatStepDuration(node);
-    summary.append(title, badge, meta);
-
-    const stepNumber = node.input && node.input.step_number;
-    if (node.status === "running" && stepNumber !== undefined && stepNumber !== null) {
-      const stopBtn = document.createElement("button");
-      stopBtn.type = "button";
-      stopBtn.className = "step-feed-stop-btn";
-      stopBtn.textContent = "Stop";
-      stopBtn.title = `Stop step ${stepNumber}`;
-      stopBtn.addEventListener("click", async (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        stopBtn.disabled = true;
-        stopBtn.textContent = "Stopping…";
-        await requestStepCancellation(stepNumber);
-      });
-      summary.appendChild(stopBtn);
-    }
-    details.appendChild(summary);
-
-    const body = document.createElement("div");
-    body.className = "step-feed-body";
-
-    if (node.summary) {
-      const p = document.createElement("div");
-      p.className = "step-feed-node-summary";
-      p.textContent = node.summary;
-      body.appendChild(p);
-    }
-
-    if (node.input && Object.keys(node.input).length) {
-      body.appendChild(this._wireNested(node.id, "input", renderStepInput(node.input)));
-    }
-
-    const childNodes = (this._childNodes.get(node.id) || [])
-      .filter((child) => !ancestors.has(child.id));
-    if (childNodes.length) {
-      const section = document.createElement("div");
-      section.className = "step-feed-section step-feed-child-section";
-      const label = document.createElement("div");
-      label.className = "step-feed-section-title";
-      label.textContent = `Sub-executors (${childNodes.length})`;
-      const childHost = document.createElement("div");
-      childHost.className = "step-feed-child-list";
-      section.append(label, childHost);
-
-      childNodes.forEach((child) => {
-        const nextAncestors = new Set(ancestors);
-        nextAncestors.add(child.id);
-        this._upsertNested(child, childHost, nextAncestors);
-      });
-
-      bubble?.appendChild(section);
-    }
-
-    const conversation = node.conversation || [];
-    if (conversation.length) {
-      const section = document.createElement("div");
-      section.className = "step-feed-section";
-      const sectionDetails = document.createElement("details");
-      sectionDetails.className = "step-feed-section-details";
-      const sectionSummary = document.createElement("summary");
-      sectionSummary.className = "step-feed-section-title";
-      sectionSummary.textContent = `Conversations (${conversation.length})`;
-      sectionDetails.appendChild(sectionSummary);
-      conversation.forEach((evt, idx) => {
-        const key = `conversation:${idx}:${evt.timestamp || ""}:${evt.type || ""}:${evt.author || ""}`;
-        sectionDetails.appendChild(this._wireNested(node.id, key, renderStepConversationEvent(evt)));
-      });
-      sectionDetails.addEventListener("toggle", () => {
-        sectionSummary.classList.toggle("open", sectionDetails.open);
-      });
-      section.appendChild(this._wireNested(node.id, "section:conversation", sectionDetails));
-      body.appendChild(section);
-    }
-
-    const toolCalls = node.tool_calls || [];
-    if (toolCalls.length) {
-      const section = document.createElement("div");
-      section.className = "step-feed-section";
-      const sectionDetails = document.createElement("details");
-      sectionDetails.className = "step-feed-section-details";
-      const sectionSummary = document.createElement("summary");
-      sectionSummary.className = "step-feed-section-title";
-      sectionSummary.textContent = `Tool calls (${toolCalls.length})`;
-      sectionDetails.appendChild(sectionSummary);
-      toolCalls.forEach((tc, idx) => {
-        const key = `tool:${idx}:${tc.name || ""}:${tc.start_time || ""}`;
-        sectionDetails.appendChild(this._wireNested(node.id, key, renderStepToolCall(tc)));
-      });
-      sectionDetails.addEventListener("toggle", () => {
-        sectionSummary.classList.toggle("open", sectionDetails.open);
-      });
-      section.appendChild(this._wireNested(node.id, "section:toolcalls", sectionDetails));
-      body.appendChild(section);
-    }
-
-    const artifacts = node.artifacts || [];
-    if (artifacts.length) {
-      const section = document.createElement("div");
-      section.className = "step-feed-section";
-      const label = document.createElement("div");
-      label.className = "step-feed-section-title";
-      label.textContent = "Artifacts";
-      const list = document.createElement("ul");
-      list.className = "detail-artifacts step-feed-artifacts";
-      artifacts.forEach((artifact) => {
-        list.appendChild(createArtifactListItem(artifact));
-      });
-      section.append(label, list);
-      body.appendChild(section);
-    }
-
-    if (!body.childElementCount) {
-      const empty = document.createElement("div");
-      empty.className = "step-feed-empty";
-      empty.textContent = "Waiting for step executor events…";
-      body.appendChild(empty);
-    }
-
-    details.appendChild(body);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Execution Plan Graph (floating popup in chat column)
-// ---------------------------------------------------------------------------
-
-const PLAN_NODE_STATUS_COLORS = {
-  pending:   { bg: "#374151", border: "#6B7280", font: "#9CA3AF" },
-  running:   { bg: "#FBBF24", border: "#F59E0B", font: "#1a1a1a" },
-  success:   { bg: "#10B981", border: "#059669", font: "#043F2E" },
-  failed:    { bg: "#EF4444", border: "#DC2626", font: "#fff" },
-  blocked:   { bg: "#1F2937", border: "#374151", font: "#4B5563" },
-};
-
-class ExecutionPlanView {
-  constructor(containerId) {
-    this._container = document.getElementById(containerId);
-    this._network = null;
-    this._pollInterval = null;
-    this._didInitialFit = false;
-    this._structureKey = null;
-    this._subgraphs = [];
-    this._currentIndex = 0;
-    this._hierarchicalMode = true;
-    this._init();
-  }
-
-  _init() {
-    if (!this._container) return;
-    const options = {
-      layout: {
-        hierarchical: {
-          direction: "LR",
-          sortMethod: "directed",
-          nodeSpacing: 120,
-          levelSeparation: 170,
-          blockShifting: true,
-          edgeMinimization: true,
-        },
-      },
-      physics: { enabled: false },
-      edges: {
-        arrows: { to: { enabled: true, scaleFactor: 0.6 } },
-        color: { color: "#4B5563", highlight: "#9CA3AF" },
-        width: 1.5,
-        smooth: { type: "cubicBezier", forceDirection: "horizontal" },
-      },
-      nodes: {
-        shape: "box",
-        borderWidth: 2,
-        borderWidthSelected: 3,
-        font: { size: 14, face: "Manrope, sans-serif", bold: true },
-        margin: { top: 8, bottom: 8, left: 12, right: 12 },
-      },
-      interaction: {
-        hover: true,
-        tooltipDelay: 200,
-        dragNodes: true,
-        dragView: true,
-        zoomView: true,
-      },
-    };
-    this._network = new Network(
-      this._container,
-      { nodes: new DataSet([]), edges: new DataSet([]) },
-      options
-    );
-  }
-
-  _computeLevels(nodeIds, rawEdges) {
-    const inDeg = Object.fromEntries(nodeIds.map((id) => [id, 0]));
-    const adj   = Object.fromEntries(nodeIds.map((id) => [id, []]));
-    rawEdges.forEach((e) => {
-      const from = Array.isArray(e) ? e[0] : e.from;
-      const to   = Array.isArray(e) ? e[1] : e.to;
-      if (adj[from]) adj[from].push(to);
-      if (to in inDeg) inDeg[to]++;
-    });
-    const levels = {};
-    const queue = nodeIds.filter((id) => inDeg[id] === 0);
-    queue.forEach((id) => { levels[id] = 0; });
-    while (queue.length) {
-      const curr = queue.shift();
-      (adj[curr] || []).forEach((nxt) => {
-        levels[nxt] = Math.max(levels[nxt] ?? 0, (levels[curr] ?? 0) + 1);
-        if (--inDeg[nxt] === 0) queue.push(nxt);
-      });
-    }
-    nodeIds.forEach((id) => { if (!(id in levels)) levels[id] = 0; });
-    return levels;
-  }
-
-  _visNode(nodeId, node, level) {
-    const status = node.status || "pending";
-    const isRunning = status === "running";
-    const colors = PLAN_NODE_STATUS_COLORS[status] || PLAN_NODE_STATUS_COLORS.pending;
-    return {
-      id: nodeId,
-      label: node.label || nodeId,
-      title: node.action || nodeId,
-      level,
-      color: {
-        background: colors.bg,
-        border: colors.border,
-        highlight: { background: colors.border, border: colors.border },
-      },
-      font: { color: colors.font, size: 14, bold: true, face: "Manrope, sans-serif" },
-      shapeProperties: isRunning ? { borderDashes: [4, 3] } : {},
-      borderWidth: isRunning ? 2.5 : 2,
-    };
-  }
-
-  _extractConnectedSubgraphs(graphData) {
-    const nodes = graphData.nodes || {};
-    const rawEdges = graphData.edges || [];
-    const nodeIds = Object.keys(nodes);
-    if (nodeIds.length === 0) return [graphData];
-
-    // No edges at all → treat as one graph
-    if (rawEdges.length === 0) return [graphData];
-
-    const adj = {};
-    nodeIds.forEach((id) => { adj[id] = []; });
-    rawEdges.forEach((e) => {
-      const from = Array.isArray(e) ? e[0] : e.from;
-      const to = Array.isArray(e) ? e[1] : e.to;
-      if (adj[from]) adj[from].push(to);
-      if (adj[to]) adj[to].push(from);
-    });
-
-    const visited = new Set();
-    const components = [];
-    for (const id of nodeIds) {
-      if (visited.has(id)) continue;
-      const compIds = new Set();
-      const queue = [id];
-      visited.add(id);
-      while (queue.length) {
-        const cur = queue.shift();
-        compIds.add(cur);
-        for (const nb of (adj[cur] || [])) {
-          if (!visited.has(nb)) {
-            visited.add(nb);
-            queue.push(nb);
-          }
-        }
-      }
-      const compNodes = {};
-      const compEdges = [];
-      for (const cid of compIds) {
-        if (nodes[cid]) compNodes[cid] = nodes[cid];
-      }
-      rawEdges.forEach((e) => {
-        const from = Array.isArray(e) ? e[0] : e.from;
-        const to = Array.isArray(e) ? e[1] : e.to;
-        if (compIds.has(from) || compIds.has(to)) {
-          compEdges.push(e);
-        }
-      });
-      components.push({ nodes: compNodes, edges: compEdges });
-    }
-
-    // Merge all isolated (single-node) components into one group
-    const multi = components.filter((c) => Object.keys(c.nodes).length > 1);
-    const singles = components.filter((c) => Object.keys(c.nodes).length === 1);
-    if (singles.length > 0) {
-      const mergedNodes = {};
-      singles.forEach((c) => Object.assign(mergedNodes, c.nodes));
-      multi.push({ nodes: mergedNodes, edges: [] });
-    }
-
-    return multi.length > 0 ? multi : [graphData];
-  }
-
-  update(graphData) {
-    if (!graphData || typeof graphData.nodes !== "object") return;
-    const nodeEntries = Object.entries(graphData.nodes);
-    if (nodeEntries.length === 0) return;
-
-    // Auto-show popup on first data
-    if (!this._didInitialFit && planGraphPopup?.classList.contains("hidden")) {
-      showPlanGraph();
-    }
-
-    const rawEdges = graphData.edges || [];
-    const nodeIds = nodeEntries.map(([id]) => id);
-
-    // Detect structural changes
-    const structureKey = JSON.stringify({ ids: [...nodeIds].sort(), edges: rawEdges });
-    const structureChanged = structureKey !== this._structureKey;
-    if (structureChanged) {
-      this._structureKey = structureKey;
-      this._subgraphs = this._extractConnectedSubgraphs(graphData);
-      this._currentIndex = 0;
-    }
-
-    if (this._subgraphs.length === 0) return;
-    this._renderCurrentSubgraph();
-    this._updateNavUI();
-  }
-
-  _renderCurrentSubgraph() {
-    const sub = this._subgraphs[this._currentIndex];
-    if (!sub) return;
-
-    const nodeEntries = Object.entries(sub.nodes);
-    const rawEdges = sub.edges || [];
-    const nodeIds = nodeEntries.map(([id]) => id);
-    const levels = this._computeLevels(nodeIds, rawEdges);
-    const maxLevel = Math.max(...Object.values(levels), 0);
-    const noHierarchy = maxLevel === 0 && nodeIds.length > 1;
-
-    let visNodes;
-    if (noHierarchy) {
-      if (this._hierarchicalMode !== false) {
-        this._network.setOptions({ layout: { hierarchical: false, randomSeed: 42 } });
-        this._hierarchicalMode = false;
-      }
-      const cols = Math.ceil(Math.sqrt(nodeIds.length));
-      const gapX = 260;
-      const gapY = 55;
-      visNodes = nodeEntries.map(([id, n], i) => {
-        const col = i % cols;
-        const row = Math.floor(i / cols);
-        return {
-          ...this._visNode(id, n, 0),
-          x: col * gapX,
-          y: row * gapY,
-          fixed: { x: true, y: true },
-        };
-      });
-    } else {
-      if (this._hierarchicalMode !== true) {
-        this._network.setOptions({
-          layout: {
-            hierarchical: {
-              direction: "LR",
-              sortMethod: "directed",
-              nodeSpacing: 120,
-              levelSeparation: 170,
-              blockShifting: true,
-              edgeMinimization: true,
-            },
-          },
-        });
-        this._hierarchicalMode = true;
-      }
-      visNodes = nodeEntries.map(([id, n]) => this._visNode(id, n, levels[id] ?? 0));
-    }
-
-    const visEdges = rawEdges.map((e) => {
-      const from = Array.isArray(e) ? e[0] : e.from;
-      const to = Array.isArray(e) ? e[1] : e.to;
-      return {
-        id: `e__${from}__${to}`,
-        from,
-        to,
-        physics: false,
-        hidden: false,
-        smooth: { type: "cubicBezier", forceDirection: "horizontal" },
-      };
-    });
-
-    // Save camera before setData resets the layout
-    let savedCamera = null;
-    if (this._didInitialFit) {
-      try {
-        savedCamera = {
-          position: this._network.getViewPosition(),
-          scale: this._network.getScale(),
-        };
-      } catch (_) {}
-    }
-
-    this._network.setData({ nodes: new DataSet(visNodes), edges: new DataSet(visEdges) });
-
-    if (!this._didInitialFit) {
-      this._network.fit({ animation: { duration: 300, easingFunction: "easeInOutQuad" } });
-      this._didInitialFit = true;
-    } else {
-      if (savedCamera) {
-        this._network.moveTo({
-          position: savedCamera.position,
-          scale: savedCamera.scale,
-          animation: false,
-        });
-      }
-    }
-  }
-
-  _updateNavUI() {
-    const counter = document.getElementById("plan-graph-counter");
-    const prevBtn = document.getElementById("plan-graph-prev");
-    const nextBtn = document.getElementById("plan-graph-next");
-    if (this._subgraphs.length <= 1) {
-      if (counter) counter.textContent = "";
-      if (prevBtn) prevBtn.style.display = "none";
-      if (nextBtn) nextBtn.style.display = "none";
-    } else {
-      if (counter) counter.textContent = `Plan Graph ${this._currentIndex + 1} / ${this._subgraphs.length}`;
-      if (prevBtn) { prevBtn.style.display = ""; prevBtn.disabled = this._currentIndex === 0; }
-      if (nextBtn) { nextBtn.style.display = ""; nextBtn.disabled = this._currentIndex >= this._subgraphs.length - 1; }
-    }
-  }
-
-  goPrev() {
-    if (this._currentIndex > 0) {
-      this._currentIndex--;
-      this._didInitialFit = false;
-      this._renderCurrentSubgraph();
-      this._updateNavUI();
-    }
-  }
-
-  goNext() {
-    if (this._currentIndex < this._subgraphs.length - 1) {
-      this._currentIndex++;
-      this._didInitialFit = false;
-      this._renderCurrentSubgraph();
-      this._updateNavUI();
-    }
-  }
-
-  startPolling(sessionId) {
-    this._currentSessionId = sessionId;
-    this._setStatus("polling");
-    this._poll(sessionId);
-    this._pollInterval = setInterval(() => this._poll(sessionId), 2000);
-  }
-
-  stopPolling() {
-    if (this._pollInterval) {
-      clearInterval(this._pollInterval);
-      this._pollInterval = null;
-    }
-    this._setStatus("idle");
-  }
-
-  async _poll(sessionId) {
-    try {
-      const resp = await fetch(`/api/execution-graph/${sessionId}`);
-      if (!resp.ok) return;
-      const data = await resp.json();
-      if (sessionId !== this._currentSessionId) return;
-      this.update(data);
-    } catch (_) {}
-  }
-
-  reset() {
-    this._currentSessionId = null;
-    this._hierarchicalMode = true;
-    this._network?.setOptions({
-      layout: {
-        hierarchical: {
-          direction: "LR",
-          sortMethod: "directed",
-          nodeSpacing: 120,
-          levelSeparation: 170,
-          blockShifting: true,
-          edgeMinimization: true,
-        },
-      },
-    });
-    this._network?.setData({ nodes: new DataSet([]), edges: new DataSet([]) });
-    this._didInitialFit = false;
-    this._structureKey = null;
-    this._subgraphs = [];
-    this._currentIndex = 0;
-    this._updateNavUI();
-    this.stopPolling();
-  }
-
-  notifyLayoutChanged() {
-    this._network?.redraw();
-    if (!this._didInitialFit) {
-      this._network?.fit({ animation: false });
-    }
-  }
-
-  zoomIn() {
-    if (!this._network) return;
-    const scale = this._network.getScale() * 1.3;
-    this._network.moveTo({ scale, animation: { duration: 200, easingFunction: "easeInOutQuad" } });
-  }
-
-  zoomOut() {
-    if (!this._network) return;
-    const scale = this._network.getScale() / 1.3;
-    this._network.moveTo({ scale, animation: { duration: 200, easingFunction: "easeInOutQuad" } });
-  }
-
-  fitToView() {
-    if (!this._network) return;
-    this._network.fit({ animation: { duration: 300, easingFunction: "easeInOutQuad" } });
-  }
-
-  _setStatus(s) {
-    const el = document.getElementById("plan-graph-status");
-    if (el) { el.textContent = s; el.className = `graph-status status-${s}`; }
-  }
-}
-
-const stepExecutionFeed = new StepExecutionFeed();
-const agentGraph = new AgentGraphView("agent-graph");
-const planGraph = new ExecutionPlanView("plan-graph-canvas");
+const stepExecutionFeed = new StepExecutionFeed({
+  chatArea,
+  isSending: () => state.isSending,
+  isChatNearBottom,
+  scrollToBottom,
+  createAgentAvatarEl,
+  stepFeedTitle,
+  formatStepDuration,
+  renderStepInput,
+  renderStepConversationEvent,
+  renderStepToolCall,
+  requestStepCancellation,
+  createArtifactListItem,
+});
+const agentGraph = new AgentGraphView("agent-graph", {
+  stepExecutionFeed,
+  graphViewport,
+  requestStepCancellation,
+  createArtifactListItem,
+  createJsonBlock,
+  getStructurePaths,
+  createStructureViewButton,
+  syncPanelResizerVisibility: () => layoutController.syncPanelResizerVisibility(),
+});
+const planGraph = new ExecutionPlanView("plan-graph-canvas", {
+  toggleButton: document.getElementById("plan-graph-toggle"),
+  thumbnailElement: document.getElementById("plan-graph-thumbnail"),
+  onNewGraph: () => showPlanGraph(),
+});
+const layoutController = createLayoutController({
+  getUserId: () => state.userId,
+  onLayoutChanged: () => agentGraph.notifyLayoutChanged(),
+  elements: {
+    graphResizer: document.getElementById("graph-resizer"),
+    graphColumn: document.getElementById("graph-column"),
+    sidePanel: document.getElementById("side-panel"),
+    fileExplorerCol: document.getElementById("file-explorer-col"),
+    colResizerGraph: document.getElementById("col-resizer-graph"),
+    colResizerSide: document.getElementById("col-resizer-side"),
+    colResizerFiles: document.getElementById("col-resizer-files"),
+  },
+});
 
 async function requestStepCancellation(stepNumber) {
   if (stepNumber === undefined || stepNumber === null) return false;
@@ -1627,16 +231,25 @@ async function requestStepCancellation(stepNumber) {
   }
 }
 
+function shouldRefreshPlanGraphForTool(toolName) {
+  return toolName === "validate_graph" || toolName === "validate_plan";
+}
+
 // ---------------------------------------------------------------------------
 // Plan graph popup toggle
 // ---------------------------------------------------------------------------
 
 const planGraphPopup = document.getElementById("plan-graph-popup");
 const planGraphToggleBtn = document.getElementById("plan-graph-toggle");
+const planGraphThumbnailEl = document.getElementById("plan-graph-thumbnail");
 const planGraphCloseBtn = document.getElementById("plan-graph-close");
 
 function showPlanGraph() {
   planGraphPopup?.classList.remove("hidden");
+  planGraphToggleBtn?.classList.add("is-open");
+  planGraphToggleBtn?.setAttribute("aria-pressed", "true");
+  planGraphToggleBtn?.setAttribute("title", "Close roadmap");
+  planGraphToggleBtn?.setAttribute("aria-label", "Close roadmap");
   requestAnimationFrame(() => {
     planGraph.notifyLayoutChanged();
     planGraph.fitToView();
@@ -1645,6 +258,10 @@ function showPlanGraph() {
 
 function hidePlanGraph() {
   planGraphPopup?.classList.add("hidden");
+  planGraphToggleBtn?.classList.remove("is-open");
+  planGraphToggleBtn?.setAttribute("aria-pressed", "false");
+  planGraphToggleBtn?.setAttribute("title", "Open roadmap");
+  planGraphToggleBtn?.setAttribute("aria-label", "Open roadmap");
 }
 
 planGraphToggleBtn?.addEventListener("click", () => {
@@ -1663,225 +280,8 @@ document.getElementById("plan-graph-prev")?.addEventListener("click", () => plan
 document.getElementById("plan-graph-next")?.addEventListener("click", () => planGraph.goNext());
 // ---------------------------------------------------------------------------
 
-function isMobileLayout() {
-  return MOBILE_LAYOUT_QUERY.matches;
-}
-
-function panelStorageKey(targetId) {
-  const user = state.userId || "anon";
-  return `mat_panel_height_${user}_${targetId}`;
-}
-
 function clamp(n, min, max) {
   return Math.max(min, Math.min(max, n));
-}
-
-function getTargetHeight(targetEl) {
-  return Math.round(targetEl.getBoundingClientRect().height);
-}
-
-function applyTargetHeight(targetEl, heightPx) {
-  if (!targetEl) return;
-  const bounds = PANEL_HEIGHT_BOUNDS[targetEl.id];
-  if (!bounds) return;
-  targetEl.style.height = `${clamp(heightPx, bounds.min, bounds.max)}px`;
-}
-
-function persistTargetHeight(targetEl) {
-  if (!targetEl) return;
-  localStorage.setItem(panelStorageKey(targetEl.id), String(getTargetHeight(targetEl)));
-}
-
-function applyStoredPanelHeights() {
-  for (const [targetId, fallback] of Object.entries(PANEL_HEIGHT_DEFAULTS)) {
-    const el = document.getElementById(targetId);
-    if (!el) continue;
-    if (isMobileLayout()) {
-      el.style.removeProperty("height");
-      continue;
-    }
-
-    const raw = localStorage.getItem(panelStorageKey(targetId));
-    const parsed = raw ? Number(raw) : fallback;
-    const nextHeight = Number.isFinite(parsed) ? parsed : fallback;
-    applyTargetHeight(el, nextHeight);
-  }
-}
-
-function refreshGraphAndStructureLayout() {
-  agentGraph.notifyLayoutChanged();
-  for (const tab of structureTabs.values()) {
-    if (!tab.viewer) continue;
-    try {
-      tab.viewer.resize();
-      tab.viewer.render();
-    } catch (_) {
-      // ignore transient resize/render issues
-    }
-  }
-}
-
-function syncPanelResizerVisibility() {
-  graphResizer?.classList.add("hidden");
-}
-
-function initPanelResizer(handleEl, targetEl) {
-  if (!handleEl || !targetEl) return;
-
-  const keyStep = 16;
-
-  const commit = () => {
-    persistTargetHeight(targetEl);
-    refreshGraphAndStructureLayout();
-  };
-
-  const resizeBy = (delta) => {
-    const curr = getTargetHeight(targetEl);
-    applyTargetHeight(targetEl, curr + delta);
-    refreshGraphAndStructureLayout();
-  };
-
-  handleEl.addEventListener("pointerdown", (e) => {
-    if (isMobileLayout() || handleEl.classList.contains("hidden")) return;
-    e.preventDefault();
-
-    const startY = e.clientY;
-    const startHeight = getTargetHeight(targetEl);
-    handleEl.classList.add("resizing");
-    handleEl.setPointerCapture(e.pointerId);
-
-    const onMove = (moveEvt) => {
-      const dy = moveEvt.clientY - startY;
-      applyTargetHeight(targetEl, startHeight + dy);
-      refreshGraphAndStructureLayout();
-    };
-
-    const onUp = () => {
-      handleEl.classList.remove("resizing");
-      handleEl.removeEventListener("pointermove", onMove);
-      handleEl.removeEventListener("pointerup", onUp);
-      handleEl.removeEventListener("pointercancel", onUp);
-      commit();
-    };
-
-    handleEl.addEventListener("pointermove", onMove);
-    handleEl.addEventListener("pointerup", onUp);
-    handleEl.addEventListener("pointercancel", onUp);
-  });
-
-  handleEl.addEventListener("keydown", (e) => {
-    if (isMobileLayout() || handleEl.classList.contains("hidden")) return;
-    if (e.key === "ArrowUp") {
-      e.preventDefault();
-      resizeBy(-keyStep);
-      commit();
-    }
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      resizeBy(keyStep);
-      commit();
-    }
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Column (horizontal) resizing — mirrors the panel (vertical) resizer pattern
-// ---------------------------------------------------------------------------
-
-function colStorageKey(colId) {
-  return `mat_col_width_${state.userId || "anon"}_${colId}`;
-}
-function getColWidth(colEl) {
-  return Math.round(colEl.getBoundingClientRect().width);
-}
-function applyColWidth(colEl, widthPx) {
-  const bounds = COL_WIDTH_BOUNDS[colEl.id];
-  if (!bounds) return;
-  colEl.style.width = `${clamp(widthPx, bounds.min, bounds.max)}px`;
-}
-function persistColWidth(colEl) {
-  localStorage.setItem(colStorageKey(colEl.id), String(getColWidth(colEl)));
-}
-function applyStoredColWidths() {
-  for (const colId of ["graph-column", "side-panel"]) {
-    const el = document.getElementById(colId);
-    if (!el) continue;
-    if (isMobileLayout()) { el.style.removeProperty("width"); continue; }
-    const raw = localStorage.getItem(colStorageKey(colId));
-    const w = raw ? Number(raw) : COL_WIDTH_DEFAULTS[colId];
-    applyColWidth(el, Number.isFinite(w) ? w : COL_WIDTH_DEFAULTS[colId]);
-  }
-}
-function syncColResizerVisibility() {
-  const mobile = isMobileLayout();
-  colResizerGraph?.classList.toggle("hidden", mobile);
-  colResizerSide?.classList.toggle("hidden", mobile);
-  colResizerFiles?.classList.add("hidden");
-}
-
-/**
- * initColResizer — horizontal mirror of initPanelResizer.
- * direction: +1 = drag-right widens targetEl (left col), -1 = drag-right narrows it (right col).
- */
-function initColResizer(handleEl, targetEl, direction = 1) {
-  if (!handleEl || !targetEl) return;
-  const keyStep = 16;
-  const commit = () => {
-    persistColWidth(targetEl);
-    refreshGraphAndStructureLayout();
-  };
-  handleEl.addEventListener("pointerdown", (e) => {
-    if (isMobileLayout() || handleEl.classList.contains("hidden")) return;
-    e.preventDefault();
-    const startX = e.clientX;
-    const startWidth = getColWidth(targetEl);
-    handleEl.classList.add("resizing");
-    handleEl.setPointerCapture(e.pointerId);
-    const onMove = (moveEvt) => {
-      applyColWidth(targetEl, startWidth + direction * (moveEvt.clientX - startX));
-      refreshGraphAndStructureLayout();
-    };
-    const onUp = () => {
-      handleEl.classList.remove("resizing");
-      handleEl.removeEventListener("pointermove", onMove);
-      handleEl.removeEventListener("pointerup", onUp);
-      handleEl.removeEventListener("pointercancel", onUp);
-      commit();
-    };
-    handleEl.addEventListener("pointermove", onMove);
-    handleEl.addEventListener("pointerup", onUp);
-    handleEl.addEventListener("pointercancel", onUp);
-  });
-  handleEl.addEventListener("keydown", (e) => {
-    if (isMobileLayout() || handleEl.classList.contains("hidden")) return;
-    if (e.key === "ArrowLeft")  { e.preventDefault(); applyColWidth(targetEl, getColWidth(targetEl) + direction * -keyStep); commit(); }
-    if (e.key === "ArrowRight") { e.preventDefault(); applyColWidth(targetEl, getColWidth(targetEl) + direction *  keyStep); commit(); }
-  });
-}
-
-function initColResizers() {
-  applyStoredColWidths();
-  fileExplorerCol?.classList.add("is-open");
-  syncColResizerVisibility();
-  initColResizer(colResizerGraph, graphColumn, 1);
-  initColResizer(colResizerSide, sidePanel, -1);
-  MOBILE_LAYOUT_QUERY.addEventListener("change", () => {
-    applyStoredColWidths();
-    fileExplorerCol?.classList.add("is-open");
-    syncColResizerVisibility();
-    refreshGraphAndStructureLayout();
-  });
-}
-
-function initPanelResizers() {
-  applyStoredPanelHeights();
-  syncPanelResizerVisibility();
-
-  MOBILE_LAYOUT_QUERY.addEventListener("change", () => {
-    applyStoredPanelHeights();
-    syncPanelResizerVisibility();
-    refreshGraphAndStructureLayout();
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1944,7 +344,7 @@ async function logout() {
   agentGraph.reset();
   planGraph.reset();
   hidePlanGraph();
-  closeSettingsModal();
+  settingsController.close();
   showLoginModal();
 }
 
@@ -2013,10 +413,7 @@ function _applySession(result) {
   hidePlanGraph();
   renderUserDisplay();
   hideLoginModal();
-  applyStoredPanelHeights();
-  applyStoredColWidths();
-  fileExplorerCol?.classList.add("is-open");
-  syncColResizerVisibility();
+  layoutController.refresh();
   loadSessions();
 }
 
@@ -2842,6 +1239,854 @@ function renderStepToolCall(tc) {
   return details;
 }
 
+function setWorkspaceCliOpen(open) {
+  workspaceCli?.classList.toggle("hidden", !open);
+  workspaceCliToggle?.classList.toggle("is-active", open);
+  workspaceCliToggle?.setAttribute("aria-expanded", String(open));
+  if (open) {
+    startWorkspaceTerminal();
+  } else {
+    stopWorkspaceTerminal();
+  }
+}
+
+function terminalWebSocketUrl() {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const params = new URLSearchParams();
+  if (state.deploymentMode === "server" && state.userId) params.set("user_id", state.userId);
+  const qs = params.toString();
+  return `${protocol}//${window.location.host}/api/workspace/terminal${qs ? `?${qs}` : ""}`;
+}
+
+function resizeWorkspaceTerminal() {
+  if (!workspaceTerminal || !workspaceTerminalFit || !workspaceTerminalSocket) return;
+  try {
+    workspaceTerminalFit.fit();
+    if (workspaceTerminalSocket.readyState === WebSocket.OPEN) {
+      workspaceTerminalSocket.send(JSON.stringify({
+        type: "resize",
+        rows: workspaceTerminal.rows,
+        cols: workspaceTerminal.cols,
+      }));
+    }
+  } catch (_) { /* terminal may not be visible yet */ }
+}
+
+function startWorkspaceTerminal() {
+  if (!workspaceTerminalEl) return;
+  if (workspaceTerminalSocket && workspaceTerminalSocket.readyState === WebSocket.OPEN) {
+    workspaceTerminal?.focus();
+    resizeWorkspaceTerminal();
+    return;
+  }
+  workspaceTerminalEl.innerHTML = "";
+  workspaceTerminal = new Terminal({
+    cursorBlink: true,
+    convertEol: true,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+    fontSize: 12,
+    theme: {
+      background: "#030712",
+      foreground: "#d1fae5",
+      cursor: "#7dd3fc",
+      selectionBackground: "#1e40af88",
+    },
+  });
+  workspaceTerminalFit = new FitAddon();
+  workspaceTerminal.loadAddon(workspaceTerminalFit);
+  workspaceTerminal.open(workspaceTerminalEl);
+  workspaceTerminal.write("\r\nStarting workspace terminal...\r\n");
+  workspaceTerminalFit.fit();
+  workspaceTerminal.focus();
+
+  workspaceTerminalSocket = new WebSocket(terminalWebSocketUrl());
+  workspaceTerminalSocket.addEventListener("open", () => {
+    resizeWorkspaceTerminal();
+  });
+  workspaceTerminalSocket.addEventListener("message", (event) => {
+    try {
+      const message = JSON.parse(event.data);
+      if (message.type === "output") workspaceTerminal.write(message.data || "");
+    } catch (_) {
+      workspaceTerminal.write(String(event.data || ""));
+    }
+  });
+  workspaceTerminalSocket.addEventListener("close", () => {
+    workspaceTerminal?.write("\r\n[terminal closed]\r\n");
+  });
+  workspaceTerminalSocket.addEventListener("error", () => {
+    workspaceTerminal?.write("\r\n[terminal connection error]\r\n");
+  });
+  workspaceTerminal.onData((data) => {
+    if (workspaceTerminalSocket?.readyState === WebSocket.OPEN) {
+      workspaceTerminalSocket.send(JSON.stringify({ type: "input", data }));
+    }
+  });
+}
+
+function stopWorkspaceTerminal() {
+  if (workspaceTerminalSocket) {
+    workspaceTerminalSocket.close();
+    workspaceTerminalSocket = null;
+  }
+  workspaceTerminal?.dispose();
+  workspaceTerminal = null;
+  workspaceTerminalFit = null;
+  if (workspaceTerminalEl) workspaceTerminalEl.innerHTML = "";
+}
+
+workspaceCliToggle?.addEventListener("click", () => {
+  setWorkspaceCliOpen(workspaceCli?.classList.contains("hidden"));
+});
+
+skillGraphOpenBtn?.addEventListener("click", () => {
+  skillGraphController.open({ force: true });
+});
+
+window.addEventListener("resize", resizeWorkspaceTerminal);
+
+async function refreshSessionFiles() {
+  if (!state.sessionId || !state.sessionReady) return;
+  try {
+    const resp = await fetch(`/api/sessions/${state.sessionId}/files`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    renderSessionFilesTree(data.files || []);
+  } catch (_) {}
+}
+
+function setUploadStatus(message, tone = "idle") {
+  if (!uploadStatus) return;
+  uploadStatus.textContent = message || "";
+  uploadStatus.className = `upload-status upload-status-${tone}`;
+}
+
+function renderCurrentUploadChips() {
+  if (!uploadStatus) return;
+  uploadStatus.innerHTML = "";
+  uploadStatus.className = "upload-status upload-file-list";
+  if (!state.currentUploads.length) return;
+
+  state.currentUploads.forEach((file) => {
+    const chip = document.createElement("span");
+    chip.className = "upload-file-chip";
+
+    const name = document.createElement("span");
+    name.className = "upload-file-name";
+    name.textContent = file.name;
+    name.title = file.path;
+    chip.appendChild(name);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "upload-file-remove";
+    removeBtn.type = "button";
+    removeBtn.title = "Delete uploaded file";
+    removeBtn.textContent = "×";
+    removeBtn.addEventListener("click", () => deleteUploadedFile(file));
+    chip.appendChild(removeBtn);
+
+    uploadStatus.appendChild(chip);
+  });
+}
+
+function clearCurrentUploads() {
+  state.currentUploads = [];
+  renderCurrentUploadChips();
+}
+
+function mergeUploadedFiles(existingFiles, newFiles) {
+  const merged = [...existingFiles];
+  const seenPaths = new Set(existingFiles.map((file) => file?.path).filter(Boolean));
+
+  newFiles.forEach((file) => {
+    const path = file?.path;
+    if (path && seenPaths.has(path)) return;
+    if (path) seenPaths.add(path);
+    merged.push(file);
+  });
+
+  return merged;
+}
+
+function sessionRelativeUploadPath(file) {
+  const normalized = String(file?.path || "").replaceAll("\\", "/");
+  const marker = `/${state.sessionId}/`;
+  const markerIdx = normalized.indexOf(marker);
+  if (markerIdx >= 0) return normalized.slice(markerIdx + marker.length);
+  return file?.name ? `uploads/${file.name}` : normalized;
+}
+
+function messageWithUploadContext(message, uploads) {
+  if (!uploads.length) return message;
+  const fileLines = uploads.map((file) => {
+    const relPath = sessionRelativeUploadPath(file);
+    return `- ${file.name}: ${relPath} (absolute path: ${file.path})`;
+  });
+  return [
+    message,
+    "",
+    "The user uploaded the following file(s) for this message. They are saved in the current session workspace. Use these paths when inspecting or processing the files:",
+    ...fileLines,
+  ].join("\n");
+}
+
+function formatUploadNames(uploadNames) {
+  if (!uploadNames.length) return "";
+  return `Attached: ${uploadNames.map((name) => `\`${name}\``).join(", ")}`;
+}
+
+function messageWithUploadNames(message, uploads) {
+  const uploadNames = uploads.map((file) => file.name).filter(Boolean);
+  const suffix = formatUploadNames(uploadNames);
+  return suffix ? `${message}\n\n${suffix}` : message;
+}
+
+function displayMessageFromStoredUserText(message) {
+  const marker = "\n\nThe user uploaded the following file(s) for this message.";
+  const rawMessage = String(message || "");
+  const markerIdx = rawMessage.indexOf(marker);
+  if (markerIdx < 0) return rawMessage;
+
+  const visibleMessage = rawMessage.slice(0, markerIdx);
+  const hiddenContext = rawMessage.slice(markerIdx);
+  const uploadNames = hiddenContext
+    .split("\n")
+    .map((line) => line.match(/^-\s+([^:]+):/)?.[1]?.trim())
+    .filter(Boolean);
+  const suffix = formatUploadNames(uploadNames);
+  return suffix ? `${visibleMessage}\n\n${suffix}` : visibleMessage;
+}
+
+async function deleteUploadedFile(file) {
+  if (!file?.path || !state.sessionId) return;
+  try {
+    const resp = await fetch(
+      `/api/sessions/${encodeURIComponent(state.sessionId)}/files?path=${encodeURIComponent(file.path)}`,
+      { method: "DELETE" }
+    );
+    if (!resp.ok) {
+      const detail = await resp.text();
+      throw new Error(detail || `HTTP ${resp.status}`);
+    }
+    state.currentUploads = state.currentUploads.filter((item) => item.path !== file.path);
+    renderCurrentUploadChips();
+    await refreshSessionFiles();
+  } catch (err) {
+    setUploadStatus(`Delete failed: ${err.message || err}`, "error");
+  }
+}
+
+async function uploadFilesToSession(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  if (!state.userId) { showLoginModal(); return; }
+  if (!canWriteActiveSession()) {
+    addMessage("agent", `Admin view is read-only for ${state.activeSessionUserId}'s session.`);
+    return;
+  }
+
+  if (!state.sessionReady) await createSession();
+  if (!state.sessionReady) {
+    setUploadStatus("Could not create session.", "error");
+    return;
+  }
+
+  if (fileUploadBtn) fileUploadBtn.disabled = true;
+  const uploaded = [];
+  try {
+    for (const file of files) {
+      setUploadStatus(`Uploading ${file.name}...`, "busy");
+      const formData = new FormData();
+      formData.append("file", file);
+      const resp = await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}/files`, {
+        method: "POST",
+        body: formData,
+      });
+      if (!resp.ok) {
+        const detail = await resp.text();
+        throw new Error(detail || `HTTP ${resp.status}`);
+      }
+      uploaded.push(await resp.json());
+    }
+
+    await refreshSessionFiles();
+    state.currentUploads = mergeUploadedFiles(state.currentUploads, uploaded);
+    renderCurrentUploadChips();
+  } catch (err) {
+    setUploadStatus(`Upload failed: ${err.message || err}`, "error");
+  } finally {
+    if (fileUploadBtn) fileUploadBtn.disabled = false;
+    fileUploadInput.value = "";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Session summary (experimental)
+// ---------------------------------------------------------------------------
+
+function renderSessionBanner(summary) {
+  if (!sessionSummaryText) return;
+  const defaultTitle = sessionSummaryText.dataset.defaultTitle || "Chat";
+  if (summary) {
+    sessionSummaryText.textContent = summary;
+    chatTab?.setAttribute("title", sessionTabTooltip(summary));
+    sessionSummaryText.classList.remove("session-summary-placeholder");
+    sessionSummaryText.classList.remove("typewriter", "typewriter-done");
+    sessionSummaryText.style.removeProperty("opacity");
+    sessionSummaryText.style.removeProperty("max-width");
+  } else {
+    sessionSummaryText.textContent = defaultTitle;
+    chatTab?.setAttribute("title", sessionTabTooltip(defaultTitle));
+    sessionSummaryText.classList.remove("session-summary-placeholder", "typewriter", "typewriter-done");
+    sessionSummaryText.style.removeProperty("opacity");
+    sessionSummaryText.style.removeProperty("max-width");
+  }
+}
+
+function runTypewriter(el, text) {
+  el.classList.remove("typewriter", "typewriter-done");
+  el.style.opacity = "";
+  el.style.maxWidth = "none";
+  el.textContent = text;
+  const fullW = el.scrollWidth;
+  el.style.maxWidth = "";
+  void el.offsetWidth;
+  const len = [...text].length;
+  el.style.setProperty("--tw-steps", len);
+  el.style.setProperty("--tw-width", fullW + "px");
+  el.textContent = text;
+  el.classList.add("typewriter");
+  el.addEventListener("animationend", function onEnd() {
+    el.removeEventListener("animationend", onEnd);
+    el.classList.remove("typewriter");
+    el.classList.add("typewriter-done");
+    el.style.removeProperty("--tw-steps");
+    el.style.removeProperty("--tw-width");
+  });
+}
+
+function startSummaryEdit() {
+  if (!sessionSummaryText || !chatTab || chatTab.querySelector("input")) return;
+  const isPlaceholder = sessionSummaryText.classList.contains("session-summary-placeholder");
+  const defaultTitle = sessionSummaryText.dataset.defaultTitle || "Chat";
+  const original = isPlaceholder || sessionSummaryText.textContent === defaultTitle ? "" : sessionSummaryText.textContent;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = original;
+  input.className = "session-summary-input";
+  input.maxLength = 60;
+  input.placeholder = "Enter session name…";
+  const labelWidth = Math.ceil(sessionSummaryText.getBoundingClientRect().width);
+  input.style.width = `${Math.max(44, labelWidth)}px`;
+  input.addEventListener("click", (e) => e.stopPropagation());
+  input.addEventListener("dblclick", (e) => e.stopPropagation());
+  sessionSummaryText.style.display = "none";
+  chatTab.insertBefore(input, sessionSummaryText);
+  input.focus();
+  input.select();
+
+  const finish = async (save) => {
+    const newValue = input.value.trim();
+    input.remove();
+    sessionSummaryText.style.display = "";
+    if (save && newValue !== original) {
+      if (newValue) {
+        state.sessionSummaries[state.sessionId] = newValue;
+        state.summaryGeneratedFor.add(state.sessionId);
+        renderSessionBanner(newValue);
+        await saveSessionSummary(state.sessionId, newValue);
+      } else {
+        delete state.sessionSummaries[state.sessionId];
+        state.summaryGeneratedFor.delete(state.sessionId);
+        renderSessionBanner("");
+        await saveSessionSummary(state.sessionId, "");
+      }
+      renderSessionList._lastSessions && renderSessionList(renderSessionList._lastSessions);
+    } else if (!save) {
+      renderSessionBanner(original || state.sessionSummaries[state.sessionId] || "");
+    }
+  };
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { finish(false); }
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+chatTab?.addEventListener("dblclick", (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  startSummaryEdit();
+});
+
+async function saveSessionSummary(sessionId, summary) {
+  try {
+    const owner = state.activeSessionUserId || state.userId || "";
+    const query = owner ? `?user_id=${encodeURIComponent(owner)}` : "";
+    await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/summary${query}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ summary }),
+    });
+  } catch (_) {
+    // silently ignore
+  }
+}
+
+async function generateSessionSummary(sessionId) {
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      const msg = await resp.text().catch(() => "");
+      throw new Error(msg || `HTTP ${resp.status}`);
+    }
+    const blob = await resp.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = `matcreator-session-log-${sessionId}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
+  } catch (err) {
+    console.warn("Failed to download session log", err);
+  }
+}
+
+document.getElementById("refresh-files").addEventListener("click", (e) => { e.stopPropagation(); refreshSessionFiles(); });
+
+// ---------------------------------------------------------------------------
+// File path → API URL conversion
+// ---------------------------------------------------------------------------
+
+function pathToApiUrl(path) {
+  const sid = state.sessionId ? `&session_id=${encodeURIComponent(state.sessionId)}` : "";
+  return `/api/workspace/files?path=${encodeURIComponent(path)}${sid}`;
+}
+
+// ---------------------------------------------------------------------------
+// Chat helpers
+// ---------------------------------------------------------------------------
+
+// Post-process marked output: wrap ASCII art (box-drawing chars) in <pre>.
+const BOX_RE = /[┌┐└┘├┤┬┴┼│━─]/;
+function renderMarkdown(text) {
+  if (!text) return "";
+  let html = marked.parse(text);
+  html = html.replace(/<pre><code>([\s\S]*?)<\/code><\/pre>/gi, (match, inner) => {
+    const decoded = inner.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+    return BOX_RE.test(decoded) ? `<pre class="ascii-art">${decoded}</pre>` : match;
+  });
+  html = html.replace(/<p>([\s\S]*?)<\/p>/gi, (match, inner) => {
+    const decoded = inner.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+    return BOX_RE.test(decoded) ? `<pre class="ascii-art">${decoded}</pre>` : match;
+  });
+  return html;
+}
+
+// Unescape common escape sequences in text content.
+// Converts literal \n, \t, \r, \\ to actual characters.
+function unescapeText(text) {
+  if (!text) return "";
+  return text
+    .replace(/\\\\/g, "\x00")    // protect literal backslashes
+    .replace(/\\n/g, "\n")
+    .replace(/\\t/g, "\t")
+    .replace(/\\r/g, "\r")
+    .replace(/\\"/g, '"')
+    .replace(/\x00/g, "\\");     // restore literal backslashes
+}
+
+// Cached character widths for wrap calculation (ASCII and CJK)
+let _asciiWidth = 0;
+let _cjkWidth = 0;
+function getCharWidths() {
+  if (_asciiWidth) return { ascii: _asciiWidth, cjk: _cjkWidth };
+  const s = document.createElement("span");
+  s.style.cssText = "position:absolute;visibility:hidden;font:14px 'Courier New',Consolas,monospace;white-space:pre;";
+  document.body.appendChild(s);
+  s.textContent = "x";
+  _asciiWidth = s.getBoundingClientRect().width;
+  s.textContent = "中";
+  _cjkWidth = s.getBoundingClientRect().width;
+  document.body.removeChild(s);
+  return { ascii: _asciiWidth, cjk: _cjkWidth };
+}
+
+const CJK_RE = /[一-鿿㐀-䶿豈-﫿　-〿＀-￯]/;
+function measureLine(line) {
+  const { ascii, cjk } = getCharWidths();
+  let w = 0;
+  for (const ch of line) {
+    w += CJK_RE.test(ch) ? cjk : ascii;
+  }
+  return w;
+}
+
+// Create a <pre class="json-block"> with unescaped content.
+// Strips leading/trailing { } from JSON-like strings for cleaner display.
+// Uses ResizeObserver to adapt wrap markers to container width.
+function createJsonBlock(content) {
+  const pre = document.createElement("pre");
+  pre.className = "json-block";
+  let rawText = unescapeText(content);
+  rawText = rawText.replace(/^\{\s*/, "").replace(/\s*\}$/, "");
+  pre.dataset.raw = rawText;
+  applyWrapMarkers(pre);
+  const ro = new ResizeObserver(() => applyWrapMarkers(pre));
+  ro.observe(pre);
+  return pre;
+}
+
+function applyWrapMarkers(pre) {
+  const raw = pre.dataset.raw;
+  if (!raw) return;
+  const containerW = pre.clientWidth - 16; // subtract padding
+  if (containerW <= 0) return;
+  const { ascii, cjk } = getCharWidths();
+  const markerW = ascii * 3; // " ↵" approx 3 ascii chars wide
+  const lines = raw.split("\n");
+  const out = [];
+  for (const line of lines) {
+    const lineW = measureLine(line);
+    if (lineW <= containerW) {
+      out.push(line);
+    } else {
+      // Split line by pixel width
+      let w = 0, start = 0;
+      for (let i = 0; i < line.length; i++) {
+        const chW = CJK_RE.test(line[i]) ? cjk : ascii;
+        if (w + chW > containerW - markerW) {
+          out.push(line.slice(start, i) + " ↵");
+          start = i;
+          w = chW;
+        } else {
+          w += chW;
+        }
+      }
+      if (start < line.length) out.push(line.slice(start));
+    }
+  }
+  pre.textContent = out.join("\n");
+}
+
+const AGENT_AVATAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="rgba(125,211,252,0.9)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3" y="8" width="18" height="11" rx="2"/>
+  <path d="M8 8V6a4 4 0 0 1 8 0v2"/>
+  <circle cx="9" cy="14" r="1" fill="rgba(125,211,252,0.9)" stroke="none"/>
+  <circle cx="15" cy="14" r="1" fill="rgba(125,211,252,0.9)" stroke="none"/>
+  <path d="M7 19v2M17 19v2"/>
+</svg>`;
+
+const USER_AVATAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="rgba(168,85,247,0.9)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="8" r="4"/>
+  <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
+</svg>`;
+
+function getUserAvatar() {
+  return localStorage.getItem("user-avatar-url") || null;
+}
+
+function setUserAvatar(dataUrl) {
+  localStorage.setItem("user-avatar-url", dataUrl);
+  document.querySelectorAll(".user-avatar").forEach(applyUserAvatarToEl);
+}
+
+function applyUserAvatarToEl(el) {
+  const url = getUserAvatar();
+  el.innerHTML = url ? `<img src="${url}" alt="User">` : USER_AVATAR_SVG;
+}
+
+function createAgentAvatarEl() {
+  const el = document.createElement("div");
+  el.className = "message-avatar agent-avatar";
+  el.innerHTML = AGENT_AVATAR_SVG;
+  return el;
+}
+
+function createUserAvatarEl() {
+  const el = document.createElement("div");
+  el.className = "message-avatar user-avatar";
+  applyUserAvatarToEl(el);
+  return el;
+}
+
+function scrollToBottom() {
+  chatArea.scrollTop = chatArea.scrollHeight;
+}
+
+function isChatNearBottom() {
+  return chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight < 80;
+}
+
+function appendLiveTurnChild(container, child) {
+  if (container === chatArea || !container?.dataset?.stepLiveRegion) {
+    container.appendChild(child);
+    return;
+  }
+
+  const firstStepCard = [...container.children].find((el) => el.dataset.stepStartTime !== undefined);
+  if (firstStepCard) {
+    container.insertBefore(child, firstStepCard);
+  } else {
+    container.appendChild(child);
+  }
+}
+
+function addMessage(role, content, msgIndex, container = chatArea) {
+  const div = document.createElement("div");
+  div.className = `message ${role}-message`;
+  if (msgIndex !== undefined) div.dataset.msgIndex = String(msgIndex);
+
+  const avatar = role === "agent" ? createAgentAvatarEl() : createUserAvatarEl();
+  div.appendChild(avatar);
+
+  const bubble = document.createElement("div");
+  bubble.className = "message-bubble";
+  const inner = document.createElement("div");
+  inner.className = "markdown-content";
+  inner.innerHTML = renderMarkdown(content || "");
+  bubble.appendChild(inner);
+  div.appendChild(bubble);
+
+  appendLiveTurnChild(container, div);
+  scrollToBottom();
+  return div;
+}
+
+function getFunctionCall(part) {
+  return part?.functionCall || part?.function_call || null;
+}
+
+function getFunctionResponse(part) {
+  return part?.functionResponse || part?.function_response || null;
+}
+
+function getPlotPaths(response) {
+  const paths = [];
+  const add = (path) => {
+    if (typeof path === "string" && path && !paths.includes(path)) paths.push(path);
+  };
+  add(response?.plot_path);
+  if (Array.isArray(response?.plot_paths)) {
+    response.plot_paths.forEach(add);
+  }
+  return paths;
+}
+
+function getStructurePaths(payload) {
+  const paths = [];
+  const add = (path) => {
+    if (typeof path === "string" && path && !paths.includes(path)) paths.push(path);
+  };
+  const visit = (value, key = "") => {
+    if (!value) return;
+    if (key === "structure_path") {
+      add(value);
+      return;
+    }
+    if (key === "structure_paths" && Array.isArray(value)) {
+      value.forEach(add);
+      return;
+    }
+    if ((key === "artifacts" || key === "artifact_paths") && Array.isArray(value)) {
+      value.forEach((path) => {
+        if (classifyPath(String(path)) === "structure") add(path);
+      });
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item, key));
+      return;
+    }
+    if (typeof value === "object") {
+      Object.entries(value).forEach(([childKey, childValue]) => visit(childValue, childKey));
+    }
+  };
+  visit(payload);
+  return paths;
+}
+
+function createStructureViewButton(path) {
+  const btn = document.createElement("button");
+  btn.className = "ghost structure-view-btn";
+  btn.textContent = `🔬 View: ${path.split("/").pop()}`;
+  btn.addEventListener("click", () => openViewer({ path, url: pathToApiUrl(path) }));
+  return btn;
+}
+
+function createArtifactListItem(path) {
+  const li = document.createElement("li");
+  li.title = path;
+  if (classifyPath(path) === "structure") {
+    li.appendChild(createStructureViewButton(path));
+  } else {
+    li.textContent = path.split("/").pop();
+  }
+  return li;
+}
+
+function isExecutorLauncherTool(name) {
+  return ["run_flash_step", "run_node_executor", "run_sub_agent"].includes(name || "");
+}
+
+// Render a typed timeline array into a container element, mirroring
+// Streamlit's render_stream_timeline: thoughts and tool calls go into
+// collapsible <details> blocks; text parts render as markdown;
+// plot_path responses render as inline images.
+function renderTimeline(container, timeline, shownPlotPaths = null) {
+  container.innerHTML = "";
+  const containerPlotPaths = container._plotPaths || new Set();
+  const visiblePlotPaths = new Set();
+  for (const item of timeline) {
+    if (item.type === "thought") {
+      const details = document.createElement("details");
+      details.className = "timeline-thought";
+      const summary = document.createElement("summary");
+      summary.textContent = "🤔 Thinking...";
+      details.appendChild(summary);
+      const body = document.createElement("div");
+      body.className = "markdown-content";
+      body.innerHTML = renderMarkdown(item.text || "");
+      details.appendChild(body);
+      container.appendChild(details);
+    } else if (item.type === "function_call") {
+      const details = document.createElement("details");
+      details.className = "timeline-function-call";
+      if (isExecutorLauncherTool(item.name)) details.open = true;
+      const summary = document.createElement("summary");
+      summary.innerHTML = `<span class="timeline-badge badge-in">IN</span> ${item.name}`;
+      details.appendChild(summary);
+      details.appendChild(createJsonBlock(JSON.stringify(item.args, null, 2)));
+      container.appendChild(details);
+      if (isExecutorLauncherTool(item.name)) {
+        const inlineHost = document.createElement("div");
+        inlineHost.className = "step-feed-inline-region";
+        inlineHost.dataset.stepInlineHost = item.name;
+        container.appendChild(inlineHost);
+        if (Array.isArray(item.stepNodes) && item.stepNodes.length) {
+          item.stepNodes.forEach((node) => stepExecutionFeed.appendStatic(node, inlineHost));
+        } else if (state.isSending) {
+          stepExecutionFeed.attachLiveToolHost(inlineHost);
+        }
+      }
+    } else if (item.type === "function_response") {
+      const details = document.createElement("details");
+      details.className = "timeline-function-response";
+      const summary = document.createElement("summary");
+      summary.innerHTML = `<span class="timeline-badge badge-out">OUT</span> ${item.name}`;
+      details.appendChild(summary);
+      details.appendChild(createJsonBlock(JSON.stringify(item.response, null, 2)));
+      container.appendChild(details);
+      for (const plotPath of getPlotPaths(item.response)) {
+        if (
+          visiblePlotPaths.has(plotPath) ||
+          (shownPlotPaths && shownPlotPaths.has(plotPath) && !containerPlotPaths.has(plotPath))
+        ) {
+          continue;
+        }
+        visiblePlotPaths.add(plotPath);
+        const img = document.createElement("img");
+        img.src = pathToApiUrl(plotPath);
+        img.className = "timeline-image";
+        img.alt = plotPath.split("/").pop();
+        img.style.cursor = "zoom-in";
+        img.addEventListener("click", () => lightbox.open(img.src));
+        container.appendChild(img);
+      }
+      getStructurePaths(item.response).forEach((path) => {
+        container.appendChild(createStructureViewButton(path));
+      });
+    } else if (item.type === "text") {
+      const div = document.createElement("div");
+      div.className = "markdown-content";
+      div.innerHTML = renderMarkdown(item.text || "");
+      container.appendChild(div);
+    }
+  }
+  container._plotPaths = visiblePlotPaths;
+  visiblePlotPaths.forEach((path) => shownPlotPaths?.add(path));
+  scrollToBottom();
+}
+
+// Create an agent message div with an inner timeline container, append to
+// chatArea, and return the inner container for live updates.
+function addAgentTimelineMessage(timeline, shownPlotPaths = null, msgIndex, container = chatArea) {
+  const outer = document.createElement("div");
+  outer.className = "message agent-message";
+  if (msgIndex !== undefined) outer.dataset.msgIndex = String(msgIndex);
+  outer.appendChild(createAgentAvatarEl());
+  const bubble = document.createElement("div");
+  bubble.className = "message-bubble";
+  const inner = document.createElement("div");
+  inner.className = "timeline-container";
+  bubble.appendChild(inner);
+  outer.appendChild(bubble);
+  appendLiveTurnChild(container, outer);
+  renderTimeline(inner, timeline, shownPlotPaths);
+  return inner;
+}
+
+function formatStepDuration(node) {
+  if (!node.start_time) return "—";
+  if (!node.end_time) return "running…";
+  const secs = ((new Date(node.end_time) - new Date(node.start_time)) / 1000).toFixed(1);
+  return `${secs}s`;
+}
+
+function stepFeedTitle(node) {
+  const input = node.input || {};
+  const label = node.label || input.node_id || node.id;
+  const action = input.action ? ` — ${input.action}` : "";
+  return `${label}${action}`;
+}
+
+function renderStepInput(input) {
+  const details = document.createElement("details");
+  details.className = "step-feed-nested";
+  const summary = document.createElement("summary");
+  summary.textContent = "Input";
+  details.appendChild(summary);
+  details.appendChild(createJsonBlock(JSON.stringify(input, null, 2)));
+  return details;
+}
+
+function renderStepConversationEvent(evt) {
+  const details = document.createElement("details");
+  details.className = `timeline-${evt.type} step-feed-nested`;
+  const summary = document.createElement("summary");
+  const icon = evt.type === "thought" ? "💭" : evt.type === "text" ? "💬" : evt.type === "function_call" ? "🔧" : "↩";
+  summary.textContent = `${icon} [${evt.author || "step_executor"}] ${evt.type || "event"}`;
+  details.appendChild(summary);
+  details.appendChild(createJsonBlock(evt.content));
+  return details;
+}
+
+function renderStepToolCall(tc) {
+  const details = document.createElement("details");
+  details.className = "timeline-function-call step-feed-nested";
+  const dur = tc.start_time && tc.end_time
+    ? ` (${((new Date(tc.end_time) - new Date(tc.start_time)) / 1000).toFixed(1)}s)`
+    : "";
+  const summary = document.createElement("summary");
+  summary.textContent = `🔧 ${tc.name || "tool"}${dur}`;
+  details.appendChild(summary);
+  if (tc.args_summary) {
+    details.appendChild(createJsonBlock(tc.args_summary));
+  }
+  if (tc.result_summary) {
+    const pre = createJsonBlock(`→ ${tc.result_summary}`);
+    pre.style.borderTop = "1px solid rgba(255,255,255,0.06)";
+    details.appendChild(pre);
+  }
+  getStructurePaths(tc).forEach((path) => {
+    details.appendChild(createStructureViewButton(path));
+  });
+  return details;
+}
+
 // Classify a file path as "structure", "image", or "artifact" by extension/name.
 const STRUCTURE_EXTS = new Set([".cif", ".xyz", ".extxyz", ".vasp"]);
 const STRUCTURE_NAMES = new Set(["poscar", "contcar"]);
@@ -2884,7 +2129,7 @@ function _createFileItem(f) {
   actions.className = "tree-actions";
 
   const dlLink = document.createElement("a");
-  dlLink.href = `/api/workspace/files?path=${encodeURIComponent(f.path)}`;
+  dlLink.href = pathToApiUrl(f.path);
   dlLink.download = f.relname;
   dlLink.className = "tree-btn";
   dlLink.title = "Download";
@@ -3941,6 +3186,478 @@ async function sendMessage(message) {
   try {
     const resp = await fetch("/run_sse", {
       method: "POST",
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (data.summary) {
+      state.sessionSummaries[sessionId] = data.summary;
+      state.summaryGeneratedFor.add(sessionId);
+      // Only update banner if user is still on this session
+      if (sessionId === state.sessionId) {
+        renderSessionBanner(data.summary);
+      }
+      // Refresh session list to show summary
+      renderSessionList._lastSessions && renderSessionList(renderSessionList._lastSessions);
+    }
+  } catch (_) {
+    // silently ignore — summary is non-critical
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Session management
+// ---------------------------------------------------------------------------
+
+async function createSession() {
+  state.activeSessionUserId = state.userId;
+  const url = `/apps/${APP_NAME}/users/${activeSessionBackendUserId()}/sessions/${state.sessionId}`;
+  const defaultWorkdir = (state.defaultWorkdir || "").trim();
+  const sessionWorkdir = state.customWorkdir || defaultWorkdir;
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...(state.agentMode !== "normal" ? { agent_mode: state.agentMode } : {}),
+        ...(state.agentMode === "bench" ? { benchmark_mode: true } : {}),
+        ...(sessionWorkdir ? { custom_workdir: sessionWorkdir } : {}),
+      }),
+    });
+    if (!resp.ok) {
+      console.error(`Failed to create session: HTTP ${resp.status}`, await resp.text());
+      return;
+    }
+    state.sessionReady = true;
+    await startKnowledgeReview();
+    await loadSessions();
+  } catch (err) {
+    console.error("Failed to create session:", err);
+  }
+}
+
+function renderKnowledgeReviewStatus(review) {
+  const status = review?.status || "idle";
+  const running = status === "running";
+  const progress = review?.progress || {};
+  const phase = review?.phase || "memory";
+  const completed = progress.completed || 0;
+  const total = progress.total || 0;
+  const results = Array.isArray(review?.results) ? review.results : [];
+  const errors = Array.isArray(review?.errors) ? review.errors : [];
+  if (knowledgeReviewBanner) {
+    knowledgeReviewBanner.disabled = running;
+    knowledgeReviewBanner.className = `knowledge-review-banner status-${status}`;
+    const detail = review?.summary || errors[0];
+    knowledgeReviewBanner.title = detail
+      ? `${detail}${running ? "" : " Click to review memory and graph nodes."}`
+      : running
+        ? "Knowledge review is running"
+        : "Click to review memory and graph nodes";
+  }
+  knowledgeReviewSpinner?.classList.toggle("hidden", !running);
+  if (knowledgeReviewText) {
+    if (running) {
+      const phaseLabel = phase === "graph" ? "graph nodes" : "memory";
+      knowledgeReviewText.textContent = total
+        ? `Reviewing ${phaseLabel}: ${completed}/${total} (${progress.percent || 0}%)`
+        : `Starting ${phaseLabel} review`;
+    } else if (status === "failed") {
+      knowledgeReviewText.textContent = `Review failed: ${errors[0] || "unknown error"} · click to retry`;
+    } else if (status === "completed" || status === "completed_with_errors") {
+      const memoryCount = results.filter((item) => item.phase === "memory").length;
+      const graphCount = results.filter((item) => item.phase === "graph").length;
+      const warning = errors.length ? `, ${errors.length} errors` : "";
+      const summary = review?.summary?.trim();
+      if (memoryCount === 0 && graphCount === 0 && summary) {
+        knowledgeReviewText.textContent = `${summary}${warning} · click to run again`;
+      } else {
+        knowledgeReviewText.textContent = `Review complete: ${memoryCount} memory, ${graphCount} graph actions${warning} · click to run again`;
+      }
+    } else {
+      knowledgeReviewText.textContent = "Review memory and graph · click to start";
+    }
+  }
+  if (!running && knowledgeReviewPoll) {
+    clearInterval(knowledgeReviewPoll);
+    knowledgeReviewPoll = null;
+  }
+}
+
+async function refreshKnowledgeReviewStatus() {
+  try {
+    const resp = await fetch("/api/knowledge-review/status");
+    if (!resp.ok) return;
+    const review = await resp.json();
+    renderKnowledgeReviewStatus(review);
+    if (review.status === "running" && !knowledgeReviewPoll) {
+      knowledgeReviewPoll = setInterval(refreshKnowledgeReviewStatus, 2000);
+    }
+  } catch (_) {
+    // The banner is informational; session work should continue if polling fails.
+  }
+}
+
+async function startKnowledgeReview() {
+  renderKnowledgeReviewStatus({
+    status: "running",
+    phase: "memory",
+    message: "Starting Know-Do Graph review.",
+  });
+  try {
+    const resp = await fetch("/api/knowledge-review/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: state.sessionId }),
+    });
+    const review = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      renderKnowledgeReviewStatus({
+        status: "failed",
+        errors: [review.detail || `HTTP ${resp.status}`],
+      });
+      return;
+    }
+    renderKnowledgeReviewStatus(review);
+    if (!knowledgeReviewPoll) {
+      knowledgeReviewPoll = setInterval(refreshKnowledgeReviewStatus, 2000);
+    }
+  } catch (_) {
+    renderKnowledgeReviewStatus({
+      status: "failed",
+      errors: ["Could not reach the review service"],
+    });
+  }
+}
+
+knowledgeReviewBanner?.addEventListener("click", () => {
+  if (!knowledgeReviewBanner.disabled) startKnowledgeReview();
+});
+
+async function patchSessionAgentMode(mode) {
+  if (!state.sessionReady || !state.sessionId) return;
+  const url = `/apps/${APP_NAME}/users/${encodeURIComponent(activeSessionBackendUserId())}/sessions/${encodeURIComponent(state.sessionId)}`;
+  try {
+    const delta = { agent_mode: mode, benchmark_mode: mode === "bench" };
+    const resp = await fetch(url, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state_delta: delta }),
+    });
+    if (!resp.ok) console.error(`Failed to patch agent mode: HTTP ${resp.status}`);
+  } catch (err) {
+    console.error("Failed to patch agent mode:", err);
+  }
+}
+
+async function fetchSessionData(sessionId) {
+  const owner = state.activeSessionUserId || state.userId;
+  const resp = await fetch(
+    `/api/users/${encodeURIComponent(owner)}/sessions/${encodeURIComponent(sessionId)}`,
+    { headers: { "Content-Type": "application/json" } }
+  );
+  if (!resp.ok) return null;
+  return resp.json();
+}
+
+async function fetchSessionStepNodes(sessionId) {
+  try {
+    const graphResp = await fetch(`/api/agent-graph/${encodeURIComponent(sessionId)}`);
+    if (!graphResp.ok) return [];
+    const graphData = await graphResp.json();
+    return Object.values(graphData.nodes || {})
+      .filter((node) => node.type === "step")
+      .sort((a, b) => stepNodeTimestamp(a) - stepNodeTimestamp(b));
+  } catch (_) {
+    return [];
+  }
+}
+
+function eventTimestamp(event, fallbackOrder) {
+  if (event.timestamp) {
+    const raw = Number(event.timestamp);
+    return raw < 1e12 ? raw * 1000 : raw;
+  }
+  if (event.createTime) return new Date(event.createTime).getTime();
+  return fallbackOrder;
+}
+
+function stepNodeTimestamp(node) {
+  return node.start_time ? new Date(node.start_time).getTime() : Infinity;
+}
+
+function buildSessionTimeline(events, stepNodes) {
+  const timeline = [];
+  events.forEach((event, idx) => {
+    timeline.push({ type: "event", data: event, ts: eventTimestamp(event, idx), order: idx });
+  });
+  stepNodes.forEach((node, idx) => {
+    timeline.push({ type: "step", data: node, ts: stepNodeTimestamp(node), order: 1e9 + idx });
+  });
+  timeline.sort((a, b) => a.ts - b.ts || a.order - b.order);
+  return timeline;
+}
+
+function assignStepNodesToExecutorCalls(timeline, pendingStepNodes) {
+  for (const item of timeline) {
+    if (item.type !== "function_call" || !isExecutorLauncherTool(item.name)) continue;
+    const nextStep = pendingStepNodes.shift();
+    if (nextStep) item.stepNodes = [nextStep];
+  }
+  return timeline;
+}
+
+function collectFunctionResponsesById(events) {
+  const frById = {};
+  for (const event of events) {
+    for (const part of (event.content?.parts || [])) {
+      const fr = getFunctionResponse(part);
+      if (fr?.id) frById[fr.id] = fr;
+    }
+  }
+  return frById;
+}
+
+function eventToTimelineParts(event, frById, pairedResponseIds = new Set()) {
+  const parts = event.content?.parts || [];
+  const evtTimeline = [];
+  let accText = "";
+
+  for (const part of parts) {
+    if (part.thought) {
+      evtTimeline.push({ type: "thought", text: part.text || "" });
+    } else if (getFunctionCall(part)) {
+      const fc = getFunctionCall(part);
+      const matchedFr = frById[fc.id];
+      evtTimeline.push({
+        type: "function_call",
+        id: fc.id,
+        name: fc.name || "Unknown",
+        args: fc.args || {},
+      });
+      if (matchedFr) {
+        if (matchedFr.id) pairedResponseIds.add(matchedFr.id);
+        evtTimeline.push({
+          type: "function_response",
+          id: matchedFr.id,
+          name: matchedFr.name || "Unknown",
+          response: matchedFr.response || {},
+        });
+      }
+    } else if (getFunctionResponse(part)) {
+      const fr = getFunctionResponse(part);
+      if (fr.id && pairedResponseIds.has(fr.id)) continue;
+      const alreadyMatched = evtTimeline.some(
+        (item) => item.type === "function_response" && item.id === fr.id
+      );
+      if (!alreadyMatched) {
+        evtTimeline.push({
+          type: "function_response",
+          id: fr.id,
+          name: fr.name || "Unknown",
+          response: fr.response || {},
+        });
+      }
+    } else if (part.text && !part.thought) {
+      accText += part.text;
+      const last = evtTimeline[evtTimeline.length - 1];
+      if (last?.type === "text") {
+        last.text = accText;
+      } else {
+        evtTimeline.push({ type: "text", text: accText });
+      }
+    }
+  }
+
+  return evtTimeline;
+}
+
+function renderSessionTimeline(events, stepNodes) {
+  chatArea.innerHTML = "";
+  stepExecutionFeed.reset();
+  stepExecutionFeed.setHierarchy(stepNodes || []);
+
+  const sortedEvents = (events || [])
+    .map((event, idx) => ({ event, ts: eventTimestamp(event, idx), order: idx }))
+    .sort((a, b) => a.ts - b.ts || a.order - b.order)
+    .map((item) => item.event);
+  const pendingStepNodes = (stepNodes || [])
+    .filter((node) => stepExecutionFeed.isRootStep(node))
+    .slice()
+    .sort((a, b) => stepNodeTimestamp(a) - stepNodeTimestamp(b));
+  const frById = collectFunctionResponsesById(events);
+  const pairedResponseIds = new Set();
+  let shownPlotPaths = new Set();
+  let msgIdx = 0;
+
+  for (const event of sortedEvents) {
+    const role = event.author === "user" ? "user" : "agent";
+    if (role === "user") {
+      const text = displayMessageFromStoredUserText(
+        (event.content?.parts || []).map((part) => part.text || "").join("")
+      );
+      if (text) addMessage("user", text, msgIdx++);
+      shownPlotPaths = new Set();
+      continue;
+    }
+
+    const evtTimeline = assignStepNodesToExecutorCalls(
+      eventToTimelineParts(event, frById, pairedResponseIds),
+      pendingStepNodes,
+    );
+    if (evtTimeline.length > 0) {
+      addAgentTimelineMessage(evtTimeline, shownPlotPaths, msgIdx++);
+    }
+  }
+
+  pendingStepNodes.forEach((node) => stepExecutionFeed.appendStatic(node));
+}
+
+function updateSessionWorkdirDisplay(sessionData) {
+  const workdirDisplay = document.getElementById("session-workdir-display");
+  if (!workdirDisplay) return;
+  const workdir = sessionData.state?.workdir || sessionData.state?.custom_workdir || state.defaultWorkdir || "";
+  workdirDisplay.textContent = workdir;
+  workdirDisplay.style.display = workdir ? "" : "none";
+}
+
+// Reload full session history from the ADK server and re-render the chat,
+// mirroring Streamlit's load_session() called after send_message_sse().
+async function loadSession(sessionId) {
+  try {
+    const sessionData = await fetchSessionData(sessionId);
+    if (!sessionData) {
+      state.sessionReady = false;
+      return;
+    }
+    state.sessionReady = true;
+    if (state.deploymentMode === "local" && sessionData.userId) {
+      state.activeSessionUserId = sessionData.userId;
+    }
+    const events = sessionData.events || [];
+
+    // Show the session summary in the Chat tab when available.
+    if (sessionData.summary) {
+      state.sessionSummaries[sessionId] = sessionData.summary;
+      state.summaryGeneratedFor.add(sessionId);
+    }
+    const sessionSummary = sessionData.summary || state.sessionSummaries[sessionId] || "";
+    renderSessionBanner(sessionSummary);
+
+    const graphNodes = await fetchSessionStepNodes(sessionId);
+    renderSessionTimeline(events, graphNodes);
+
+    const hasUserMessage = events.some((event) => event?.author === "user");
+    if (hasUserMessage && !sessionSummary && !state.summaryGeneratedFor.has(sessionId)) {
+      generateSessionSummary(sessionId);
+    }
+
+    await refreshSessionFiles();
+    updateSessionWorkdirDisplay(sessionData);
+  } catch (err) {
+    console.error("Failed to load session:", err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Message sending + SSE streaming
+// ---------------------------------------------------------------------------
+
+function setSendingState(isSending, controller = null) {
+  state.isSending = isSending;
+  state.sendController = controller;
+  if (!sendBtn) return;
+  sendBtn.textContent = isSending ? "■" : "➜";
+  sendBtn.title = isSending ? "Stop" : "Send";
+  sendBtn.classList.toggle("is-stopping", isSending);
+}
+
+function stopCurrentMessage() {
+  if (!state.isSending || !state.sendController) return;
+  fetch(`/api/sessions/${state.sessionId}/cancel`, { method: "POST" }).catch(() => {});
+  state.sendController.abort();
+  pollCancellationConfirmed(state.sessionId);
+}
+
+function pollCancellationConfirmed(sessionId, attempts = 0) {
+  const MAX_ATTEMPTS = 20;  // 20 × 2s = 40s timeout
+  const INTERVAL_MS = 2000;
+
+  if (attempts >= MAX_ATTEMPTS) {
+    addMessage("agent", "⚠️ Stop requested but execution may still be running in the background.");
+    return;
+  }
+
+  setTimeout(async () => {
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/cancel`);
+      const data = await res.json();
+      if (!data.cancellation_requested) {
+        addMessage("agent", "✓ Execution stopped.");
+        return;
+      }
+    } catch (_) { /* ignore transient network errors */ }
+    pollCancellationConfirmed(sessionId, attempts + 1);
+  }, INTERVAL_MS);
+}
+
+async function sendMessage(message) {
+  if (!message.trim()) return;
+  if (state.isSending) return;
+  if (!state.userId) { showLoginModal(); return; }
+  if (!canWriteActiveSession()) {
+    addMessage("agent", `Admin view is read-only for ${state.activeSessionUserId}'s session.`);
+    return;
+  }
+
+  // Clear any stale cancellation flag left over from a previous stop so that
+  // step executors launched in this new run don't abort immediately.
+  try { await fetch(`/api/sessions/${state.sessionId}/cancel`, { method: "DELETE" }); } catch (_) {}
+
+  const uploadsForMessage = state.currentUploads.slice();
+  const userMessageEl = addMessage("user", messageWithUploadNames(message, uploadsForMessage));
+  const liveStartedAt = Date.now();
+  const backendMessage = messageWithUploadContext(message, uploadsForMessage);
+  textInput.value = "";
+  clearCurrentUploads();
+  autoResizeTextInput();
+
+  if (!state.sessionReady) await createSession();
+  if (!state.sessionReady) {
+    addMessage("agent", "Failed to create session — the backend may still be loading. Please try again in a moment.");
+    stepExecutionFeed.finishLiveTurn();
+    return;
+  }
+  const previousPlanGraphKey = planGraph.currentGraphKey();
+  agentGraph.reset();
+  planGraph.reset();
+  const liveTurnContainer = stepExecutionFeed.startLiveTurn(userMessageEl, liveStartedAt);
+  agentGraph.startPolling(state.sessionId);
+  planGraph.startPolling(state.sessionId, {
+    autoOpenOnNewGraph: true,
+    autoOpenBaselineKey: previousPlanGraphKey,
+  });
+
+  const controller = new AbortController();
+  setSendingState(true, controller);
+  const payload = {
+    app_name: APP_NAME,
+    user_id: activeSessionBackendUserId(),
+    session_id: state.sessionId,
+    new_message: {
+      role: "user",
+      parts: [{ text: backendMessage }],
+    },
+  };
+
+  const timeline = [];
+  let timelineContainer = null;
+  let accText = "";
+  let summaryTriggered = false;
+  const shownPlotPaths = new Set();
+
+  try {
+    const resp = await fetch("/run_sse", {
+      method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
@@ -3988,6 +3705,9 @@ async function sendMessage(message) {
                 name: fr.name || "Unknown",
                 response: fr.response || {},
               });
+              if (shouldRefreshPlanGraphForTool(fr.name)) {
+                planGraph.refresh(state.sessionId);
+              }
             } else if (p.text) {
               accText = mergeReplayedText(accText, p.text);
               upsertTimelineText(timeline, compactRepeatedPrefixSnapshots(accText));
@@ -4019,7 +3739,12 @@ async function sendMessage(message) {
           for (const p of parts) {
             if (p.thought) upsertTimelineThought(timeline, p.text || "");
             else if (p.functionCall) upsertTimelineEvent(timeline, { type: "function_call", id: p.functionCall.id, name: p.functionCall.name || "Unknown", args: p.functionCall.args || {} });
-            else if (p.functionResponse) upsertTimelineEvent(timeline, { type: "function_response", id: p.functionResponse.id, name: p.functionResponse.name || "Unknown", response: p.functionResponse.response || {} });
+            else if (p.functionResponse) {
+              upsertTimelineEvent(timeline, { type: "function_response", id: p.functionResponse.id, name: p.functionResponse.name || "Unknown", response: p.functionResponse.response || {} });
+              if (shouldRefreshPlanGraphForTool(p.functionResponse.name)) {
+                planGraph.refresh(state.sessionId);
+              }
+            }
             else if (p.text) { accText = mergeReplayedText(accText, p.text); upsertTimelineText(timeline, compactRepeatedPrefixSnapshots(accText)); }
             if (timeline.length > 0 && !timelineContainer) timelineContainer = addAgentTimelineMessage(timeline, shownPlotPaths, undefined, liveTurnContainer);
             else if (timelineContainer) renderTimeline(timelineContainer, timeline, shownPlotPaths);
@@ -4076,31 +3801,11 @@ function activateCenterTab(tabId) {
 
   const structureTab = structureTabs.get(tabId);
   state.structure3dViewer = structureTab?.viewer || null;
-  if (structureTab?.viewer) {
-    requestAnimationFrame(() => {
-      try {
-        structureTab.viewer.resize();
-        structureTab.viewer.render();
-      } catch (_) {
-        // ignore transient 3Dmol resize issues
-      }
-    });
-  }
-  if (tabId === "skill-graph" && skillGraphTab?.network) {
-    requestAnimationFrame(() => {
-      try {
-        skillGraphTab.network.fit({ animation: false });
-      } catch (_) {}
-    });
-  }
+  skillGraphController.activate(tabId);
 }
 
 function closeCenterTab(tabId) {
-  if (tabId === "skill-graph" && skillGraphTab) {
-    skillGraphTab.network?.destroy();
-    skillGraphTab.button.remove();
-    skillGraphTab.panel.remove();
-    skillGraphTab = null;
+  if (skillGraphController.close(tabId)) {
     if (state.activeCenterTabId === tabId) {
       activateCenterTab("chat");
     }
@@ -4110,6 +3815,7 @@ function closeCenterTab(tabId) {
   const tab = structureTabs.get(tabId);
   if (!tab) return;
 
+  if (tab.destroyViewer) void tab.destroyViewer();
   tab.button.remove();
   tab.panel.remove();
   structureTabs.delete(tabId);
@@ -4175,1175 +3881,10 @@ function ensureStructureTab(item) {
   centerTabsScroll?.appendChild(button);
   centerTabPanels?.appendChild(panel);
 
-  const tab = { id: tabId, item, button, panel, canvas, meta, viewer: null };
+  const tab = { id: tabId, item, button, panel, canvas, meta, viewer: null, destroyViewer: null };
   structureTabs.set(tabId, tab);
   activateCenterTab(tabId);
   return tab;
-}
-
-const SKILL_GRAPH_COLORS = {
-  basic: { background: "#3B82F6", border: "#2563EB", highlight: { background: "#60A5FA", border: "#93C5FD" } },
-  capability: { background: "#3B82F6", border: "#2563EB", highlight: { background: "#60A5FA", border: "#93C5FD" } },
-  workflow: { background: "#14B8A6", border: "#0F766E", highlight: { background: "#2DD4BF", border: "#5EEAD4" } },
-  procedure: { background: "#14B8A6", border: "#0F766E", highlight: { background: "#2DD4BF", border: "#5EEAD4" } },
-  heuristic: { background: "#F59E0B", border: "#D97706", highlight: { background: "#FBBF24", border: "#FDE68A" } },
-  limitation: { background: "#EF4444", border: "#DC2626", highlight: { background: "#F87171", border: "#FCA5A5" } },
-  constraint: { background: "#EF4444", border: "#DC2626", highlight: { background: "#F87171", border: "#FCA5A5" } },
-  tool: { background: "#06B6D4", border: "#0891B2", highlight: { background: "#22D3EE", border: "#67E8F9" } },
-  generic: { background: "#475569", border: "#64748B", highlight: { background: "#64748B", border: "#94A3B8" } },
-};
-
-function hexToRgb(hex) {
-  const value = hex.replace("#", "");
-  return [
-    parseInt(value.slice(0, 2), 16),
-    parseInt(value.slice(2, 4), 16),
-    parseInt(value.slice(4, 6), 16),
-  ];
-}
-
-function rgba(hex, alpha) {
-  const [r, g, b] = hexToRgb(hex);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
-function skillGraphNodeColor(type, enabled = true, skillLevel = null) {
-  const kind = skillGraphNodeKindFor(type, skillLevel).value;
-  const color = SKILL_GRAPH_COLORS[kind] || SKILL_GRAPH_COLORS[type] || SKILL_GRAPH_COLORS.generic;
-  if (enabled !== false) return color;
-  return {
-    background: rgba(color.background, 0.28),
-    border: rgba(color.border, 0.34),
-    highlight: {
-      background: rgba(color.highlight.background, 0.42),
-      border: rgba(color.highlight.border, 0.55),
-    },
-  };
-}
-
-function skillGraphEdgeColor(disabled = false) {
-  return disabled
-    ? { color: "rgba(140, 160, 194, 0.16)", highlight: "rgba(125, 211, 252, 0.38)" }
-    : { color: "rgba(140, 160, 194, 0.45)", highlight: "#7dd3fc" };
-}
-
-function isEmptyDetailValue(value) {
-  if (value === undefined || value === null || value === "") return true;
-  if (Array.isArray(value)) return value.length === 0;
-  if (typeof value === "object") return Object.keys(value).length === 0;
-  return false;
-}
-
-function formatDetailValue(value) {
-  if (value === undefined || value === null) return "";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return JSON.stringify(value, null, 2);
-}
-
-function createSkillGraphSection(title, children) {
-  const visibleChildren = children.filter(Boolean);
-  if (!visibleChildren.length) return null;
-  const section = document.createElement("section");
-  section.className = "skill-graph-detail-section";
-  const heading = document.createElement("h4");
-  heading.textContent = title;
-  section.append(heading, ...visibleChildren);
-  return section;
-}
-
-function createSkillGraphMarkdown(value, className = "skill-graph-markdown") {
-  const formatted = formatDetailValue(value);
-  if (!formatted) return null;
-  const div = document.createElement("div");
-  div.className = className;
-  div.innerHTML = renderMarkdown(formatted);
-  return div;
-}
-
-function createSkillGraphFacts(items) {
-  const facts = document.createElement("dl");
-  facts.className = "skill-graph-facts";
-  for (const [key, value, options = {}] of items) {
-    if (isEmptyDetailValue(value)) continue;
-    const dt = document.createElement("dt");
-    dt.textContent = key;
-    const dd = document.createElement("dd");
-    const formatted = formatDetailValue(value);
-    if (options.markdown) {
-      dd.appendChild(createSkillGraphMarkdown(value));
-    } else if (formatted.includes("\n")) {
-      const pre = document.createElement("pre");
-      pre.textContent = formatted;
-      dd.appendChild(pre);
-    } else {
-      dd.textContent = formatted;
-    }
-    facts.append(dt, dd);
-  }
-  return facts.children.length ? facts : null;
-}
-
-function createSkillGraphList(values) {
-  if (!Array.isArray(values) || !values.length) return null;
-  const list = document.createElement("ul");
-  list.className = "skill-graph-list";
-  values.forEach((value) => {
-    const item = document.createElement("li");
-    const formatted = formatDetailValue(value);
-    if (typeof value === "string") {
-      item.appendChild(createSkillGraphMarkdown(formatted, "skill-graph-inline-markdown"));
-    } else {
-      item.textContent = formatted;
-    }
-    list.appendChild(item);
-  });
-  return list;
-}
-
-function createSkillGraphObjectList(values, titleKey = "filename") {
-  if (!Array.isArray(values) || !values.length) return null;
-  const list = document.createElement("div");
-  list.className = "skill-graph-object-list";
-  values.forEach((value, index) => {
-    const details = document.createElement("details");
-    const summary = document.createElement("summary");
-    summary.textContent = value?.[titleKey] || value?.name || value?.id || `Item ${index + 1}`;
-    details.append(summary, createSkillGraphMarkdown(value));
-    list.appendChild(details);
-  });
-  return list;
-}
-
-function skillGraphAttachmentPath(item) {
-  const folder = String(item?.folder || "").replace(/^\/+|\/+$/g, "");
-  const filename = item?.filename || item?.name || item?.id || "";
-  return folder ? `${folder}/${filename}` : filename;
-}
-
-function skillGraphAttachmentKind(item) {
-  return String(item?.kind || item?.metadata?.kind || "").toLowerCase();
-}
-
-function dedupeSkillGraphAttachments(values) {
-  const seen = new Set();
-  return (values || []).filter((item) => {
-    const key = skillGraphAttachmentPath(item) || JSON.stringify(item);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function createSkillGraphAttachmentList(values, folder = "") {
-  const items = dedupeSkillGraphAttachments(values);
-  if (!items.length) return null;
-  const list = document.createElement("div");
-  list.className = "skill-graph-object-list";
-  items.forEach((value, index) => {
-    const details = document.createElement("details");
-    const summary = document.createElement("summary");
-    const fullPath = skillGraphAttachmentPath(value);
-    const path = attachmentDisplayName(fullPath, folder || value?.folder) || `File ${index + 1}`;
-    const kind = skillGraphAttachmentKind(value);
-    summary.textContent = kind ? `${path} [${kind}]` : path;
-    details.append(summary, createSkillGraphMarkdown(value));
-    list.appendChild(details);
-  });
-  return list;
-}
-
-function groupSkillGraphAttachments(node) {
-  const grouped = new Map();
-  const add = (item, fallbackFolder = "") => {
-    const folder = item?.folder || fallbackFolder || "files";
-    if (!grouped.has(folder)) grouped.set(folder, []);
-    grouped.get(folder).push(item);
-  };
-  (node.assets || []).forEach((asset) => add(asset));
-  (node.scripts || []).forEach((script) => add(script, "scripts"));
-  return Array.from(grouped.entries())
-    .map(([folder, items]) => [folder, dedupeSkillGraphAttachments(items)])
-    .filter(([, items]) => items.length)
-    .sort(([a], [b]) => a.localeCompare(b));
-}
-
-function createSkillGraphLinks(nodeId) {
-  const edges = skillGraphTab?.edges || [];
-  const nodeData = skillGraphTab?.nodeData || new Map();
-  const related = [
-    ...edges
-      .filter((edge) => edge.from === nodeId)
-      .map((edge) => ({ direction: "Outgoing", relation: edge.relation, node: nodeData.get(edge.to), nodeId: edge.to })),
-    ...edges
-      .filter((edge) => edge.to === nodeId)
-      .map((edge) => ({ direction: "Incoming", relation: edge.relation, node: nodeData.get(edge.from), nodeId: edge.from })),
-  ];
-  if (!related.length) return null;
-
-  const list = document.createElement("div");
-  list.className = "skill-graph-links";
-  related.forEach((link) => {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "skill-graph-link-row";
-    const label = link.node?.title || link.node?.label || link.nodeId;
-    row.innerHTML = `
-      <span class="skill-graph-link-direction"></span>
-      <span class="skill-graph-link-main"></span>
-      <span class="skill-graph-link-relation"></span>
-    `;
-    row.querySelector(".skill-graph-link-direction").textContent = link.direction;
-    row.querySelector(".skill-graph-link-main").textContent = label;
-    row.querySelector(".skill-graph-link-relation").textContent = link.relation || "related";
-    row.addEventListener("click", () => {
-      if (!skillGraphTab?.network) return;
-      skillGraphTab.network.selectNodes([link.nodeId]);
-      skillGraphTab.network.focus(link.nodeId, { scale: 1.05, animation: { duration: 280, easingFunction: "easeInOutQuad" } });
-      renderSkillGraphDetail(link.node);
-    });
-    list.appendChild(row);
-  });
-  return list;
-}
-
-function skillGraphAttachedContextFacts(nodeId) {
-  const edges = skillGraphTab?.edges || [];
-  const heuristics = edges.filter((edge) => edge.to === nodeId && edge.relation === "heuristic_for").length;
-  const limitations = edges.filter((edge) => (
-    edge.to === nodeId && (edge.relation === "constraint_on" || edge.relation === "warning_about")
-  )).length;
-  return createSkillGraphFacts([
-    ["Heuristics", heuristics],
-    ["Limitations", limitations],
-  ]);
-}
-
-function csvToList(value) {
-  return String(value || "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function listToCsv(values) {
-  return Array.isArray(values) ? values.join(", ") : "";
-}
-
-function skillGraphAvailableSkillNames(exclude = "") {
-  return Array.from(skillGraphTab?.nodeData?.values?.() || [])
-    .map((node) => node.skill_name)
-    .filter((name) => name && name !== exclude)
-    .sort((a, b) => a.localeCompare(b));
-}
-
-function skillGraphEntryTypes() {
-  return ["capability", "procedure", "workflow", "tool", "repository", "environment", "dependency", "data", "analytical", "heuristic", "constraint", "generic"];
-}
-
-const SKILL_GRAPH_NODE_KINDS = [
-  {
-    value: "basic",
-    label: "Basic",
-    entry_type: "capability",
-    skill_level: "L1",
-    hint: "General skill or concept node.",
-  },
-  {
-    value: "workflow",
-    label: "Workflow",
-    entry_type: "workflow",
-    skill_level: "L2",
-    hint: "A multi-step procedure or task flow.",
-  },
-  {
-    value: "heuristic",
-    label: "Heuristic",
-    entry_type: "heuristic",
-    skill_level: "L3",
-    hint: "A practical rule, preference, or decision guide.",
-  },
-  {
-    value: "limitation",
-    label: "Limitation",
-    entry_type: "constraint",
-    skill_level: "L4",
-    hint: "A constraint, caveat, warning, or known failure mode.",
-  },
-];
-
-function skillGraphNodeKindFor(entryType, skillLevel) {
-  if (entryType === "procedure") return SKILL_GRAPH_NODE_KINDS.find((kind) => kind.value === "workflow");
-  if (entryType === "constraint") return SKILL_GRAPH_NODE_KINDS.find((kind) => kind.value === "limitation");
-  if (entryType === "heuristic") return SKILL_GRAPH_NODE_KINDS.find((kind) => kind.value === "heuristic");
-  return SKILL_GRAPH_NODE_KINDS.find((kind) => (
-    kind.entry_type === entryType || kind.skill_level === skillLevel
-  )) || SKILL_GRAPH_NODE_KINDS[0];
-}
-
-function populateSkillGraphNodeKindSelect(select, value = "basic") {
-  select.innerHTML = "";
-  SKILL_GRAPH_NODE_KINDS.forEach((kind) => {
-    const option = document.createElement("option");
-    option.value = kind.value;
-    option.textContent = kind.label;
-    select.appendChild(option);
-  });
-  select.value = value;
-}
-
-function updateSkillGraphNodeKindHint(host, value) {
-  const hint = host.querySelector("[data-node-kind-hint]");
-  const kind = SKILL_GRAPH_NODE_KINDS.find((item) => item.value === value) || SKILL_GRAPH_NODE_KINDS[0];
-  if (hint) hint.textContent = kind.hint;
-  const relationLabel = host.querySelector("[data-relation-label]");
-  const relationHint = host.querySelector("[data-relation-hint]");
-  if (relationLabel) {
-    relationLabel.textContent = kind.value === "heuristic" || kind.value === "limitation"
-      ? "Attached to"
-      : "Dependencies";
-  }
-  if (relationHint) {
-    relationHint.textContent = kind.value === "heuristic"
-      ? "These parent nodes will show this heuristic during progressive retrieval."
-      : kind.value === "limitation"
-        ? "These parent nodes will show this limitation during progressive retrieval."
-        : "These nodes are required or related prerequisites.";
-  }
-}
-
-function selectedSkillGraphNodeKind(host, selectorPrefix = "data-edit-field") {
-  const value = host.querySelector(`[${selectorPrefix}='node_kind']`)?.value || "basic";
-  return SKILL_GRAPH_NODE_KINDS.find((kind) => kind.value === value) || SKILL_GRAPH_NODE_KINDS[0];
-}
-
-function skillGraphDisplayNodeType(entryType, skillLevel) {
-  return skillGraphNodeKindFor(entryType, skillLevel).label.toLowerCase();
-}
-
-function createSkillGraphEditToggle(node) {
-  if (!node.skill_name) return null;
-  const host = document.createElement("section");
-  host.className = "skill-graph-edit-toggle skill-graph-detail-section";
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "ghost mini-btn";
-  button.textContent = "Edit";
-  button.addEventListener("click", () => {
-    skillGraphTab.detail.innerHTML = "";
-    const editorHost = document.createElement("section");
-    editorHost.className = "skill-graph-editor";
-    editorHost.innerHTML = "<h4>Edit Skill</h4><div class=\"skill-graph-editor-status\">Loading editor...</div>";
-    skillGraphTab.detail.appendChild(editorHost);
-    loadSkillGraphEditor(node, editorHost);
-  });
-  host.appendChild(button);
-  if (node.skill_name) {
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.className = "ghost mini-btn danger";
-    remove.textContent = "Remove";
-    remove.addEventListener("click", () => removeSkillGraphNode(node));
-    host.appendChild(remove);
-  }
-  return host;
-}
-
-function skillGraphEditorSnapshot(host) {
-  const kind = selectedSkillGraphNodeKind(host);
-  return {
-    description: host.querySelector("[data-edit-field='description']")?.value || "",
-    entry_type: kind.entry_type,
-    skill_level: kind.skill_level,
-    node_kind: kind.value,
-    tags: csvToList(host.querySelector("[data-edit-field='tags']")?.value),
-    dependent_skills: Array.from(host._skillGraphDependencySelected || []),
-    content: host.querySelector("[data-edit-field='content']")?.value || "",
-    pendingRemovals: Array.from(host.querySelectorAll("[data-attachment-path][aria-pressed='true']"))
-      .map((button) => button.dataset.attachmentPath),
-    uploadFolders: Array.from(host.querySelectorAll("[data-upload-folder]"))
-      .map((folder) => folder.dataset.uploadFolder)
-      .filter(Boolean),
-  };
-}
-
-function applySkillGraphEditorSnapshot(host, snapshot) {
-  const setValue = (field, value) => {
-    const el = host.querySelector(`[data-edit-field='${field}']`);
-    if (el) el.value = value;
-  };
-  setValue("description", snapshot.description || "");
-  setValue("node_kind", snapshot.node_kind || skillGraphNodeKindFor(snapshot.entry_type, snapshot.skill_level).value);
-  updateSkillGraphNodeKindHint(host, host.querySelector("[data-edit-field='node_kind']")?.value || "basic");
-  setValue("tags", listToCsv(snapshot.tags));
-  setValue("content", snapshot.content || "");
-  const selectedDeps = new Set(snapshot.dependent_skills || []);
-  host._skillGraphDependencySelected = selectedDeps;
-  renderSkillGraphDependencyPicker(host, host._skillGraphDependencySkills || [], selectedDeps);
-  host.querySelectorAll("[data-attachment-path]").forEach((button) => {
-    const remove = (snapshot.pendingRemovals || []).includes(button.dataset.attachmentPath);
-    button.setAttribute("aria-pressed", String(remove));
-    button.closest(".skill-graph-attachment-row")?.classList.toggle("pending-remove", remove);
-  });
-  syncSkillGraphUploadFolders(host, snapshot.uploadFolders || host._skillGraphUploadFolders || []);
-}
-
-function renderSkillGraphDependencyPicker(host, skills, selected) {
-  const list = host.querySelector(".skill-graph-dependency-list");
-  const filter = host.querySelector("[data-dependency-filter]");
-  const selectedSet = selected instanceof Set ? selected : new Set(selected || []);
-  host._skillGraphDependencySkills = skills;
-  host._skillGraphDependencySelected = selectedSet;
-  const render = () => {
-    const query = (filter.value || "").trim().toLowerCase();
-    list.innerHTML = "";
-    skills
-      .filter((skill) => !query || skill.toLowerCase().includes(query) || selectedSet.has(skill))
-      .forEach((skill) => {
-        const label = document.createElement("label");
-        label.className = "skill-graph-dependency-row";
-        const checkbox = document.createElement("input");
-        checkbox.type = "checkbox";
-        checkbox.value = skill;
-        checkbox.dataset.dependencySkill = skill;
-        checkbox.checked = selectedSet.has(skill);
-        checkbox.addEventListener("change", () => {
-          if (checkbox.checked) selectedSet.add(skill);
-          else selectedSet.delete(skill);
-          host._skillGraphDependencySelected = selectedSet;
-          pushSkillGraphEditorHistory(host);
-          render();
-        });
-        const span = document.createElement("span");
-        span.textContent = skill;
-        label.append(checkbox, span);
-        list.appendChild(label);
-      });
-    if (!list.children.length) {
-      const empty = document.createElement("div");
-      empty.className = "skill-graph-editor-empty";
-      empty.textContent = "No matching skills.";
-      list.appendChild(empty);
-    }
-  };
-  if (!filter.dataset.boundDependencyFilter) {
-    filter.dataset.boundDependencyFilter = "true";
-    filter.addEventListener("input", render);
-  }
-  render();
-}
-
-function attachmentDisplayName(path, folder = "") {
-  const normalizedPath = String(path || "");
-  const normalizedFolder = String(folder || "").replace(/^\/+|\/+$/g, "");
-  const prefix = normalizedFolder ? `${normalizedFolder}/` : "";
-  return normalizedPath.startsWith(prefix) ? normalizedPath.slice(prefix.length) : normalizedPath.split("/").pop();
-}
-
-function syncSkillGraphUploadFolders(host, folders) {
-  const normalized = Array.from(new Set((folders || []).map((folder) => String(folder || "").trim()).filter(Boolean)));
-  host._skillGraphUploadFolders = normalized;
-  host.querySelectorAll("[data-upload-folder]").forEach((folderEl) => {
-    if (!normalized.includes(folderEl.dataset.uploadFolder)) folderEl.remove();
-  });
-  normalized.forEach((folder) => ensureSkillGraphFolderCard(host, folder));
-}
-
-function ensureSkillGraphFolderCard(host, folder) {
-  host._skillGraphPendingUploads ||= [];
-  const list = host.querySelector(".skill-graph-folder-list");
-  let card = Array.from(list.querySelectorAll("[data-upload-folder]"))
-    .find((item) => item.dataset.uploadFolder === folder);
-  if (card) return card;
-  card = document.createElement("div");
-  card.className = "skill-graph-folder-card";
-  card.dataset.uploadFolder = folder;
-  card.innerHTML = `
-    <div class="skill-graph-folder-header">
-      <span></span>
-      <label class="ghost mini-btn skill-graph-folder-add" title="Add files">
-        +
-        <input data-upload-files type="file" multiple />
-      </label>
-    </div>
-    <div class="skill-graph-folder-files"></div>
-    <div class="skill-graph-folder-pending"></div>
-  `;
-  card.querySelector(".skill-graph-folder-header span").textContent = folder;
-  card.querySelector("[data-upload-files]").addEventListener("change", (event) => {
-    const files = Array.from(event.target.files || []);
-    if (!files.length) return;
-    host._skillGraphPendingUploads.push({ folder, files });
-    event.target.value = "";
-    renderSkillGraphPendingUploads(host, folder);
-  });
-  list.appendChild(card);
-  return card;
-}
-
-function renderSkillGraphPendingUploads(host, folder) {
-  const card = Array.from(host.querySelectorAll("[data-upload-folder]"))
-    .find((item) => item.dataset.uploadFolder === folder);
-  if (!card) return;
-  const pendingEl = card.querySelector(".skill-graph-folder-pending");
-  const pending = (host._skillGraphPendingUploads || [])
-    .filter((item) => item.folder === folder)
-    .flatMap((item) => item.files);
-  pendingEl.innerHTML = "";
-  pending.forEach((file) => {
-    const item = document.createElement("div");
-    item.className = "skill-graph-pending-file";
-    item.textContent = file.name;
-    pendingEl.appendChild(item);
-  });
-}
-
-function addSkillGraphFolder(host) {
-  const input = host.querySelector("[data-new-folder-name]");
-  const folder = (input.value || "").trim().replace(/^\/+|\/+$/g, "");
-  if (!folder) return;
-  ensureSkillGraphFolderCard(host, folder);
-  host._skillGraphUploadFolders = Array.from(new Set([...(host._skillGraphUploadFolders || []), folder]));
-  input.value = "";
-  pushSkillGraphEditorHistory(host);
-}
-
-function renderSkillGraphCreatePanel() {
-  if (!skillGraphTab?.detail) return;
-  skillGraphTab.panel.classList.add("has-selection");
-  skillGraphTab.network?.unselectAll();
-  const host = document.createElement("section");
-  host.className = "skill-graph-editor";
-  host.innerHTML = `
-    <h4>Add Node</h4>
-    <div class="skill-graph-editor-actions">
-      <button type="button" class="ghost mini-btn" data-create-action="cancel">Cancel</button>
-      <button type="button" class="primary mini-btn" data-create-action="save">Create</button>
-    </div>
-    <label class="skill-graph-editor-field">Name
-      <input data-create-field="name" type="text" placeholder="new-skill-name" />
-    </label>
-    <label class="skill-graph-editor-field">Description
-      <input data-create-field="description" type="text" />
-    </label>
-    <label class="skill-graph-editor-field">Node type
-      <select data-create-field="node_kind"></select>
-      <span class="skill-graph-field-hint" data-node-kind-hint></span>
-    </label>
-    <label class="skill-graph-editor-field">Tags
-      <input data-create-field="tags" type="text" placeholder="comma separated" />
-    </label>
-    <div class="skill-graph-editor-field"><span data-relation-label>Dependencies</span>
-      <input data-dependency-filter type="text" placeholder="filter skills" />
-      <span class="skill-graph-field-hint" data-relation-hint></span>
-      <div class="skill-graph-dependency-list"></div>
-    </div>
-    <label class="skill-graph-editor-field">SKILL.md body
-      <textarea data-create-field="content" spellcheck="false"></textarea>
-    </label>
-    <div class="skill-graph-editor-attachments">
-      <strong>Attachments</strong>
-      <div class="skill-graph-new-folder">
-        <input data-new-folder-name type="text" placeholder="new folder, e.g. references/setup" />
-        <button type="button" class="ghost mini-btn" data-create-action="add-folder">New folder</button>
-      </div>
-      <div class="skill-graph-folder-list"></div>
-    </div>
-    <div class="skill-graph-editor-status"></div>
-  `;
-  const nodeKindSelect = host.querySelector("[data-create-field='node_kind']");
-  populateSkillGraphNodeKindSelect(nodeKindSelect, "basic");
-  updateSkillGraphNodeKindHint(host, "basic");
-  nodeKindSelect.addEventListener("change", () => updateSkillGraphNodeKindHint(host, nodeKindSelect.value));
-  host.querySelector("[data-create-field='content']").value = "# New skill\n\nDescribe how and when to use this skill.";
-  renderSkillGraphDependencyPicker(host, skillGraphAvailableSkillNames(), []);
-  host.querySelector("[data-create-action='cancel']").addEventListener("click", () => renderSkillGraphDetail(null));
-  host.querySelector("[data-create-action='save']").addEventListener("click", () => createSkillGraphNode(host));
-  host.querySelector("[data-create-action='add-folder']").addEventListener("click", () => addSkillGraphFolder(host));
-  host.querySelector("[data-new-folder-name]").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      addSkillGraphFolder(host);
-    }
-  });
-  skillGraphTab.detail.innerHTML = "";
-  skillGraphTab.detail.appendChild(host);
-  host.querySelector("[data-create-field='name']")?.focus();
-}
-
-async function createSkillGraphNode(host) {
-  const status = host.querySelector(".skill-graph-editor-status");
-  const saveButton = host.querySelector("[data-create-action='save']");
-  const name = host.querySelector("[data-create-field='name']")?.value.trim();
-  if (!name) {
-    status.classList.add("error");
-    status.textContent = "Name is required.";
-    return;
-  }
-  const kind = selectedSkillGraphNodeKind(host, "data-create-field");
-  const payload = {
-    name,
-    description: host.querySelector("[data-create-field='description']")?.value || "",
-    entry_type: kind.entry_type,
-    skill_level: kind.skill_level,
-    tags: csvToList(host.querySelector("[data-create-field='tags']")?.value),
-    dependent_skills: Array.from(host._skillGraphDependencySelected || []),
-    content: host.querySelector("[data-create-field='content']")?.value || "",
-  };
-  status.textContent = "Creating...";
-  status.classList.remove("error");
-  saveButton.disabled = true;
-  try {
-    const resp = await fetch("/api/skill-graph/skills", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (!resp.ok) throw new Error(await resp.text());
-    for (const pending of host._skillGraphPendingUploads || []) {
-      const files = pending.files || [];
-      if (!files.length) continue;
-      const formData = new FormData();
-      formData.append("category", pending.folder || "references");
-      files.forEach((file) => formData.append("files", file));
-      const uploadResp = await fetch(`/api/skill-graph/skills/${encodeURIComponent(name)}/attachments`, {
-        method: "POST",
-        body: formData,
-      });
-      if (!uploadResp.ok) throw new Error(await uploadResp.text());
-    }
-    await refreshSkillGraphData();
-    const created = Array.from(skillGraphTab.nodeData.values()).find((node) => node.skill_name === name);
-    if (created) {
-      skillGraphTab.network?.selectNodes([created.id]);
-      renderSkillGraphDetail(created);
-    }
-  } catch (err) {
-    status.classList.add("error");
-    status.textContent = `Create failed: ${String(err.message || err)}`;
-  } finally {
-    saveButton.disabled = false;
-  }
-}
-
-async function removeSkillGraphNode(node) {
-  if (!node?.skill_name) return;
-  if (!node.is_custom) {
-    window.alert(`Managed skill '${node.skill_name}' cannot be removed here.`);
-    return;
-  }
-  const message = node.is_custom
-    ? `Remove custom skill '${node.skill_name}' from the workspace?`
-    : `Remove default skill '${node.skill_name}'?\n\nThis can delete files from the bundled skill directory in this checkout. Only continue if you really intend to remove it.`;
-  if (!window.confirm(message)) return;
-  const previousStatus = skillGraphTab.status.textContent;
-  skillGraphTab.status.textContent = "removing";
-  skillGraphTab.status.className = "graph-status status-polling";
-  try {
-    const resp = await fetch(`/api/skill-graph/skills/${encodeURIComponent(node.skill_name)}`, {
-      method: "DELETE",
-    });
-    if (!resp.ok) throw new Error(await resp.text());
-    await refreshSkillGraphData();
-    renderSkillGraphDetail(null);
-  } catch (err) {
-    skillGraphTab.status.className = "graph-status status-idle";
-    skillGraphTab.status.textContent = previousStatus || "idle";
-    const error = document.createElement("div");
-    error.className = "skill-graph-editor-status error";
-    error.textContent = `Remove failed: ${String(err.message || err)}`;
-    skillGraphTab.detail.prepend(error);
-  }
-}
-
-function pushSkillGraphEditorHistory(host) {
-  const edit = host._skillGraphEdit;
-  if (!edit || edit.applying) return;
-  edit.history = edit.history.slice(0, edit.index + 1);
-  edit.history.push(skillGraphEditorSnapshot(host));
-  edit.index = edit.history.length - 1;
-}
-
-function moveSkillGraphEditorHistory(host, direction) {
-  const edit = host._skillGraphEdit;
-  if (!edit) return;
-  const nextIndex = edit.index + direction;
-  if (nextIndex < 0 || nextIndex >= edit.history.length) return;
-  edit.applying = true;
-  edit.index = nextIndex;
-  applySkillGraphEditorSnapshot(host, edit.history[edit.index]);
-  edit.applying = false;
-}
-
-function renderSkillGraphEditor(host, node, data) {
-  const metadata = data.metadata || {};
-  const attachments = data.attachments || [];
-  host.innerHTML = `
-    <h4>Edit Skill</h4>
-    <div class="skill-graph-editor-actions">
-      <button type="button" class="ghost mini-btn" data-edit-action="cancel">Cancel</button>
-      <button type="button" class="primary mini-btn" data-edit-action="save">Save</button>
-    </div>
-    <label class="skill-graph-editor-field">Description
-      <input data-edit-field="description" type="text" />
-    </label>
-    <label class="skill-graph-editor-field">Node type
-      <select data-edit-field="node_kind"></select>
-      <span class="skill-graph-field-hint" data-node-kind-hint></span>
-    </label>
-    <label class="skill-graph-editor-field">Tags
-      <input data-edit-field="tags" type="text" placeholder="comma separated" />
-    </label>
-    <div class="skill-graph-editor-field"><span data-relation-label>Dependencies</span>
-      <input data-dependency-filter type="text" placeholder="filter skills" />
-      <span class="skill-graph-field-hint" data-relation-hint></span>
-      <div class="skill-graph-dependency-list"></div>
-    </div>
-    <label class="skill-graph-editor-field">SKILL.md body
-      <textarea data-edit-field="content" spellcheck="false"></textarea>
-    </label>
-    <div class="skill-graph-editor-attachments">
-      <strong>Attachments</strong>
-      <div class="skill-graph-new-folder">
-        <input data-new-folder-name type="text" placeholder="new folder, e.g. references/setup" />
-        <button type="button" class="ghost mini-btn" data-edit-action="add-folder">New folder</button>
-      </div>
-      <div class="skill-graph-folder-list"></div>
-    </div>
-    <div class="skill-graph-editor-status"></div>
-  `;
-
-  const nodeKindSelect = host.querySelector("[data-edit-field='node_kind']");
-  const currentKind = skillGraphNodeKindFor(data.entry_type, data.skill_level);
-  populateSkillGraphNodeKindSelect(nodeKindSelect, currentKind.value);
-  updateSkillGraphNodeKindHint(host, currentKind.value);
-  nodeKindSelect.addEventListener("change", () => {
-    updateSkillGraphNodeKindHint(host, nodeKindSelect.value);
-    pushSkillGraphEditorHistory(host);
-  });
-  host.querySelector("[data-edit-field='description']").value = data.description || "";
-  host.querySelector("[data-edit-field='tags']").value = listToCsv(data.tags || metadata.tags);
-  host.querySelector("[data-edit-field='content']").value = data.content || "";
-  renderSkillGraphDependencyPicker(host, data.available_skills || [], data.dependent_skills || metadata.dependent_skills || []);
-
-  const initialFolders = [];
-  attachments.forEach((category) => {
-    initialFolders.push(category.name);
-    const group = ensureSkillGraphFolderCard(host, category.name);
-    const filesEl = group.querySelector(".skill-graph-folder-files");
-    (category.files || []).forEach((file) => {
-      const row = document.createElement("div");
-      row.className = "skill-graph-attachment-row";
-      row.innerHTML = '<span></span><button type="button" class="ghost mini-btn" aria-pressed="false">Remove</button>';
-      row.querySelector("span").textContent = attachmentDisplayName(file.path, category.name);
-      const button = row.querySelector("button");
-      button.dataset.attachmentPath = file.path;
-      button.addEventListener("click", () => {
-        const pressed = button.getAttribute("aria-pressed") === "true";
-        button.setAttribute("aria-pressed", String(!pressed));
-        row.classList.toggle("pending-remove", !pressed);
-        pushSkillGraphEditorHistory(host);
-      });
-      filesEl.appendChild(row);
-    });
-  });
-  syncSkillGraphUploadFolders(host, initialFolders);
-
-  host._skillGraphEdit = {
-    skillName: node.skill_name,
-    nodeId: node.id,
-    history: [],
-    index: -1,
-    applying: false,
-  };
-  pushSkillGraphEditorHistory(host);
-
-  host.querySelectorAll("[data-edit-field]").forEach((field) => {
-    if (field.type === "file") return;
-    field.addEventListener("input", () => pushSkillGraphEditorHistory(host));
-    field.addEventListener("change", () => pushSkillGraphEditorHistory(host));
-  });
-  host.querySelector("[data-edit-action='cancel']").addEventListener("click", () => {
-    renderSkillGraphDetail(skillGraphTab?.nodeData.get(node.id) || node);
-  });
-  host.querySelector("[data-edit-action='save']").addEventListener("click", () => saveSkillGraphEditor(host));
-  host.querySelector("[data-edit-action='add-folder']").addEventListener("click", () => addSkillGraphFolder(host));
-  host.querySelector("[data-new-folder-name]").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      addSkillGraphFolder(host);
-    }
-  });
-  host.addEventListener("keydown", (event) => {
-    if (!event.ctrlKey && !event.metaKey) return;
-    const key = event.key.toLowerCase();
-    if (key === "z") {
-      event.preventDefault();
-      moveSkillGraphEditorHistory(host, event.shiftKey ? 1 : -1);
-    } else if (key === "y") {
-      event.preventDefault();
-      moveSkillGraphEditorHistory(host, 1);
-    }
-  });
-}
-
-async function loadSkillGraphEditor(node, host) {
-  try {
-    const resp = await fetch(`/api/skill-graph/skills/${encodeURIComponent(node.skill_name)}/edit`);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    renderSkillGraphEditor(host, node, await resp.json());
-  } catch (err) {
-    host.innerHTML = `<h4>Edit Skill</h4><div class="skill-graph-editor-status error">Editor unavailable: ${String(err.message || err)}</div>`;
-  }
-}
-
-async function saveSkillGraphEditor(host) {
-  const edit = host._skillGraphEdit;
-  if (!edit) return;
-  const status = host.querySelector(".skill-graph-editor-status");
-  const saveButton = host.querySelector("[data-edit-action='save']");
-  const snapshot = skillGraphEditorSnapshot(host);
-  status.textContent = "Saving...";
-  status.classList.remove("error");
-  saveButton.disabled = true;
-  try {
-    const resp = await fetch(`/api/skill-graph/skills/${encodeURIComponent(edit.skillName)}/edit`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(snapshot),
-    });
-    if (!resp.ok) throw new Error(await resp.text());
-    for (const path of snapshot.pendingRemovals || []) {
-      const delResp = await fetch(`/api/skill-graph/skills/${encodeURIComponent(edit.skillName)}/attachments?path=${encodeURIComponent(path)}`, {
-        method: "DELETE",
-      });
-      if (!delResp.ok) throw new Error(await delResp.text());
-    }
-    for (const pending of host._skillGraphPendingUploads || []) {
-      const files = pending.files || [];
-      if (!files.length) continue;
-      const formData = new FormData();
-      formData.append("category", pending.folder || "references");
-      files.forEach((file) => formData.append("files", file));
-      const uploadResp = await fetch(`/api/skill-graph/skills/${encodeURIComponent(edit.skillName)}/attachments`, {
-        method: "POST",
-        body: formData,
-      });
-      if (!uploadResp.ok) throw new Error(await uploadResp.text());
-    }
-    status.textContent = "Saved.";
-    await refreshSkillGraphData({ selectedNodeId: edit.nodeId });
-  } catch (err) {
-    status.classList.add("error");
-    status.textContent = `Save failed: ${String(err.message || err)}`;
-  } finally {
-    saveButton.disabled = false;
-  }
-}
-
-function renderSkillGraphDetail(node) {
-  if (!skillGraphTab?.detail) return;
-  skillGraphTab.panel.classList.toggle("has-selection", Boolean(node));
-  if (!node) {
-    skillGraphTab.detail.innerHTML = "";
-    return;
-  }
-
-  skillGraphTab.detail.innerHTML = "";
-  const title = document.createElement("h3");
-  title.textContent = node.title || node.label || "Untitled";
-  const metadata = node.metadata || {};
-
-  const meta = document.createElement("div");
-  meta.className = "skill-graph-detail-meta";
-  const metaItems = [
-    skillGraphDisplayNodeType(node.entry_type, metadata?.skill_level),
-    node.enabled === false ? "disabled" : "enabled",
-    node.verification_status,
-    node.refinement_status,
-  ].filter(Boolean);
-  meta.textContent = metaItems.join(" / ");
-
-  const tags = document.createElement("div");
-  tags.className = "skill-graph-tags";
-  (node.tags || []).forEach((tag) => {
-    const chip = document.createElement("span");
-    chip.textContent = tag;
-    tags.appendChild(chip);
-  });
-
-  const content = createSkillGraphMarkdown(node.content || "No content.", "skill-graph-detail-content skill-graph-markdown");
-
-  const identity = createSkillGraphFacts([
-    ["ID", node.id],
-    ["Slug", node.slug],
-    ["Skill", node.skill_name],
-    ["Enabled", node.enabled !== false],
-    ["Type", skillGraphDisplayNodeType(node.entry_type, metadata.skill_level)],
-    ["Aliases", node.aliases],
-  ]);
-  const quality = createSkillGraphFacts([
-    ["Verification", metadata.verification_status || node.verification_status],
-    ["Refinement", metadata.refinement_status || node.refinement_status],
-    ["Kind", skillGraphDisplayNodeType(node.entry_type, metadata.skill_level)],
-    ["Trust", metadata.trust_score ?? node.trust_score],
-    ["Usage", metadata.usage_count ?? node.usage_count],
-    ["Review count", metadata.review_count],
-    ["Modify count", metadata.modify_count],
-    ["Needs generalization", metadata.needs_generalization],
-  ]);
-  const provenance = createSkillGraphFacts([
-    ["Source", metadata.source_provenance || node.source_provenance],
-    ["Extraction", metadata.extraction_method],
-    ["Timestamp", metadata.timestamp],
-    ["Last reviewed", metadata.last_reviewed_at],
-    ["Remote source", metadata.remote_source],
-  ]);
-  const requirements = createSkillGraphFacts([
-    ["Applicability", metadata.applicability],
-    ["Failure modes", metadata.failure_modes],
-    ["Runtime", metadata.runtime_requirements],
-    ["Related envs", metadata.related_environments],
-    ["Script language", metadata.script_language],
-    ["Script filename", metadata.script_filename],
-    ["Script requirements", metadata.script_requirements],
-  ]);
-  const custom = createSkillGraphFacts([["Custom", metadata.custom]]);
-  const attachmentSections = groupSkillGraphAttachments(node)
-    .map(([folder, items]) => createSkillGraphSection(folder, [createSkillGraphAttachmentList(items, folder)]));
-
-  skillGraphTab.detail.append(title, meta);
-  if (tags.children.length) skillGraphTab.detail.appendChild(tags);
-  const sections = [
-    createSkillGraphEditToggle(node),
-    createSkillGraphSection("Content", [content]),
-    createSkillGraphSection("Identity", [identity]),
-    createSkillGraphSection("Quality", [quality]),
-    createSkillGraphSection("Provenance", [provenance]),
-    createSkillGraphSection("References", [
-      createSkillGraphList(node.internal_refs),
-      createSkillGraphList(metadata.external_refs),
-    ]),
-    createSkillGraphSection("Progressive Retrieval", [skillGraphAttachedContextFacts(node.id)]),
-    createSkillGraphSection("Execution Context", [requirements]),
-    createSkillGraphSection("Feedback", [createSkillGraphObjectList(metadata.feedback_log, "verdict")]),
-    ...attachmentSections,
-    createSkillGraphSection("Custom Metadata", [custom]),
-    createSkillGraphSection("Links", [createSkillGraphLinks(node.id)]),
-  ].filter(Boolean);
-  skillGraphTab.detail.append(...sections);
-}
-
-function ensureSkillGraphTab() {
-  if (skillGraphTab) {
-    activateCenterTab("skill-graph");
-    return skillGraphTab;
-  }
-
-  const tabId = "skill-graph";
-  const button = document.createElement("button");
-  button.className = "center-tab";
-  button.type = "button";
-  button.role = "tab";
-  button.dataset.tabId = tabId;
-  button.id = `tab-${tabId}`;
-  button.setAttribute("aria-selected", "false");
-  button.setAttribute("aria-controls", `${tabId}-panel`);
-  button.title = "Skill Graph";
-
-  const title = document.createElement("span");
-  title.className = "center-tab-title";
-  title.textContent = "Skill Graph";
-  button.appendChild(title);
-
-  const close = document.createElement("span");
-  close.className = "center-tab-close";
-  close.dataset.closeTabId = tabId;
-  close.setAttribute("aria-hidden", "true");
-  close.textContent = "×";
-  button.appendChild(close);
-
-  const panel = document.createElement("div");
-  panel.className = "center-tab-panel skill-graph-tab-panel";
-  panel.id = `${tabId}-panel`;
-  panel.role = "tabpanel";
-  panel.dataset.tabId = tabId;
-  panel.setAttribute("aria-labelledby", button.id);
-
-  const header = document.createElement("div");
-  header.className = "skill-graph-header";
-  const heading = document.createElement("div");
-  heading.innerHTML = '<div class="eyebrow">Knowledge</div><strong>Skill Graph</strong>';
-  const actions = document.createElement("div");
-  actions.className = "skill-graph-header-actions";
-  const addNode = document.createElement("button");
-  addNode.type = "button";
-  addNode.className = "ghost mini-btn";
-  addNode.textContent = "Add node";
-  addNode.addEventListener("click", renderSkillGraphCreatePanel);
-  const status = document.createElement("span");
-  status.className = "graph-status status-idle";
-  status.textContent = "idle";
-  actions.append(addNode, status);
-  header.append(heading, actions);
-
-  const body = document.createElement("div");
-  body.className = "skill-graph-body";
-  const canvas = document.createElement("div");
-  canvas.className = "skill-graph-canvas";
-  const detail = document.createElement("aside");
-  detail.className = "skill-graph-detail";
-  body.append(canvas, detail);
-  panel.append(header, body);
-
-  centerTabs?.appendChild(button);
-  centerTabPanels?.appendChild(panel);
-  skillGraphTab = {
-    button,
-    panel,
-    status,
-    canvas,
-    detail,
-    network: null,
-    nodesDataSet: null,
-    edgesDataSet: null,
-    nodeData: new Map(),
-    edges: [],
-    loaded: false,
-  };
-  activateCenterTab(tabId);
-  return skillGraphTab;
-}
-
-function skillGraphNodeView(node, positions = {}) {
-  const position = positions[node.id];
-  const nodeKind = skillGraphNodeKindFor(node.entry_type, node.metadata?.skill_level);
-  return {
-    id: node.id,
-    label: node.label,
-    title: `${node.title}\n${nodeKind.label.toLowerCase()}${node.enabled === false ? "\ndisabled" : ""}`,
-    color: skillGraphNodeColor(node.entry_type, node.enabled, node.metadata?.skill_level),
-    font: {
-      color: node.enabled === false
-        ? (state.theme === "light" ? "rgba(19, 32, 51, 0.42)" : "rgba(231, 237, 247, 0.42)")
-        : (state.theme === "light" ? "#132033" : "#e7edf7"),
-      size: 13,
-      face: "Manrope",
-    },
-    shape: "dot",
-    size: nodeKind.value === "basic" || nodeKind.value === "workflow" ? 18 : 14,
-    borderWidth: node.enabled === false ? 1 : 2,
-    ...(position ? { x: position.x, y: position.y } : {}),
-  };
-}
-
-function skillGraphEdgeView(edge, nodeData) {
-  return {
-    id: edge.id,
-    from: edge.from,
-    to: edge.to,
-    arrows: "to",
-    color: skillGraphEdgeColor(
-      nodeData.get(edge.from)?.enabled === false
-        || nodeData.get(edge.to)?.enabled === false
-    ),
-    title: edge.relation || "related",
-    smooth: { type: "dynamic" },
-  };
-}
-
-function syncSkillGraphDataSet(dataSet, items) {
-  const nextIds = new Set(items.map((item) => item.id));
-  const staleIds = dataSet.getIds().filter((id) => !nextIds.has(id));
-  if (staleIds.length) dataSet.remove(staleIds);
-  if (items.length) dataSet.update(items);
-}
-
-async function refreshSkillGraphData({ selectedNodeId = null } = {}) {
-  const tab = skillGraphTab;
-  if (!tab?.network || !tab.nodesDataSet || !tab.edgesDataSet) {
-    await loadSkillGraphTab({ force: true });
-    return;
-  }
-  const selected = selectedNodeId || tab.network.getSelectedNodes()[0] || null;
-  tab.status.textContent = "updating";
-  tab.status.className = "graph-status status-polling";
-  const resp = await fetch("/api/skill-graph/data?limit=500");
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  const data = await resp.json();
-  const positions = tab.network.getPositions();
-  tab.nodeData = new Map((data.nodes || []).map((node) => [node.id, node]));
-  tab.edges = data.edges || [];
-  tab.network.setOptions({ physics: { enabled: false } });
-  syncSkillGraphDataSet(tab.nodesDataSet, (data.nodes || []).map((node) => skillGraphNodeView(node, positions)));
-  syncSkillGraphDataSet(tab.edgesDataSet, (data.edges || []).map((edge) => skillGraphEdgeView(edge, tab.nodeData)));
-  tab.status.className = "graph-status status-idle";
-  tab.status.textContent = `${data.nodes?.length || 0} nodes / ${data.edges?.length || 0} edges`;
-  if (selected && tab.nodeData.has(selected)) {
-    tab.network.selectNodes([selected]);
-    renderSkillGraphDetail(tab.nodeData.get(selected));
-  } else {
-    renderSkillGraphDetail(null);
-  }
-}
-
-async function loadSkillGraphTab({ force = false } = {}) {
-  const tab = ensureSkillGraphTab();
-  if (tab.loaded && !force) return;
-  tab.status.textContent = "loading";
-  tab.status.className = "graph-status status-polling";
-  tab.loaded = false;
-  tab.network?.destroy();
-  tab.network = null;
-  tab.nodesDataSet = null;
-  tab.edgesDataSet = null;
-  renderSkillGraphDetail(null);
-  tab.canvas.innerHTML = '<div class="skill-graph-loading">Loading graph...</div>';
-
-  try {
-    const resp = await fetch("/api/skill-graph/data?limit=500");
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-    tab.nodeData = new Map((data.nodes || []).map((node) => [node.id, node]));
-    tab.edges = data.edges || [];
-
-    const nodes = new DataSet((data.nodes || []).map(skillGraphNodeView));
-    const edges = new DataSet((data.edges || []).map((edge) => skillGraphEdgeView(edge, tab.nodeData)));
-    tab.nodesDataSet = nodes;
-    tab.edgesDataSet = edges;
-
-    tab.canvas.innerHTML = "";
-    tab.network?.destroy();
-    tab.network = new Network(tab.canvas, { nodes, edges }, {
-      autoResize: true,
-      physics: {
-        enabled: true,
-        stabilization: { iterations: 160 },
-        barnesHut: { gravitationalConstant: -5600, springLength: 120, springConstant: 0.045 },
-      },
-      interaction: { hover: true, tooltipDelay: 180, navigationButtons: false, keyboard: false },
-      nodes: { borderWidth: 2 },
-      edges: { width: 1.6 },
-    });
-    tab.network.on("selectNode", (params) => {
-      renderSkillGraphDetail(tab.nodeData.get(params.nodes[0]));
-    });
-    tab.network.on("deselectNode", () => renderSkillGraphDetail(null));
-    tab.network.once("stabilizationIterationsDone", () => {
-      tab.network.fit({ animation: false });
-    });
-    tab.loaded = true;
-    tab.status.className = "graph-status status-idle";
-    tab.status.textContent = `${data.nodes?.length || 0} nodes / ${data.edges?.length || 0} edges`;
-  } catch (err) {
-    tab.status.className = "graph-status status-idle";
-    tab.status.textContent = "failed";
-    tab.canvas.innerHTML = "";
-    const error = document.createElement("div");
-    error.className = "skill-graph-loading";
-    error.textContent = `Failed to load graph: ${String(err.message || err)}`;
-    tab.canvas.appendChild(error);
-  }
 }
 
 centerTabs?.addEventListener("click", (event) => {
@@ -5361,46 +3902,47 @@ centerTabs?.addEventListener("click", (event) => {
 async function openViewer(item) {
   graphDetail.classList.add("hidden");
   const tab = ensureStructureTab(item);
+  if (tab.viewer) return;
+  if (tab.destroyViewer) await tab.destroyViewer();
+  tab.viewer = null;
+  tab.destroyViewer = null;
   tab.canvas.innerHTML = '<div style="color:var(--muted);padding:16px;font-size:13px">Loading…</div>';
   tab.meta.textContent = "";
 
   try {
-    const resp = await fetch(`/api/structure/view?path=${encodeURIComponent(item.path)}&session_id=${encodeURIComponent(state.sessionId || "")}`);
+    const [resp, [structureViewer, svelte]] = await Promise.all([
+      fetch(`/api/structure/view?path=${encodeURIComponent(item.path)}&session_id=${encodeURIComponent(state.sessionId || "")}`),
+      loadStructureViewerModules(),
+    ]);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
 
     tab.canvas.innerHTML = "";
-
-    const viewer = $3Dmol.createViewer(tab.canvas, { backgroundColor: state.theme === "light" ? "0xf8fbff" : "0x06080f" });
-    tab.viewer = viewer;
-    if (state.activeCenterTabId === tab.id) state.structure3dViewer = viewer;
-    viewer.addModel(data.xyz, "xyz");
-    viewer.setStyle({}, { sphere: { scale: 0.3 }, stick: { radius: 0.15 } });
-
-    if (data.periodic && data.cell) {
-      const [a, b, c] = data.cell;
-      const add = (u, v) => [u[0] + v[0], u[1] + v[1], u[2] + v[2]];
-      const corners = [
-        [0, 0, 0], a, b, c,
-        add(a, b), add(a, c), add(b, c), add(add(a, b), c),
-      ];
-      const edges = [[0,1],[0,2],[0,3],[1,4],[1,5],[2,4],[2,6],[3,5],[3,6],[4,7],[5,7],[6,7]];
-      for (const [i, j] of edges) {
-        viewer.addLine({
-          start: { x: corners[i][0], y: corners[i][1], z: corners[i][2] },
-          end:   { x: corners[j][0], y: corners[j][1], z: corners[j][2] },
-          color: "0x7dd3fc",
-          linewidth: 2,
-        });
-      }
-    }
-
-    viewer.zoomTo();
-    viewer.render();
-    refreshGraphAndStructureLayout();
-
-    tab.meta.textContent =
+    const structureMeta =
       `${data.formula}  ·  ${data.n_atoms} atoms${data.periodic ? "  ·  periodic" : ""}`;
+    const viewer = svelte.mount(structureViewer.default, {
+      target: tab.canvas,
+      props: {
+        structure_string: data.structure_string || data.xyz,
+        source_path: item.path,
+        session_id: state.sessionId || "",
+        background_color: state.theme === "light" ? "#f8fbff" : "#06080f",
+        performance_mode: data.n_atoms > 500 ? "speed" : "quality",
+        on_modified: () => {
+          tab.meta.textContent = `${structureMeta}  ·  unsaved atom edits`;
+        },
+        on_generated: (generated) => {
+          const generatedMeta = `${generated.formula}  ·  ${generated.n_atoms} atoms`;
+          tab.meta.textContent = `${generatedMeta}  ·  ${generated.operation}  ·  saved`;
+          void refreshSessionFiles();
+        },
+      },
+    });
+    tab.viewer = viewer;
+    tab.destroyViewer = () => svelte.unmount(viewer);
+    if (state.activeCenterTabId === tab.id) state.structure3dViewer = viewer;
+
+    tab.meta.textContent = `${structureMeta}  ·  Select an atom to edit it`;
   } catch (err) {
     tab.canvas.innerHTML =
       `<div style="color:#f87171;padding:16px;font-size:13px">Failed to load structure: ${err}</div>`;
@@ -5468,112 +4010,9 @@ document.getElementById("file-viewer-modal")?.addEventListener("click", (e) => {
 // Image lightbox
 // ---------------------------------------------------------------------------
 
-const lightbox = {
-  el: document.getElementById("image-lightbox"),
-  img: document.getElementById("lightbox-img"),
-  viewport: document.getElementById("lightbox-viewport"),
-  label: document.getElementById("lightbox-zoom-label"),
-  _scale: 1,
-  _tx: 0,
-  _ty: 0,
-  _dragging: false,
-  _dragStartX: 0,
-  _dragStartY: 0,
-  _dragStartTx: 0,
-  _dragStartTy: 0,
+const lightbox = createImageLightbox();
 
-  open(src) {
-    this._scale = 1;
-    this._tx = 0;
-    this._ty = 0;
-    this.img.src = src;
-    this.img.style.transform = "";
-    this.el.classList.remove("hidden");
-    this._updateLabel();
-  },
-
-  close() {
-    this.el.classList.add("hidden");
-    this.img.src = "";
-  },
-
-  _apply() {
-    this.img.style.transform = `translate(${this._tx}px, ${this._ty}px) scale(${this._scale})`;
-    this._updateLabel();
-  },
-
-  _updateLabel() {
-    if (this.label) this.label.textContent = `${Math.round(this._scale * 100)}%`;
-  },
-
-  zoomIn() {
-    this._scale = Math.min(this._scale * 1.3, 20);
-    this._apply();
-  },
-
-  zoomOut() {
-    const newScale = this._scale / 1.3;
-    if (newScale < 0.1) return;
-    const oldScale = this._scale;
-    this._scale = newScale;
-    const factor = this._scale / oldScale;
-    this._tx *= factor;
-    this._ty *= factor;
-    this._apply();
-  },
-
-  resetZoom() {
-    this._scale = 1;
-    this._tx = 0;
-    this._ty = 0;
-    this._apply();
-  },
-};
-
-lightbox.viewport?.addEventListener("wheel", (e) => {
-  e.preventDefault();
-  if (e.deltaY < 0) lightbox.zoomIn();
-  else lightbox.zoomOut();
-}, { passive: false });
-
-lightbox.viewport?.addEventListener("mousedown", (e) => {
-  if (e.target === lightbox.img) {
-    lightbox._dragging = true;
-    lightbox._dragStartX = e.clientX;
-    lightbox._dragStartY = e.clientY;
-    lightbox._dragStartTx = lightbox._tx;
-    lightbox._dragStartTy = lightbox._ty;
-    e.preventDefault();
-  }
-});
-
-document.addEventListener("mousemove", (e) => {
-  if (!lightbox._dragging) return;
-  lightbox._tx = lightbox._dragStartTx + (e.clientX - lightbox._dragStartX);
-  lightbox._ty = lightbox._dragStartTy + (e.clientY - lightbox._dragStartY);
-  lightbox._apply();
-});
-
-document.addEventListener("mouseup", () => {
-  lightbox._dragging = false;
-});
-
-// Click on viewport backdrop (not the image) to close
-lightbox.viewport?.addEventListener("click", (e) => {
-  if (e.target === lightbox.viewport) lightbox.close();
-});
-
-document.getElementById("lightbox-close")?.addEventListener("click", () => lightbox.close());
-document.getElementById("lightbox-zoom-in")?.addEventListener("click", () => lightbox.zoomIn());
-document.getElementById("lightbox-zoom-out")?.addEventListener("click", () => lightbox.zoomOut());
-document.getElementById("lightbox-zoom-reset")?.addEventListener("click", () => lightbox.resetZoom());
-
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !lightbox.el.classList.contains("hidden")) lightbox.close();
-});
-
-initPanelResizers();
-initColResizers();
+layoutController.init();
 
 // ---------------------------------------------------------------------------
 // Event listeners
@@ -5669,700 +4108,3 @@ async function _doNewSession(customWorkdir) {
   hidePlanGraph();
   await createSession();
 }
-
-// ---------------------------------------------------------------------------
-// Settings panel
-// ---------------------------------------------------------------------------
-
-const settingsModal = document.getElementById("settings-modal");
-const settingsBtn = document.getElementById("settings-btn");
-const settingsClose = document.getElementById("settings-close");
-const settingsSave = document.getElementById("settings-save");
-const settingsStatus = document.getElementById("settings-status");
-const settingsUsername = document.getElementById("settings-username");
-const settingsUuid = document.getElementById("settings-uuid");
-const skillsChecklist = document.getElementById("skills-checklist");
-const settingsRestartBtn = document.getElementById("settings-restart-btn");
-const settingsEnvPairs = document.getElementById("settings-env-pairs");
-const settingsEnvAdd = document.getElementById("settings-env-add");
-const settingsLlmExecutorDefault = document.getElementById("settings-llm-executor-default");
-const settingsLlmCards = document.getElementById("settings-llm-cards");
-const settingsLlmCardAdd = document.getElementById("settings-llm-card-add");
-const CUSTOM_ENV_CONFIG_KEY = "CUSTOM_ENV";
-
-// Env config input refs
-const envInputs = {
-  LLM_MODEL:              () => document.getElementById("settings-llm-model"),
-  LLM_API_KEY:            () => document.getElementById("settings-llm-apikey"),
-  LLM_BASE_URL:           () => document.getElementById("settings-llm-baseurl"),
-  EMBEDDING_MODEL:        () => document.getElementById("settings-llm-embed"),
-  GRAPH_AGENT_MODEL:      () => document.getElementById("settings-llm-graph-model"),
-  REVIEW_AGENT_MODEL:     () => document.getElementById("settings-llm-review-model"),
-};
-
-function settingsQueryString() {
-  return state.deploymentMode === "server" && state.userId
-    ? `?user_id=${encodeURIComponent(state.userId)}`
-    : "";
-}
-
-function settingsApiUrl(path) {
-  return `${path}${settingsQueryString()}`;
-}
-
-function createEnvPairRow(key = "", value = "") {
-  const row = document.createElement("div");
-  row.className = "settings-env-pair-row";
-
-  const keyInput = document.createElement("input");
-  keyInput.className = "text-input settings-env-input settings-env-key";
-  keyInput.placeholder = "KEY";
-  keyInput.value = key;
-  keyInput.autocomplete = "off";
-
-  const valueInput = document.createElement("input");
-  valueInput.className = "text-input settings-env-input settings-env-value";
-  valueInput.placeholder = "value";
-  valueInput.value = value;
-  valueInput.autocomplete = "new-password";
-
-  const remove = document.createElement("button");
-  remove.type = "button";
-  remove.className = "ghost settings-env-remove";
-  remove.title = "Remove variable";
-  remove.textContent = "×";
-  remove.addEventListener("click", () => row.remove());
-
-  row.append(keyInput, valueInput, remove);
-  return row;
-}
-
-function renderEnvPairs(envCfg = {}) {
-  if (!settingsEnvPairs) return;
-  settingsEnvPairs.innerHTML = "";
-  const entries = Object.entries(envCfg || {}).sort(([a], [b]) => a.localeCompare(b));
-  entries.forEach(([key, value]) => settingsEnvPairs.appendChild(createEnvPairRow(key, value)));
-}
-
-function collectEnvPairs() {
-  const values = {};
-  settingsEnvPairs?.querySelectorAll(".settings-env-pair-row")?.forEach((row) => {
-    const key = row.querySelector(".settings-env-key")?.value.trim();
-    const value = row.querySelector(".settings-env-value")?.value || "";
-    if (key && value) values[key] = value;
-  });
-  return values;
-}
-
-function formatJsonConfig(value) {
-  if (!value || (typeof value === "object" && !Object.keys(value).length)) return "";
-  return JSON.stringify(value, null, 2);
-}
-
-function parseJsonConfig(text, label) {
-  const trimmed = (text || "").trim();
-  if (!trimmed) return undefined;
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
-      throw new Error(`${label} must be a JSON object.`);
-    }
-    return parsed;
-  } catch (err) {
-    throw new Error(`${label} is not valid JSON: ${err.message}`);
-  }
-}
-
-function csvFieldToList(value) {
-  return String(value || "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function listFieldToCsv(value) {
-  return Array.isArray(value) ? value.join(", ") : String(value || "");
-}
-
-function executorCardKnownFields() {
-  return new Set([
-    "model",
-    "description",
-    "skills",
-    "tags",
-    "routing_keywords",
-    "cost_tier",
-    "latency_tier",
-    "priority",
-  ]);
-}
-
-function createExecutorCardEditor(name = "", data = {}) {
-  const card = document.createElement("section");
-  card.className = "settings-llm-card-editor";
-  const customData = { ...(data || {}) };
-  executorCardKnownFields().forEach((key) => delete customData[key]);
-
-  card.innerHTML = `
-    <div class="settings-llm-card-title">Executor Card</div>
-    <label class="settings-label">name</label>
-    <div class="settings-llm-card-header">
-      <input data-card-field="name" class="text-input settings-env-input settings-llm-card-name" placeholder="card name" autocomplete="off" />
-      <button type="button" class="ghost settings-llm-card-remove" title="Remove card">×</button>
-    </div>
-    <label class="settings-label">Model</label>
-    <input data-card-field="model" class="text-input settings-env-input" placeholder="openai/qwen3-plus" />
-    <label class="settings-label">Description</label>
-    <textarea data-card-field="description" class="text-input settings-env-input settings-llm-card-description" spellcheck="false" placeholder="When this card should be used"></textarea>
-    <div class="settings-llm-card-grid">
-      <label class="settings-llm-field">Skills
-        <input data-card-field="skills" class="text-input settings-env-input" placeholder="filesystem, python" />
-      </label>
-      <label class="settings-llm-field">Tags
-        <input data-card-field="tags" class="text-input settings-env-input" placeholder="vision, cheap" />
-      </label>
-      <label class="settings-llm-field">Routing Keywords
-        <input data-card-field="routing_keywords" class="text-input settings-env-input" placeholder="debug, analyze" />
-      </label>
-      <label class="settings-llm-field">Cost Tier
-        <input data-card-field="cost_tier" class="text-input settings-env-input" placeholder="low / medium / high" />
-      </label>
-      <label class="settings-llm-field">Latency Tier
-        <input data-card-field="latency_tier" class="text-input settings-env-input" placeholder="low / medium / high" />
-      </label>
-      <label class="settings-llm-field">Priority
-        <input data-card-field="priority" type="number" class="text-input settings-env-input" placeholder="0" />
-      </label>
-    </div>
-    <label class="settings-label">Custom Fields JSON</label>
-    <textarea data-card-field="custom" class="text-input settings-env-input settings-json-textarea settings-llm-card-custom" spellcheck="false" placeholder='{"api_key":"...","base_url":"https://..."}'></textarea>
-  `;
-
-  card.querySelector("[data-card-field='name']").value = name;
-  card.querySelector("[data-card-field='model']").value = data?.model || "";
-  card.querySelector("[data-card-field='description']").value = data?.description || "";
-  card.querySelector("[data-card-field='skills']").value = listFieldToCsv(data?.skills);
-  card.querySelector("[data-card-field='tags']").value = listFieldToCsv(data?.tags);
-  card.querySelector("[data-card-field='routing_keywords']").value = listFieldToCsv(data?.routing_keywords || data?.keywords);
-  card.querySelector("[data-card-field='cost_tier']").value = data?.cost_tier || "";
-  card.querySelector("[data-card-field='latency_tier']").value = data?.latency_tier || "";
-  card.querySelector("[data-card-field='priority']").value = data?.priority ?? "";
-  card.querySelector("[data-card-field='custom']").value = formatJsonConfig(customData);
-  card.querySelector(".settings-llm-card-remove")?.addEventListener("click", () => card.remove());
-  return card;
-}
-
-function renderExecutorCards(executorCards = {}) {
-  if (!settingsLlmCards) return;
-  settingsLlmCards.innerHTML = "";
-  if (settingsLlmExecutorDefault) settingsLlmExecutorDefault.value = executorCards?.default || "";
-  const cards = executorCards?.cards && typeof executorCards.cards === "object" ? executorCards.cards : {};
-  Object.entries(cards)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .forEach(([name, data]) => {
-      settingsLlmCards.appendChild(createExecutorCardEditor(name, data || {}));
-    });
-}
-
-function collectExecutorCards() {
-  const defaultName = settingsLlmExecutorDefault?.value.trim() || "";
-  const cards = {};
-  settingsLlmCards?.querySelectorAll(".settings-llm-card-editor")?.forEach((card) => {
-    const name = card.querySelector("[data-card-field='name']")?.value.trim();
-    if (!name) return;
-    const data = {};
-    const setText = (field) => {
-      const value = card.querySelector(`[data-card-field='${field}']`)?.value.trim();
-      if (value) data[field] = value;
-    };
-    setText("model");
-    setText("description");
-    ["skills", "tags", "routing_keywords"].forEach((field) => {
-      const value = csvFieldToList(card.querySelector(`[data-card-field='${field}']`)?.value || "");
-      if (value.length) data[field] = value;
-    });
-    setText("cost_tier");
-    setText("latency_tier");
-    const priorityRaw = card.querySelector("[data-card-field='priority']")?.value;
-    if (priorityRaw !== undefined && priorityRaw !== "") data.priority = Number(priorityRaw);
-    const custom = parseJsonConfig(card.querySelector("[data-card-field='custom']")?.value || "", `Custom Fields for ${name}`);
-    cards[name] = { ...(custom || {}), ...data };
-  });
-  return { default: defaultName, cards };
-}
-
-settingsLlmCardAdd?.addEventListener("click", () => {
-  const nextIndex = (settingsLlmCards?.querySelectorAll(".settings-llm-card-editor")?.length || 0) + 1;
-  const card = createExecutorCardEditor(`card_${nextIndex}`, {});
-  settingsLlmCards?.appendChild(card);
-  card.querySelector("[data-card-field='name']")?.focus();
-});
-
-settingsEnvAdd?.addEventListener("click", () => {
-  const row = createEnvPairRow();
-  settingsEnvPairs?.appendChild(row);
-  row.querySelector(".settings-env-key")?.focus();
-});
-
-function activeSettingsTabName() {
-  return document.querySelector(".settings-tab.active")?.dataset.tab || "profile";
-}
-
-function settingsTabRequiresBackendRestart(tabName) {
-  return ["llm", "env"].includes(tabName);
-}
-
-function openSettingsModal() {
-  settingsModal.classList.remove("hidden");
-  settingsUsername.value = state.displayName || "";
-  settingsUuid.value = state.userId || "";
-  loadSettingsData();
-}
-
-function closeSettingsModal() {
-  settingsModal.classList.add("hidden");
-}
-
-// ---- tree helpers ----------------------------------------------------------
-
-function _buildSkillTree(skills) {
-  const byName = new Map(skills.map((s) => [s.name, { ...s, children: [] }]));
-  const roots = [];
-  for (const s of skills) {
-    const node = byName.get(s.name);
-    if (s.parent && byName.has(s.parent)) {
-      byName.get(s.parent).children.push(node);
-    } else {
-      roots.push(node);
-    }
-  }
-  const cmp = (a, b) => {
-    const ak = a.children.length > 0 ? 0 : 1;
-    const bk = b.children.length > 0 ? 0 : 1;
-    return ak !== bk ? ak - bk : a.name.localeCompare(b.name);
-  };
-  roots.sort(cmp);
-  roots.forEach((r) => r.children.sort(cmp));
-  return roots;
-}
-
-function _syncParent(parentCb, childWrap) {
-  const childCbs = Array.from(
-    childWrap.querySelectorAll(":scope > .st-item > .st-row > .skill-checkbox")
-  ).filter((c) => !c.disabled);
-  if (!childCbs.length) return;
-  const checkedCount = childCbs.filter((c) => c.checked).length;
-  if (checkedCount === childCbs.length) {
-    parentCb.indeterminate = false;
-    parentCb.checked = true;
-  } else if (checkedCount === 0) {
-    parentCb.indeterminate = false;
-    parentCb.checked = false;
-  } else {
-    parentCb.indeterminate = true;
-  }
-}
-
-function _renderSkillNode(node, extraSkills, depth) {
-  const hasChildren = node.children.length > 0;
-
-  const item = document.createElement("div");
-  item.className = "st-item";
-
-  const row = document.createElement("div");
-  row.className = "st-row";
-  if (depth > 0) row.style.paddingLeft = `${depth * 18}px`;
-
-  const toggle = document.createElement("button");
-  toggle.type = "button";
-  toggle.className = "st-toggle";
-  toggle.innerHTML = hasChildren ? "&#9654;" : "";
-  toggle.disabled = !hasChildren;
-  if (!hasChildren) toggle.style.visibility = "hidden";
-
-  const cb = document.createElement("input");
-  cb.type = "checkbox";
-  cb.className = "skill-checkbox";
-  cb.dataset.name = node.name;
-  cb.checked = node.planning_enabled || extraSkills.has(node.name);
-
-  const enabledCb = document.createElement("input");
-  enabledCb.type = "checkbox";
-  enabledCb.className = "skill-enabled-checkbox";
-  enabledCb.dataset.name = node.name;
-  enabledCb.checked = node.enabled !== false;
-  enabledCb.title = "Enable skill for graph search";
-
-  const nameEl = document.createElement("span");
-  nameEl.className = "st-name";
-  nameEl.textContent = node.name;
-
-  if (node.source === "builtin") {
-    const badge = document.createElement("span");
-    badge.className = "skill-badge-custom";
-    badge.textContent = "Builtin";
-    nameEl.appendChild(badge);
-  }
-
-  if (node.source === "official") {
-    const badge = document.createElement("span");
-    badge.className = "skill-badge-custom";
-    badge.textContent = "Official";
-    nameEl.appendChild(badge);
-  }
-
-  if (node.is_custom) {
-    const badge = document.createElement("span");
-    badge.className = "skill-badge-custom";
-    badge.textContent = "Custom";
-    nameEl.appendChild(badge);
-  }
-
-  const descEl = document.createElement("span");
-  descEl.className = "st-desc";
-  descEl.textContent = node.description;
-
-  row.append(toggle, enabledCb, cb, nameEl, descEl);
-
-  if (node.is_custom) {
-    const delBtn = document.createElement("button");
-    delBtn.type = "button";
-    delBtn.className = "skill-delete-btn";
-    delBtn.title = "Delete custom skill";
-    delBtn.textContent = "✕";
-    delBtn.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      if (!confirm(`Delete custom skill "${node.name}"?`)) return;
-      await deleteCustomSkill(node.name);
-    });
-    row.appendChild(delBtn);
-  }
-
-  item.appendChild(row);
-
-  if (hasChildren) {
-    const childWrap = document.createElement("div");
-    childWrap.className = "st-children st-collapsed";
-
-    for (const child of node.children) {
-      childWrap.appendChild(_renderSkillNode(child, extraSkills, depth + 1));
-    }
-    item.appendChild(childWrap);
-
-    // Expand / collapse
-    toggle.addEventListener("click", () => {
-      const collapsed = childWrap.classList.toggle("st-collapsed");
-      toggle.innerHTML = collapsed ? "&#9654;" : "&#9660;";
-    });
-
-    // Parent → children propagation
-    cb.addEventListener("change", () => {
-      childWrap
-        .querySelectorAll(".skill-checkbox:not(:disabled)")
-        .forEach((c) => {
-          c.checked = cb.checked;
-          c.indeterminate = false;
-        });
-    });
-
-    // Children → parent tri-state
-    childWrap.addEventListener("change", () => _syncParent(cb, childWrap));
-
-    // Initial tri-state
-    queueMicrotask(() => _syncParent(cb, childWrap));
-  }
-
-  return item;
-}
-
-// ---- custom skill upload / delete ------------------------------------------
-
-async function uploadCustomSkill() {
-  const nameInput = document.getElementById("custom-skill-name");
-  const mdInput = document.getElementById("custom-skill-md");
-  const refsInput = document.getElementById("custom-skill-refs");
-  const scriptsInput = document.getElementById("custom-skill-scripts");
-  const errorEl = document.getElementById("custom-skill-error");
-  const uploadBtn = document.getElementById("custom-skill-upload-btn");
-
-  if (!nameInput || !mdInput) return;
-  errorEl.textContent = "";
-
-  const name = nameInput.value.trim();
-  if (!name) { errorEl.textContent = "Skill name is required."; return; }
-  if (!/^[a-z0-9][a-z0-9_-]*$/.test(name)) {
-    errorEl.textContent = "Name must be lowercase alphanumeric with hyphens/underscores.";
-    return;
-  }
-  if (!mdInput.files.length) { errorEl.textContent = "SKILL.md file is required."; return; }
-
-  const formData = new FormData();
-  formData.append("name", name);
-  formData.append("skill_md", mdInput.files[0]);
-  for (const ref of Array.from(refsInput?.files || [])) {
-    formData.append("references", ref);
-  }
-  for (const script of Array.from(scriptsInput?.files || [])) {
-    formData.append("scripts", script);
-  }
-
-  uploadBtn.disabled = true;
-  uploadBtn.textContent = "Uploading…";
-  try {
-    const resp = await fetch("/api/skills/custom", { method: "POST", body: formData });
-    const body = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      errorEl.textContent = body.detail || `Upload failed (${resp.status})`;
-      return;
-    }
-    nameInput.value = "";
-    mdInput.value = "";
-    if (refsInput) refsInput.value = "";
-    if (scriptsInput) scriptsInput.value = "";
-    settingsStatus.textContent = `Custom skill "${name}" uploaded ✓`;
-    setTimeout(() => { settingsStatus.textContent = ""; }, 3000);
-    await loadSettingsData();
-  } catch (err) {
-    errorEl.textContent = `Upload failed: ${err.message}`;
-  } finally {
-    uploadBtn.disabled = false;
-    uploadBtn.textContent = "Upload Skill";
-  }
-}
-
-async function deleteCustomSkill(skillName) {
-  try {
-    const resp = await fetch(`/api/skills/custom/${encodeURIComponent(skillName)}`, { method: "DELETE" });
-    const body = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      settingsStatus.textContent = body.detail || `Delete failed (${resp.status})`;
-      return;
-    }
-    settingsStatus.textContent = `Custom skill "${skillName}" deleted ✓`;
-    setTimeout(() => { settingsStatus.textContent = ""; }, 3000);
-    await loadSettingsData();
-  } catch (err) {
-    settingsStatus.textContent = `Delete failed: ${err.message}`;
-  }
-}
-
-// ---- load / save -----------------------------------------------------------
-
-async function loadSettingsData() {
-  skillsChecklist.innerHTML =
-    '<p class="settings-hint" style="opacity:0.6">Loading…</p>';
-  try {
-    const [skillsRes, settingsRes, envRes] = await Promise.all([
-      fetch(settingsApiUrl("/api/skills")),
-      fetch(settingsApiUrl("/api/settings")),
-      fetch(settingsApiUrl("/api/env-config")),
-    ]);
-    const skills = await skillsRes.json();
-    const cfg = await settingsRes.json();
-    const envCfg = envRes.ok ? await envRes.json() : {};
-    const llmCfg = cfg.llm || {};
-    const extraSkills = new Set((cfg.planning || {}).extra_skills || []);
-
-    // Populate default workdir from config
-    state.defaultWorkdir = (cfg.workspace || {}).default_workdir || "";
-    const wdInput = document.getElementById("settings-default-workdir");
-    if (wdInput) wdInput.value = state.defaultWorkdir;
-
-    const roots = _buildSkillTree(skills);
-    skillsChecklist.innerHTML = "";
-
-    const header = document.createElement("div");
-    header.className = "st-header";
-    header.innerHTML = '<span></span><span class="st-col-label" title="Skill is visible to graph search">Enabled</span><span class="st-col-label" title="Full SKILL.md available to planning agent">Planning</span><span></span>';
-    skillsChecklist.appendChild(header);
-
-    for (const node of roots) {
-      skillsChecklist.appendChild(_renderSkillNode(node, extraSkills, 0));
-    }
-
-    // Custom skill upload section
-    const uploadSection = document.createElement("div");
-    uploadSection.className = "skill-upload-section";
-    uploadSection.innerHTML = `
-      <details class="skill-upload-details">
-        <summary class="skill-upload-summary">+ Add Custom Skill</summary>
-        <div class="skill-upload-form">
-          <label class="settings-label">Skill Name <span style="font-weight:400;text-transform:none;letter-spacing:0">(lowercase, hyphens/underscores only)</span></label>
-          <input id="custom-skill-name" class="text-input settings-env-input" placeholder="e.g. my-custom-skill" autocomplete="off" />
-          <label class="settings-label" style="margin-top:8px">SKILL.md file <span style="color:#f87171">*</span></label>
-          <input id="custom-skill-md" type="file" accept=".md,text/markdown,text/plain" class="skill-file-input" />
-          <label class="settings-label" style="margin-top:8px">Reference files <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional, multiple)</span></label>
-          <input id="custom-skill-refs" type="file" multiple class="skill-file-input" />
-          <label class="settings-label" style="margin-top:8px">Script files <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional, .py/.sh/.js)</span></label>
-          <input id="custom-skill-scripts" type="file" multiple accept=".py,.sh,.bash,.js" class="skill-file-input" />
-          <p id="custom-skill-error" class="skill-upload-error"></p>
-          <button id="custom-skill-upload-btn" type="button" class="ghost" style="margin-top:8px;width:100%;justify-content:center">Upload Skill</button>
-        </div>
-      </details>
-    `;
-    skillsChecklist.appendChild(uploadSection);
-
-    document.getElementById("custom-skill-upload-btn")?.addEventListener("click", uploadCustomSkill);
-
-    // Populate env config inputs
-    for (const [key, getEl] of Object.entries(envInputs)) {
-      const el = getEl();
-      if (el && envCfg[key] !== undefined) {
-        el.value = envCfg[key];
-      }
-    }
-    renderExecutorCards(llmCfg.executor_cards || {});
-    renderEnvPairs(envCfg[CUSTOM_ENV_CONFIG_KEY] || {});
-  } catch (err) {
-    skillsChecklist.innerHTML = `<p class="settings-hint" style="color:#f87171">Failed to load: ${err.message}</p>`;
-  }
-}
-
-async function saveSettings() {
-  const activeTab = activeSettingsTabName();
-  const shouldRestartBackend = settingsTabRequiresBackendRestart(activeTab);
-  const username = settingsUsername.value.trim();
-  const nextDefaultWorkdir = document.getElementById("settings-default-workdir")?.value?.trim() || "";
-  const extraSkills = Array.from(
-    skillsChecklist.querySelectorAll(".skill-checkbox:not(:disabled)")
-  )
-    .filter((cb) => cb.checked && !cb.indeterminate)
-    .map((cb) => cb.dataset.name);
-
-  const disabledSkills = Array.from(
-    skillsChecklist.querySelectorAll(".skill-enabled-checkbox")
-  )
-    .filter((cb) => !cb.checked)
-    .map((cb) => cb.dataset.name);
-
-  // Collect env config values (skip empty sensitive fields with "***")
-  const envValues = {};
-  const sensitiveKeys = new Set(["LLM_API_KEY"]);
-  for (const [key, getEl] of Object.entries(envInputs)) {
-    const el = getEl();
-    if (!el) continue;
-    const val = el.value;
-    if (sensitiveKeys.has(key) && (!val || val === "***")) continue;
-    envValues[key] = val;
-  }
-  envValues[CUSTOM_ENV_CONFIG_KEY] = collectEnvPairs();
-  let llmValues = undefined;
-  try {
-    llmValues = { executor_cards: collectExecutorCards() };
-  } catch (err) {
-    settingsStatus.textContent = `Error: ${err.message}`;
-    return;
-  }
-
-  try {
-    settingsSave.disabled = true;
-    settingsStatus.textContent = "Saving…";
-
-    const requests = [
-      fetch(settingsApiUrl("/api/settings"), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          planning: { extra_skills: extraSkills },
-          skills: { disabled: disabledSkills },
-          user: username ? { name: username } : undefined,
-          workspace: { default_workdir: nextDefaultWorkdir },
-          ...(llmValues ? { llm: llmValues } : {}),
-        }),
-      }),
-    ];
-    if (Object.keys(envValues).length > 0) {
-      requests.push(
-        fetch(settingsApiUrl("/api/env-config"), {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ values: envValues }),
-        })
-      );
-    }
-
-    const results = await Promise.all(requests);
-    for (const res of results) {
-      if (!res.ok) throw new Error(await res.text());
-    }
-
-    if (state.deploymentMode === "server" && username && username !== state.displayName) {
-      closeSettingsModal();
-      await applyLogin(username, null);
-    }
-    state.defaultWorkdir = nextDefaultWorkdir;
-    if (shouldRestartBackend) {
-      settingsStatus.textContent = "Saved. Restarting backend…";
-      await restartBackend();
-    } else {
-      settingsStatus.textContent = "Saved ✓";
-      setTimeout(() => { settingsStatus.textContent = ""; }, 2000);
-    }
-  } catch (err) {
-    settingsStatus.textContent = `Error: ${err.message}`;
-  } finally {
-    settingsSave.disabled = false;
-  }
-}
-
-// ---- restart backend -------------------------------------------------------
-
-async function _pollBackendReady(maxAttempts = 30, intervalMs = 2000) {
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    try {
-      const userQuery = state.userId ? `?user_id=${encodeURIComponent(state.userId)}` : "";
-      const res = await fetch(`/api/backend-status${userQuery}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.ready) return;
-      }
-    } catch (_) {}
-  }
-  throw new Error("Backend did not come back online in time");
-}
-
-async function restartBackend() {
-  if (settingsRestartBtn) {
-    settingsRestartBtn.disabled = true;
-    settingsRestartBtn.textContent = "Restarting…";
-  }
-  settingsStatus.textContent = "Restarting backend…";
-  try {
-    const userQuery = state.userId ? `?user_id=${encodeURIComponent(state.userId)}` : "";
-    const res = await fetch(`/api/restart-backend${userQuery}`, { method: "POST" });
-    if (!res.ok) throw new Error(await res.text());
-    await _pollBackendReady();
-    settingsStatus.textContent = "Backend restarted ✓";
-    setTimeout(() => { settingsStatus.textContent = ""; }, 3000);
-  } catch (err) {
-    settingsStatus.textContent = `Restart failed: ${err.message}`;
-  } finally {
-    if (settingsRestartBtn) {
-      settingsRestartBtn.disabled = false;
-      settingsRestartBtn.textContent = "↺ Restart Backend";
-    }
-  }
-}
-
-// Tab switching
-document.querySelectorAll(".settings-tab").forEach((tab) => {
-  tab.addEventListener("click", () => {
-    document.querySelectorAll(".settings-tab").forEach((t) => t.classList.remove("active"));
-    document.querySelectorAll(".settings-pane").forEach((p) => p.classList.add("hidden"));
-    tab.classList.add("active");
-    const pane = document.getElementById(`tab-${tab.dataset.tab}`);
-    if (pane) pane.classList.remove("hidden");
-  });
-});
-
-if (settingsBtn) settingsBtn.addEventListener("click", openSettingsModal);
-if (settingsClose) settingsClose.addEventListener("click", closeSettingsModal);
-if (settingsSave) settingsSave.addEventListener("click", saveSettings);
-document.getElementById("settings-workdir-reset")?.addEventListener("click", () => {
-  const wdInput = document.getElementById("settings-default-workdir");
-  if (wdInput) wdInput.value = "";
-});
-settingsModal?.addEventListener("click", (e) => {
-  if (e.target === settingsModal) closeSettingsModal();
-});

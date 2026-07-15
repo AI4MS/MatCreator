@@ -67,6 +67,12 @@ services:
       - MATCREATOR_HOME=/data/matcreator/control-plane/.matcreator
       - MATCREATOR_CONFIG_PATH=/app/config.yaml
       - MATCREATOR_HOST_DATA_ROOT=${MATCREATOR_HOST_DATA_ROOT:-${PWD}/server-data}
+      # Optional: use a curated default skill directory instead of the image's
+      # bundled module skills. The path must exist inside both the control-plane
+      # container and worker containers. For host skills, mount the directory at
+      # the same container path for both, then set this value to that path.
+      # Example: export MATCREATOR_MODULE_SKILLS_ROOT=/app/custom-skills
+      - MATCREATOR_MODULE_SKILLS_ROOT=${MATCREATOR_MODULE_SKILLS_ROOT:-}
       - MATCREATOR_WORKER_CONNECT_MODE=network
       - MATCREATOR_WORKER_NETWORK=matcreator-net
       # Worker resource controls. Empty CPU/memory values mean "Docker default".
@@ -87,6 +93,10 @@ services:
       - ${MATCREATOR_HOST_DATA_ROOT:-./server-data}:/data/matcreator
       # Server-wide MatCreator defaults. Set MATCREATOR_HOST_CONFIG_PATH to override.
       - ${MATCREATOR_HOST_CONFIG_PATH:-./config.yaml}:/app/config.yaml:ro
+      # Optional host-mounted curated skills. Keep the container path aligned
+      # with MATCREATOR_MODULE_SKILLS_ROOT and add the same bind to
+      # MATCREATOR_WORKER_SHARED_MOUNTS so spawned workers can read it too.
+      # - ${MATCREATOR_HOST_SKILLS_ROOT:-./selected-skills}:/app/custom-skills:ro
       # Docker socket so control plane can manage worker containers
       - /var/run/docker.sock:/var/run/docker.sock
       - ./logs:/app/logs

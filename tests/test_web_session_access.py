@@ -65,7 +65,14 @@ def _load_web_main_server(monkeypatch, control_home: Path, data_root: Path, host
     else:
         monkeypatch.delenv("MATCREATOR_HOST_DATA_ROOT", raising=False)
     monkeypatch.delenv("MATCREATOR_HOME", raising=False)
-    for env_key in ("LLM_MODEL", "LLM_API_KEY", "LLM_BASE_URL", "MP_API_KEY", "SERVER_ONLY_FLAG"):
+    for env_key in (
+        "LLM_MODEL",
+        "LLM_API_KEY",
+        "LLM_BASE_URL",
+        "MP_API_KEY",
+        "SERVER_ONLY_FLAG",
+        "MATCREATOR_MODULE_SKILLS_ROOT",
+    ):
         monkeypatch.delenv(env_key, raising=False)
     for path in (root / "web", root / "src"):
         if str(path) not in sys.path:
@@ -123,11 +130,15 @@ def _create_session_db(path: Path, app_name: str) -> None:
 def test_server_worker_env_uses_persistent_control_plane_config(monkeypatch, tmp_path):
     control_home = tmp_path / "control-plane" / ".matcreator"
     control_home.mkdir(parents=True)
+    selected_skills = tmp_path / "selected-skills"
+    selected_skills.mkdir()
     (control_home / "config.yaml").write_text(
         "llm:\n"
         "  model: openai/server-default\n"
         "  api_key: server-secret\n"
         "  base_url: https://server.example/v1\n"
+        "skills:\n"
+        f"  module_root: {selected_skills}\n"
         "env:\n"
         "  MP_API_KEY: default-mp-key\n"
         "  SERVER_ONLY_FLAG: enabled\n",
@@ -142,6 +153,7 @@ def test_server_worker_env_uses_persistent_control_plane_config(monkeypatch, tmp
     assert env_vars["LLM_BASE_URL"] == "https://server.example/v1"
     assert env_vars["MP_API_KEY"] == "default-mp-key"
     assert env_vars["SERVER_ONLY_FLAG"] == "enabled"
+    assert env_vars["MATCREATOR_MODULE_SKILLS_ROOT"] == str(selected_skills)
 
 
 def test_worker_image_check_detects_stale_container(monkeypatch, tmp_path):

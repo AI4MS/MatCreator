@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "ase>=3.26.0",
+    "rdkit>=2025.9.1",
     "google-adk>=1.28.0",
     "google-cloud-storage",
     "lbg>=1.2.29",
@@ -26,7 +27,8 @@ dependencies = [
     "bcrypt>=4.0.0",
     "docker>=7.0.0",
     "matcraft-kit",
-    "know-do-graph>=0.1.8"
+    "know-do-graph>=0.1.8",
+    "pymatgen"
 ]
 
 [build-system]

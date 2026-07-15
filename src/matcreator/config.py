@@ -39,6 +39,7 @@ planning:
     extra_skills: [...]
 
 skills:
+    module_root: /path/to/selected/default/skills
     disabled: [...]
 
 env:
@@ -75,6 +76,7 @@ YAML_TO_ENV: dict[str, str] = {
     "compute.deepmd_image":   "BOHRIUM_DEEPMD_IMAGE",
     "compute.deepmd_machine": "BOHRIUM_DEEPMD_MACHINE",
     "compute.deepmd_model_path": "DEEPMD_MODEL_PATH",
+    "skills.module_root":     "MATCREATOR_MODULE_SKILLS_ROOT",
 }
 
 ENV_TO_YAML: dict[str, str] = {v: k for k, v in YAML_TO_ENV.items()}
@@ -88,6 +90,7 @@ _PROTECTED_USER_ENV_KEYS = frozenset({
     "PYTHONPATH",
     "LD_LIBRARY_PATH",
     "MATCREATOR_HOME",
+    "MATCREATOR_MODULE_SKILLS_ROOT",
     "MATCREATOR_MODE",
     "MATCREATOR_USER_ID",
 })

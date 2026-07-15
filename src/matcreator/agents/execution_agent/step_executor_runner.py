@@ -222,8 +222,12 @@ def _is_within_any_root(path: Path, roots: list[Path]) -> bool:
     return False
 
 
-def _artifact_allowed_roots(step_workspace: Path, suggested_skills: list[str]) -> list[Path]:
-    roots = [step_workspace]
+def _artifact_allowed_roots(
+    step_workspace: Path,
+    suggested_skills: list[str],
+    output_dir: Optional[Path] = None,
+) -> list[Path]:
+    roots = [output_dir or step_workspace]
     if "skill-creation" in suggested_skills:
         from ...skill import user_skills_dir
 
@@ -439,9 +443,14 @@ async def run_step_executor(
     # Use node_id for label when provided (DAG mode); fall back to step_number.
     effective_id = node_id if node_id else str(step_number)
 
-    # All steps CWD directly to the session workdir — no per-execution or per-node subdirs.
+    # All steps CWD directly to the workspace root/session workdir so they can read shared inputs.
+    # If configured, generated artifacts are constrained separately by output_dir.
     step_workspace = Path(tool_context.state.get("workspace_dir") or str(get_session_workdir(session_id)))
     step_workspace.mkdir(parents=True, exist_ok=True)
+    output_dir_value = tool_context.state.get("output_dir") or tool_context.state.get("session_output_dir")
+    output_dir = Path(output_dir_value).expanduser().resolve() if output_dir_value else None
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
     logger.debug("[step_executor_runner] depth=%d node %s workspace: %s", recursion_depth, effective_id, step_workspace)
 
     graph = AgentGraphLogger(session_id)
@@ -469,6 +478,7 @@ async def run_step_executor(
         action=action,
         suggested_skills=suggested_skills,
         workspace_dir=str(step_workspace),
+        output_dir=str(output_dir) if output_dir else None,
         prior_context=prior_context,
     )
     content, input_image_paths = _build_step_content(
@@ -484,6 +494,7 @@ async def run_step_executor(
         "step_number": step_number,
         "action": action,
         "workspace_dir": str(step_workspace),
+        "output_dir": str(output_dir) if output_dir else None,
         "prior_context": prior_context,
         "suggested_skills": suggested_skills,
         "llm_card": public_llm_card,
@@ -496,6 +507,7 @@ async def run_step_executor(
         "step_number": step_number,
         "action": action,
         "workspace_dir": str(step_workspace),
+        "output_dir": str(output_dir) if output_dir else None,
         "prior_context": prior_context,
         "suggested_skills": suggested_skills,
         "llm_card": public_llm_card,
@@ -574,6 +586,9 @@ async def run_step_executor(
         if not k.startswith("_adk") and not is_session_log_state_key(k)
     }
     state_dict["workspace_dir"] = str(step_workspace)
+    if output_dir is not None:
+        state_dict["output_dir"] = str(output_dir)
+        state_dict["session_output_dir"] = str(output_dir)
     state_dict["recursion_depth"] = recursion_depth + 1
     state_dict["_graph_exec_node_id"] = step_id
     state_dict["_step_label_path"] = step_label_path
@@ -694,7 +709,7 @@ async def run_step_executor(
         result = StepExecutorResult.model_validate(step_result_data)
         result, missing_artifacts = _verify_step_result_artifacts(
             result,
-            allowed_roots=_artifact_allowed_roots(step_workspace, suggested_skills),
+            allowed_roots=_artifact_allowed_roots(step_workspace, suggested_skills, output_dir),
         )
         await asyncio.to_thread(
             graph.log_node_complete,

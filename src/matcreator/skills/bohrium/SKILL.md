@@ -13,20 +13,19 @@ Submit and manage computational jobs on [Bohrium](https://bohrium.com) cloud pla
 
 ## Prerequisites
 
-### 1. Install bohr CLI
-
-- **Windows**: Download from https://bohrium.com/download, place in PATH
-- **Linux/macOS**: `curl -fsSL https://bohrium.com/download/bohr | sh`
-
+### 1. Verify bohr CLI installation
 Verify: `bohr version`
 
-### 2. Login
+If not installed, run the following command to install it:
+- **Linux/macOS**: `curl -fsSL https://bohrium.com/download/bohr | sh`
+
+
+### 2. Verify user access
 
 ```bash
-bohr login
-# Enter email and password interactively
-# Token saved to ~/.bohrium/credentials.yaml
+echo $ACCESS_KEY
 ```
+If not set, the user needs to provide the access key or set it by themselves.
 
 ### 3. Get your project ID
 

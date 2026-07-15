@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import List, Literal, Optional
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
+from google.adk.workflow import RetryConfig
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from ...llm_cards import LLMCard
@@ -21,12 +23,25 @@ logger = logging.getLogger(__name__)
 
 STEP_EXECUTOR_AGENT_NAME = "step_executor"
 
+# ADK's LiteLlm adapter parses streamed function-call arguments as JSON.  Some
+# OpenAI-compatible endpoints occasionally finish a stream with malformed tool
+# arguments, which escapes as JSONDecodeError.  Retry the *LLM node* once by
+# default; this is deliberately separate from LiteLLM's HTTP retry setting,
+# which only covers transport/status failures.
+_JSON_DECODE_RETRY_ATTEMPTS = int(
+    os.environ.get("MATCREATOR_STEP_EXECUTOR_JSON_RETRY_ATTEMPTS", "2")
+)
+
 
 class StepExecutorInput(BaseModel):
     step_number: int = Field(description="1-based index of this step in the plan")
     action: str = Field(description="Action description from the plan step")
     suggested_skills: List[str] = Field(description="Ordered list of skill names suggested by the planner for this step")
-    workspace_dir: str = Field(description="Absolute path to the session workspace directory")
+    workspace_dir: str = Field(description="Absolute path to the root workspace directory available to this step")
+    output_dir: Optional[str] = Field(
+        default=None,
+        description="Absolute path where generated files for this session should be written",
+    )
     prior_context: Optional[str] = Field(
         default=None,
         description="Condensed summaries of prior completed steps for context",
@@ -96,7 +111,8 @@ When done, call `submit_step_result` with:
 If `submit_step_result` returns a validation error, fix the fields and call it again.
 
 ## Execution rules
-- Work inside `workspace_dir` for all file operations.
+- Use `workspace_dir` as the working directory and for reading shared inputs.
+- If `output_dir` is provided, write all generated files and artifacts under `output_dir`.
 - Exception: when the loaded `skill-creation` guide requires authoring a reusable
   user skill, call `get_user_skills_root` and write only inside that returned root.
 - Use `run_python` or `run_bash` for computation. Do not fabricate outputs.
@@ -194,6 +210,14 @@ def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
     """Build a step executor agent for one executor invocation."""
     return LlmAgent(
         name=STEP_EXECUTOR_AGENT_NAME,
+        retry_config=RetryConfig(
+            max_attempts=_JSON_DECODE_RETRY_ATTEMPTS,
+            initial_delay=1.0,
+            max_delay=4.0,
+            backoff_factor=2.0,
+            jitter=0.0,
+            exceptions=[json.JSONDecodeError],
+        ),
         model=LiteLlm(
             model=llm_card.model,
             base_url=llm_card.base_url,

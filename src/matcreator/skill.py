@@ -59,7 +59,11 @@ class SkillSource:
 _MATCREATOR_HOME = Path(
     os.environ.get("MATCREATOR_HOME", str(Path.home() / ".matcreator"))
 ).expanduser()
-_MODULE_SKILLS_ROOT = Path(__file__).parent / "skills"
+MODULE_SKILLS_ROOT_ENV = "MATCREATOR_MODULE_SKILLS_ROOT"
+_DEFAULT_MODULE_SKILLS_ROOT = Path(__file__).parent / "skills"
+_MODULE_SKILLS_ROOT = Path(
+    os.environ.get(MODULE_SKILLS_ROOT_ENV, str(_DEFAULT_MODULE_SKILLS_ROOT))
+).expanduser()
 _USER_SKILLS_ROOT = _MATCREATOR_HOME / "skills"
 _OFFICIAL_SKILLS_ROOT = _USER_SKILLS_ROOT / "official"
 _RESERVED_USER_SKILL_DIRS = frozenset({"builtin", "official"})

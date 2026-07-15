@@ -113,3 +113,22 @@ matcreator config set ports.web=8101
 ```
 
 Port configuration precedence: environment variables > ~/.matcreator/config.yaml > defaults.
+
+## Skill Root Override
+
+By default, MatCreator loads bundled skills from the installed module's `skills/`
+directory. To run with a curated default skill directory without modifying those
+centrally maintained bundled skills, set `MATCREATOR_MODULE_SKILLS_ROOT` before
+starting MatCreator:
+
+```bash
+export MATCREATOR_MODULE_SKILLS_ROOT=/path/to/selected-skills
+bash script/start_matcreator.sh
+```
+
+You can also persist the same override in `~/.matcreator/config.yaml`:
+
+```yaml
+skills:
+  module_root: /path/to/selected-skills
+```

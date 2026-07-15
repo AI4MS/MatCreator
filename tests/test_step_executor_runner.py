@@ -2,9 +2,13 @@ from pathlib import Path
 import logging
 
 from matcreator.llm_cards import LLMCard
-from matcreator.agents.execution_agent.step_executor import StepExecutorResult
-from matcreator.agents.execution_agent.step_executor import StepExecutorInput
+from matcreator.agents.execution_agent.step_executor import (
+    StepExecutorInput,
+    StepExecutorResult,
+    build_step_executor_agent,
+)
 from matcreator.agents.execution_agent.step_executor_runner import (
+    _artifact_allowed_roots,
     _build_step_content,
     _verify_step_result_artifacts,
 )
@@ -115,6 +119,32 @@ def test_existing_artifact_outside_allowed_roots_requires_replanning(tmp_path):
     assert missing_artifacts == [str(outside_artifact)]
 
 
+def test_output_dir_constrains_artifacts_without_restricting_workspace_access(tmp_path):
+    workspace = tmp_path / "workspace"
+    output_dir = workspace / "case_001"
+    output_dir.mkdir(parents=True)
+    shared_artifact = workspace / "shared.txt"
+    shared_artifact.write_text("readable shared file, but not a valid output", encoding="utf-8")
+    output_artifact = output_dir / "result.txt"
+    output_artifact.write_text("valid output", encoding="utf-8")
+
+    result = StepExecutorResult(
+        status="success",
+        key_results="Generated artifacts.",
+        concise_summary="Generated artifacts.",
+        artifacts=[str(shared_artifact), str(output_artifact)],
+    )
+
+    verified, missing_artifacts = _verify_step_result_artifacts(
+        result,
+        allowed_roots=_artifact_allowed_roots(workspace, [], output_dir),
+    )
+
+    assert verified.status == "needs_replanning"
+    assert verified.artifacts == [str(output_artifact)]
+    assert missing_artifacts == [str(shared_artifact)]
+
+
 def test_multimodal_card_attaches_referenced_image_to_step_content(tmp_path):
     image_path = tmp_path / "plot.png"
     image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
@@ -210,3 +240,11 @@ def test_multimodal_card_accepts_adk_state_object_for_session_image_artifacts(tm
 
     assert input_images == [str(image_path)]
     assert len(content.parts) == 2
+
+
+def test_step_executor_retries_only_malformed_streamed_tool_arguments():
+    agent = build_step_executor_agent(LLMCard(name="test", model="openai/test"))
+
+    assert agent.retry_config is not None
+    assert agent.retry_config.max_attempts == 2
+    assert agent.retry_config.exceptions == ["JSONDecodeError"]

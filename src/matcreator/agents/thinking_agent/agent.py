@@ -32,7 +32,9 @@ from ...tools.workspace_tools import (
     get_user_skills_root,
     init_workspace_tool,
     run_bash,
-    run_python
+    run_python,
+    set_session_output_dir,
+    set_session_workdir,
 )
 from ...workspace import get_session_workdir
 from ...tools.util_tools import (
@@ -304,6 +306,10 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
 
 ## Rules
 - NEVER execute plan nodes.
+- When the user asks to keep outputs in a session-specific folder, call
+    `set_session_output_dir` with a relative subdirectory under the workspace before execution.
+    The executor can still read shared files from the workspace root, but generated files
+    should be written under the configured output directory.
 - Keep responses concise; reference absolute file paths where relevant.
 - When you encounter an error, quote the exact message and propose concrete solutions.
 - You may call `run_synthesizer` when the knowledge graph seems stale or after heavy knowledge accumulation.
@@ -398,6 +404,8 @@ thinking_agent = LlmAgent(
         FunctionTool(read_memory),
         FunctionTool(update_memory),
         FunctionTool(init_workspace_tool),
+        FunctionTool(set_session_output_dir),
+        #FunctionTool(set_session_workdir),
         FunctionTool(refresh_skills),
         FunctionTool(get_user_skills_root),
         FunctionTool(run_python),

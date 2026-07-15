@@ -34,11 +34,27 @@ def _safe_workspace_path(relative: str) -> Path:
     """Resolve *relative* inside the workspace root, refusing path traversal."""
     root = get_workspace_root()
     resolved = (root / relative).resolve()
-    if not str(resolved).startswith(str(root.resolve())):
+    try:
+        resolved.relative_to(root.resolve())
+    except ValueError:
         raise ValueError(
             f"Path '{relative}' resolves outside the workspace root '{root}'."
         )
     return resolved
+
+
+def _safe_workspace_subdir(relative_path: str) -> Path:
+    """Resolve a subdirectory inside the workspace root."""
+    raw_path = (relative_path or "").strip()
+    if not raw_path:
+        raise ValueError("Session output directory must be a non-empty relative path.")
+    candidate = Path(raw_path).expanduser()
+    if candidate.is_absolute():
+        raise ValueError("Session output directory must be relative to the workspace root.")
+    target = _safe_workspace_path(raw_path)
+    if target == get_workspace_root().resolve():
+        raise ValueError("Session output directory must be a subdirectory, not the workspace root itself.")
+    return target
 
 
 def _resolve_skill_script_path(
@@ -104,6 +120,45 @@ def read_workspace_file(relative_path: str) -> str:
     if not target.exists():
         return f"File not found: {target}"
     return target.read_text(encoding="utf-8")
+
+
+def set_session_output_dir(relative_path: str, tool_context: ToolContext) -> dict:
+    """Set the active session output directory to a workspace subdirectory.
+
+    Args:
+        relative_path: Non-empty directory path relative to the workspace root,
+            e.g. ``"dpa4_si_test"``. Absolute paths and ``..`` traversal are
+            rejected.
+
+    Returns:
+        A status dict with the resolved absolute path.
+    """
+    try:
+        target = _safe_workspace_subdir(relative_path)
+        target.mkdir(parents=True, exist_ok=True)
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
+    except OSError as exc:
+        return {"status": "error", "message": f"Could not create session output directory: {exc}"}
+
+    resolved = str(target)
+    tool_context.state["output_dir"] = resolved
+    tool_context.state["session_output_dir"] = resolved
+    return {
+        "status": "ok",
+        "output_dir": resolved,
+        "message": f"Session output directory set to {resolved}",
+    }
+
+
+def set_session_workdir(relative_path: str, tool_context: ToolContext) -> dict:
+    """Deprecated alias for setting the session output directory.
+
+    The executor still uses the workspace root as its working directory so it can
+    read shared inputs freely. Generated artifacts should be placed under the
+    returned output directory.
+    """
+    return set_session_output_dir(relative_path, tool_context)
 
 
 def list_workspace_skills() -> str:
