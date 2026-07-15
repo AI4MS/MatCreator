@@ -2,6 +2,54 @@
 
 <!-- version list -->
 
+## v2.10.0 (2026-07-15)
+
+### Bug Fixes
+
+- Add custom session output dir support
+  ([`da9d2bd`](https://github.com/AI4MS/MatCreator/commit/da9d2bd5c2bf9a85338822263952e87bf7b038d2))
+
+- Add custom skill dic path
+  ([`752c4e9`](https://github.com/AI4MS/MatCreator/commit/752c4e92a1adaacfbb23c923e1ae19a37fdad364))
+
+- Fix user download files
+  ([`42a6ed5`](https://github.com/AI4MS/MatCreator/commit/42a6ed5ad84ce725a7584bc3032d303325a8ac2a))
+
+- Handle JSONDecodeError in step executor
+  ([`d7d66d2`](https://github.com/AI4MS/MatCreator/commit/d7d66d24f9e713729dc0e5e650149ff395a301ae))
+
+- Issues with bohr skill
+  ([`2f0b64f`](https://github.com/AI4MS/MatCreator/commit/2f0b64f8876a67d8cc7f052bf9f0b928f0c38ce3))
+
+- Rebase devel start.sh
+  ([`86a3ddd`](https://github.com/AI4MS/MatCreator/commit/86a3ddda22b5f58e14d370a4f132c2e7a03c5028))
+
+### Features
+
+- Agent graph finetune
+  ([`d153127`](https://github.com/AI4MS/MatCreator/commit/d1531271661294287856e9da17840279fd5aa6a7))
+
+- Matterviz structure modelling
+  ([`f0f790a`](https://github.com/AI4MS/MatCreator/commit/f0f790a78677db2b67f404f2acd3cb4da4682574))
+
+- Not that fancier mode animation
+  ([`2c4720f`](https://github.com/AI4MS/MatCreator/commit/2c4720ffe097fb70ecfb64ba7da6dc1964be97f8))
+
+- Performance change of roadmap
+  ([`89323de`](https://github.com/AI4MS/MatCreator/commit/89323ded27b67fe62ba872e676ade4d904be4966))
+
+- Refactor frontend main.js
+  ([`f16086b`](https://github.com/AI4MS/MatCreator/commit/f16086b75d9fd41b73807a3d3ea58100f5428ae4))
+
+### Refactoring
+
+- Frontend modelling panel
+  ([`bb98d99`](https://github.com/AI4MS/MatCreator/commit/bb98d99936f61f5836a7716ff77f3d0a00162f7e))
+
+- Plan graph to roadmap
+  ([`67f7ffd`](https://github.com/AI4MS/MatCreator/commit/67f7ffd2c91cc14458b073261cc6b64aa8ee959b))
+
+
 ## v2.9.0 (2026-07-11)
 
 ### Bug Fixes
