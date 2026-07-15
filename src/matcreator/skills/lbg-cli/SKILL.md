@@ -84,7 +84,7 @@ export time, per-file `sha256`).
 | Subcommand | Description |
 | --- | --- |
 | `create [template]` | Launch a new sandbox (default: `sdbxagent` template) |
-| `exec <id> <cmd>` | Run a command inside a sandbox (foreground / background) |
+| `exec <id> <cmd>` | Run a command inside a sandbox (foreground / background); pass `--user root` when root privileges are needed |
 | `kill <id>` | Terminate a sandbox |
 | `list` | List active sandboxes |
 | `describe <id>` | Get sandbox details (incl. IP, status, template) |

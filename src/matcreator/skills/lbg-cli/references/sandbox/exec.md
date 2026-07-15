@@ -1,6 +1,6 @@
 # Sandbox exec
 
-`lbg sdbx exec` usage, including `--background` mechanics.
+`lbg sdbx exec` usage, including `--background` mechanics and `--user`.
 
 For the foreground vs background vs PTY mental model and the retrieve-before-kill SOP, see [`execution-modes.md`](./execution-modes.md).
 
@@ -15,6 +15,26 @@ lbg sdbx exec <sandbox_id> 'cd /workspace && python train.py'
 lbg sdbx exec <sandbox_id> 'cat log.txt | grep ERROR | wc -l'
 lbg sdbx exec <sandbox_id> 'echo hello > /tmp/out.txt'
 ```
+
+## Running as root (`--user root`)
+
+By default `exec` runs as the sandbox's default user (often a non-root uid
+like 1001). **Pass `--user root` when the command needs root privileges** —
+reading files uploaded via `--ti` (owned by `root:root`, mode 640), writing
+to system paths, `chown`/`chmod`, `apt`/`pip install`, or anything that
+touches `/opt`, `/etc`, etc.
+
+```bash
+lbg sdbx exec --user root <sandbox_id> 'cat /workspace/uploaded_by_ti.json'
+lbg sdbx exec --user root <sandbox_id> 'chown -R 1001:1001 /workspace/data'
+lbg sdbx exec --user root <sandbox_id> 'apt-get update && apt-get install -y build-essential'
+```
+
+> **Always use `--user root` for file-ownership fixes.** Files uploaded with
+> `--ti` land as `root:root` 640 and are unreadable by the default sandbox
+> user; `exec --user root` (or `chown`/`chmod` as root first) is the only way
+> a non-root session can access them. See
+> [`files.md`](./files.md) for the full upload-ownership note.
 
 ## Background jobs (`--background`)
 
