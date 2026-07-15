@@ -32,7 +32,7 @@ lbg sdbx create train-tpl --timeout 0 --project-id <id> --json   # 0 = no auto-d
 # 3. (overseas deps) proxy on, install, proxy off  — see network.md
 
 # 4. Run long jobs in the background, log to a persistent path
-lbg sdbx exec --background <id> 'mkdir -p /workspace/out && python train.py > /workspace/out/run.log 2>&1'
+lbg sdbx exec --background --user root <id> 'mkdir -p /workspace/out && python train.py > /workspace/out/run.log 2>&1'
 
 # 5. Retrieve BEFORE kill; binaries download losslessly (auto bytes)
 lbg sdbx files read <id> /workspace/out/run.log    --output ./run.log
@@ -55,7 +55,7 @@ SANDBOX_ID=$(lbg sdbx create c32_m128_cpu --project-id <id> --timeout 14400 --js
 for i in $(seq 0 9); do
     lbg sdbx files write --source "frame_$i" "$SANDBOX_ID" /workspace/
 done
-lbg sdbx exec --background "$SANDBOX_ID" 'for d in /workspace/frame_*; do (cd "$d" && mpirun -np '"$NCPU"' vasp_std); done && touch /workspace/DONE'
+lbg sdbx exec --background --user root "$SANDBOX_ID" 'for d in /workspace/frame_*; do (cd "$d" && mpirun -np '"$NCPU"' vasp_std); done && touch /workspace/DONE'
 
 # 4. Poll for completion, retrieve, then kill
 # See lifecycle.md — Auto-cleanup patterns for the full workflow

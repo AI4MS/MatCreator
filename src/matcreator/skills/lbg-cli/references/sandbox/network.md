@@ -87,7 +87,7 @@ Wrap the snippet in `bash -c` and ship it through `exec`:
 
 ```bash
 # turn proxy on
-lbg sdbx exec <sandbox-id> -- bash -c '
+lbg sdbx exec --user root <sandbox-id> -- bash -c '
 mkdir -p ~/.pip && cat > ~/.pip/pip.conf <<EOF
 [global]
 proxy=http://pai.ga.op.xdptech.com:3128
@@ -111,10 +111,10 @@ git config --global https.proxy http://pai.ga.op.xdptech.com:3128
 '
 
 # do your overseas-reach work, e.g.
-lbg sdbx exec <sandbox-id> -- pip install -i https://pypi.org/simple/ click
+lbg sdbx exec --user root <sandbox-id> -- pip install -i https://pypi.org/simple/ click
 
 # turn proxy off
-lbg sdbx exec <sandbox-id> -- bash -c '
+lbg sdbx exec --user root <sandbox-id> -- bash -c '
 rm -f ~/.pip/pip.conf ~/.condarc ~/.wgetrc ~/.curlrc
 git config --global --unset http.proxy 2>/dev/null || true
 git config --global --unset https.proxy 2>/dev/null || true

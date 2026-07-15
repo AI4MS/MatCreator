@@ -36,7 +36,7 @@ back. The PTY is a streaming session inside the sandbox, but each `lbg`
 invocation is a one-shot RPC, so there is no per-process buffer to read from
 afterwards. Two patterns work:
 
-- **Preferred — use `exec`:** `lbg sdbx exec <sandbox_id> '<cmd>'` already
+- **Preferred — use `exec`:** `lbg sdbx exec --user root <sandbox_id> '<cmd>'` already
   returns `stdout` / `stderr` / `exit_code` in a single call with no escape-code
   handling required.
 - **PTY-bound case — redirect, then read:** if the workload genuinely needs a

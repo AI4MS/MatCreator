@@ -16,7 +16,7 @@ lbg sdbx create my-template --session-id <session-id> --json # tag with a sessio
 lbg sdbx list --json                                  # list your sandboxes
 lbg sdbx describe <sandbox_id> --with-processes --json # metadata + running processes
 lbg sdbx ps <sandbox_id> --json                       # list processes in a sandbox
-lbg sdbx exec <sandbox_id> python script.py --json    # foreground command
+lbg sdbx exec --user root <sandbox_id> python script.py --json    # foreground command
 lbg sdbx files write --source ./local_dir <sandbox_id> /workspace/dir --json  # upload a file or directory
 lbg sdbx files read <sandbox_id> /workspace/result.csv --output ./result.csv
 lbg sdbx kill <sandbox_id> --json                     # destroy a sandbox
@@ -80,7 +80,7 @@ first `=` only, so values may themselves contain `=` (e.g.
 `--env URL=a=b=c`). Empty `--env` is omitted from the body so backend
 defaults apply. The injected vars are visible to every later
 `lbg sdbx exec` / `terminal` shell (any user), e.g.
-`lbg sdbx exec <id> 'echo $HELLO'`.
+`lbg sdbx exec --user root <id> 'echo $HELLO'`.
 
 **In-place image override.** Pass `--image <image-path>` to launch the
 chosen template but replace its container image with `<image-path>` for
@@ -124,8 +124,8 @@ For GPU workloads, use one of the GPU template shortcuts from
 
 ```bash
 lbg sdbx create <gpu-template> --json
-lbg sdbx exec <sandbox_id> nvidia-smi
-lbg sdbx exec <sandbox_id> python train.py --json
+lbg sdbx exec --user root <sandbox_id> nvidia-smi
+lbg sdbx exec --user root <sandbox_id> python train.py --json
 lbg sdbx kill <sandbox_id> --json
 ```
 
@@ -165,11 +165,11 @@ of these patterns:
 SANDBOX_ID=$(lbg sdbx create my-template --timeout 7200 --json | jq -r '.sandbox_id')
 
 # Launch job in background
-lbg sdbx exec --background "$SANDBOX_ID" 'bash /workspace/run.sh'
+lbg sdbx exec --background --user root "$SANDBOX_ID" 'bash /workspace/run.sh'
 
 # Poll for completion (touch /workspace/DONE at end of run.sh)
 while true; do
-    if lbg sdbx exec "$SANDBOX_ID" 'test -f /workspace/DONE' 2>/dev/null; then
+    if lbg sdbx exec --user root "$SANDBOX_ID" 'test -f /workspace/DONE' 2>/dev/null; then
         break
     fi
     sleep 30
@@ -210,13 +210,13 @@ for idx in "${!SANDBOX_IDS[@]}"; do
         lbg sdbx files write --source "scf_frame_$i" "$id" /workspace/
     done
     # run_batch.sh runs frames one by one: for d in /workspace/frame_*; do (cd "$d" && mpirun -np $NCPU vasp_std); done
-    lbg sdbx exec --background "$id" "bash /workspace/run_batch.sh"
+    lbg sdbx exec --background --user root "$id" "bash /workspace/run_batch.sh"
 done
 
 # Poll all sandboxes for completion
 for id in "${SANDBOX_IDS[@]}"; do
     while true; do
-        if lbg sdbx exec "$id" 'test -f /workspace/DONE' 2>/dev/null; then
+        if lbg sdbx exec --user root "$id" 'test -f /workspace/DONE' 2>/dev/null; then
             break
         fi
         sleep 30

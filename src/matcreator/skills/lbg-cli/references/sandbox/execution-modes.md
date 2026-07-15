@@ -6,8 +6,8 @@ Foreground vs background vs PTY: which `lbg sdbx` mode survives a local interrup
 
 | Mode | Invocation | Local connection | Where it runs | Survives `--timeout` | Output retrieval |
 |------|------------|------------------|---------------|----------------------|------------------|
-| Foreground | `lbg sdbx exec <id> '<cmd>'` | blocks until done | sandbox | dies at `--timeout` (default 60s); local disconnect drops captured output | inline `stdout` / `stderr` from the same call |
-| Background | `lbg sdbx exec --background <id> '<cmd>'` | returns immediately with `pid` | sandbox | unlimited by default (`--timeout 0`); finite `--timeout` kills the remote command at that boundary | read files the command wrote (`lbg sdbx files read`); pid status via `lbg sdbx ps` / `describe --with-processes` |
+| Foreground | `lbg sdbx exec --user root <id> '<cmd>'` | blocks until done | sandbox | dies at `--timeout` (default 60s); local disconnect drops captured output | inline `stdout` / `stderr` from the same call |
+| Background | `lbg sdbx exec --background --user root <id> '<cmd>'` | returns immediately with `pid` | sandbox | unlimited by default (`--timeout 0`); finite `--timeout` kills the remote command at that boundary | read files the command wrote (`lbg sdbx files read`); pid status via `lbg sdbx ps` / `describe --with-processes` |
 | Terminal (PTY) | `lbg sdbx terminal create / send / kill` | persistent PTY pid | sandbox | PTY pid lives until `terminal kill <pid>` or sandbox destruction (per-PTY `--timeout` available) | redirect each command (`cmd > /tmp/out 2>&1\n`) and read the file with `lbg sdbx files read` |
 
 In all three cases the work happens inside the sandbox; what differs is the lifetime of the local connection and how the caller gets the output back.
@@ -25,7 +25,7 @@ This is the safe sequence for any `--background` job whose outputs you actually 
 1. **Decide where outputs go.** Pick a persistent path inside the sandbox — convention is `/workspace/out/`. Bake it into the command itself; do not rely on the default cwd.
 2. **Launch with `--background`.** The default `--timeout 0` (unlimited) kicks in automatically; do not pass a finite `--timeout` unless you actually want the job killed at that boundary.
    ```bash
-   lbg sdbx exec --background <id> 'mkdir -p /workspace/out && python train.py > /workspace/out/run.log 2>&1'
+   lbg sdbx exec --background --user root <id> 'mkdir -p /workspace/out && python train.py > /workspace/out/run.log 2>&1'
    ```
    The command returns a `pid` (or `{"pid": N, ...}` under `--json`). Record it.
 3. **Poll until done.** Check liveness with either of:
