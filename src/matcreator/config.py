@@ -49,6 +49,7 @@ env:
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +83,16 @@ ENV_TO_YAML: dict[str, str] = {v: k for k, v in YAML_TO_ENV.items()}
 
 # Fields whose values should be masked when displayed.
 SENSITIVE_YAML_KEYS = frozenset({"llm.api_key", "bohrium.password"})
+_USER_ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_PROTECTED_USER_ENV_KEYS = frozenset({
+    "HOME",
+    "PATH",
+    "PYTHONPATH",
+    "LD_LIBRARY_PATH",
+    "MATCREATOR_HOME",
+    "MATCREATOR_MODE",
+    "MATCREATOR_USER_ID",
+})
 
 
 def load_config() -> dict[str, Any]:
