@@ -2884,7 +2884,7 @@ function _createFileItem(f) {
   actions.className = "tree-actions";
 
   const dlLink = document.createElement("a");
-  dlLink.href = `/api/workspace/files?path=${encodeURIComponent(f.path)}`;
+  dlLink.href = pathToApiUrl(f.path);
   dlLink.download = f.relname;
   dlLink.className = "tree-btn";
   dlLink.title = "Download";

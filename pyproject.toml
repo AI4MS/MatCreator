@@ -26,7 +26,8 @@ dependencies = [
     "bcrypt>=4.0.0",
     "docker>=7.0.0",
     "matcraft-kit",
-    "know-do-graph>=0.1.8"
+    "know-do-graph>=0.1.8",
+    "pymatgen"
 ]
 
 [build-system]
