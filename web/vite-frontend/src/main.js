@@ -28,18 +28,19 @@ const AGENT_MODE_KEY = "mat_agentMode";
 const THEME_KEY = "mat_theme";
 
 const state = {
-  sessionId: localStorage.getItem("mat_sessionId") || `session-${Math.floor(Date.now() / 1000)}`,
+  sessionId: localStorage.getItem("mat_sessionId") || newSessionId(),
   userId: localStorage.getItem("mat_userId") || "",
   displayName: localStorage.getItem("mat_displayName") || localStorage.getItem("mat_userId") || "",
   activeSessionUserId: localStorage.getItem("mat_userId") || "",
   isAdmin: false,
   deploymentMode: localStorage.getItem("mat_deploymentMode") || "local",
   sessionReady: false,
+  sessionStatusFilter: "all",
   structure3dViewer: null,
   activeCenterTabId: "chat",
   currentUploads: [],
-  isSending: false,
-  sendController: null,
+  activeRequests: new Map(),
+  sessionViewCache: new Map(),
   agentMode: localStorage.getItem(AGENT_MODE_KEY) || "normal",
   theme: localStorage.getItem(THEME_KEY) || "dark",
   customWorkdir: "",
@@ -65,6 +66,7 @@ const workspaceCliToggle = document.getElementById("workspace-cli-toggle");
 const skillGraphOpenBtn = document.getElementById("skill-graph-open");
 const themeToggle = document.getElementById("theme-toggle");
 const refreshSessionsBtn = document.getElementById("refresh-sessions");
+const sessionStatusFilter = document.getElementById("session-status-filter");
 const graphViewport = document.getElementById("graph-viewport");
 const graphDetail = document.getElementById("graph-detail");
 const centerTabs = document.getElementById("center-tabs");
@@ -180,7 +182,7 @@ refreshKnowledgeReviewStatus();
 
 const stepExecutionFeed = new StepExecutionFeed({
   chatArea,
-  isSending: () => state.isSending,
+  isSending: () => Boolean(activeSessionRequest()),
   isChatNearBottom,
   scrollToBottom,
   createAgentAvatarEl,
@@ -233,6 +235,42 @@ async function requestStepCancellation(stepNumber) {
 
 function shouldRefreshPlanGraphForTool(toolName) {
   return toolName === "validate_graph" || toolName === "validate_plan";
+}
+
+function newSessionId() {
+  const randomPart = globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2);
+  return `session-${Date.now()}-${randomPart}`;
+}
+
+function sessionRequestKey(sessionId = state.sessionId, owner = state.activeSessionUserId || state.userId) {
+  return `${owner || "user"}:${sessionId || ""}`;
+}
+
+function activeSessionRequest() {
+  return state.activeRequests.get(sessionRequestKey());
+}
+
+function releaseSessionRequest(request) {
+  if (!request) return;
+  const current = state.activeRequests.get(request.key);
+  if (current === request) {
+    state.activeRequests.delete(request.key);
+  }
+  if (request.key === sessionRequestKey()) {
+    updateSendButtonState();
+  }
+}
+
+function updateSendButtonState() {
+  const running = Boolean(activeSessionRequest());
+  if (!sendBtn) return;
+  sendBtn.textContent = running ? "■" : "➜";
+  sendBtn.title = running ? "Stop" : "Send";
+  sendBtn.classList.toggle("is-stopping", running);
+}
+
+function managedRunEventsUrl(request) {
+  return `/api/runs/${request.runId}/events` + `?after=${request.lastSequence}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -395,7 +433,7 @@ function _applySession(result) {
   state.userId = result.user_id;
   state.displayName = result.display_name;
   state.activeSessionUserId = result.user_id;
-  state.sessionId = `session-${Math.floor(Date.now() / 1000)}`;
+  state.sessionId = newSessionId();
   state.sessionReady = false;
   state.isAdmin = Boolean(result.is_admin);
   loginUuidDisplay.textContent = `UUID: ${result.user_id}`;
@@ -557,7 +595,7 @@ function applyLocalIdentity(resetSession = false) {
   state.isAdmin = false;
   state.sessionReady = false;
   if (resetSession) {
-    state.sessionId = `session-${Math.floor(Date.now() / 1000)}`;
+    state.sessionId = newSessionId();
     localStorage.setItem("mat_sessionId", state.sessionId);
   }
   localStorage.setItem("mat_deploymentMode", "local");
@@ -640,11 +678,13 @@ function renderSessionList(sessions) {
   }
   sessions
     .slice()
+    .filter((session) => state.sessionStatusFilter === "all" || sessionDisplayStatus(session, session.userId || state.userId) === state.sessionStatusFilter)
     .sort((a, b) => (b.lastUpdateTime || 0) - (a.lastUpdateTime || 0))
     .forEach((s) => {
       const li = document.createElement("li");
       const owner = s.userId || state.userId;
       const isActive = s.id === state.sessionId && owner === state.activeSessionUserId;
+      const status = sessionDisplayStatus(s, owner);
       li.className = "session-item" + (isActive ? " active" : "");
       li.dataset.owner = owner;
 
@@ -656,6 +696,10 @@ function renderSessionList(sessions) {
       const idLine = document.createElement("div");
       idLine.className = "session-item-id";
       idLine.textContent = sessionLabel;
+      const statusIndicator = document.createElement("span");
+      statusIndicator.className = `session-status-indicator status-${status}`;
+      statusIndicator.title = status;
+      idLine.prepend(statusIndicator);
 
       if (summary) {
         li.classList.add("has-summary");
@@ -695,19 +739,32 @@ function renderSessionList(sessions) {
     });
 }
 
+function sessionDisplayStatus(session, owner) {
+  if (state.activeRequests.get(sessionRequestKey(session.id, owner))) return "running";
+  const status = String(session.status || session.phase || "").toLowerCase();
+  return ["running", "idle"].includes(status) ? status : "idle";
+}
+
 async function switchSession(sessionId, owner = state.userId) {
+  const viewKey = sessionRequestKey(sessionId, owner);
   state.sessionId = sessionId;
   state.activeSessionUserId = owner;
   state.sessionReady = true;
   localStorage.setItem("mat_sessionId", sessionId);
   sessionIdEl.textContent = sessionId;
-  renderSessionFilesTree([]);
+  const cachedView = state.sessionViewCache.get(viewKey);
+  if (cachedView) renderSessionSnapshot(cachedView);
+  else renderSessionFilesTree([]);
   clearCurrentUploads();
   agentGraph.reset();
   planGraph.reset();
   hidePlanGraph();
-  await loadSession(sessionId);
-  await loadSessions();
+  const [activeRun] = await Promise.all([
+    discoverManagedRun(sessionId, owner),
+    loadSession(sessionId, owner),
+  ]);
+  if (activeRun) startManagedRunReconnect(activeRun, sessionId, owner);
+  void loadSessions();
   agentGraph.startPolling(sessionId);
   planGraph.startPolling(sessionId);
 }
@@ -755,13 +812,13 @@ function showConfirmDialog(message) {
 }
 
 async function deleteSession(sessionId) {
-  if (state.isSending) return;
+  if (activeSessionRequest()) return;
   if (!await showConfirmDialog(`Delete session ${sessionId}? This cannot be undone.`)) return;
   try {
     const resp = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
     if (!resp.ok) return;
     if (sessionId === state.sessionId) {
-      state.sessionId = `session-${Math.floor(Date.now() / 1000)}`;
+      state.sessionId = newSessionId();
       state.activeSessionUserId = state.userId;
       state.sessionReady = false;
       localStorage.setItem("mat_sessionId", state.sessionId);
@@ -781,6 +838,10 @@ async function deleteSession(sessionId) {
 }
 
 refreshSessionsBtn.addEventListener("click", (e) => { e.stopPropagation(); loadSessions(); });
+sessionStatusFilter?.addEventListener("change", () => {
+  state.sessionStatusFilter = sessionStatusFilter.value || "all";
+  renderSessionList._lastSessions && renderSessionList(renderSessionList._lastSessions);
+});
 
 async function downloadSessionLog(sessionId, owner = state.userId) {
   if (!sessionId) return;
@@ -1120,7 +1181,7 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
         container.appendChild(inlineHost);
         if (Array.isArray(item.stepNodes) && item.stepNodes.length) {
           item.stepNodes.forEach((node) => stepExecutionFeed.appendStatic(node, inlineHost));
-        } else if (state.isSending) {
+        } else if (activeSessionRequest()) {
           stepExecutionFeed.attachLiveToolHost(inlineHost);
         }
       }
@@ -1345,12 +1406,13 @@ skillGraphOpenBtn?.addEventListener("click", () => {
 
 window.addEventListener("resize", resizeWorkspaceTerminal);
 
-async function refreshSessionFiles() {
-  if (!state.sessionId || !state.sessionReady) return;
+async function refreshSessionFiles(sessionId = state.sessionId, owner = state.activeSessionUserId || state.userId) {
+  if (!sessionId || !state.sessionReady) return;
   try {
-    const resp = await fetch(`/api/sessions/${state.sessionId}/files`);
+    const resp = await fetch(`/api/sessions/${sessionId}/files`);
     if (!resp.ok) return;
     const data = await resp.json();
+    if (sessionRequestKey(sessionId, owner) !== sessionRequestKey()) return;
     renderSessionFilesTree(data.files || []);
   } catch (_) {}
 }
@@ -1664,7 +1726,8 @@ async function generateSessionSummary(sessionId) {
 
 async function createSession() {
   state.activeSessionUserId = state.userId;
-  const url = `/apps/${APP_NAME}/users/${activeSessionBackendUserId()}/sessions/${state.sessionId}`;
+  const sessionId = state.sessionId;
+  const url = `/apps/${APP_NAME}/users/${activeSessionBackendUserId()}/sessions/${sessionId}`;
   const defaultWorkdir = (state.defaultWorkdir || "").trim();
   const sessionWorkdir = state.customWorkdir || defaultWorkdir;
   try {
@@ -1677,15 +1740,83 @@ async function createSession() {
         ...(sessionWorkdir ? { custom_workdir: sessionWorkdir } : {}),
       }),
     });
+    const existingResp = resp.status === 409 ? await fetch(url) : null;
     if (!resp.ok) {
-      console.error(`Failed to create session: HTTP ${resp.status}`, await resp.text());
-      return;
+      if (!existingResp?.ok) {
+        if (resp.status !== 409) console.error(`Failed to create session: HTTP ${resp.status}`, await resp.text());
+        return;
+      }
     }
     state.sessionReady = true;
-    await startKnowledgeReview();
+    if (resp.status !== 409) await startKnowledgeReview(sessionId);
     await loadSessions();
   } catch (err) {
     console.error("Failed to create session:", err);
+  }
+}
+
+async function discoverManagedRun(sessionId, owner = state.activeSessionUserId || state.userId) {
+  if (!owner || !sessionId) return null;
+  try {
+    const query = new URLSearchParams({ user_id: owner, session_id: sessionId });
+    const resp = await fetch(`/api/runs/active?${query}`);
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data.run || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function startManagedRunReconnect(activeRun, sessionId, owner = state.activeSessionUserId || state.userId) {
+  if (!activeRun?.run_id) return;
+  const key = sessionRequestKey(sessionId, owner);
+  if (state.activeRequests.get(key)) return;
+  const request = {
+    key,
+    sessionId,
+    owner,
+    backendUserId: owner,
+    controller: new AbortController(),
+    lastSequence: activeRun.latest_sequence || 0,
+    runId: activeRun.run_id,
+  };
+  state.activeRequests.set(request.key, request);
+  updateSendButtonState();
+  void streamManagedRunEvents(request);
+}
+
+async function streamManagedRunEvents(request) {
+  try {
+    const resp = await fetch(managedRunEventsUrl(request), {
+      headers: { "Accept": "text/event-stream" },
+      signal: request.controller.signal,
+    });
+    if (!resp.ok) return;
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let eventBuf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      eventBuf += decoder.decode(value, { stream: true });
+      const lines = eventBuf.split("\n");
+      eventBuf = lines.pop();
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data: ")) continue;
+        try {
+          const event = JSON.parse(trimmed.slice(6));
+          if (event.type === "event") request.lastSequence = event.sequence || request.lastSequence;
+          if (event.type === "snapshot_required") await loadSession(request.sessionId, request.owner);
+        } catch (_) {}
+      }
+    }
+  } catch (_) {
+    // reconnect is best-effort; a normal send path will surface hard errors.
+  } finally {
+    releaseSessionRequest(request);
+    await loadSession(request.sessionId, request.owner);
   }
 }
 
@@ -1966,6 +2097,14 @@ function renderSessionTimeline(events, stepNodes) {
   pendingStepNodes.forEach((node) => stepExecutionFeed.appendStatic(node));
 }
 
+function renderSessionSnapshot(snapshot) {
+  if (!snapshot) return;
+  renderSessionBanner(snapshot.summary || "");
+  renderSessionTimeline(snapshot.events || [], snapshot.graphNodes || []);
+  renderSessionFilesTree(snapshot.files || []);
+  updateSessionWorkdirDisplay(snapshot.sessionData || {});
+}
+
 function updateSessionWorkdirDisplay(sessionData) {
   const workdirDisplay = document.getElementById("session-workdir-display");
   if (!workdirDisplay) return;
@@ -1976,13 +2115,21 @@ function updateSessionWorkdirDisplay(sessionData) {
 
 // Reload full session history from the ADK server and re-render the chat,
 // mirroring Streamlit's load_session() called after send_message_sse().
-async function loadSession(sessionId) {
+async function loadSession(sessionId, owner = state.activeSessionUserId || state.userId) {
+  const viewKey = sessionRequestKey(sessionId, owner);
+  const requestAtStart = activeSessionRequest();
+  const viewIsCurrent = () => sessionRequestKey() === viewKey;
   try {
-    const sessionData = await fetchSessionData(sessionId);
+    const [sessionData, graphNodes] = await Promise.all([
+      fetchSessionData(sessionId),
+      fetchSessionStepNodes(sessionId),
+    ]);
     if (!sessionData) {
+      if (!viewIsCurrent()) return;
       state.sessionReady = false;
       return;
     }
+    if (!viewIsCurrent()) return;
     state.sessionReady = true;
     if (state.deploymentMode === "local" && sessionData.userId) {
       state.activeSessionUserId = sessionData.userId;
@@ -1997,15 +2144,26 @@ async function loadSession(sessionId) {
     const sessionSummary = sessionData.summary || state.sessionSummaries[sessionId] || "";
     renderSessionBanner(sessionSummary);
 
-    const graphNodes = await fetchSessionStepNodes(sessionId);
     renderSessionTimeline(events, graphNodes);
+    state.sessionViewCache.set(viewKey, {
+      sessionData,
+      events,
+      graphNodes,
+      files: [],
+      summary: sessionSummary,
+    });
+    if (state.sessionViewCache.size > 10) {
+      const oldestKey = state.sessionViewCache.keys().next().value;
+      state.sessionViewCache.delete(oldestKey);
+    }
 
     const hasUserMessage = events.some((event) => event?.author === "user");
     if (hasUserMessage && !sessionSummary && !state.summaryGeneratedFor.has(sessionId)) {
       generateSessionSummary(sessionId);
     }
 
-    await refreshSessionFiles();
+    if (requestAtStart && requestAtStart !== activeSessionRequest()) return;
+    void refreshSessionFiles(sessionId, owner);
     updateSessionWorkdirDisplay(sessionData);
   } catch (err) {
     console.error("Failed to load session:", err);
@@ -2013,22 +2171,18 @@ async function loadSession(sessionId) {
 }
 
 // ---------------------------------------------------------------------------
+// Streaming deduplication helpers
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // Message sending + SSE streaming
 // ---------------------------------------------------------------------------
 
-function setSendingState(isSending, controller = null) {
-  state.isSending = isSending;
-  state.sendController = controller;
-  if (!sendBtn) return;
-  sendBtn.textContent = isSending ? "■" : "➜";
-  sendBtn.title = isSending ? "Stop" : "Send";
-  sendBtn.classList.toggle("is-stopping", isSending);
-}
-
 function stopCurrentMessage() {
-  if (!state.isSending || !state.sendController) return;
+  const request = activeSessionRequest();
+  if (!request) return;
   fetch(`/api/sessions/${state.sessionId}/cancel`, { method: "POST" }).catch(() => {});
-  state.sendController.abort();
+  request.controller.abort();
   pollCancellationConfirmed(state.sessionId);
 }
 
@@ -2056,7 +2210,7 @@ function pollCancellationConfirmed(sessionId, attempts = 0) {
 
 async function sendMessage(message) {
   if (!message.trim()) return;
-  if (state.isSending) return;
+  if (activeSessionRequest()) return;
   if (!state.userId) { showLoginModal(); return; }
   if (!canWriteActiveSession()) {
     addMessage("agent", `Admin view is read-only for ${state.activeSessionUserId}'s session.`);
@@ -2092,11 +2246,22 @@ async function sendMessage(message) {
   });
 
   const controller = new AbortController();
-  setSendingState(true, controller);
+  const owner = state.activeSessionUserId || state.userId;
+  const request = {
+    key: sessionRequestKey(state.sessionId, owner),
+    sessionId: state.sessionId,
+    owner,
+    backendUserId: activeSessionBackendUserId(),
+    controller,
+    lastSequence: 0,
+    runId: null,
+  };
+  state.activeRequests.set(request.key, request);
+  updateSendButtonState();
   const payload = {
     app_name: APP_NAME,
-    user_id: activeSessionBackendUserId(),
-    session_id: state.sessionId,
+    user_id: request.backendUserId,
+    session_id: request.sessionId,
     new_message: {
       role: "user",
       parts: [{ text: backendMessage }],
@@ -2108,75 +2273,105 @@ async function sendMessage(message) {
   let accText = "";
   let summaryTriggered = false;
   const shownPlotPaths = new Set();
+  let lineBuf = "";
+
+  const handleAdkData = (dataStr) => {
+    if (dataStr === "[DONE]") return;
+    try {
+      const evt = JSON.parse(dataStr);
+      const parts = evt?.content?.parts || [];
+      for (const p of parts) {
+        if (p.thought) {
+          upsertTimelineThought(timeline, p.text || "");
+        } else if (p.functionCall) {
+          const fc = p.functionCall;
+          upsertTimelineEvent(timeline, {
+            type: "function_call",
+            id: fc.id,
+            name: fc.name || "Unknown",
+            args: fc.args || {},
+          });
+        } else if (p.functionResponse) {
+          const fr = p.functionResponse;
+          upsertTimelineEvent(timeline, {
+            type: "function_response",
+            id: fr.id,
+            name: fr.name || "Unknown",
+            response: fr.response || {},
+          });
+          if (shouldRefreshPlanGraphForTool(fr.name)) {
+            planGraph.refresh(request.sessionId);
+          }
+        } else if (p.text) {
+          accText = mergeReplayedText(accText, p.text);
+          upsertTimelineText(timeline, compactRepeatedPrefixSnapshots(accText));
+          if (!summaryTriggered && !state.summaryGeneratedFor.has(request.sessionId) && !state.sessionSummaries[request.sessionId]) {
+            summaryTriggered = true;
+            generateSessionSummary(request.sessionId, request.owner);
+          }
+        }
+
+        if (timeline.length > 0 && !timelineContainer) {
+          timelineContainer = addAgentTimelineMessage(timeline, shownPlotPaths, undefined, liveTurnContainer);
+        } else if (timelineContainer) {
+          renderTimeline(timelineContainer, timeline, shownPlotPaths);
+        }
+      }
+    } catch (_) {
+      // ignore malformed lines
+    }
+  };
+
+  const handleAdkChunk = (chunkText) => {
+    lineBuf += chunkText;
+    const lines = lineBuf.split("\n");
+    lineBuf = lines.pop();
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data: ")) continue;
+      handleAdkData(trimmed.slice(6));
+    }
+  };
 
   try {
-    const resp = await fetch("/run_sse", {
+    const startResp = await fetch("/api/runs", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Accept": "text/event-stream",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
       },
       body: JSON.stringify(payload),
-      signal: controller.signal,
+      signal: request.controller.signal,
     });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    if (!startResp.ok) throw new Error(`HTTP ${startResp.status}`);
+    const activeRun = await startResp.json();
+    request.runId = activeRun.run_id;
 
-    const reader = resp.body.getReader();
+    const eventsResp = await fetch(managedRunEventsUrl(request), {
+      headers: { "Accept": "text/event-stream" },
+      signal: request.controller.signal,
+    });
+    if (!eventsResp.ok) throw new Error(`HTTP ${eventsResp.status}`);
+    const reader = eventsResp.body.getReader();
     const decoder = new TextDecoder();
-    let lineBuf = "";
+    let eventBuf = "";
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      lineBuf += decoder.decode(value, { stream: true });
-      const lines = lineBuf.split("\n");
-      lineBuf = lines.pop(); // keep the incomplete last line in the buffer
+      eventBuf += decoder.decode(value, { stream: true });
+      const lines = eventBuf.split("\n");
+      eventBuf = lines.pop();
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed.startsWith("data: ")) continue;
-        const dataStr = trimmed.slice(6);
-        if (dataStr === "[DONE]") continue;
         try {
-          const evt = JSON.parse(dataStr);
-          const parts = evt?.content?.parts || [];
-          for (const p of parts) {
-            if (p.thought) {
-              upsertTimelineThought(timeline, p.text || "");
-            } else if (p.functionCall) {
-              const fc = p.functionCall;
-              upsertTimelineEvent(timeline, {
-                type: "function_call",
-                id: fc.id,
-                name: fc.name || "Unknown",
-                args: fc.args || {},
-              });
-            } else if (p.functionResponse) {
-              const fr = p.functionResponse;
-              upsertTimelineEvent(timeline, {
-                type: "function_response",
-                id: fr.id,
-                name: fr.name || "Unknown",
-                response: fr.response || {},
-              });
-              if (shouldRefreshPlanGraphForTool(fr.name)) {
-                planGraph.refresh(state.sessionId);
-              }
-            } else if (p.text) {
-              accText = mergeReplayedText(accText, p.text);
-              upsertTimelineText(timeline, compactRepeatedPrefixSnapshots(accText));
-              // Trigger summary early: on first agent text output (after planning)
-              if (!summaryTriggered && !state.summaryGeneratedFor.has(state.sessionId) && !state.sessionSummaries[state.sessionId]) {
-                summaryTriggered = true;
-                generateSessionSummary(state.sessionId);
-              }
-            }
-
-            if (timeline.length > 0 && !timelineContainer) {
-              timelineContainer = addAgentTimelineMessage(timeline, shownPlotPaths, undefined, liveTurnContainer);
-            } else if (timelineContainer) {
-              renderTimeline(timelineContainer, timeline, shownPlotPaths);
-            }
+          const runEvent = JSON.parse(trimmed.slice(6));
+          if (runEvent.type === "event") {
+            request.lastSequence = runEvent.sequence || request.lastSequence;
+            handleAdkChunk(runEvent.data || "");
+          } else if (runEvent.type === "snapshot_required") {
+            await loadSession(request.sessionId, request.owner);
+          } else if (runEvent.type === "terminal") {
+            request.lastSequence = runEvent.latest_sequence || request.lastSequence;
           }
         } catch (_) {
           // ignore malformed lines
@@ -2186,25 +2381,7 @@ async function sendMessage(message) {
     // Flush remaining data in the line buffer
     if (lineBuf.trim().startsWith("data: ")) {
       const dataStr = lineBuf.trim().slice(6);
-      if (dataStr !== "[DONE]") {
-        try {
-          const evt = JSON.parse(dataStr);
-          const parts = evt?.content?.parts || [];
-          for (const p of parts) {
-            if (p.thought) upsertTimelineThought(timeline, p.text || "");
-            else if (p.functionCall) upsertTimelineEvent(timeline, { type: "function_call", id: p.functionCall.id, name: p.functionCall.name || "Unknown", args: p.functionCall.args || {} });
-            else if (p.functionResponse) {
-              upsertTimelineEvent(timeline, { type: "function_response", id: p.functionResponse.id, name: p.functionResponse.name || "Unknown", response: p.functionResponse.response || {} });
-              if (shouldRefreshPlanGraphForTool(p.functionResponse.name)) {
-                planGraph.refresh(state.sessionId);
-              }
-            }
-            else if (p.text) { accText = mergeReplayedText(accText, p.text); upsertTimelineText(timeline, compactRepeatedPrefixSnapshots(accText)); }
-            if (timeline.length > 0 && !timelineContainer) timelineContainer = addAgentTimelineMessage(timeline, shownPlotPaths, undefined, liveTurnContainer);
-            else if (timelineContainer) renderTimeline(timelineContainer, timeline, shownPlotPaths);
-          }
-        } catch (_) {}
-      }
+      handleAdkData(dataStr);
     }
   } catch (err) {
     if (err?.name === "AbortError") {
@@ -2213,14 +2390,14 @@ async function sendMessage(message) {
       addMessage("agent", `Backend error: ${err}`, undefined, liveTurnContainer);
     }
   } finally {
-    await agentGraph._poll(state.sessionId);
+    releaseSessionRequest(request);
+    await agentGraph._poll(request.sessionId);
     agentGraph.stopPolling();
-    await planGraph._poll(state.sessionId);
+    await planGraph._poll(request.sessionId);
     planGraph.stopPolling();
-    await refreshSessionFiles();
+    await refreshSessionFiles(request.sessionId, request.owner);
     stepExecutionFeed.finishLiveTurn();
-    setSendingState(false);
-    await loadSession(state.sessionId);
+    await loadSession(request.sessionId, request.owner);
   }
 }
 
@@ -2473,7 +2650,7 @@ layoutController.init();
 // ---------------------------------------------------------------------------
 
 sendBtn.addEventListener("click", () => {
-  if (state.isSending) {
+  if (activeSessionRequest()) {
     stopCurrentMessage();
     return;
   }
@@ -2482,7 +2659,7 @@ sendBtn.addEventListener("click", () => {
 textInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
-    if (state.isSending) return;
+    if (activeSessionRequest()) return;
     sendMessage(textInput.value);
   }
 });
@@ -2545,7 +2722,7 @@ resetBtn.addEventListener("click", () => {
 
 async function _doNewSession(customWorkdir) {
   state.customWorkdir = customWorkdir;
-  state.sessionId = `session-${Math.floor(Date.now() / 1000)}`;
+  state.sessionId = newSessionId();
   state.activeSessionUserId = state.userId;
   state.sessionReady = false;
   localStorage.setItem("mat_sessionId", state.sessionId);

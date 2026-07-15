@@ -92,6 +92,7 @@ from matcreator.skill import (  # noqa: E402
 from matcreator.config import load_config, save_config, get_disabled_skills  # noqa: E402
 from matcreator.config import ENV_TO_YAML, YAML_TO_ENV, SENSITIVE_YAML_KEYS  # noqa: E402
 from matcreator.constants import GRAPH_AGENT_MODEL, KNOW_DO_GRAPH_DB  # noqa: E402
+from matcreator.control_plane.runs import ManagedRun, ManagedRunRegistry  # noqa: E402
 from matcreator.knowledge.query import _get_kg  # noqa: E402
 from matcreator.knowledge.review import run_review_pipeline  # noqa: E402
 from matcreator.ports import get_adk_port, get_local_adk_command, get_web_port, get_worker_base_port  # noqa: E402
@@ -155,6 +156,7 @@ _knowledge_review_state = {
     "errors": [],
     "summary": "",
 }
+_run_registry = ManagedRunRegistry()
 _LEGACY_ENV_ALIASES = {
     "LLM_API_KEY": "MINIMAX_API_KEY",
     "LLM_BASE_URL": "MINIMAX_API_BASE",
@@ -889,6 +891,104 @@ async def _proxy_sse(request: Request, target_url: str, path: str):
             ) as resp:
                 async for chunk in resp.aiter_bytes():
                     yield chunk
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+class ManagedRunBody(BaseModel):
+    app_name: str = APP_NAME
+    user_id: str
+    session_id: str
+    new_message: dict[str, Any]
+
+
+def _body_to_dict(body: BaseModel) -> dict[str, Any]:
+    if hasattr(body, "model_dump"):
+        return body.model_dump()
+    return body.dict()
+
+
+async def _target_url_for_user(user_id: str) -> str:
+    if _MATCREATOR_MODE != "server":
+        return f"http://127.0.0.1:{get_adk_port()}"
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required to route to worker in server mode")
+    return await asyncio.to_thread(ensure_worker_running, user_id)
+
+
+async def _produce_managed_run(run: ManagedRun, payload: dict[str, Any], target_url: str) -> None:
+    url = f"{target_url.rstrip('/')}/run_sse"
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+    }
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream(
+            method="POST",
+            url=url,
+            headers=headers,
+            content=json.dumps(payload),
+        ) as resp:
+            if resp.status_code >= 400:
+                detail = await resp.aread()
+                raise RuntimeError(f"ADK run_sse failed with HTTP {resp.status_code}: {detail.decode('utf-8', errors='replace')}")
+            async for chunk in resp.aiter_bytes():
+                if run.status == "cancelling":
+                    raise asyncio.CancelledError()
+                if chunk:
+                    await _run_registry.publish(run, chunk.decode("utf-8", errors="replace"))
+
+
+@app.post("/api/runs")
+async def start_managed_run(body: ManagedRunBody) -> JSONResponse:
+    payload = _body_to_dict(body)
+    owner_id = body.user_id
+    target_url = await _target_url_for_user(owner_id)
+
+    async def producer(run: ManagedRun) -> None:
+        await _produce_managed_run(run, payload, target_url)
+
+    try:
+        run = await _run_registry.start(
+            owner_id=owner_id,
+            session_id=body.session_id,
+            producer=producer,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return JSONResponse(run.summary())
+
+
+@app.get("/api/runs/active")
+async def get_active_runs(
+    user_id: str = Query(..., description="Current signed-in user"),
+    session_id: str = Query(default="", description="Optional session ID to narrow reconnect lookup"),
+) -> JSONResponse:
+    if session_id:
+        run = _run_registry.active_for(user_id, session_id)
+        return JSONResponse({"run": run.summary() if run else None})
+    return JSONResponse({"runs": [run.summary() for run in _run_registry.active_runs(user_id)]})
+
+
+@app.get("/api/runs/{run_id}")
+async def get_managed_run(run_id: str) -> JSONResponse:
+    run = _run_registry.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return JSONResponse(run.summary())
+
+
+@app.get("/api/runs/{run_id}/events")
+async def stream_managed_run_events(run_id: str, after: int = Query(default=0, ge=0)) -> StreamingResponse:
+    run = _run_registry.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    async def stream():
+        async for event in _run_registry.subscribe(run, after=after):
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 
@@ -1778,6 +1878,11 @@ async def _on_startup() -> None:
         asyncio.create_task(_idle_worker_reaper())
 
 
+@app.on_event("shutdown")
+async def _on_shutdown() -> None:
+    await _run_registry.shutdown()
+
+
 class LoginBody(BaseModel):
     display_name: str
     password: str | None = None
@@ -2640,6 +2745,8 @@ async def cancel_session_execution(
         AgentGraphLogger(session_id).mark_running_nodes_cancelled,
         summary=f"Cancelled by user ({reason})"
     )
+    for run in _run_registry.active_for_session(session_id):
+        await _run_registry.request_cancel(run)
     return JSONResponse({
         "status": "ok",
         "session_id": session_id,
