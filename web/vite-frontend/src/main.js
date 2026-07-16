@@ -105,6 +105,9 @@ let knowledgeReviewPoll = null;
 let workspaceTerminal = null;
 let workspaceTerminalFit = null;
 let workspaceTerminalSocket = null;
+let workspaceTerminalPointerDown = false;
+let workspaceTerminalSelectionReleasedAt = 0;
+let workspaceTerminalCtrlCKeyAt = 0;
 const structureTabs = new Map();
 let structureViewerModulePromise = null;
 let svelteRuntimePromise = null;
@@ -1333,6 +1336,52 @@ function resizeWorkspaceTerminal() {
   } catch (_) { /* terminal may not be visible yet */ }
 }
 
+function handleWorkspaceTerminalCopy(event) {
+  if (!workspaceTerminal?.hasSelection?.()) return;
+  const selectedText = workspaceTerminal.getSelection();
+  if (!selectedText) return;
+  event.preventDefault();
+  event.clipboardData?.setData("text/plain", selectedText);
+  navigator.clipboard?.writeText(selectedText).catch(() => {});
+}
+
+function writeWorkspaceTerminalSelectionToClipboard() {
+  if (!workspaceTerminal?.hasSelection?.()) return false;
+  const selectedText = workspaceTerminal.getSelection();
+  if (!selectedText) return false;
+  navigator.clipboard?.writeText(selectedText).catch(() => {});
+  return true;
+}
+
+function handleWorkspaceTerminalKeydown(event) {
+  const isCopyKey = (event.ctrlKey || event.metaKey) && event.key?.toLowerCase?.() === "c";
+  if (!isCopyKey) return;
+  workspaceTerminalCtrlCKeyAt = Date.now();
+  if (!workspaceTerminal?.hasSelection?.()) return;
+  event.preventDefault();
+  event.stopPropagation();
+  writeWorkspaceTerminalSelectionToClipboard();
+}
+
+function handleWorkspaceTerminalPointerDown() {
+  workspaceTerminalPointerDown = true;
+}
+
+function handleWorkspaceTerminalPointerUp() {
+  if (workspaceTerminalPointerDown && workspaceTerminal?.hasSelection?.()) {
+    workspaceTerminalSelectionReleasedAt = Date.now();
+  }
+  workspaceTerminalPointerDown = false;
+}
+
+function shouldSuppressWorkspaceTerminalInput(data) {
+  if (data !== "\x03") return false;
+  const now = Date.now();
+  const afterMouseSelection = now - workspaceTerminalSelectionReleasedAt < 500;
+  const fromKeyboardShortcut = now - workspaceTerminalCtrlCKeyAt < 500;
+  return afterMouseSelection && !fromKeyboardShortcut;
+}
+
 function startWorkspaceTerminal() {
   if (!workspaceTerminalEl) return;
   if (workspaceTerminalSocket && workspaceTerminalSocket.readyState === WebSocket.OPEN) {
@@ -1356,6 +1405,14 @@ function startWorkspaceTerminal() {
   workspaceTerminalFit = new FitAddon();
   workspaceTerminal.loadAddon(workspaceTerminalFit);
   workspaceTerminal.open(workspaceTerminalEl);
+  workspaceTerminalEl.removeEventListener("copy", handleWorkspaceTerminalCopy);
+  workspaceTerminalEl.addEventListener("copy", handleWorkspaceTerminalCopy);
+  workspaceTerminalEl.removeEventListener("keydown", handleWorkspaceTerminalKeydown, true);
+  workspaceTerminalEl.addEventListener("keydown", handleWorkspaceTerminalKeydown, true);
+  workspaceTerminalEl.removeEventListener("pointerdown", handleWorkspaceTerminalPointerDown);
+  workspaceTerminalEl.addEventListener("pointerdown", handleWorkspaceTerminalPointerDown);
+  workspaceTerminalEl.removeEventListener("pointerup", handleWorkspaceTerminalPointerUp);
+  workspaceTerminalEl.addEventListener("pointerup", handleWorkspaceTerminalPointerUp);
   workspaceTerminal.write("\r\nStarting workspace terminal...\r\n");
   workspaceTerminalFit.fit();
   workspaceTerminal.focus();
@@ -1379,6 +1436,7 @@ function startWorkspaceTerminal() {
     workspaceTerminal?.write("\r\n[terminal connection error]\r\n");
   });
   workspaceTerminal.onData((data) => {
+    if (shouldSuppressWorkspaceTerminalInput(data)) return;
     if (workspaceTerminalSocket?.readyState === WebSocket.OPEN) {
       workspaceTerminalSocket.send(JSON.stringify({ type: "input", data }));
     }
@@ -1393,6 +1451,10 @@ function stopWorkspaceTerminal() {
   workspaceTerminal?.dispose();
   workspaceTerminal = null;
   workspaceTerminalFit = null;
+  workspaceTerminalEl?.removeEventListener("copy", handleWorkspaceTerminalCopy);
+  workspaceTerminalEl?.removeEventListener("keydown", handleWorkspaceTerminalKeydown, true);
+  workspaceTerminalEl?.removeEventListener("pointerdown", handleWorkspaceTerminalPointerDown);
+  workspaceTerminalEl?.removeEventListener("pointerup", handleWorkspaceTerminalPointerUp);
   if (workspaceTerminalEl) workspaceTerminalEl.innerHTML = "";
 }
 
