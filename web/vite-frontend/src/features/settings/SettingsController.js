@@ -435,7 +435,7 @@ export function createSettingsController({ state, applyLogin }) {
     uploadBtn.disabled = true;
     uploadBtn.textContent = "Uploading…";
     try {
-      const resp = await fetch("/api/skills/custom", { method: "POST", body: formData });
+      const resp = await fetch(settingsApiUrl("/api/skills/custom"), { method: "POST", body: formData });
       const body = await resp.json().catch(() => ({}));
       if (!resp.ok) {
         errorEl.textContent = body.detail || `Upload failed (${resp.status})`;
@@ -458,7 +458,7 @@ export function createSettingsController({ state, applyLogin }) {
 
   async function deleteCustomSkill(skillName) {
     try {
-      const resp = await fetch(`/api/skills/custom/${encodeURIComponent(skillName)}`, { method: "DELETE" });
+      const resp = await fetch(settingsApiUrl(`/api/skills/custom/${encodeURIComponent(skillName)}`), { method: "DELETE" });
       const body = await resp.json().catch(() => ({}));
       if (!resp.ok) {
         settingsStatus.textContent = body.detail || `Delete failed (${resp.status})`;
