@@ -49,7 +49,7 @@ Create or edit the `.env` file in the same directory as `vasp_tools.py` and
 | Variable | Required | Example | Description |
 |---|---|---|---|
 | `PMG_VASP_PSP_DIR` | Yes | `/home/user/pbe/potpaw_PBE` | Path to the pymatgen POTCAR library (see §1) |
-| `BOHRIUM_USERNAME` | Yes | `you@example.com` | Bohrium account e-mail |
+| `BOHRIUM_EMAIL` | Yes | `you@example.com` | Bohrium account e-mail |
 | `BOHRIUM_PASSWORD` | Yes | `yourpassword` | Bohrium account password |
 | `BOHRIUM_PROJECT_ID` | Yes | `29496` | Bohrium project ID (integer) |
 | `BOHRIUM_VASP_IMAGE` | Yes | `registry.dp.tech/dptech/prod-15454/vasp:5.4.4` | Container image used to run VASP on Bohrium |
@@ -63,7 +63,7 @@ Create or edit the `.env` file in the same directory as `vasp_tools.py` and
 PMG_VASP_PSP_DIR=/home/user/pbe/potpaw_PBE
 
 # Bohrium credentials & job settings
-BOHRIUM_USERNAME=you@example.com
+BOHRIUM_EMAIL=you@example.com
 BOHRIUM_PASSWORD=yourpassword
 BOHRIUM_PROJECT_ID=12345
 BOHRIUM_VASP_IMAGE=registry.dp.tech/dptech/prod-15454/vasp:5.4.4

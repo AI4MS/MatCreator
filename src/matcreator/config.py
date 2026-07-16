@@ -68,7 +68,7 @@ YAML_TO_ENV: dict[str, str] = {
     "llm.embedding_model":    "EMBEDDING_MODEL",
     "llm.graph_agent_model":  "GRAPH_AGENT_MODEL",
     "llm.review_agent_model": "REVIEW_AGENT_MODEL",
-    "bohrium.email":          "BOHRIUM_USERNAME",
+    "bohrium.email":          "BOHRIUM_EMAIL",
     "bohrium.password":       "BOHRIUM_PASSWORD",
     "bohrium.project_id":     "BOHRIUM_PROJECT_ID",
     "compute.vasp_image":     "BOHRIUM_VASP_IMAGE",

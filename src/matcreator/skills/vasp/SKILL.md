@@ -30,7 +30,7 @@ One script handles VASP-specific work; job submission is now delegated to the `d
 
 Use the `run_skill_script` tool to execute it:
 - `skill_name`: `"vasp"`
-- `script_name`: `"vasp_prepare.py"`
+- `script_name`: `"vasp_tools.py"`
 - `args`: the sub-command and flags as a single string
 
 Every command prints JSON to stdout and exits 0 on success, 1 on error.

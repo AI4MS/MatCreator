@@ -414,7 +414,7 @@ def dflow_remote_execution(
             if mode == "bohrium":
                 dflow.config["mode"] = "default"
                 bohrium_config = {
-                    "username": os.environ.get("BOHRIUM_USERNAME"),
+                    "username": os.environ.get("BOHRIUM_EMAIL"),
                     "password": os.environ.get("BOHRIUM_PASSWORD"),
                     "project_id": int(os.environ.get("BOHRIUM_PROJECT_ID", 0)),
                 }
@@ -833,7 +833,7 @@ def dflow_batch_execution(
             if mode == "bohrium":
                 dflow.config["mode"] = "default"
                 bohrium_config = {
-                    "username": os.environ.get("BOHRIUM_USERNAME"),
+                    "username": os.environ.get("BOHRIUM_EMAIL"),
                     "password": os.environ.get("BOHRIUM_PASSWORD"),
                     "project_id": int(os.environ.get("BOHRIUM_PROJECT_ID", 0)),
                 }
