@@ -10,7 +10,7 @@ import { AgentGraphView, StepExecutionFeed } from "./features/graphs/AgentGraphV
 import { ExecutionPlanView } from "./features/graphs/ExecutionPlanView.js";
 import { createSkillGraphController } from "./features/skills/SkillGraphController.js";
 import { createSettingsController } from "./features/settings/SettingsController.js";
-import "./style.css";
+import "./styles/index.css";
 
 // ---------------------------------------------------------------------------
 // State
