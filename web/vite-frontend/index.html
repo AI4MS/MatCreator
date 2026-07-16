@@ -278,11 +278,14 @@
             <div class="right-session-meta">
               <span>Session: <span id="session-id">-</span></span>
             </div>
-            <select id="session-status-filter" class="session-status-filter" aria-label="Filter sessions by status">
-              <option value="all">All</option>
-              <option value="running">Running</option>
-              <option value="idle">Idle</option>
-            </select>
+            <div class="custom-select session-status-filter" id="session-status-filter" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-label="Filter sessions by status" tabindex="0">
+              <span class="custom-select-trigger" data-value="all">All</span>
+              <ul class="custom-select-options" role="listbox">
+                <li role="option" data-value="all" aria-selected="true">All</li>
+                <li role="option" data-value="running">Running</li>
+                <li role="option" data-value="idle">Idle</li>
+              </ul>
+            </div>
             <div class="panel-block-body">
               <ul class="artifact-list" id="session-list">
                 <li class="empty">Sign in to see sessions</li>
