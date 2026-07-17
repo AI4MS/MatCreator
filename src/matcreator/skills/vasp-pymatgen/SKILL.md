@@ -75,10 +75,8 @@ load_skill_resource(skill_name="vasp-pymatgen", path="references/read-results.md
 ## Submission
 
 ### `bohrium` skill (Recommended for Bohrium users)
-Submit jobs to Bohrium using the `bohrium` skill, which uses the **dpdispatcher**
-Python API (the `bohr` CLI is **not** available on this platform — it is
-bohr.io). This is the recommended submission method for users running on the
-Bohrium platform.
+Submit jobs to Bohrium using the `bohrium` skill. This is the recommended
+submission method for users running on the Bohrium platform.
 
 For the full submission template, environment variables, polling, and DFT-label
 extxyz collection guidance for a VASP job on Bohrium, see:

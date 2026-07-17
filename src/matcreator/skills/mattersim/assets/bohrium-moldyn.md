@@ -1,7 +1,7 @@
 # Example submission.json for mattersim MD
 
 Set `JOB_NAME` before substituting (e.g. `export JOB_NAME="mattersim-md-Cu-300K"`).
-See the naming convention in [bohrium/references/dpdispatcher.md](../../bohrium/references/dpdispatcher.md#job-naming-mandatory).
+See the naming convention in the `bohrium` skill.
 
 ```json
 {

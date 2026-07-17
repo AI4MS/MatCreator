@@ -1,7 +1,7 @@
 # Example submission.json for mattersim finetune
 
 Set `JOB_NAME` before substituting (e.g. `export JOB_NAME="mattersim-finetune-CuAu"`).
-See the naming convention in [bohrium/references/dpdispatcher.md](../../bohrium/references/dpdispatcher.md#job-naming-mandatory).
+See the naming convention in the `bohrium` skill.
 
 ```json
 {

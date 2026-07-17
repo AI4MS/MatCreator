@@ -1,9 +1,7 @@
-# VASP Bohrium Submission Reference (dpdispatcher)
+# VASP Bohrium Submission Reference
 
-> **Do NOT use a `bohr` CLI** — the `bohr` executable on this platform is
-> bohr.io, not the Bohrium CLI. Submit through dpdispatcher. See the `bohrium`
-> skill and [bohrium/references/dpdispatcher.md](../../bohrium/references/dpdispatcher.md)
-> for the canonical `submission.json` schema, polling, and download.
+Submit through the `bohrium` skill. See the `bohrium` skill documentation
+for the canonical submission schema, polling, and download.
 
 This file covers only **VASP-specific** parameters.
 
@@ -84,29 +82,19 @@ than per-task submission.
 envsubst '${BOHRIUM_EMAIL} ${BOHRIUM_PASSWORD} ${BOHRIUM_PROJECT_ID} ${BOHRIUM_VASP_MACHINE} ${BOHRIUM_VASP_IMAGE} ${JOB_NAME}' \
 ```
 
-Export `JOB_NAME` before substituting, following the convention in
-[bohrium/references/dpdispatcher.md](../../bohrium/references/dpdispatcher.md#job-naming-mandatory):
+Export `JOB_NAME` before substituting, following the naming convention in the
+`bohrium` skill:
 e.g. `export JOB_NAME="vasp-scf-Al2O3-50frames"` for a 50-frame SCF label batch.
     < submission.template.json > submission.json
 ```
 
-```python
-from dpdispatcher import Submission
-sub = Submission.submission_from_json("submission.json")
-sub.run_submission(check_interval=30)   # upload → submit → poll → download
-```
+Submit via the `bohrium` skill.
 
 ## Handling failed jobs
 
 Recover the submission and inspect a failed task's `log`/`err` (downloaded into
-its `task_work_path`):
-
-```python
-from dpdispatcher import Submission
-sub = Submission.submission_from_json("submission.json")
-sub.check_all_finished()   # True once all terminal
-sub.download_jobs()
-```
+its `task_work_path`). See the `bohrium` skill for recovery and re-download
+procedures.
 
 Modify the INCAR/settings, write a fresh `submission.json`, and re-submit.
 

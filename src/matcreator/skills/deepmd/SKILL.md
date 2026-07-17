@@ -91,7 +91,7 @@ run_skill_script(
 | `<model>.pt` | Copy or symlink to base model (finetune variants) |
 
 > **Remote submission:** The base model must be a regular file (not a symlink) inside
-> `<workdir>` for dpdispatcher to upload it. Pass `--copy_model` during preparation to
+> `<workdir>` for upload. Pass `--copy_model` during preparation to
 > copy the file rather than symlink it.
 
 ---
@@ -215,13 +215,10 @@ dp --pt compress -i model.ckpt.pt -o model_compressed.pt
 
 ---
 
-## Remote execution via the bohrium skill (dpdispatcher API)
+## Remote execution via the bohrium skill
 
-> **Do NOT use a `bohr` CLI** — the `bohr` executable on this platform is
-> bohr.io, not the Bohrium CLI. Always submit through dpdispatcher. See the
-> `bohrium` skill and
-> [bohrium/references/dpdispatcher.md](../bohrium/references/dpdispatcher.md)
-> for the canonical `submission.json` schema, polling, and download.
+Submit jobs to Bohrium using the `bohrium` skill. See the `bohrium` skill
+documentation for submission details.
 
 ### Environment variables
 
@@ -267,34 +264,16 @@ includes `input.json` (+ the base model + `train_data/`), and whose
 | Finetune (single-task) | `dp --pt train input.json --finetune DPA2.pt --use-pretrain-script --model-branch Omat24` |
 | Finetune (multi-task) | `dp --pt train input.json --finetune DPA2.pt --use-pretrain-script` |
 
-Substitute env vars and submit + wait via the dpdispatcher Python API:
+Substitute env vars and submit via the `bohrium` skill:
 
 ```bash
 envsubst '${BOHRIUM_EMAIL} ${BOHRIUM_PASSWORD} ${BOHRIUM_PROJECT_ID} ${BOHRIUM_DEEPMD_MACHINE} ${BOHRIUM_DEEPMD_IMAGE} ${JOB_NAME}' \
     < submission.template.json > submission.json
 ```
 
-```python
-from dpdispatcher import Submission
-sub = Submission.submission_from_json("submission.json")
-sub.run_submission(check_interval=30)   # upload → submit → poll → download
-```
-
 ### Step 3 — Recover / poll after a session reset
 
-`run_submission` serializes the submission state next to `submission.json`. To
-resume polling from any later session (do not re-submit):
-
-```python
-from dpdispatcher import Submission
-sub = Submission.submission_from_json("submission.json")
-if sub.check_all_finished():
-    sub.download_jobs()
-```
-
-> **Polling primitives:** `Submission.check_all_finished()` (non-blocking) and
-> `Submission.run_submission()` (blocking). Do not invent `job_status()`; do
-> not call the internal `get_job_detail` directly.
+See the `bohrium` skill for how to resume polling from a later session.
 
 ---
 
@@ -306,5 +285,4 @@ if sub.check_all_finished():
 - For multi-task finetuning the base model must be a DPA-2 multi-task checkpoint.
 - `deepmd/npy` systems are written per chemical formula; use `--mixed_type` to allow
   variable composition within a single directory.
-- All `task_work_path` entries in `submission.json` must share the same `work_base` directory
-  (dpdispatcher requirement).
+- All `task_work_path` entries in `submission.json` must share the same `work_base` directory.

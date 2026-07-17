@@ -1,11 +1,6 @@
 # ASE / DeePMD Bohrium Submission Reference
 
-> **Do NOT use a `bohr` CLI** — the `bohr` executable on this platform is
-> bohr.io, not the Bohrium CLI. All submission/polling/download goes through
-> dpdispatcher (the `bohrium` skill). This file already uses the dpdispatcher
-> `submission.json` schema; ignore any `bohr *` commands elsewhere.
-
-See the `bohrium` skill and [bohrium/references/dpdispatcher.md](../../bohrium/references/dpdispatcher.md)
+Submit through the `bohrium` skill. See the `bohrium` skill documentation
 for the canonical submission schema, polling, and download. This file covers
 only **ASE / DeePMD-specific** submission details.
 
@@ -128,24 +123,13 @@ envsubst '${BOHRIUM_EMAIL} ${BOHRIUM_PASSWORD} ${BOHRIUM_PROJECT_ID} ${BOHRIUM_D
     < submission.template.json > submission.json
 
 uv run -m json.tool submission.json >/dev/null
-uvx --with dpdispatcher dargs check -f dpdispatcher.entrypoints.submit.submission_args submission.json
-uvx --from dpdispatcher --with oss2 dpdisp submit submission.json
 ```
+
+Submit via the `bohrium` skill.
 
 ## Monitoring and result download
 
-Prefer the dpdispatcher Python API for monitoring and download (the `bohr` CLI
-is **not** available on this platform):
-
-```python
-from dpdispatcher import Submission
-sub = Submission.submission_from_json("submission.json")
-if sub.check_all_finished():
-    sub.download_jobs()
-```
-
-`run_submission` (see the `bohrium` skill) already polls and downloads in one
-call. Job metadata and logs land in the working directory.
+See the `bohrium` skill for monitoring and download procedures.
 
 After results are available locally, collect them with the ASE / DeePMD tool:
 
@@ -157,12 +141,6 @@ python ase_deepmd_tools.py collect_relax --calc_dirs /tmp/ase_deepmd_jobs/relax_
 ## Handling failed jobs
 
 Inspect `status.json`, `log`, and `err` in the downloaded task directory. If
-results were not downloaded, recover the submission and download again:
-
-```python
-from dpdispatcher import Submission
-sub = Submission.submission_from_json("submission.json")
-sub.download_jobs()
-```
+results were not downloaded, see the `bohrium` skill for recovery procedures.
 
 Modify the input, image, machine type, or model path, then prepare or submit again.

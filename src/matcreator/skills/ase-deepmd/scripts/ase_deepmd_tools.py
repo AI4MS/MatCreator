@@ -52,7 +52,7 @@ run_ase_job.py handling
 -----------------------
 * run_ase_job.py (the job runner script that lives alongside this file) is always
   copied into the batch directory alongside model.pt.  Both files are then listed
-  in ``forward_common_files`` when building the DPDispatcher submission JSON so
+  in ``forward_common_files`` when building the submission JSON so
   they are uploaded once to the remote root and shared by every task.
 """
 

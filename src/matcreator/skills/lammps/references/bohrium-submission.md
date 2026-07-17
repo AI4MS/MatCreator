@@ -51,18 +51,15 @@
 ## Submission flow
 
 1. Generate `submission.template.json` as above, using `${VARNAME}` for environment variables.
-2. Export `JOB_NAME` (see the convention in
-   [bohrium/references/dpdispatcher.md](../../bohrium/references/dpdispatcher.md#job-naming-mandatory)),
+2. Export `JOB_NAME` (see the naming convention in the `bohrium` skill),
    e.g. `export JOB_NAME="lammps-npt-Al-500K"`, then substitute:
    ```bash
    envsubst '${BOHRIUM_EMAIL} ${BOHRIUM_PASSWORD} ${BOHRIUM_PROJECT_ID} ${BOHRIUM_DEEPMD_MACHINE} ${BOHRIUM_DEEPMD_IMAGE} ${JOB_NAME}' \
        < submission.template.json > submission.json
    ```
-3. Validate and submit:
+3. Validate and submit via the `bohrium` skill:
    ```bash
    uv run -m json.tool submission.json >/dev/null
-   uvx --with dpdispatcher dargs check -f dpdispatcher.entrypoints.submit.submission_args submission.json
-   uvx --from dpdispatcher --with oss2 dpdisp submit submission.json
    ```
 
 ## Multi-job submission (all frames)
