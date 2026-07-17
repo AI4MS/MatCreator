@@ -180,8 +180,10 @@ body[data-theme="light"] .custom-select-options li[aria-selected="true"] {
   font-family: var(--mono);
 }
 .session-files-body { max-height: 600px; }
-.remote-jobs-pane { border-top: 1px solid var(--border); padding-top: 12px; flex: 0 1 30%; min-height: 88px; overflow-y: auto; }
-.remote-jobs-pane:not(.is-expanded) { align-self: flex-start; border-top: 0; flex: 0 0 auto; min-height: 0; overflow: visible; padding-top: 0; }
+.remote-jobs-pane { border-top: 1px solid var(--border); padding: 10px 14px 12px; flex: 0 1 30%; min-height: 48px; overflow-y: auto; }
+.remote-jobs-pane:not(.is-expanded) { align-self: stretch; flex: 0 0 auto; min-height: 0; overflow: visible; }
+.remote-jobs-pane .block-header { font-size: 12px; }
+body[data-theme="light"] .remote-jobs-pane .block-header { color: #233044; }
 .remote-jobs-pane .ghost { font-size: 11px; padding: 3px 8px; }
 .remote-jobs-toggle { align-items: center; background: transparent; border: 0; color: var(--text); cursor: pointer; display: inline-flex; font: inherit; font-weight: inherit; gap: 6px; padding: 0; }
 .remote-jobs-pane:not(.is-expanded) .remote-jobs-toggle { color: var(--muted); height: 18px; }
@@ -189,6 +191,7 @@ body[data-theme="light"] .custom-select-options li[aria-selected="true"] {
 .remote-jobs-pane:not(.is-expanded) .ghost { display: none; }
 .remote-jobs-caret { color: var(--muted); font-size: 10px; transition: transform 0.15s ease; }
 .remote-jobs-toggle.is-expanded .remote-jobs-caret { transform: rotate(90deg); }
+.remote-jobs-demo-badge { border: 1px solid rgba(251, 191, 36, 0.45); border-radius: 999px; color: #fbbf24; font-size: 9px; font-weight: 700; letter-spacing: 0.04em; padding: 1px 5px; text-transform: uppercase; }
 .remote-job-list { list-style: none; display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 .remote-job-list .empty { padding: 4px 0; font-size: 12px; }
 .remote-job { border: 1px solid var(--border); border-left: 3px solid var(--muted); border-radius: 6px; padding: 7px 8px; background: var(--subtle-surface); }

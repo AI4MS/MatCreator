@@ -20,6 +20,8 @@ const APP_NAME = "MatCreator";
 
 const AGENT_MODE_KEY = "mat_agentMode";
 const THEME_KEY = "mat_theme";
+const DUMMY_REMOTE_JOBS = import.meta.env.VITE_DUMMY_REMOTE_JOBS === "true";
+const dummyRemoteJobsBySession = new Map();
 
 const state = {
   sessionId: localStorage.getItem("mat_sessionId") || newSessionId(),
@@ -111,6 +113,7 @@ const remoteJobListEl = document.getElementById("remote-job-list");
 const refreshRemoteJobsBtn = document.getElementById("refresh-remote-jobs");
 const remoteJobsToggleBtn = document.getElementById("remote-jobs-toggle");
 const remoteJobsPane = document.getElementById("remote-jobs-pane");
+const remoteJobsDemoBadge = document.getElementById("remote-jobs-demo-badge");
 let knowledgeReviewPoll = null;
 let remoteJobsPoll = null;
 const structureTabs = new Map();
@@ -736,6 +739,13 @@ function startRemoteJobsPolling(sessionId, owner) {
 
 async function loadRemoteJobs(sessionId = state.sessionId, owner = state.activeSessionUserId || state.userId) {
   if (!sessionId || !owner) return;
+  if (DUMMY_REMOTE_JOBS) {
+    state.remoteJobs = getDummyRemoteJobs(sessionId, owner);
+    remoteJobsDemoBadge?.classList.remove("hidden");
+    renderRemoteJobs();
+    rerenderSessionList();
+    return;
+  }
   try {
     const response = await fetch(remoteJobsUrl(sessionId, owner));
     if (!response.ok) return;
@@ -747,6 +757,36 @@ async function loadRemoteJobs(sessionId = state.sessionId, owner = state.activeS
   } catch (_) {
     // The control plane may be restarting; retain the last visible snapshot.
   }
+}
+
+function getDummyRemoteJobs(sessionId, owner) {
+  const key = `${owner}:${sessionId}`;
+  if (!dummyRemoteJobsBySession.has(key)) {
+    dummyRemoteJobsBySession.set(key, [
+      {
+        job_id: "demo-running-job",
+        external_id: "sandbox-demo-running",
+        provider: "e2b",
+        status: "running",
+        snapshot: { provider_status: "running" },
+      },
+      {
+        job_id: "demo-paused-job",
+        external_id: "sandbox-demo-paused",
+        provider: "e2b",
+        status: "paused",
+        snapshot: { provider_status: "paused" },
+      },
+      {
+        job_id: "demo-complete-job",
+        external_id: "sandbox-demo-complete",
+        provider: "e2b",
+        status: "collected",
+        snapshot: { provider_status: "completed" },
+      },
+    ]);
+  }
+  return dummyRemoteJobsBySession.get(key);
 }
 
 function renderRemoteJobs() {
@@ -851,6 +891,17 @@ async function controlRemoteJob(job, action, button) {
   if (!owner || !job?.job_id) return;
   button.disabled = true;
   try {
+    if (DUMMY_REMOTE_JOBS) {
+      if (action === "pause") {
+        job.status = "paused";
+        job.snapshot = { ...job.snapshot, provider_status: "paused" };
+      } else if (action === "terminate") {
+        job.status = "terminated";
+        job.snapshot = { ...job.snapshot, provider_status: "terminated" };
+      }
+      await loadRemoteJobs(state.sessionId, owner);
+      return;
+    }
     const url = `/api/sessions/${encodeURIComponent(state.sessionId)}/remote-jobs/${encodeURIComponent(job.job_id)}/${action}?user_id=${encodeURIComponent(owner)}`;
     const response = await fetch(url, { method: "POST" });
     if (response.ok) await loadRemoteJobs(state.sessionId, owner);
