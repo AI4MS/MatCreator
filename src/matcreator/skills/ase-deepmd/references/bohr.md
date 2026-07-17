@@ -123,17 +123,7 @@ envsubst '${BOHRIUM_EMAIL} ${BOHRIUM_PASSWORD} ${BOHRIUM_PROJECT_ID} ${BOHRIUM_D
 
 uv run -m json.tool submission.json >/dev/null
 uvx --with dpdispatcher dargs check -f dpdispatcher.entrypoints.submit.submission_args submission.json
-
-# Always use --with oss2 for Bohrium jobs
 uvx --from dpdispatcher --with oss2 dpdisp submit submission.json
-```
-
-For long-running MD jobs, wrap submission in `tmux`:
-
-```bash
-tmux new-session -d -s ase_md \
-    "uvx --from dpdispatcher --with oss2 dpdisp submit submission.json"
-tmux ls
 ```
 
 ## Monitoring and result download

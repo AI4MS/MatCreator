@@ -35,7 +35,7 @@ _pre_env = frozenset(os.environ.keys())
 
 # Apply config.yaml values, but do not override vars that were already present
 # in the environment before this module was imported unless running as a server worker.
-from .config import get_llm_config, get_bohrium_config, get_compute_config, get_env_overrides  # noqa: E402
+from .config import get_llm_config, get_bohrium_config, get_compute_config, get_env_overrides, load_config  # noqa: E402
 
 _llm_cfg = get_llm_config()
 _bohrium_cfg = get_bohrium_config()
@@ -50,6 +50,8 @@ _yaml_to_env: dict[str, str | None] = {
     "REVIEW_AGENT_MODEL":   _llm_cfg.get("review_agent_model"),
     "BOHRIUM_USERNAME":     _bohrium_cfg.get("email"),
     "BOHRIUM_PASSWORD":     _bohrium_cfg.get("password"),
+    "BOHRIUM_ACCESS_KEY":   _bohrium_cfg.get("access_key"),
+    "BOHRIUM_API_URL":      _bohrium_cfg.get("api_url"),
     "BOHRIUM_PROJECT_ID":   str(_bohrium_cfg["project_id"]) if _bohrium_cfg.get("project_id") else None,
     "BOHRIUM_VASP_IMAGE":   _compute_cfg.get("vasp_image"),
     "BOHRIUM_VASP_MACHINE": _compute_cfg.get("vasp_machine"),
@@ -95,6 +97,8 @@ LLM_BASE_URL: str = os.environ.get("LLM_BASE_URL", "")
 BOHRIUM_USERNAME: str = os.environ.get("BOHRIUM_USERNAME", "")
 BOHRIUM_PASSWORD: str = os.environ.get("BOHRIUM_PASSWORD", "")
 BOHRIUM_PROJECT_ID: int | str = os.environ.get("BOHRIUM_PROJECT_ID", 00000)
+BOHRIUM_ACCESS_KEY: str = os.environ.get("BOHRIUM_ACCESS_KEY", "")
+BOHRIUM_API_URL: str = os.environ.get("BOHRIUM_API_URL", "")
 EXECUTION_ENABLE_WITHIN_INVOCATION_COMPACTION: str|int = os.environ.get("EXECUTION_ENABLE_WITHIN_INVOCATION_COMPACTION", 1)
 EXECUTION_COMPACT_KEEP_TAIL: int = int(os.environ.get("EXECUTION_COMPACT_KEEP_TAIL", "10"))
 EXECUTION_COMPACT_EVERY_EVENTS: int = int(os.environ.get("EXECUTION_COMPACT_EVERY_EVENTS", "5"))

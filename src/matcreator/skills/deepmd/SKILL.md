@@ -12,12 +12,10 @@ metadata:
     - run_skill_script
   dependent_skills:
     - bohrium
+    - dpdisp
   tags:
     - deepmd
-    - deep-potential
     - dpa
-    - ase
-    - training
     - finetuning
     - testing
     - machine-learning-potential
@@ -44,6 +42,7 @@ Use the `run_skill_script` tool to execute:
 The tool will resolve the script from the skill directory and runs it with `cwd` set to the
 session working directory, so relative paths in arguments resolve correctly.
 
+---
 
 ## Phase 1 — Preparation
 

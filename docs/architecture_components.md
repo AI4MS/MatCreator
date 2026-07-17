@@ -149,23 +149,29 @@ flowchart LR
 
 The server-mode worker registry is currently process-local. Existing containers can continue to exist outside the middleware process, but the in-memory registry itself is not a durable scheduler.
 
-## 6. Where A Resilient Middleware Would Fit
+## 6. Remote Job Control Plane
 
-A resilient middleware/control-plane layer would sit between the frontend and ADK. Instead of the browser owning `/run_sse`, the middleware would own the live ADK invocation and expose reconnectable run status/events to the frontend.
-
-Target direction:
+Remote E2B sandbox work now has a durable control-plane implementation separate
+from the browser-owned `/run_sse` connection. It persists provider identity and
+lifecycle state, periodically reconciles active sandboxes, and gives the
+frontend owner-scoped pause, terminate, and refresh APIs.
 
 ```mermaid
 flowchart LR
-    FE[Frontend] --> Runs[Control-plane run API]
-    Runs --> RunStore[Run registry / future durable store]
-    Runs --> ADK[ADK runtime]
-    ADK --> Agent[Agent framework]
-    Runs --> Events[Replayable event stream]
-    Events --> FE
+    FE[Frontend] --> API[FastAPI remote-job APIs]
+    API --> Store[(Per-owner remote-jobs.db)]
+    API --> Service[RemoteJobService]
+    Monitor[RemoteJobMonitor] --> Service
+    Service --> E2B[E2B sandbox]
+    Agent[Step executor tools] --> Service
 ```
 
-The first stage of that direction would make the middleware own active runs for the lifetime of the FastAPI process. A later stage would make run scheduling durable across middleware restarts and would persist remote-job monitoring state outside browser requests.
+Remote jobs outlive a frontend request and agent reconnection because their
+records and provider sandbox IDs are persisted. The monitor's polling schedule
+is process-local, but it rediscovers active records after restart. The broader
+agent-run lifecycle remains request/stream oriented. See [Remote Job
+Monitoring](remote_job_monitoring.md) for the state model, concurrency rules,
+ownership, and APIs.
 
 ## 7. Practical Reading Map
 
@@ -176,6 +182,8 @@ Start with these files when navigating the architecture:
 - `src/matcreator/scripts/start_agent.py` — CLI and ADK API-server startup.
 - `src/matcreator/agents/orchestrator/agent.py` — planning/execution orchestration.
 - `src/matcreator/agents/execution_agent/` — execution-agent and step-executor behavior.
+- `src/matcreator/control_plane/` — durable remote-job store, service, E2B adapter, and monitor.
+- `docs/remote_job_monitoring.md` — remote-job monitoring lifecycle and operations.
 - `src/matcreator/workspace.py` — workspace and session workdir resolution.
 - `src/matcreator/config.py` and `src/matcreator/ports.py` — runtime configuration and port resolution.
 

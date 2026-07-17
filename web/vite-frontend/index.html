@@ -289,6 +289,18 @@
               </ul>
             </div>
           </section>
+          <section class="remote-jobs-pane" id="remote-jobs-pane" aria-live="polite">
+            <div class="block-header">
+              <button class="remote-jobs-toggle" id="remote-jobs-toggle" type="button" aria-expanded="false" aria-controls="remote-job-list">
+                <span aria-hidden="true" class="remote-jobs-caret">&#9656;</span>
+                <span>Remote Jobs</span>
+              </button>
+              <button class="ghost" id="refresh-remote-jobs" type="button" title="Refresh remote jobs" aria-label="Refresh remote jobs">↺</button>
+            </div>
+            <ul class="remote-job-list hidden" id="remote-job-list">
+              <li class="empty">No remote jobs in this session</li>
+            </ul>
+          </section>
           <section class="file-explorer-col is-open" id="file-explorer-col">
             <div class="file-explorer-header">
               <div class="block-header">Files

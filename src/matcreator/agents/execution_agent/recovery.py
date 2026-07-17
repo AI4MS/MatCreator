@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from ...control_plane.remote_jobs import ACTIVE_REMOTE_JOB_STATUSES, RemoteJobStore
 from ...workspace import ADK_DIR
 
 _RECOVERY_DIR = "recovery"
@@ -143,7 +144,42 @@ def heartbeat_node_attempt(attempt: dict[str, Any]) -> None:
     """Refresh the heartbeat for a running attempt."""
     if not attempt or attempt.get("status") != "running":
         return
+    if "remote_job" not in attempt:
+        persisted = _read_json(Path(attempt["_latest_path"]))
+        if isinstance(persisted.get("remote_job"), dict):
+            attempt["remote_job"] = persisted["remote_job"]
     attempt["heartbeat_at"] = _now()
+    _write_attempt(attempt)
+
+
+def record_remote_job_reference(
+    *,
+    session_id: str,
+    node_id: str,
+    job_id: str,
+    provider: str,
+    external_id: str | None,
+    recovery_base_dir: Optional[str | Path] = None,
+) -> None:
+    """Attach a persisted remote-job identity to the current node attempt.
+
+    The job store remains the authoritative provider state. The recovery record
+    only carries enough identity to prevent duplicate submission after restart.
+    """
+    latest_path = _recovery_root(session_id, recovery_base_dir) / _safe_id(node_id) / "latest.json"
+    attempt = _read_json(latest_path)
+    if not attempt or attempt.get("session_id") != session_id or attempt.get("node_id") != node_id:
+        return
+    attempt["remote_job"] = {
+        "job_id": job_id,
+        "provider": provider,
+        "external_id": external_id,
+        "recorded_at": _now(),
+    }
+    attempt["heartbeat_at"] = _now()
+    attempt_path = latest_path.parent / f"attempt-{int(attempt.get('attempt', 0)):03d}.json"
+    attempt["_attempt_path"] = str(attempt_path)
+    attempt["_latest_path"] = str(latest_path)
     _write_attempt(attempt)
 
 
@@ -192,6 +228,24 @@ def _mark_attempt_stale(latest_path: Path, attempt: dict[str, Any]) -> None:
     _write_attempt(attempt)
 
 
+def _active_remote_job(attempt: dict[str, Any]) -> dict[str, Any] | None:
+    reference = attempt.get("remote_job")
+    if not isinstance(reference, dict) or not reference.get("job_id"):
+        return None
+    try:
+        job = RemoteJobStore(ADK_DIR / "remote-jobs.db").get_job(str(reference["job_id"]))
+    except Exception:
+        return None
+    if (
+        job
+        and job.get("session_id") == attempt.get("session_id")
+        and job.get("node_id") == attempt.get("node_id")
+        and job.get("status") in ACTIVE_REMOTE_JOB_STATUSES
+    ):
+        return job
+    return None
+
+
 def reconcile_recovery_state(
     state: Any,
     workspace_dir: str | Path,
@@ -202,8 +256,8 @@ def reconcile_recovery_state(
     """Fold durable attempt records back into the in-memory execution graph.
 
     Completed attempts repair graph state after a crash between step completion
-    and status update. Stale running attempts are reset to pending so the normal
-    execution loop can retry them.
+    and status update. A stale local attempt with active remote work becomes
+    ``waiting`` instead of ``pending`` so normal scheduling cannot resubmit it.
     """
     graph = state.get("execution_graph") if hasattr(state, "get") else None
     if not isinstance(graph, dict):
@@ -231,6 +285,23 @@ def reconcile_recovery_state(
             attempt,
             stale_after_seconds=stale_after_seconds,
         ):
+            remote_job = _active_remote_job(attempt)
+            if remote_job is not None:
+                node["status"] = "waiting"
+                node["result"] = "Recovered active remote job; waiting for provider completion."
+                node["remote_job"] = {
+                    "job_id": remote_job["job_id"],
+                    "provider": remote_job["provider"],
+                    "external_id": remote_job["external_id"],
+                    "status": remote_job["status"],
+                }
+                node["recovery"] = {
+                    "attempt": attempt.get("attempt"),
+                    "status": "waiting_remote",
+                    "recovered_at": _now(),
+                }
+                actions.append({"node_id": node_id, "action": "wait_for_remote_job", "status": "waiting"})
+                continue
             _mark_attempt_stale(latest_path, attempt)
             node["status"] = "pending"
             node["result"] = "Recovered stale running attempt; retrying node."

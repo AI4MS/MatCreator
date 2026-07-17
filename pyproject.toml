@@ -29,6 +29,7 @@ dependencies = [
     "mp-api",
     "bcrypt>=4.0.0",
     "docker>=7.0.0",
+    "e2b-code-interpreter",
     "matcraft-kit",
     "know-do-graph>=0.1.8",
     "pymatgen"

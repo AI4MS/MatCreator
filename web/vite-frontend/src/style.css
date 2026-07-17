@@ -2147,6 +2147,89 @@ details.panel-block:not([open]) > summary.block-header::after { transform: rotat
   white-space: nowrap;
   font-family: var(--mono);
 }
+.remote-jobs-pane {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  flex: 0 1 30%;
+  min-height: 88px;
+  overflow-y: auto;
+}
+.remote-jobs-pane:not(.is-expanded) {
+  align-self: flex-start;
+  border-top: 0;
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: visible;
+  padding-top: 0;
+}
+.remote-jobs-pane .ghost {
+  font-size: 11px;
+  padding: 3px 8px;
+}
+.remote-jobs-toggle {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-weight: inherit;
+  gap: 6px;
+  padding: 0;
+}
+.remote-jobs-pane:not(.is-expanded) .remote-jobs-toggle {
+  color: var(--muted);
+  height: 18px;
+}
+.remote-jobs-pane:not(.is-expanded) .remote-jobs-caret {
+  font-size: 11px;
+}
+.remote-jobs-pane:not(.is-expanded) .ghost {
+  display: none;
+}
+.remote-jobs-caret { color: var(--muted); font-size: 10px; transition: transform 0.15s ease; }
+.remote-jobs-toggle.is-expanded .remote-jobs-caret { transform: rotate(90deg); }
+.remote-job-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.remote-job-list .empty {
+  padding: 4px 0;
+  font-size: 12px;
+}
+.remote-job {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--muted);
+  border-radius: 6px;
+  padding: 7px 8px;
+  background: var(--subtle-surface);
+}
+.remote-job.status-running,
+.remote-job.status-reachable { border-left-color: var(--accent); }
+.remote-job.status-paused { border-left-color: #fbbf24; }
+.remote-job.status-succeeded,
+.remote-job.status-collected { border-left-color: #4ade80; }
+.remote-job.status-terminated,
+.remote-job.status-failed,
+.remote-job.status-lost { border-left-color: #f87171; }
+.remote-job-header { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.remote-job-provider { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--accent); }
+.remote-job-status { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.remote-job-id { margin-top: 3px; font: 10px var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.remote-job-provider-detail { margin-top: 3px; color: var(--muted); font-size: 10px; }
+.remote-job-error { margin-top: 4px; color: #f87171; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.remote-job-actions { display: flex; gap: 4px; margin-left: auto; }
+.remote-job-action {
+  width: 24px; height: 24px; padding: 0; border: 1px solid var(--border); border-radius: 5px;
+  background: transparent; color: var(--muted); cursor: pointer; font-size: 13px;
+}
+.remote-job-action:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.remote-job-action.terminate:hover:not(:disabled) { border-color: #f87171; color: #f87171; }
+.remote-job-action:disabled { cursor: progress; opacity: 0.5; }
 .session-files-body { max-height: 600px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .pill {

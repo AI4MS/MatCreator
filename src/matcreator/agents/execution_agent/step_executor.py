@@ -18,6 +18,14 @@ from ...knowledge.query import get_related_skills, search_skill_context, search_
 from ...tools.remoteagent_tool import load_remote_a2a_agents
 from ...tools.util_tools import show_artifact, show_plot, show_structure
 from ...tools.workspace_tools import get_user_skills_root, run_bash, run_python
+from .e2b_tools import (
+    get_e2b_job_status,
+    pause_e2b_sandbox,
+    run_e2b_command,
+    submit_e2b_sandbox,
+    terminate_e2b_sandbox,
+    upload_e2b_input,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +133,13 @@ When `prior_context` mentions a previously submitted remote job (e.g. Bohrium/Sl
 2. **Check for already-downloaded output files** (e.g. `frozen.pt2`, `lcurve.out`). If they exist, the job already completed — use the existing results directly.
 3. **If submission.json exists but outputs are missing**, reuse the same submission file (dpdispatcher is idempotent — it skips completed tasks). Do NOT regenerate submission.json.
 4. **Never resubmit a job that already completed** — this wastes GPU time and creates duplicate training runs.
+
+## User controls for E2B sandboxes
+`get_e2b_job_status` may return `user_control` when the user paused or terminated
+the sandbox from the UI. This does not cancel your executor. Treat it as the
+user's explicit instruction: do not retry the interrupted sandbox command or
+submit a replacement sandbox. Report the pause or termination accurately with
+`submit_step_result(status="needs_replanning", replan_reason=...)`.
 
 ## MANDATORY: Always call submit_step_result
 You MUST call `submit_step_result` before finishing. If you exit without calling it, the step will be marked as `needs_replanning` after timeout. Never end a step with just a text response — always use `submit_step_result` to report your outcome.
@@ -238,6 +253,12 @@ def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
             FunctionTool(get_user_skills_root),
             FunctionTool(run_python),
             FunctionTool(run_bash),
+            FunctionTool(submit_e2b_sandbox),
+            FunctionTool(get_e2b_job_status),
+            FunctionTool(run_e2b_command),
+            FunctionTool(upload_e2b_input),
+            FunctionTool(pause_e2b_sandbox),
+            FunctionTool(terminate_e2b_sandbox),
             ALL_SKILLS_TOOLSET,
             FunctionTool(show_plot),
             FunctionTool(show_structure),

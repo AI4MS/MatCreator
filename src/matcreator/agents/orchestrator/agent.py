@@ -179,7 +179,7 @@ class PlanningExecutionOrchestrator(BaseAgent):
                             "[CANCEL COMPLETE] Execution fully stopped for session %s — returning to planner",
                             state.get("session_id", ""),
                         )
-                else:
+                elif _is_graph_complete(state):
                     logger.info("[orchestrator] all %d nodes complete", total_nodes)
                     graph.log_node_complete(exec_id, "success")
                     state["_node_exec_counter"] = 0
@@ -197,6 +197,13 @@ class PlanningExecutionOrchestrator(BaseAgent):
                             logger.info("[orchestrator] knowledge synthesizer: %s", synth_result.get("message"))
                     except Exception as _kg_exc:
                         logger.warning("[orchestrator] knowledge extraction failed: %s", _kg_exc)
+                else:
+                    logger.info("[orchestrator] execution returned with incomplete graph")
+                    graph.log_node_complete(
+                        exec_id,
+                        "needs_replanning",
+                        summary="Execution paused with graph nodes still pending, running, or waiting.",
+                    )
 
                 state["execution_approved"] = False
                 state["current_step"] = None

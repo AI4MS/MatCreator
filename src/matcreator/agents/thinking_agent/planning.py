@@ -75,9 +75,94 @@ class ExecutionPlan(BaseModel):
 class NodeStatus(str, Enum):
     pending = "pending"
     running = "running"
+    waiting = "waiting"
     success = "success"
     failed = "failed"
     blocked = "blocked"   # a predecessor failed; this node cannot run
+
+
+_NODE_TRANSITIONS: dict[NodeStatus, frozenset[NodeStatus]] = {
+    NodeStatus.pending: frozenset({NodeStatus.running, NodeStatus.blocked}),
+    NodeStatus.running: frozenset({NodeStatus.success, NodeStatus.failed, NodeStatus.waiting}),
+    NodeStatus.waiting: frozenset({NodeStatus.pending, NodeStatus.failed}),
+    NodeStatus.success: frozenset(),
+    NodeStatus.failed: frozenset(),
+    NodeStatus.blocked: frozenset(),
+}
+
+
+def transition_graph_node(
+    graph: dict,
+    node_id: str,
+    target: NodeStatus,
+    result: Optional[str] = None,
+) -> dict:
+    """Apply one legal graph node lifecycle transition."""
+    node = (graph.get("nodes") or {}).get(node_id)
+    if not isinstance(node, dict):
+        raise ValueError(f"Unknown graph node: {node_id}")
+    try:
+        current = NodeStatus(node.get("status", NodeStatus.pending))
+    except ValueError as exc:
+        raise ValueError(f"Unsupported node status: {node.get('status')}") from exc
+    if target != current and target not in _NODE_TRANSITIONS[current]:
+        raise ValueError(f"Illegal graph node transition: {current.value} -> {target.value}")
+    node["status"] = target.value
+    if result is not None:
+        node["result"] = result
+    return node
+
+
+def graph_nodes_with_status(graph: dict, status: NodeStatus) -> list[str]:
+    """Return node IDs currently in a lifecycle state."""
+    return [
+        node_id
+        for node_id, node in (graph.get("nodes") or {}).items()
+        if node.get("status") == status.value
+    ]
+
+
+def ready_nodes_from_graph(graph: dict) -> list[dict]:
+    """Return pending nodes whose graph predecessors have succeeded."""
+    nodes = graph.get("nodes") or {}
+    predecessors: dict[str, set[str]] = {node_id: set() for node_id in nodes}
+    for edge in graph.get("edges") or []:
+        if len(edge) == 2:
+            predecessors.setdefault(edge[1], set()).add(edge[0])
+    return [
+        node
+        for node_id, node in nodes.items()
+        if node.get("status") == NodeStatus.pending.value
+        and all(nodes.get(parent_id, {}).get("status") == NodeStatus.success.value for parent_id in predecessors[node_id])
+    ]
+
+
+def block_graph_dependents(graph: dict, failed_node_id: str) -> list[str]:
+    """Mark pending transitive dependents as blocked and record their source."""
+    nodes = graph.get("nodes") or {}
+    successors: dict[str, list[str]] = {node_id: [] for node_id in nodes}
+    for edge in graph.get("edges") or []:
+        if len(edge) == 2:
+            successors.setdefault(edge[0], []).append(edge[1])
+    blocked: list[str] = []
+    pending = list(successors.get(failed_node_id, []))
+    while pending:
+        node_id = pending.pop(0)
+        if node_id in blocked:
+            continue
+        blocked.append(node_id)
+        pending.extend(successors.get(node_id, []))
+        node = nodes.get(node_id)
+        if isinstance(node, dict) and node.get("status") == NodeStatus.pending.value:
+            node["status"] = NodeStatus.blocked.value
+            node.setdefault("blocked_by", []).append(failed_node_id)
+    return blocked
+
+
+def is_graph_complete(graph: dict) -> bool:
+    """Return whether every graph node completed successfully."""
+    nodes = (graph.get("nodes") or {}).values()
+    return bool(nodes) and all(node.get("status") == NodeStatus.success.value for node in nodes)
 
 
 class GraphNode(BaseModel):
@@ -256,7 +341,7 @@ def set_node_status(
 
     Args:
         node_id: The node's ID string in the execution graph.
-        status:  New status: 'success', 'failed', 'running', 'blocked', or 'cancelled'.
+        status:  New status: 'success', 'failed', 'running', 'waiting', 'blocked', or 'cancelled'.
         result:  Optional concise summary (success) or failure reason.
     """
     graph = tool_context.state.get("execution_graph")

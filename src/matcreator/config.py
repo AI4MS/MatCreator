@@ -26,6 +26,8 @@ llm:
 bohrium:
     email: user@example.com
     password: ...
+    access_key: ...
+    api_url: https://...
     project_id: 12345
 
 compute:
@@ -70,6 +72,8 @@ YAML_TO_ENV: dict[str, str] = {
     "llm.review_agent_model": "REVIEW_AGENT_MODEL",
     "bohrium.email":          "BOHRIUM_USERNAME",
     "bohrium.password":       "BOHRIUM_PASSWORD",
+    "bohrium.access_key":     "BOHRIUM_ACCESS_KEY",
+    "bohrium.api_url":        "BOHRIUM_API_URL",
     "bohrium.project_id":     "BOHRIUM_PROJECT_ID",
     "compute.vasp_image":     "BOHRIUM_VASP_IMAGE",
     "compute.vasp_machine":   "BOHRIUM_VASP_MACHINE",
@@ -82,7 +86,7 @@ YAML_TO_ENV: dict[str, str] = {
 ENV_TO_YAML: dict[str, str] = {v: k for k, v in YAML_TO_ENV.items()}
 
 # Fields whose values should be masked when displayed.
-SENSITIVE_YAML_KEYS = frozenset({"llm.api_key", "bohrium.password"})
+SENSITIVE_YAML_KEYS = frozenset({"llm.api_key", "bohrium.password", "bohrium.access_key"})
 _USER_ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _PROTECTED_USER_ENV_KEYS = frozenset({
     "HOME",

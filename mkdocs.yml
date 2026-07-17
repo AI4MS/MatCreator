@@ -40,6 +40,7 @@ nav:
   - Getting Started: getting-started.md
   - Overview: overview.md
   - Architecture Components: architecture_components.md
+  - Remote Job Monitoring: remote_job_monitoring.md
   - Deployment:
       - Overview: deployment.md
       - Personal Application: deployment/personal.md

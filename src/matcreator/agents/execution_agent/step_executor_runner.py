@@ -317,6 +317,35 @@ async def _heartbeat_recovery_attempt(attempt: dict) -> None:
         pass
 
 
+async def _cleanup_step_runner(
+    runner: Runner,
+    tasks: tuple[asyncio.Task, ...],
+) -> None:
+    """Wait for executor tasks to finish, then close their runner."""
+    await asyncio.gather(*tasks, return_exceptions=True)
+    try:
+        await asyncio.wait_for(runner.close(), timeout=5.0)
+    except Exception:
+        pass
+
+
+def _log_cancelled_cleanup_result(task: asyncio.Task) -> None:
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        logger.exception("[CANCEL] step runner cleanup failed")
+
+
+def _schedule_step_runner_cleanup(
+    runner: Runner,
+    tasks: tuple[asyncio.Task, ...],
+) -> None:
+    cleanup_task = asyncio.create_task(_cleanup_step_runner(runner, tasks))
+    cleanup_task.add_done_callback(_log_cancelled_cleanup_result)
+
+
 async def _stream_step_events(
     runner: Runner,
     session,
@@ -586,6 +615,7 @@ async def run_step_executor(
         if not k.startswith("_adk") and not is_session_log_state_key(k)
     }
     state_dict["workspace_dir"] = str(step_workspace)
+    state_dict["step_number"] = step_number
     if output_dir is not None:
         state_dict["output_dir"] = str(output_dir)
         state_dict["session_output_dir"] = str(output_dir)
@@ -630,11 +660,11 @@ async def run_step_executor(
             watcher.cancel()
         if not recovery_heartbeat.done():
             recovery_heartbeat.cancel()
-        await asyncio.gather(inner_task, watcher, recovery_heartbeat, return_exceptions=True)
-        try:
-            await asyncio.wait_for(runner.close(), timeout=5.0)
-        except Exception:
-            pass
+        cleanup_tasks = (inner_task, watcher, recovery_heartbeat)
+        if cancelled:
+            _schedule_step_runner_cleanup(runner, cleanup_tasks)
+        else:
+            await _cleanup_step_runner(runner, cleanup_tasks)
 
     if timed_out:
         logger.warning(

@@ -92,6 +92,9 @@ from matcreator.skill import (  # noqa: E402
 from matcreator.config import load_config, save_config, get_disabled_skills  # noqa: E402
 from matcreator.config import ENV_TO_YAML, YAML_TO_ENV, SENSITIVE_YAML_KEYS  # noqa: E402
 from matcreator.constants import GRAPH_AGENT_MODEL, KNOW_DO_GRAPH_DB  # noqa: E402
+from matcreator.control_plane.remote_job_monitor import RemoteJobMonitor  # noqa: E402
+from matcreator.control_plane.remote_job_service import RemoteJobService  # noqa: E402
+from matcreator.control_plane.remote_jobs import RemoteJobStore  # noqa: E402
 from matcreator.control_plane.runs import ManagedRun, ManagedRunRegistry  # noqa: E402
 from matcreator.knowledge.query import _get_kg  # noqa: E402
 from matcreator.knowledge.review import run_review_pipeline  # noqa: E402
@@ -123,11 +126,11 @@ app.add_middleware(
 )
 
 SUMMARIES_PATH = ROOT / "agents" / "MatCreator" / ".adk" / "session_summaries.json"
-_SENSITIVE_FIELDS = frozenset({"LLM_API_KEY", "BOHRIUM_PASSWORD"})
+_SENSITIVE_FIELDS = frozenset({"LLM_API_KEY", "BOHRIUM_PASSWORD", "BOHRIUM_ACCESS_KEY"})
 _ENV_FIELDS = [
     "LLM_MODEL", "LLM_API_KEY", "LLM_BASE_URL", "EMBEDDING_MODEL",
     "GRAPH_AGENT_MODEL", "REVIEW_AGENT_MODEL",
-    "BOHRIUM_EMAIL", "BOHRIUM_PASSWORD", "BOHRIUM_PROJECT_ID",
+    "BOHRIUM_EMAIL", "BOHRIUM_PASSWORD", "BOHRIUM_ACCESS_KEY", "BOHRIUM_API_URL", "BOHRIUM_PROJECT_ID",
     "BOHRIUM_VASP_IMAGE", "BOHRIUM_VASP_MACHINE",
     "BOHRIUM_DEEPMD_IMAGE", "BOHRIUM_DEEPMD_MACHINE", "DEEPMD_MODEL_PATH",
 ]
@@ -157,6 +160,11 @@ _knowledge_review_state = {
     "summary": "",
 }
 _run_registry = ManagedRunRegistry()
+_remote_job_store = RemoteJobStore(_ADK_DIR / "remote-jobs.db")
+_remote_job_service = RemoteJobService(_remote_job_store)
+_remote_job_monitor = RemoteJobMonitor(_remote_job_store, _remote_job_service)
+_remote_job_monitor_task: asyncio.Task[None] | None = None
+_remote_job_monitor_stop = asyncio.Event()
 _LEGACY_ENV_ALIASES = {
     "LLM_API_KEY": "MINIMAX_API_KEY",
     "LLM_BASE_URL": "MINIMAX_API_BASE",
@@ -234,6 +242,48 @@ def _safe_user_dir_name(user_id: str) -> str:
 def _user_matcreator_home(user_id: str, *, host: bool = False) -> Path:
     root = _USERS_HOST_ROOT if host else _USERS_DATA_ROOT
     return root / _safe_user_dir_name(user_id) / ".matcreator"
+
+
+def _remote_job_store_for_owner(owner_id: str) -> RemoteJobStore:
+    if _MATCREATOR_MODE == "server":
+        if not owner_id:
+            raise HTTPException(status_code=400, detail="user_id is required in server mode")
+        return RemoteJobStore(_user_matcreator_home(owner_id) / ".adk" / "remote-jobs.db")
+    return _remote_job_store
+
+
+def _remote_job_service_for_owner(owner_id: str) -> RemoteJobService:
+    store = _remote_job_store_for_owner(owner_id)
+    if store is _remote_job_store:
+        return _remote_job_service
+    return RemoteJobService(store)
+
+
+async def _run_remote_job_monitor() -> None:
+    """Reconcile local jobs or each user-owned store in server mode."""
+    if _MATCREATOR_MODE != "server":
+        await _remote_job_monitor.run()
+        return
+
+    monitors: dict[str, RemoteJobMonitor] = {}
+    while not _remote_job_monitor_stop.is_set():
+        if _USERS_DATA_ROOT.exists():
+            for user_root in _USERS_DATA_ROOT.iterdir():
+                if not user_root.is_dir():
+                    continue
+                owner_id = user_root.name
+                monitor = monitors.setdefault(
+                    owner_id,
+                    RemoteJobMonitor(
+                        _remote_job_store_for_owner(owner_id),
+                        _remote_job_service_for_owner(owner_id),
+                    ),
+                )
+                await monitor.reconcile_once()
+        try:
+            await asyncio.wait_for(_remote_job_monitor_stop.wait(), timeout=15)
+        except TimeoutError:
+            pass
 
 
 def _config_path_for_user(user_id: str = "") -> Path | None:
@@ -500,7 +550,7 @@ def _worker_env_vars() -> dict[str, str]:
     keys = [
         "LLM_MODEL", "LLM_API_KEY", "LLM_BASE_URL", "EMBEDDING_MODEL",
         "GRAPH_AGENT_MODEL", "REVIEW_AGENT_MODEL",
-        "BOHRIUM_USERNAME", "BOHRIUM_PASSWORD", "BOHRIUM_PROJECT_ID",
+        "BOHRIUM_USERNAME", "BOHRIUM_PASSWORD", "BOHRIUM_ACCESS_KEY", "BOHRIUM_API_URL", "BOHRIUM_PROJECT_ID",
         "BOHRIUM_VASP_IMAGE", "BOHRIUM_VASP_MACHINE",
         "BOHRIUM_DEEPMD_IMAGE", "BOHRIUM_DEEPMD_MACHINE", "DEEPMD_MODEL_PATH",
         "KDG_EMBED_MODEL", "HF_HUB_OFFLINE", "MATCREATOR_MODULE_SKILLS_ROOT",
@@ -1871,15 +1921,21 @@ async def get_skill_graph_data(
 
 @app.on_event("startup")
 async def _on_startup() -> None:
+    global _remote_job_monitor_task
     users_db.init_db()
     if _MATCREATOR_MODE != "server":
         users_db.migrate_legacy_adk_sessions(SESSION_DB_PATH, APP_NAME)
     if _MATCREATOR_MODE == "server" and _WORKER_IDLE_TIMEOUT_SECONDS > 0:
         asyncio.create_task(_idle_worker_reaper())
+    _remote_job_monitor_task = asyncio.create_task(_run_remote_job_monitor())
 
 
 @app.on_event("shutdown")
 async def _on_shutdown() -> None:
+    _remote_job_monitor.stop()
+    _remote_job_monitor_stop.set()
+    if _remote_job_monitor_task is not None:
+        await _remote_job_monitor_task
     await _run_registry.shutdown()
 
 
@@ -2164,6 +2220,101 @@ async def get_user_session(user_id: str, session_id: str) -> JSONResponse:
     # what was actually persisted in the session DB.
     summary["events"] = events
     return JSONResponse(summary)
+
+
+@app.get("/api/sessions/{session_id}/remote-jobs")
+async def list_session_remote_jobs(
+    session_id: str,
+    user_id: str = Query(..., description="Current signed-in user"),
+) -> JSONResponse:
+    """Return durable remote-job snapshots owned by one user/session."""
+    return JSONResponse(
+        {
+            "session_id": session_id,
+            "jobs": _remote_job_store_for_owner(user_id).list_jobs(
+                owner_id=user_id, session_id=session_id
+            ),
+        }
+    )
+
+
+@app.get("/api/sessions/{session_id}/remote-jobs/{job_id}/events")
+async def list_session_remote_job_events(
+    session_id: str,
+    job_id: str,
+    user_id: str = Query(..., description="Current signed-in user"),
+    after: int = Query(default=0, ge=0),
+) -> JSONResponse:
+    """Return a remote job's replayable durable event history."""
+    store = _remote_job_store_for_owner(user_id)
+    job = store.get_job(job_id)
+    if job is None or job["owner_id"] != user_id or job["session_id"] != session_id:
+        raise HTTPException(status_code=404, detail="Remote job not found")
+    return JSONResponse({"job": job, "events": store.list_events(job_id, after=after)})
+
+
+def _get_owned_remote_job(session_id: str, job_id: str, user_id: str) -> dict[str, Any]:
+    job = _remote_job_store_for_owner(user_id).get_job(job_id)
+    if job is None or job["owner_id"] != user_id or job["session_id"] != session_id:
+        raise HTTPException(status_code=404, detail="Remote job not found")
+    return job
+
+
+@app.post("/api/sessions/{session_id}/remote-jobs/{job_id}/pause")
+async def pause_session_remote_job(
+    session_id: str,
+    job_id: str,
+    user_id: str = Query(..., description="Current signed-in user"),
+) -> JSONResponse:
+    """Pause one E2B sandbox and notify its linked executor without stopping it."""
+    job = _get_owned_remote_job(session_id, job_id, user_id)
+    try:
+        paused = await asyncio.to_thread(_remote_job_service_for_owner(user_id).pause_e2b, job_id)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await asyncio.to_thread(
+        _remote_job_store_for_owner(user_id).record_user_control,
+        job_id,
+        "pause",
+    )
+    return JSONResponse(paused)
+
+
+@app.post("/api/sessions/{session_id}/remote-jobs/{job_id}/terminate")
+async def terminate_session_remote_job(
+    session_id: str,
+    job_id: str,
+    user_id: str = Query(..., description="Current signed-in user"),
+) -> JSONResponse:
+    """Terminate one E2B sandbox and notify its linked executor without stopping it."""
+    job = _get_owned_remote_job(session_id, job_id, user_id)
+    try:
+        terminated = await asyncio.to_thread(_remote_job_service_for_owner(user_id).terminate_e2b, job_id)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await asyncio.to_thread(
+        _remote_job_store_for_owner(user_id).record_user_control,
+        job_id,
+        "terminate",
+    )
+    return JSONResponse(terminated)
+
+
+@app.post("/api/sessions/{session_id}/remote-jobs/{job_id}/refresh")
+async def refresh_session_remote_job(
+    session_id: str,
+    job_id: str,
+    user_id: str = Query(..., description="Current signed-in user"),
+) -> JSONResponse:
+    """Synchronize a caller-owned active E2B job with its sandbox."""
+    job = _get_owned_remote_job(session_id, job_id, user_id)
+    if job["provider"] != "e2b":
+        raise HTTPException(status_code=409, detail="Remote job is not managed by E2B")
+    try:
+        refreshed = await asyncio.to_thread(_remote_job_service_for_owner(user_id).reconcile_e2b, job_id)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return JSONResponse(refreshed)
 
 
 @app.get("/api/admin/sessions")
@@ -2732,6 +2883,7 @@ async def delete_session_file(
 @app.post("/api/sessions/{session_id}/cancel")
 async def cancel_session_execution(
     session_id: str,
+    user_id: str = Query(default="", description="Current signed-in user"),
     reason: str = Query(default="user_requested", description="Cancellation reason"),
 ) -> JSONResponse:
     """Request cancellation of any ongoing execution for this session.
@@ -2740,6 +2892,13 @@ async def cancel_session_execution(
     periodically during a step (force). The flag is cleared automatically
     when the orchestrator routes back to the planner.
     """
+    paused_jobs = []
+    if user_id:
+        paused_jobs = await asyncio.to_thread(
+            _remote_job_service_for_owner(user_id).pause_active_session_e2b_jobs,
+            owner_id=user_id,
+            session_id=session_id,
+        )
     await asyncio.to_thread(request_cancellation, session_id, reason)
     await asyncio.to_thread(
         AgentGraphLogger(session_id).mark_running_nodes_cancelled,
@@ -2750,6 +2909,7 @@ async def cancel_session_execution(
     return JSONResponse({
         "status": "ok",
         "session_id": session_id,
+        "remote_jobs": paused_jobs,
         "message": "Cancellation requested. The running step will stop at the next checkpoint.",
     })
 
