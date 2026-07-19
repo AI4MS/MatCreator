@@ -79,6 +79,7 @@ from matcreator.agents.cancellation import (  # noqa: E402
     request_step_cancellation,
 )
 from matcreator.agents.graph_logger import AgentGraphLogger  # noqa: E402
+from matcreator.agents.execution_graph_state import decode_execution_graph  # noqa: E402
 from matcreator.agents.session_log import build_session_log_export  # noqa: E402
 from matcreator.skill import (  # noqa: E402
     ALL_SKILLS,
@@ -2864,10 +2865,8 @@ def _load_execution_graph(session_id: str) -> dict:
                 if row is None:
                     continue
                 state = _load_json_field(row["state"], {})
-                raw = state.get("execution_graph")
-                if isinstance(raw, str):
-                    raw = _load_json_field(raw, None)
-                if not isinstance(raw, dict):
+                raw = decode_execution_graph(state.get("execution_graph"))
+                if raw is None:
                     return {"nodes": {}, "edges": []}
                 return raw
         except sqlite3.Error:

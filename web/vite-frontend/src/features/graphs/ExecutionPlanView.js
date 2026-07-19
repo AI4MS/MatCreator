@@ -297,6 +297,30 @@ export class ExecutionPlanView {
     return multi.length > 0 ? multi : [graphData];
   }
 
+  _isHistoricalSubgraph(subgraph) {
+    const terminalStatuses = new Set(["success", "failed", "blocked", "cancelled"]);
+    const nodes = Object.values(subgraph?.nodes || {});
+    return nodes.length > 0 && nodes.every((node) => terminalStatuses.has(node.status));
+  }
+
+  _subgraphPriority(subgraph) {
+    const nodes = Object.values(subgraph?.nodes || {});
+    const statuses = new Set(nodes.map((node) => node.status || "pending"));
+    const activityScore = statuses.has("running")
+      ? 1000
+      : statuses.has("pending")
+        ? 800
+        : statuses.has("waiting")
+          ? 600
+          : 0;
+    const connectedScore = Math.min((subgraph?.edges || []).length, 20) * 10;
+    return activityScore + connectedScore + Math.min(nodes.length, 20);
+  }
+
+  _primarySubgraph() {
+    return this._subgraphs[0] || this._latestGraphData;
+  }
+
   update(graphData) {
     if (!graphData || typeof graphData.nodes !== "object") return;
     const nodeEntries = Object.entries(graphData.nodes);
@@ -304,7 +328,6 @@ export class ExecutionPlanView {
     const graphKey = this._graphContentKey(graphData);
     this._latestGraphData = graphData;
     this._latestGraphKey = graphKey;
-    this._renderThumbnail(graphData);
     if (this._autoOpenOnNewGraph && graphKey && graphKey !== this._autoOpenBaselineKey) {
       this._autoOpenOnNewGraph = false;
       this._onNewGraph();
@@ -318,7 +341,8 @@ export class ExecutionPlanView {
     const structureChanged = structureKey !== this._structureKey;
     if (structureChanged) {
       this._structureKey = structureKey;
-      this._subgraphs = this._extractConnectedSubgraphs(graphData);
+      this._subgraphs = this._extractConnectedSubgraphs(graphData)
+        .sort((a, b) => this._subgraphPriority(b) - this._subgraphPriority(a));
       this._currentIndex = 0;
     } else {
       // The graph structure can stay the same while execution status changes.
@@ -331,6 +355,10 @@ export class ExecutionPlanView {
     }
 
     if (this._subgraphs.length === 0) return;
+    // The compact preview represents the current/primary roadmap only. Older
+    // disconnected nodes remain navigable in the full popup without turning
+    // the thumbnail into a collection of unrelated fragments.
+    this._renderThumbnail(this._primarySubgraph());
     this._renderCurrentSubgraph(structureChanged);
     this._updateNavUI();
   }
@@ -474,7 +502,9 @@ export class ExecutionPlanView {
       if (prevBtn) prevBtn.style.display = "none";
       if (nextBtn) nextBtn.style.display = "none";
     } else {
-      if (counter) counter.textContent = `Plan Graph ${this._currentIndex + 1} / ${this._subgraphs.length}`;
+      const current = this._subgraphs[this._currentIndex];
+      const sectionLabel = this._isHistoricalSubgraph(current) ? "Roadmap history" : "Roadmap";
+      if (counter) counter.textContent = `${sectionLabel} ${this._currentIndex + 1} / ${this._subgraphs.length}`;
       if (prevBtn) { prevBtn.style.display = ""; prevBtn.disabled = this._currentIndex === 0; }
       if (nextBtn) { nextBtn.style.display = ""; nextBtn.disabled = this._currentIndex >= this._subgraphs.length - 1; }
     }
@@ -650,4 +680,3 @@ export class ExecutionPlanView {
     this._network.fit({ animation: { duration: 300, easingFunction: "easeInOutQuad" } });
   }
 }
-

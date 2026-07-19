@@ -31,16 +31,19 @@ Check the current configuration without revealing secrets:
 matcreator config show
 ```
 
-## Install vite
-For using vite frontend, you need to install it first:
+## Install the Vite frontend
+
+The Vite frontend uses Ketcher and requires Node.js 24.14.1 or later. Install
+its dependencies with:
+
 ```bash
 cd web/vite-frontend
 npm install
-````
-Make sure your system has node.js installed before installing vite.
+```
 
-Check vite installation with:
+Check the installed versions with:
 ```bash
+node --version
 npx vite --version
 ```
 

@@ -9,6 +9,7 @@ from typing import Any, Optional
 
 from ...control_plane.remote_jobs import ACTIVE_REMOTE_JOB_STATUSES, RemoteJobStore
 from ...workspace import ADK_DIR
+from ..execution_graph_state import get_execution_graph, set_execution_graph
 
 _RECOVERY_DIR = "recovery"
 _STALE_AFTER_SECONDS = int(os.environ.get("STEP_RECOVERY_STALE_AFTER", "60"))
@@ -110,6 +111,7 @@ def start_node_attempt(
     action: str,
     suggested_skills: list[str],
     prior_context: Optional[str],
+    graph_id: Optional[str] = None,
     recovery_base_dir: Optional[str | Path] = None,
 ) -> dict[str, Any]:
     """Persist a durable running-attempt record for one graph node."""
@@ -120,6 +122,7 @@ def start_node_attempt(
     now = _now()
     attempt = {
         "session_id": session_id,
+        "graph_id": graph_id,
         "node_id": node_id,
         "step_id": step_id,
         "step_number": step_number,
@@ -259,12 +262,13 @@ def reconcile_recovery_state(
     and status update. A stale local attempt with active remote work becomes
     ``waiting`` instead of ``pending`` so normal scheduling cannot resubmit it.
     """
-    graph = state.get("execution_graph") if hasattr(state, "get") else None
+    graph = get_execution_graph(state)
     if not isinstance(graph, dict):
         return []
     nodes = graph.get("nodes") or {}
     if not isinstance(nodes, dict):
         return []
+    graph_id = graph.get("graph_id")
 
     actions: list[dict[str, Any]] = []
     session_id = state.get("session_id") if hasattr(state, "get") else None
@@ -272,6 +276,12 @@ def reconcile_recovery_state(
     for latest_path in sorted(root.glob("*/latest.json")):
         attempt = _read_json(latest_path)
         if isinstance(session_id, str) and attempt.get("session_id") != session_id:
+            continue
+        # Node IDs are only unique within a graph.  Never apply a completed or
+        # stale attempt from an earlier plan to a newly validated plan that
+        # happens to reuse the same node ID.  Graphs created before graph_id was
+        # introduced retain the legacy recovery behaviour.
+        if graph_id is not None and attempt.get("graph_id") != graph_id:
             continue
         node_id = attempt.get("node_id")
         if not isinstance(node_id, str) or node_id not in nodes:
@@ -330,5 +340,5 @@ def reconcile_recovery_state(
             actions.append({"node_id": node_id, "action": "recover_completed", "status": recovered_status})
 
     if actions:
-        state["execution_graph"] = graph
+        set_execution_graph(state, graph)
     return actions

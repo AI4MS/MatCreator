@@ -37,6 +37,7 @@ from ...tools.workspace_tools import (
     set_session_workdir,
 )
 from ...workspace import get_session_workdir
+from ..execution_graph_state import get_execution_graph, set_execution_graph
 from ...tools.util_tools import (
     show_artifact,
     show_plot,
@@ -118,13 +119,22 @@ def confirm_plan_and_start_execution(tool_context: ToolContext) -> dict:
     sid = tool_context.state.get("session_id") or tool_context._invocation_context.session.id
     clear_cancellation(sid)
 
+    # The model may retry a successful tool call before the orchestrator gets
+    # control back. Confirmation must not reset nodes that already started or
+    # completed during that window.
+    if tool_context.state.get("execution_approved", False):
+        return {
+            "status": "ok",
+            "message": "Execution was already approved; hand control back to the orchestrator.",
+        }
+
     # Reset all node statuses so a fresh run starts clean
-    graph = tool_context.state.get("execution_graph")
+    graph = get_execution_graph(tool_context.state)
     if graph and isinstance(graph.get("nodes"), dict):
         for node in graph["nodes"].values():
             node["status"] = "pending"
             node["result"] = None
-        tool_context.state["execution_graph"] = graph
+        set_execution_graph(tool_context.state, graph)
 
     tool_context.state["execution_approved"] = True
     tool_context.state["_node_exec_counter"] = 0
@@ -139,7 +149,13 @@ def resume_execution(tool_context: ToolContext) -> dict:
 
     Call this when the user explicitly requests to continue execution after an interruption.
     """
-    graph = tool_context.state.get("execution_graph")
+    if tool_context.state.get("execution_approved", False):
+        return {
+            "status": "ok",
+            "message": "Execution resume was already approved; hand control back to the orchestrator.",
+        }
+
+    graph = get_execution_graph(tool_context.state)
     if not graph or not graph.get("nodes"):
         return {
             "status": "error",
@@ -308,6 +324,9 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
 - NEVER execute plan nodes.
 - When the user asks to keep outputs in a session-specific folder, call
     `set_session_output_dir` with a relative subdirectory under the workspace before execution.
+    Every call creates a new directory; if the requested name exists, the tool adds a numeric
+    suffix such as `_01`. Always use and report the output path returned by the tool rather than
+    assuming the requested name was created.
     The executor can still read shared files from the workspace root, but generated files
     should be written under the configured output directory.
 - Keep responses concise; reference absolute file paths where relevant.
@@ -362,7 +381,7 @@ def before_agent_callback(callback_context: CallbackContext) -> None:
             )
         callback_context.state["instruction_body"] = _NORMAL_INSTRUCTION.format(
             goal=state.get("goal") or "Not set",
-            execution_graph=state.get("execution_graph"),
+            execution_graph=get_execution_graph(state),
             summarize=state.get("summarize"),
             confirmation_instruction=confirmation_instruction,
         )

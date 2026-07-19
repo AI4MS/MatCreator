@@ -42,7 +42,7 @@ from ..workspace import ADK_DIR
 _session_locks: dict[str, threading.Lock] = {}
 _session_locks_mutex = threading.Lock()
 
-NodeStatus = Literal["idle", "running", "success", "failed", "needs_replanning"]
+NodeStatus = Literal["idle", "running", "success", "failed", "cancelled", "needs_replanning"]
 NodeType = Literal["orchestrator", "planning", "execution", "tester", "step"]
 
 
@@ -113,6 +113,10 @@ class AgentGraphLogger:
             node = graph["nodes"].get(node_id)
             if node is None:
                 return
+            # A cancellation is terminal for this run. A late completion from
+            # an already-cancelled async task must not turn the graph green.
+            if node.get("status") == "cancelled" and status != "cancelled":
+                return
             node["status"] = status
             node["end_time"] = _now()
             if summary is not None:
@@ -171,7 +175,7 @@ class AgentGraphLogger:
         node_types: Optional[list[NodeType]] = None,
         summary: str = "Cancelled by user",
     ) -> None:
-        """Pre-emptively mark running nodes as failed.
+        """Pre-emptively mark running nodes as cancelled.
 
         Called eagerly on session cancel so the graph reflects cancellation
         before the step executor polls its flag.
@@ -184,13 +188,13 @@ class AgentGraphLogger:
                     continue
                 if node_types is not None and node.get("type") not in node_types:
                     continue
-                node["status"] = "failed"
+                node["status"] = "cancelled"
                 node["end_time"] = now
                 node["summary"] = summary
             self._write(graph)
 
     def cancel_step_node_by_number(self, step_number: int, summary: str = "Cancelled by user") -> bool:
-        """Find the running step node with input.step_number==step_number and mark it failed.
+        """Find the running step node with input.step_number==step_number and mark it cancelled.
 
         Returns True if a node was found and updated.
         """
@@ -203,7 +207,7 @@ class AgentGraphLogger:
                     and node.get("status") == "running"
                     and (node.get("input") or {}).get("step_number") == step_number
                 ):
-                    node["status"] = "failed"
+                    node["status"] = "cancelled"
                     node["end_time"] = now
                     node["summary"] = summary
                     self._write(graph)
@@ -211,7 +215,7 @@ class AgentGraphLogger:
         return False
 
     def cancel_step_node_by_id(self, node_id: str, summary: str = "Cancelled by user") -> bool:
-        """Find the running step node with input.node_id==node_id and mark it failed.
+        """Find the running step node with input.node_id==node_id and mark it cancelled.
 
         Used for DAG-mode cancellation where nodes are identified by string node_id.
         Returns True if a matching node was found and updated.
@@ -225,7 +229,7 @@ class AgentGraphLogger:
                     and node.get("status") == "running"
                     and (node.get("input") or {}).get("node_id") == node_id
                 ):
-                    node["status"] = "failed"
+                    node["status"] = "cancelled"
                     node["end_time"] = now
                     node["summary"] = summary
                     self._write(graph)

@@ -2,6 +2,35 @@
 
 <!-- version list -->
 
+## v2.12.0 (2026-07-19)
+
+### Bug Fixes
+
+- Agent graph connection error for failed steps
+  ([`07da627`](https://github.com/AI4MS/MatCreator/commit/07da62754d46e635123e704eb2af3426e968e6f7))
+
+- Issues with the workspace output directory handling
+  ([`3f7ebc2`](https://github.com/AI4MS/MatCreator/commit/3f7ebc2314ebadc92781e0a9c5a46a44e19d3819))
+
+### Features
+
+- **skills**: Dpa4 workflow overhaul, extract eos skill, remove dpdisp/vasp deps
+  ([`571c254`](https://github.com/AI4MS/MatCreator/commit/571c2543f9c576f3a1d5d24a973999d134e7675c))
+
+
+## v2.11.1 (2026-07-16)
+
+### Bug Fixes
+
+- Issues with CLI in frontend
+  ([`2db9406`](https://github.com/AI4MS/MatCreator/commit/2db9406935db2eab882f904dba5603d77406b3d3))
+
+### Chores
+
+- Add mermaid support to mkdocs and session status filter to frontend
+  ([`07a97f3`](https://github.com/AI4MS/MatCreator/commit/07a97f310370f8b98eccbd4284fe6c845fc817ba))
+
+
 ## v2.11.0 (2026-07-15)
 
 ### Bug Fixes

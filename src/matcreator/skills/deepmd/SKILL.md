@@ -1,333 +1,254 @@
 ---
 name: deepmd
-description: DeePMD-kit training, finetuning, testing, and model inspection skill. Use this skill whenever training or finetuning a Deep Potential (DP / DPA-1 / DPA-2) model, running model tests, or inspecting model parameters. Training is split into a preparation phase (data conversion + input.json generation, always local) and an execution phase (dp CLI commands, local or via bohrium skill on Bohrium cloud).
+description: Deep potential models finetuning and testing using the DeePMD-kit.
+  Use this skill whenever finetuning a Deep Potential (DPA-1 / DPA-2 / DPA-3 / DPA-4) model
+  or running model tests on a dataset. The oldest DP descriptors such as se_e2_a, se_e2_r,
+  and se_e3 are no longer supported. 
+  Training from scratch is NEVER advised unless distilling a student model from a teacher model.
+  Multitask fine-tuning is NOT supported.
 metadata:
   tools:
     - run_bash
+    - run_skill_script
   dependent_skills:
     - bohrium
+    - dpdisp
   tags:
     - deepmd
     - dpa
-    - training
     - finetuning
+    - testing
     - machine-learning-potential
 ---
 
-# DeePMD-kit Skill
+# DeePMD-kit CLI (fine-tuning, testing)
 
-Training and evaluation are split into two decoupled phases:
+Every operation to be performed with the deepmd-kit CLI, including fine-tuning and `dp test` testing,
+should be divided into:
+1. a **preparation** stage (including data conversion + input.json generation, should be performed locally);
+2. an **execution** stage (executing dp CLI commands, local or via bohrium skill on Bohrium cloud).
 
-| Phase | Tool | Where |
-|---|---|---|
-| **Prepare** | `deepmd_prepare.py` | always local |
-| **Execute** | `dp` CLI | local **or** remote via bohr skill |
+| Stage       | Tool | Where                                              |
+|-------------|---|----------------------------------------------------|
+| **Prepare** | `deepmd_prepare.py` | always run locally                                 |
+| **Execute** | `dp` CLI | run locally **or** submit remotelly via bohr skill |
 
-Script: `deepmd_prepare.py` (in the skill's `scripts/` directory).
-
-Use the `run_skill_script` tool to execute it:
+Script: `deepmd_prepare.py` ([scripts/deepmd_prepare.py](scripts/deepmd_prepare.py]).
+Use the `run_skill_script` tool to execute:
 - `skill_name`: `"deepmd"`
 - `script_name`: `"deepmd_prepare.py"`
 - `args`: the sub-command and flags as a single string
 
-The tool resolves the script from the skill directory and runs it with `cwd` set to the
+The tool will resolve the script from the skill directory and runs it with `cwd` set to the
 session working directory, so relative paths in arguments resolve correctly.
 
----
 
 ## Phase 1 — Preparation
 
-`deepmd_prepare.py` converts raw structure files into `deepmd/npy` format and writes
-`input.json` ready for `dp train`. It always runs locally and requires `ase`, `dpdata`,
-and `numpy`.
+`deepmd_prepare.py` converts raw structure files into `deepmd/npy` format. In preparation of fine-tuning tasks,
+it also copies (or symlinks) the base model and writes `input.json` ready for `dp train`.
 
-Check env variable `DEEPMD_MODEL_PATH` for default pre-trained model, or submit explicit model path.
+It always runs locally and requires `ase`, `dpdata`, and `numpy`.
 
-Each sub-command prints a JSON summary to stdout that includes the exact `dp` execution
-command to use in Phase 2.
+Check reference [references/supported_deepmd_models.md](references/supported_deepmd_models.md) of this skill
+carefully for details of available DPA models, variants and their usage.
 
-### 1a. Train from scratch
+Each sub-command prints a summary message in json format through logging.logger that includes the exact `dp` execution
+command to use in Phase 2. The message will start with something like `"CLI execution summary:..."`.
 
-```
-run_skill_script(
-    skill_name="deepmd",
-    script_name="deepmd_prepare.py",
-    args="prepare-training --workdir <workdir> --train_data file1.xyz [file2.xyz ...] [--numb_steps 1000] [--rcut 6.0] [--rcut_smth 0.5] [--descriptor_neuron 25 50 100] [--neuron 240 240 240] [--split_ratio 0.1] [--type_map Fe Ni Cu ...] [--impl pytorch] [--mixed_type] [--seed 42]"
-)
-```
+Use subcommand `prepare-finetune` for fine-tuning, `prepare-test` for testing.
 
-### 1b. Finetune a DPA model (single-task)
+If you are not sure about the arguments, try `deepmd_prepare.py --help` or `deepmd_prepare.py <subcommand> --help`
+before running.
 
-```
-run_skill_script(
-    skill_name="deepmd",
-    script_name="deepmd_prepare.py",
-    args="prepare-finetune --workdir <workdir> --train_data file1.xyz [...] --base_model /path/to/model.pt [--head <branch_name>] [--numb_steps 500] [--split_ratio 0.1] [--type_map Fe Ni ...] [--copy_model]"
-)
-```
+> **Notice:**
+> 1. Unless absolutely necessary, **keep all optional arguments at their default values**. Default model parameters
+> and training parameters, etc.
+> Set only the required ones, including choice of model and variant, path to model file, specification of data, etc.
+> 2. **Remote submission:** The base model must be a regular file (not a symlink) inside
+> `<workdir>` for dpdispatcher to upload it. NEVER use symlinks when performing remote submission!
 
-By default `--head` is `Omat24`, so the generated command includes `--model-branch Omat24`.
-Pass `--head none` to reinitialise the fitting net instead.
+Expected contents of `<workdir>` after preparation can be found in the docs and help message of `deepmd_prepare.py`.
 
-### 1c. Finetune a DPA model (multi-task)
 
-```
-run_skill_script(
-    skill_name="deepmd",
-    script_name="deepmd_prepare.py",
-    args="prepare-finetune-multitask --workdir <workdir> --base_model /path/to/model.pt --task_data task1:file1.xyz,file2.xyz task2:file3.xyz [--numb_steps 500] [--neuron 240 240 240] [--model_prob 1.0] [--copy_model]"
-)
-```
+## Phase 2 — Execution
 
-**Contents of `<workdir>` after preparation:**
+### Local execution
+All commands must run from **inside the workdir** (`cd <workdir>`).
+Run the command as returned in Phase 1's summary message.
 
-| Path | Description |
-|---|---|
-| `input.json` | Training configuration for `dp train` |
-| `train_data/` | deepmd/npy training split |
-| `valid_data/` | deepmd/npy validation split (when `split_ratio > 0`) |
-| `train_data_<task>/` | Per-task training data (multitask only) |
-| `valid_data_<task>/` | Per-task validation data (multitask only) |
-| `<model>.pt` | Copy or symlink to base model (finetune variants) |
 
-> **Remote submission:** The base model must be a regular file (not a symlink) inside
-> `<workdir>` for dpdispatcher to upload it. Pass `--copy_model` during preparation to
-> copy the file rather than symlink it.
+### Remote submission to Bohrium (**preferred**)
 
----
+The primary submission method uses the `bohrium` skill (`bohr` CLI). Refer to the skill `bohrium` for details.
 
-## Phase 2 — Execution (local)
-
-All commands run from **inside the workdir** (`cd <workdir>`).
-
-### Training from scratch (PyTorch backend)
-
-```bash
-dp --pt train input.json
-```
-
-### Training from scratch (TensorFlow backend)
-
-```bash
-dp train input.json
-dp freeze -o frozen_model.pb      # export frozen graph after training
-```
-
-### Finetuning — single-task
-
-```bash
-# Default (head=Omat24) → continue from the Omat24 branch
-dp --pt train input.json --finetune <model>.pt --use-pretrain-script \
-    --model-branch Omat24
-
-# head=none → reinitialise fitting network
-dp --pt train input.json --finetune <model>.pt --use-pretrain-script
-```
-
-### Finetuning — multi-task
-
-```bash
-dp --pt train input.json --finetune <model>.pt --use-pretrain-script
-```
-
-### Restarting an interrupted run
-
-```bash
-dp --pt train input.json --restart model.ckpt
-```
-
-### Output files
-
-| File | Description |
-|---|---|
-| `model.ckpt.pt` | Saved PyTorch checkpoint |
-| `lcurve.out` | Training loss curve (step, energy MAE, force MAE, …) |
-| `input_v2_compat.json` | Updated config written by compat migration (finetune only) |
-
----
-
-## Phase 3 — Test / Evaluation
-
-`dp test` computes energy and force MAE / RMSE against a labelled dataset.
-Its `-s` argument must point to a `deepmd/npy` system directory, not a raw xyz file.
-Use the `convert-data` sub-command to convert any ASE-readable format first.
-
-### 3a. Convert test data to deepmd/npy
-
-```
-run_skill_script(
-    skill_name="deepmd",
-    script_name="deepmd_prepare.py",
-    args="convert-data --data test.extxyz [test2.extxyz ...] --outdir ./test_data [--mixed_type] [--head <head_name>] [--nframes 200]"
-)
-```
-
-The command prints a JSON result containing:
-
-| Field | Description |
-|---|---|
-| `outdir` | Absolute path to the output directory |
-| `system_dirs` | List of `deepmd/npy` system directories created |
-| `dp_test_commands` | Ready-to-run `dp --pt test` command(s) with all flags filled in |
-
-The `--head` and `--nframes` flags are optional — they are only used to pre-fill the
-printed `dp test` commands; they do not affect the data conversion.
-
-### 3b. Run dp test
-
-> **Tip:** Run `dp --pt test --help` to see the full list of available flags and options.
-
-Copy the commands from the JSON output, substituting the actual model path.
-Always add `-d` to write per-frame detailed output files (DFT vs DP energies, forces, virials, pairs, etc.):
-
-```bash
-# Single-task model
-dp --pt test -m model.ckpt.pt -s ./test_data/<system_dir> [-n <nframes>] -d
-
-# Multi-task model — specify the head to evaluate
-dp --pt test -m model.ckpt.pt -s ./test_data/<system_dir> --head <head_name> [-n <nframes>] -d
-```
-
-**Output files** (written to the current directory):
-
-| File | Description |
-|---|---|
-| `e_peratom.out` | Per-frame: DFT energy/atom vs predicted energy/atom (eV/atom) |
-| `f.out` | Per-component: DFT force vs predicted force (eV/Å) |
-| stdout | Summary MAE / RMSE for energy and forces |
-
-> The `-d` flag enables detailed output: per-frame DFT and DP energies, forces, virials, and pair information are written to separate files for further analysis.
-
----
-
-## Phase 4 — Model inspection and compression
-
-```bash
-# List available heads/branches (multi-task model)
-dp show model.ckpt.pt model-branch
-
-# Inspect descriptor parameters
-dp show model.ckpt.pt descriptor
-
-# Compress model for faster inference
-dp --pt compress -i model.ckpt.pt -o model_compressed.pt
-```
-
----
-
-## Remote execution via the bohrium skill (preferred)
-
-The primary submission method uses the `bohrium` skill (`bohr` CLI).
-
-### Environment variables
-
-| Variable | Description |
-|---|---|
-| `BOHRIUM_PROJECT_ID` | Bohrium project ID (integer) |
-| `BOHRIUM_DEEPMD_MACHINE` | Machine type for training, e.g. `1 * NVIDIA V100_32g` |
-| `BOHRIUM_DEEPMD_IMAGE` | Container image URI with deepmd-kit installed, e.g. `registry.dp.tech/dptech/deepmd-kit:3.1.3` |
-
-Authentication is handled via `bohr login` (credentials stored in `~/.bohrium/credentials.yaml`).
-
-### Step 1 — Prepare locally
-
-Always use `--copy_model` for finetune jobs so the model file is a regular file inside `<workdir>`.
-
-```
-run_skill_script(
-    skill_name="deepmd",
-    script_name="deepmd_prepare.py",
-    args="prepare-finetune --workdir ./train_001 --train_data data.extxyz --base_model /models/DPA2.pt --numb_steps 2000 --copy_model"
-)
-```
-
-### Step 2 — Create a job group and submit
-
-```bash
-# Create a job group for tracking
-JOB_GROUP_ID=$(bohr job_group create -n "deepmd-train" -p "$BOHRIUM_PROJECT_ID" | grep -oP '\d+')
-echo "$JOB_GROUP_ID" > .bohrium_job_group_id
-
-# Submit — adjust --command and --backward_files for your job type
-bohr job submit \
-    --project_id "$BOHRIUM_PROJECT_ID" \
-    --job_name "deepmd-train-001" \
-    --machine_type "$BOHRIUM_DEEPMD_MACHINE" \
-    --image_address "$BOHRIUM_DEEPMD_IMAGE" \
-    --input_directory "./train_001/" \
-    --job_group_id "$JOB_GROUP_ID" \
-    --backward_files "model.ckpt.pt,lcurve.out,log,err" \
-    --command "dp --pt train input.json"
-```
-
-**Finetuning (single-task):**
-
-```bash
-bohr job submit \
-    --project_id "$BOHRIUM_PROJECT_ID" \
-    --job_name "deepmd-finetune-001" \
-    --machine_type "$BOHRIUM_DEEPMD_MACHINE" \
-    --image_address "$BOHRIUM_DEEPMD_IMAGE" \
-    --input_directory "./train_001/" \
-    --job_group_id "$JOB_GROUP_ID" \
-    --backward_files "model.ckpt.pt,input.json,lcurve.out,log,err" \
-    --command "dp --pt train input.json --finetune DPA2.pt --use-pretrain-script --model-branch Omat24"
-```
-
-**Finetuning (multi-task):**
-
-```bash
-bohr job submit \
-    --project_id "$BOHRIUM_PROJECT_ID" \
-    --job_name "deepmd-finetune-mt" \
-    --machine_type "$BOHRIUM_DEEPMD_MACHINE" \
-    --image_address "$BOHRIUM_DEEPMD_IMAGE" \
-    --input_directory "./train_001/" \
-    --job_group_id "$JOB_GROUP_ID" \
-    --backward_files "model.ckpt.pt,input.json,lcurve.out,log,err" \
-    --command "dp --pt train input.json --finetune DPA2.pt --use-pretrain-script"
-```
-
-### Step 3 — Monitor and download results
-
-```bash
-# Persist job group ID (already done in step 2, but re-read if session restarted)
-GROUP_ID=$(cat .bohrium_job_group_id)
-
-# Poll until all jobs reach terminal state
-while true; do
-    OUTPUT=$(timeout 120 bohr job list -j "$GROUP_ID" --json 2>/dev/null)
-    TOTAL=$(echo "$OUTPUT" | jq 'length')
-    DONE=$(echo "$OUTPUT" | jq '[.[] | select(.status == "Finished" or .status == "Failed" or .status == "Cancelled" or .status == "Terminated")] | length')
-    FAILED=$(echo "$OUTPUT" | jq '[.[] | select(.status == "Failed" or .status == "Cancelled" or .status == "Terminated")] | length')
-    echo "[$(date '+%H:%M:%S')] $DONE/$TOTAL jobs done, $FAILED failed"
-    if [ "$DONE" -eq "$TOTAL" ] && [ "$TOTAL" -gt 0 ]; then
-        [ "$FAILED" -gt 0 ] && echo "$FAILED job(s) failed!" && break
-        echo "All $TOTAL jobs finished successfully!" && break
-    fi
-    sleep 60
-done
-
-# Download all results
-bohr job_group download -j "$GROUP_ID" -o ./output/
-```
-
-For long-running training jobs, wrap the submission + polling in `tmux`:
-
+### Handling long jobs
+For time-consuming fine-tuning jobs, you can wrap the submission + polling in `tmux`:
 ```bash
 tmux new-session -d -s deepmd_train "bash -c '...submit+poll commands...'"
 tmux ls
 ```
 
+
+### Restarting an interrupted run
+
+```bash
+dp --pt train input.json --restart model.ckpt.pt
+```
+
+> **Notice:** 
+> 1. The restart command must be run from the workdir.
+> 2. When resuming a Bohrium run, you must first download the bohrium output, copy model.ckpt.pt to the workdir,
+>    and then resubmit with the restart command.
+
+### Expected output files
+
+#### Fine-tuning tasks
+
+| File                                    | Description                                                                                                                                                                                                                                     |
+|-----------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `model.ckpt.pt`                         | Saved PyTorch checkpoint                                                                                                                                                                                                                        |
+| `frozen.pt2`(DPA-4)/`frozen.pth`(other) | (Optional) Frozen AOTInductor model or TorchScript for fast inference                                                                                                                                                                           |
+| `lcurve.out`                            | Training loss curve (step, energy MAE, force MAE, etc…)                                                                                                                                                                                         |
+| `train_log`                             | Training logfile, expect stdout/stderr                                                                                                                                                                                                          |
+| `result-train*`                         | Result files of `dp test` on training set (per-frame energies `results-train.e.out`, energy-per-atom `results-train.e_peratom.out`, forces `results-train.f.out`, virials `results-train.v.out`, virial-per-atom `results-train.v_peratom.out`) |
+| `result-test*`                          | Result files of `dp test` on testing set                                                                                                                                                                                                        |
+| `log-train`                             | Logfile of `dp test` evaluation on training set, expect stdout/stderr                                                                                                                                                                           |
+| `log-test`                              | Logfile of `dp test` evaluation on testing set, expect stdout/stderr                                                                                                                                                                            |
+
+#### Testing tasks
+
+| File            | Description                                                          |
+|-----------------|----------------------------------------------------------------------|
+| `result-infer*` | Result files of `dp test` on the provided dataset                    |
+| `log-infer`     | Logfile of `dp test` evaluation on testing set, expect stdout/stderr |
+
+
+## Model inspection
+You can inspect the available model heads/branches and descriptor parameters using `dp show`, either before
+or after usage, if necessary.
+
+```bash
+# List available heads/branches (multi-task model)
+dp show <model_file> model-branch
+
+# Inspect descriptor parameters
+dp show <model_file> descriptor
+```
+
 ---
+# DeePMD-kit python interface (ASE calculator)
+
+Deepmd-kit provides a Python interface, which can act as an ASE calculator, further enabling any calculation task
+supported by ASE. A quick example:
+
+```python
+from ase import Atoms
+from deepmd.calculator import DP
+
+calc = DP(model="<model_file>", head="<some_head>")
+water = Atoms(
+    "H2O",
+    positions=[(0.7601, 1.9270, 1), (1.9575, 1, 1), (1.0, 1.0, 1.0)],
+    cell=[100, 100, 100],
+    calculator=,
+)
+print(water.get_potential_energy())
+print(water.get_forces())
+print(water.get_stress())
+```
+
+Here, the `model_file` can be both a `.pt` checkpoint file or a `.pth`/`.pt2` frozen model. Choose head
+only for multi-head pretrained models (DPA-2, DPA-3). No need to specify head for models with no head or
+fine-tuned model.
+
+Details about this interface is documented in the
+[Deepmd-kit documentation (ASE integration)](https://docs.deepmodeling.com/projects/deepmd/en/stable/third-party/ase.html).
+
+
+---
+
+# DeePMD-kit lammps interface
+
+Deepmd-kit provides a LAMMPS interface, which can be used in LAMMPS simulations. A quick example:
+
+```bash
+pair_style deepmd <model_file>
+pair_coeff * * <element_1> <element_2> ...
+```
+
+Here, the `model_file` must be a `.pth`/`.pt2` frozen model. No checkpoint `.pt` file allowed.
+The order of `element_1`, `element_2`, ... must strictly match the atom types used in the
+LAMMPS simulation input file and the simulation box. For example, if the lammps simulation box
+has `type 1 = H`, `type 2 = O`, then the pair_coeff line should be `pair_coeff * * H O`.
+
+> For DPA-4 models: **`atom_modify map yes` is required at the very beginning of lammps input file.**
+> The `.pt2` graph inference relies on an explicit ghost/periodic-image to local-atom map;
+> the model fails fast without it!
+
+Multi-GPU (MPI) inference: launch one MPI rank per GPU. An example on a 4-GPU machine:
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 mpirun -np 4 lmp -in in.lammps
+```
+
+Details about this interface is documented in the
+[Deepmd-kit documentation (lammps integration)](https://docs.deepmodeling.com/projects/deepmd/en/stable/third-party/lammps-command.html).
+
+---
+
+# Fast Inference techniques
+
+## Freeze to `.pt2` (for DPA-4)
+
+The frozen `.pt2` is an AOTInductor archive used for inference (ASE, LAMMPS).
+
+```
+dp --pt freeze -c <model_file> -o frozen
+```
+
+The PyTorch backend detects DPA4/SeZM and writes `frozen.pt2`.
+
+> **The `.pt2` is target-specific** — it depends on host CPU/GPU, GPU compute
+> capability, and libtorch version. Freeze on the target machine rather than
+> reusing a `.pt2` across different hardware.
+
+## Inference precision environment variables
+
+**Precision is fixed at freeze time.** Set these before running `dp --pt freeze`:
+
+| Variable          | Default       | Effect                                                                                                                                                                                                                                                                            |
+|-------------------|---------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `DP_TF32_INFER`   | `0` (highest) | float32 matmul precision: `0` highest, `1` high, `2` medium. Keep `0` for MD and PES-smoothness-sensitive workflows.                                                                                                                                                              |
+| `DP_TRITON_INFER` | `0`           | Fused Triton inference kernels (CUDA), cumulative: `0` off; `1` universal kernels; `2` adds table-tuned SO(2) value-path kernels; `3` adds fp16 tensor-core mixing GEMMs. Levels `0`–`2` keep full float32 accumulation; `3` gives large speedup with negligible accuracy impact. |
+
+Accepted boolean values: `1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off`.
+
+The script [scripts/deepmd_prepare.py](scripts/deepmd_prepare.py) will automatically freeze with the above defaults after fine-tuning,
+when `--freeze` argument is passed.
+
+If not satisfied with the defaults, do not use the resulting `.pt2` file after fine-tuning,
+but instead freeze your own model with the desired settings from `model.ckpt.pt`. 
+
+---
+
 
 ## Constraints
 
-- `deepmd_prepare.py` requires `ase`, `dpdata`, and `numpy` in the local Python environment.
-- All input structure files must contain labeled structures (energy + forces). Unlabeled
-  structures will raise an error during dpdata export.
-- For multi-task finetuning the base model must be a DPA-2 multi-task checkpoint.
-- `deepmd/npy` systems are written per chemical formula; use `--mixed_type` to allow
-  variable composition within a single directory.
-- All `task_work_path` entries in `submission.json` must share the same `work_base` directory
-  (dpdispatcher requirement).
+**Environment & dependencies:** 
+- `dpa4_prepare.py` requires `ase`, `dpdata`, and `numpy` in the local Python environment.
+
+**Data & model:**
+- All input structures must be **labelled** (having energy + forces + virial, either by DFT or by a teacher model). 
+  Unlabeled structures raise an error during dpdata export.
+- Base model for finetuning must be a `.pt` checkpoint file. **Frozen models cannot be fine-tuned.**
+- Model variant and input parameters must match exactly — do not mix across variants.
+- **`type_map` is fixed to the full periodic table (H–Og).** DPA models uses type embeddings
+  indexed by this map; do NOT attempt to change it, and do not restrict it to dataset elements.
+- `deepmd/npy` systems are written per chemical formula; use `--mixed_type` for variable
+  composition within a single directory (but often not necessary).
+
+**Backend limitations:**
+- **No support beyond pytorch implementation**: the tensorflow, jax and paddle-paddle backends are not supported.
+- **Check GPU and image compatibility carefully**: as documented in reference
+    [refereces/supported_deepmd_models.md](references/supported_deepmd_models.md).
+    Choosing wrong GPU or image may lead to unexpected errors.

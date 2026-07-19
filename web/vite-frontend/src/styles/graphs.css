@@ -1,0 +1,443 @@
+/* ── Agent Graph panel ──────────────────────────────────── */
+.graph-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  align-items: stretch;
+  height: calc(100vh - 32px);
+  width: 360px;
+  flex: 0 0 auto;
+  overflow: visible;
+  background: rgba(var(--panel-rgb), 0.9);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--panel-shadow);
+}
+
+.graph-column {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.left-home-card,
+.left-settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  flex: 0 0 auto;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.left-home-card {
+  padding-bottom: 10px;
+}
+
+.left-settings-card {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.left-user-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.left-user-row .chip {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-ghost {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.left-action-row {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+.left-action-row .ghost {
+  flex: 0 0 auto;
+}
+
+.left-action-row .icon-action-btn {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.left-action-row a.icon-action-btn {
+  text-decoration: none;
+}
+
+.left-action-row .icon-action-btn:disabled {
+  cursor: progress;
+  opacity: 0.55;
+}
+
+.icon-action-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  overflow: visible;
+}
+
+.theme-icon-sun {
+  display: none;
+}
+
+body[data-theme="light"] .theme-icon-moon {
+  display: none;
+}
+
+body[data-theme="light"] .theme-icon-sun {
+  display: block;
+}
+
+.graph-card {
+  display: flex; flex-direction: column;
+  /* A zero basis keeps the canvas's periodically written pixel height from
+     becoming this item's flex base size.  Otherwise it competes with the
+     percentage-sized Remote Jobs pane and causes a layout feedback loop. */
+  flex: 1 1 0;
+  min-height: 220px;
+  padding-top: 40px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.graph-viewport {
+  position: relative;
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
+  background: rgba(var(--panel-rgb), 0.32);
+}
+
+.graph-viewport::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.24;
+  background-image: radial-gradient(circle, rgba(148, 163, 184, 0.34) 0.65px, transparent 0.8px);
+  background-size: 22px 22px;
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 14%, #000 84%, transparent);
+  mask-image: linear-gradient(to bottom, transparent, #000 14%, #000 84%, transparent);
+}
+
+body[data-theme="light"] .graph-viewport {
+  background: rgba(var(--panel-rgb), 0.5);
+}
+
+body[data-theme="light"] .graph-viewport::before {
+  opacity: 0.2;
+  background-image: radial-gradient(circle, rgba(71, 85, 105, 0.32) 0.65px, transparent 0.8px);
+}
+
+.graph-panel-title {
+  position: absolute;
+  top: 12px;
+  left: 14px;
+  z-index: 8;
+  margin: 0;
+  color: #8996a7;
+  font-size: 10px;
+  font-weight: 600;
+  /* pointer-events: none; */
+}
+
+body[data-theme="light"] .graph-panel-title {
+  color: #9baabe;
+}
+
+.graph-surface {
+  width: 100%;
+  height: 100%;
+}
+
+.graph-canvas {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+/* vis-network canvas needs explicit dimensions */
+.graph-canvas canvas { display: block; }
+
+.graph-canvas .vis-network {
+  overflow: visible !important;
+}
+
+.graph-canvas .vis-tooltip {
+  z-index: 60 !important;
+  max-width: 280px;
+  white-space: normal !important;
+  word-break: break-word;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  background: rgba(var(--panel-rgb), 0.98) !important;
+  color: var(--text) !important;
+  box-shadow: var(--popup-shadow) !important;
+  font-family: 'Manrope', system-ui, -apple-system, sans-serif !important;
+  font-size: 12px !important;
+  line-height: 1.4;
+  padding: 7px 9px !important;
+}
+
+.plan-graph-thumbnail-btn {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 74px;
+  height: 64px;
+  padding: 0;
+  border: 1px solid rgba(125, 211, 252, 0.3);
+  border-radius: 0;
+  background:
+    linear-gradient(155deg, rgba(125, 211, 252, 0.13), rgba(16, 185, 129, 0.08)),
+    rgba(var(--panel-rgb), 0.86);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.32), inset 0 0 0 1px rgba(255,255,255,0.035);
+  cursor: pointer;
+  overflow: hidden;
+  z-index: 8;
+  backdrop-filter: blur(8px);
+  display: flex;
+  flex-direction: column;
+  transition: bottom 260ms cubic-bezier(0.4, 0, 0.2, 1), transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+}
+
+.graph-rail.remote-jobs-expanded .plan-graph-thumbnail-btn {
+  bottom: calc(min(30vh, 320px) - 37px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plan-graph-thumbnail-btn { transition: none; }
+}
+
+.plan-graph-thumbnail-btn::before {
+  display: none;
+}
+
+.plan-graph-thumbnail-btn:hover,
+.plan-graph-thumbnail-btn:focus-visible,
+.plan-graph-thumbnail-btn.is-open {
+  transform: translateY(-1px);
+  border-color: var(--accent);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.38), 0 0 0 3px rgba(125, 211, 252, 0.1);
+}
+
+.plan-graph-thumbnail-btn:focus-visible {
+  outline: none;
+}
+
+.plan-graph-thumbnail {
+  position: relative;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  margin: 0;
+  z-index: 1;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 0;
+}
+
+.plan-graph-thumbnail-label {
+  position: relative;
+  z-index: 12;
+  width: 100%;
+  flex: 0 0 23px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.35px;
+  text-transform: uppercase;
+  background: rgba(0, 0, 0, 0.18);
+  color: var(--text);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.plan-graph-thumbnail-node {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border: 0;
+  border-radius: 0;
+  transform: translate(-50%, -50%);
+  box-shadow: none;
+  z-index: 1;
+}
+
+.plan-graph-thumbnail-connections {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.plan-graph-thumbnail-connections line {
+  stroke: rgba(148, 163, 184, 0.58);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+
+.plan-graph-thumbnail-node:nth-child(3n + 1) {
+  width: 8px;
+  height: 8px;
+}
+
+body[data-theme="light"] .plan-graph-thumbnail-btn {
+  border-color: rgba(19, 32, 51, 0.18);
+  background: #ffffff;
+  box-shadow: 0 10px 24px rgba(55, 70, 90, 0.16), inset 0 0 0 1px rgba(19, 32, 51, 0.035);
+}
+
+body[data-theme="light"] .plan-graph-thumbnail {
+  background: rgba(19, 32, 51, 0.035);
+}
+
+body[data-theme="light"] .plan-graph-thumbnail-connections line {
+  stroke: rgba(71, 85, 105, 0.48);
+}
+
+body[data-theme="light"] .plan-graph-thumbnail-label {
+  background: rgba(19, 32, 51, 0.035);
+  color: var(--text);
+  border-color: rgba(19, 32, 51, 0.1);
+}
+
+.graph-status {
+  font-size: 11px; font-weight: 600; letter-spacing: 1px;
+  text-transform: uppercase; padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--border); color: var(--muted);
+  background: rgba(255,255,255,0.03);
+  align-self: flex-start; margin-top: 2px;
+}
+.graph-status.status-polling { color: #FBBF24; border-color: #FBBF24; }
+.graph-status.status-idle    { color: var(--muted); }
+
+/* Node detail popup in the center panel */
+.graph-detail {
+  position: absolute;
+  top: 58px;
+  left: 50%;
+  z-index: 20;
+  width: min(640px, calc(100% - 36px));
+  max-height: min(70vh, calc(100% - 150px));
+  transform: translateX(-50%);
+  background: rgba(var(--panel-rgb), 0.96);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  overflow-y: auto;
+  box-shadow: var(--popup-shadow);
+  backdrop-filter: blur(10px);
+}
+.graph-detail.hidden { display: none; }
+.hidden { display: none !important; }
+
+.panel-resizer.hidden {
+  display: none;
+}
+
+.panel-resizer {
+  height: 6px;
+  border-radius: 0;
+  border: 0;
+  background: transparent;
+  cursor: ns-resize;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.panel-resizer::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 36px;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(125, 211, 252, 0.28);
+}
+
+.panel-resizer:hover,
+.panel-resizer:focus-visible,
+.panel-resizer.resizing {
+  border-color: var(--accent);
+  box-shadow: none;
+}
+
+/* ── Column resizers (vertical drag handles) ────────────── */
+.col-resizer {
+  width: 8px;
+  border-radius: 0;
+  border: 0;
+  background: transparent;
+  cursor: ew-resize;
+  position: relative;
+  flex-shrink: 0;
+  align-self: stretch;
+}
+.col-resizer::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 2px;
+  height: 42px;
+  border-radius: 999px;
+  background: rgba(125, 211, 252, 0.24);
+}
+.col-resizer:hover,
+.col-resizer:focus-visible,
+.col-resizer.resizing {
+  border-color: var(--accent);
+  box-shadow: none;
+  outline: none;
+}
+.col-resizer.hidden { display: none; }

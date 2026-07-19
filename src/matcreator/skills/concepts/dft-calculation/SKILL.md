@@ -15,7 +15,7 @@ metadata:
 
 # DFT Calculation
 
-Density Functional Theory (DFT) is an ab initio quantum-mechanical method that computes the electronic structure of materials from first principles. It is the standard approach for generating accurate reference energies, forces, and stresses used to label training data for machine learning force fields (MLFFs), as well as for validating candidate structures in materials design workflows.
+Density Functional Theory (DFT) is an ab initio quantum-mechanical method that computes the electronic structure of materials from first principles. It is the standard approach for generating accurate reference energies, forces, and stresses used to label training data for machine-learned force fields (MLFFs), as well as for validating candidate structures in materials design workflows.
 
 ## When to Use DFT
 

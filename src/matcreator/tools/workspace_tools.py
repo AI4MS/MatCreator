@@ -51,10 +51,24 @@ def _safe_workspace_subdir(relative_path: str) -> Path:
     candidate = Path(raw_path).expanduser()
     if candidate.is_absolute():
         raise ValueError("Session output directory must be relative to the workspace root.")
-    target = _safe_workspace_path(raw_path)
-    if target == get_workspace_root().resolve():
+    root = get_workspace_root().resolve()
+    resolved_target = _safe_workspace_path(raw_path)
+    if resolved_target == root:
         raise ValueError("Session output directory must be a subdirectory, not the workspace root itself.")
-    return target
+    return root / Path(os.path.normpath(raw_path))
+
+
+def _create_unique_workspace_subdir(target: Path) -> Path:
+    """Atomically create *target* or its first available numbered sibling."""
+    candidate = target
+    suffix = 0
+    while True:
+        try:
+            candidate.mkdir(parents=True)
+            return candidate
+        except FileExistsError:
+            suffix += 1
+            candidate = target.with_name(f"{target.name}_{suffix:02d}")
 
 
 def _resolve_skill_script_path(
@@ -123,7 +137,10 @@ def read_workspace_file(relative_path: str) -> str:
 
 
 def set_session_output_dir(relative_path: str, tool_context: ToolContext) -> dict:
-    """Set the active session output directory to a workspace subdirectory.
+    """Create and set a unique session output directory under the workspace.
+
+    If the requested path already exists, a numbered suffix such as ``_01`` is
+    appended. Every successful call creates a new directory.
 
     Args:
         relative_path: Non-empty directory path relative to the workspace root,
@@ -131,11 +148,11 @@ def set_session_output_dir(relative_path: str, tool_context: ToolContext) -> dic
             rejected.
 
     Returns:
-        A status dict with the resolved absolute path.
+        A status dict with the absolute path that was actually created.
     """
     try:
-        target = _safe_workspace_subdir(relative_path)
-        target.mkdir(parents=True, exist_ok=True)
+        requested_target = _safe_workspace_subdir(relative_path)
+        target = _create_unique_workspace_subdir(requested_target)
     except ValueError as exc:
         return {"status": "error", "message": str(exc)}
     except OSError as exc:

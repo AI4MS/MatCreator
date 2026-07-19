@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import aclosing
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -35,6 +36,7 @@ from ...knowledge.extractor import run_knowledge_extractor
 from ...knowledge.synthesizer import run_knowledge_synthesizer
 from ...knowledge.kg_state import increment_exec_count, record_synthesizer_run
 from ..execution_agent.recovery import reconcile_recovery_state
+from ..execution_graph_state import get_execution_graph
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +56,7 @@ def _get_agent_mode(state: dict) -> str:
 
 def _validate_graph_ready(state: dict) -> tuple[bool, str]:
     """Return (ready, reason) — ready=True when at least one pending node exists."""
-    graph = state.get("execution_graph")
+    graph = get_execution_graph(state)
     if not graph or not isinstance(graph, dict):
         return False, "No execution_graph in session state."
     nodes = graph.get("nodes") or {}
@@ -68,7 +70,7 @@ def _validate_graph_ready(state: dict) -> tuple[bool, str]:
 
 def _is_graph_complete(state: dict) -> bool:
     """Return True when every node in the graph reached 'success'."""
-    nodes = (state.get("execution_graph") or {}).get("nodes") or {}
+    nodes = (get_execution_graph(state) or {}).get("nodes") or {}
     return bool(nodes) and all(n.get("status") == "success" for n in nodes.values())
 
 
@@ -127,8 +129,15 @@ class PlanningExecutionOrchestrator(BaseAgent):
             planning_id = f"planning_{loop_idx}" if has_execution else "planning_0"
             logger.info("[orchestrator] entering planning phase")
             graph.log_node_start(planning_id, "planning", f"Planning {loop_idx + 1}", "orchestrator")
-            async for event in self.planning_agent.run_async(ctx):
-                yield event
+            # Approval is a hard handoff boundary. Yield the successful tool
+            # response first so clients can persist/render it, then close the
+            # planner stream before it can start another model/tool round.
+            async with aclosing(self.planning_agent.run_async(ctx)) as planning_events:
+                async for event in planning_events:
+                    yield event
+                    if state.get("execution_approved", False):
+                        logger.info("[orchestrator] approval received; ending planning phase")
+                        break
             graph.log_node_complete(planning_id, "success")
 
             # Flash mode: thinking agent handles everything; skip execution phase
@@ -146,9 +155,10 @@ class PlanningExecutionOrchestrator(BaseAgent):
                     state["execution_approved"] = False
                     continue  # loop back to planner
 
-                total_nodes = len((state.get("execution_graph") or {}).get("nodes") or {})
+                execution_graph = get_execution_graph(state) or {}
+                total_nodes = len(execution_graph.get("nodes") or {})
                 pending_count = sum(
-                    1 for n in (state.get("execution_graph") or {}).get("nodes", {}).values()
+                    1 for n in execution_graph.get("nodes", {}).values()
                     if n.get("status") == "pending"
                 )
                 logger.info(

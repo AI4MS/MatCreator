@@ -6,11 +6,35 @@ from pathlib import Path
 
 
 MAIN_JS = Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "main.js"
+MESSAGE_STREAM_JS = Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "chat" / "messageStream.js"
 INDEX_HTML = Path(__file__).parents[1] / "web" / "vite-frontend" / "index.html"
 
 
 def _main_js() -> str:
     return MAIN_JS.read_text(encoding="utf-8")
+
+
+def _message_stream_js() -> str:
+    return MESSAGE_STREAM_JS.read_text(encoding="utf-8")
+
+
+def test_plan_approval_uses_live_validation_and_consumes_stale_prompt() -> None:
+    content = _message_stream_js()
+
+    assert "sessionRuntime.suppressPlanApproval(state.sessionId, backendMessage);" in content
+    assert 'querySelectorAll(".plan-approval-message")' in content
+    assert "let validatedPlanThisTurn = false;" in content
+    assert 'response.name === "validate_graph"' in content
+    assert "validatedPlanThisTurn && !executionApprovedThisTurn" in content
+    assert "sessionRuntime.restorePlanApproval(request.sessionId);" in content
+    assert "addPlanApprovalActions(latestTimeline);" in content
+
+    runtime = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "session" / "runtime.js").read_text(encoding="utf-8")
+    assert "const suppressedPlanApprovalTurns = new Map();" in runtime
+    assert "latestUserText === suppressedTurn.userText" in runtime
+    assert "function latestTurnPendingPlan(events)" in runtime
+    assert 'response?.name === "confirm_plan_and_start_execution"' in runtime
+    assert "pendingPlan = null;" in runtime
 
 
 def test_frontend_tracks_requests_per_session() -> None:

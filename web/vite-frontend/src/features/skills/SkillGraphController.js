@@ -1,6 +1,13 @@
 import { Network, DataSet } from "vis-network/standalone";
 
-export function createSkillGraphController({ state, centerTabs, centerTabPanels, activateCenterTab, renderMarkdown }) {
+export function createSkillGraphController({
+  state,
+  centerTabs,
+  centerTabPanels,
+  activateCenterTab,
+  renderMarkdown,
+  knowledgeReviewBanner,
+}) {
   let skillGraphTab = null;
 
   const SKILL_GRAPH_COLORS = {
@@ -1007,7 +1014,7 @@ export function createSkillGraphController({ state, centerTabs, centerTabPanels,
     status.className = "graph-status status-idle";
     status.textContent = "idle";
     actions.append(addNode, status);
-    header.append(heading, actions);
+    header.append(heading, knowledgeReviewBanner, actions);
 
     const body = document.createElement("div");
     body.className = "skill-graph-body";

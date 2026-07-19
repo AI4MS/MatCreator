@@ -46,28 +46,45 @@
       <main class="app-grid">
 
         <!-- Left: Agent execution graph + node detail -->
-        <div class="graph-column" id="graph-column">
-          <section class="card left-home-card">
-            <div class="brand">
-              <img class="brand-icon" src="/favicon.png" alt="MatCreator project icon">
-              <div>
-                <div class="brand-title">MatCreator</div>
-                <div class="brand-sub">Plan · Execute · Review</div>
+        <div class="graph-rail" id="graph-column">
+          <div class="graph-column">
+            <section class="card left-home-card">
+              <div class="brand">
+                <img class="brand-icon" src="/favicon.png" alt="MatCreator project icon">
+                <div>
+                  <div class="brand-title">MatCreator</div>
+                  <div class="brand-sub">Plan · Execute · Review</div>
+                </div>
               </div>
-            </div>
-          </section>
-          <section class="card graph-card">
-            <div class="graph-viewport" id="graph-viewport">
-              <h2 class="graph-panel-title">Agent Graph</h2>
-              <div class="graph-surface" id="graph-surface">
-                <div id="agent-graph" class="graph-canvas"></div>
+            </section>
+            <section class="card graph-card">
+              <div class="graph-viewport" id="graph-viewport">
+                <h2 class="graph-panel-title">Agent Graph</h2>
+                <div class="graph-surface" id="graph-surface">
+                  <div id="agent-graph" class="graph-canvas"></div>
+                </div>
+                <button class="plan-graph-thumbnail-btn hidden" id="plan-graph-toggle" type="button" title="Open roadmap" aria-label="Open roadmap" aria-pressed="false">
+                  <span class="plan-graph-thumbnail-label">Roadmap</span>
+                  <span class="plan-graph-thumbnail" id="plan-graph-thumbnail" aria-hidden="true"></span>
+                </button>
               </div>
-              <button class="plan-graph-thumbnail-btn hidden" id="plan-graph-toggle" type="button" title="Open roadmap" aria-label="Open roadmap" aria-pressed="false">
-                <span class="plan-graph-thumbnail-label">Roadmap</span>
-                <span class="plan-graph-thumbnail" id="plan-graph-thumbnail" aria-hidden="true"></span>
-              </button>
-            </div>
-          </section>
+            </section>
+          </div>
+          <div class="remote-jobs-slot">
+            <section class="remote-jobs-pane" id="remote-jobs-pane" aria-live="polite">
+              <div class="block-header">
+                <button class="remote-jobs-toggle" id="remote-jobs-toggle" type="button" aria-expanded="false" aria-controls="remote-job-list">
+                  <span aria-hidden="true" class="remote-jobs-caret">&#9656;</span>
+                  <span>Remote Jobs</span>
+                  <span class="remote-jobs-demo-badge hidden" id="remote-jobs-demo-badge">Demo</span>
+                </button>
+                <button class="ghost refresh-button" id="refresh-remote-jobs" type="button" title="Refresh remote jobs" aria-label="Refresh remote jobs"><svg class="refresh-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M18.5 9A7 7 0 1 0 19 15"></path><path d="M18.5 5v4h-4"></path></svg></button>
+              </div>
+              <ul class="remote-job-list hidden" id="remote-job-list">
+                <li class="empty">No remote jobs in this session</li>
+              </ul>
+            </section>
+          </div>
           <div
             class="panel-resizer hidden"
             id="graph-resizer"
@@ -79,10 +96,6 @@
           ></div>
 
           <section class="card left-settings-card">
-            <button class="knowledge-review-banner status-idle" id="knowledge-review-banner" type="button" aria-live="polite" title="Click to review memory and graph nodes">
-              <span class="knowledge-review-spinner hidden" id="knowledge-review-spinner"></span>
-              <span id="knowledge-review-text">Review Know-Do Graph</span>
-            </button>
             <div class="left-action-row">
               <button class="ghost icon-action-btn" id="skill-graph-open" type="button" title="Open skill graph" aria-label="Open skill graph">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -172,24 +185,24 @@
               <div class="input-area">
                 <div class="upload-status" id="upload-status" aria-live="polite"></div>
                 <div class="input-container">
-                  <div class="composer-controls">
-                    <div class="composer-left-tools">
-                      <div class="mode-selector" id="mode-selector" role="group" aria-label="Agent mode">
-                        <button class="mode-btn" data-mode="flash" title="Conversational with direct execution; no DAG required">Flash</button>
-                        <button class="mode-btn" data-mode="normal" title="Plan first, then confirm before execution">Standard</button>
-                        <button class="mode-btn" data-mode="bench" title="Plan first, then auto-confirm without waiting">Bench</button>
-                      </div>
-                    </div>
-                    <div class="quick-actions">
-                      <button class="composer-pill" data-quick="yes" title="Approve the current plan">Approve</button>
-                      <button class="composer-pill" data-quick="replan" title="Ask the agent to revise the plan">Replan</button>
-                      <button class="composer-pill" data-quick="continue" title="Continue the current workflow">Continue</button>
-                    </div>
-                  </div>
                   <div class="composer-input-row">
+                    <textarea class="text-input" id="text-input" placeholder="Ask for a plan, run, or assessment…" rows="1"></textarea>
+                  </div>
+                  <div class="composer-toolbar">
                     <button class="tool-btn" id="file-upload-btn" title="Upload file">+</button>
                     <input type="file" id="file-upload-input" multiple style="display:none">
-                    <textarea class="text-input" id="text-input" placeholder="Ask for a plan, run, or assessment…" rows="1"></textarea>
+                    <div class="mode-selector" id="mode-selector">
+                      <button class="mode-trigger" id="mode-trigger" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="mode-menu" title="Choose agent mode">
+                        <span class="mode-trigger-icon" aria-hidden="true"></span>
+                        <span class="mode-trigger-label"></span>
+                        <svg class="mode-trigger-chevron" aria-hidden="true" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+                      </button>
+                      <div class="mode-menu" id="mode-menu" role="menu" aria-label="Agent mode">
+                        <button class="mode-btn" type="button" role="menuitemradio" data-mode="flash" aria-checked="false" title="Conversational with direct execution; no DAG required"><span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m13 2-9 12h7l-1 8 10-13h-7z"/></svg></span><span>Flash</span><span class="mode-check" aria-hidden="true">✓</span></button>
+                        <button class="mode-btn" type="button" role="menuitemradio" data-mode="normal" aria-checked="true" title="Plan first, then confirm before execution"><span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2"/></svg></span><span>Standard</span><span class="mode-check" aria-hidden="true">✓</span></button>
+                        <button class="mode-btn" type="button" role="menuitemradio" data-mode="bench" aria-checked="false" title="Plan first, then auto-confirm without waiting"><span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3M8 16h8"/></svg></span><span>Bench</span><span class="mode-check" aria-hidden="true">✓</span></button>
+                      </div>
+                    </div>
                     <button class="send-btn" id="send-btn" title="Send">➜</button>
                   </div>
                 </div>
@@ -350,41 +363,37 @@
           <section class="panel-block sessions-pane">
             <div class="block-header">Sessions
               <div class="session-header-actions">
+<<<<<<< HEAD
                 <button class="ghost" id="reset-session">New Session</button>
                 <button class="ghost" id="saved-question-drafts">Drafts</button>
                 <button class="ghost" id="refresh-sessions" style="font-size:11px" title="Refresh session list">↺</button>
+=======
+                <button class="ghost new-session-button" id="reset-session" title="New session" aria-label="New session">+</button>
+                <button class="ghost refresh-button" id="refresh-sessions" title="Refresh session list" aria-label="Refresh session list"><svg class="refresh-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M18.5 9A7 7 0 1 0 19 15"></path><path d="M18.5 5v4h-4"></path></svg></button>
+>>>>>>> origin/devel
               </div>
             </div>
             <div class="right-session-meta">
               <span>Session: <span id="session-id">-</span></span>
             </div>
-            <select id="session-status-filter" class="session-status-filter" aria-label="Filter sessions by status">
-              <option value="all">All</option>
-              <option value="running">Running</option>
-              <option value="idle">Idle</option>
-            </select>
+            <div class="custom-select session-status-filter" id="session-status-filter" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-label="Filter sessions by status" tabindex="0">
+              <span class="custom-select-trigger" data-value="all">All</span>
+              <ul class="custom-select-options" role="listbox">
+                <li role="option" data-value="all" aria-selected="true">All</li>
+                <li role="option" data-value="running">Running</li>
+                <li role="option" data-value="idle">Idle</li>
+              </ul>
+            </div>
             <div class="panel-block-body">
               <ul class="artifact-list" id="session-list">
                 <li class="empty">Sign in to see sessions</li>
               </ul>
             </div>
           </section>
-          <section class="remote-jobs-pane" id="remote-jobs-pane" aria-live="polite">
-            <div class="block-header">
-              <button class="remote-jobs-toggle" id="remote-jobs-toggle" type="button" aria-expanded="false" aria-controls="remote-job-list">
-                <span aria-hidden="true" class="remote-jobs-caret">&#9656;</span>
-                <span>Remote Jobs</span>
-              </button>
-              <button class="ghost" id="refresh-remote-jobs" type="button" title="Refresh remote jobs" aria-label="Refresh remote jobs">↺</button>
-            </div>
-            <ul class="remote-job-list hidden" id="remote-job-list">
-              <li class="empty">No remote jobs in this session</li>
-            </ul>
-          </section>
           <section class="file-explorer-col is-open" id="file-explorer-col">
             <div class="file-explorer-header">
               <div class="block-header">Files
-                <button class="ghost" id="refresh-files" style="font-size:11px" title="Refresh files">↺</button>
+                <button class="ghost refresh-button" id="refresh-files" title="Refresh files" aria-label="Refresh files"><svg class="refresh-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M18.5 9A7 7 0 1 0 19 15"></path><path d="M18.5 5v4h-4"></path></svg></button>
               </div>
             </div>
             <div class="file-explorer-body">

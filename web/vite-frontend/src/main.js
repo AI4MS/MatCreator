@@ -1,22 +1,16 @@
-import { marked } from "marked";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import "@xterm/xterm/css/xterm.css";
+import { createChatRenderer } from "./features/chat/rendering.js";
+import { createMessageStreamController } from "./features/chat/messageStream.js";
 import { createLayoutController } from "./features/layout/resizers.js";
 import { createImageLightbox } from "./features/media/imageLightbox.js";
 import { classifyPath, createSessionFileTree } from "./features/session/fileTree.js";
-import {
-  compactRepeatedPrefixSnapshots,
-  mergeReplayedText,
-  upsertTimelineEvent,
-  upsertTimelineText,
-  upsertTimelineThought,
-} from "./features/chat/timeline.js";
+import { createSessionListController } from "./features/session/sessionList.js";
+import { createSessionRuntime } from "./features/session/runtime.js";
+import { createWorkspaceTerminalController } from "./features/workspace/terminal.js";
 import { AgentGraphView, StepExecutionFeed } from "./features/graphs/AgentGraphView.js";
 import { ExecutionPlanView } from "./features/graphs/ExecutionPlanView.js";
 import { createSkillGraphController } from "./features/skills/SkillGraphController.js";
 import { createSettingsController } from "./features/settings/SettingsController.js";
-import "./style.css";
+import "./styles/index.css";
 
 // ---------------------------------------------------------------------------
 // State
@@ -26,6 +20,8 @@ const APP_NAME = "MatCreator";
 
 const AGENT_MODE_KEY = "mat_agentMode";
 const THEME_KEY = "mat_theme";
+const DUMMY_REMOTE_JOBS = import.meta.env.VITE_DUMMY_REMOTE_JOBS === "true";
+const dummyRemoteJobsBySession = new Map();
 
 const state = {
   sessionId: localStorage.getItem("mat_sessionId") || newSessionId(),
@@ -79,6 +75,7 @@ const themeToggle = document.getElementById("theme-toggle");
 const refreshSessionsBtn = document.getElementById("refresh-sessions");
 const sessionStatusFilter = document.getElementById("session-status-filter");
 const graphViewport = document.getElementById("graph-viewport");
+const graphRail = document.getElementById("graph-column");
 const graphDetail = document.getElementById("graph-detail");
 const centerTabs = document.getElementById("center-tabs");
 const centerTabsScroll = document.getElementById("center-tabs-scroll");
@@ -104,18 +101,31 @@ const logoutBtn = document.getElementById("logout-btn");
 const settingsLogoutBtn = document.getElementById("settings-logout-btn");
 const benchToggle = null; // removed — replaced by mode-selector
 const modeSelector = document.getElementById("mode-selector");
+const modeTrigger = document.getElementById("mode-trigger");
+const modeMenu = document.getElementById("mode-menu");
 const sessionSummaryText = document.getElementById("session-summary-text");
 const chatTab = document.getElementById("tab-chat");
 const filesColToggleBtn = document.getElementById("files-col-toggle");
-const knowledgeReviewBanner = document.getElementById("knowledge-review-banner");
-const knowledgeReviewText = document.getElementById("knowledge-review-text");
-const knowledgeReviewSpinner = document.getElementById("knowledge-review-spinner");
+const knowledgeReviewBanner = document.createElement("button");
+knowledgeReviewBanner.className = "knowledge-review-banner status-idle";
+knowledgeReviewBanner.id = "knowledge-review-banner";
+knowledgeReviewBanner.type = "button";
+knowledgeReviewBanner.setAttribute("aria-live", "polite");
+knowledgeReviewBanner.title = "Click to review memory and graph nodes";
+const knowledgeReviewSpinner = document.createElement("span");
+knowledgeReviewSpinner.className = "knowledge-review-spinner hidden";
+knowledgeReviewSpinner.id = "knowledge-review-spinner";
+const knowledgeReviewText = document.createElement("span");
+knowledgeReviewText.id = "knowledge-review-text";
+knowledgeReviewText.textContent = "Review Know-Do Graph";
+knowledgeReviewBanner.append(knowledgeReviewSpinner, knowledgeReviewText);
 const workspaceCli = document.getElementById("workspace-cli");
 const workspaceTerminalEl = document.getElementById("workspace-terminal");
 const remoteJobListEl = document.getElementById("remote-job-list");
 const refreshRemoteJobsBtn = document.getElementById("refresh-remote-jobs");
 const remoteJobsToggleBtn = document.getElementById("remote-jobs-toggle");
 const remoteJobsPane = document.getElementById("remote-jobs-pane");
+<<<<<<< HEAD
 const workspaceModeBtn = document.getElementById("workspace-mode-btn");
 const evaluationModeBtn = document.getElementById("evaluation-mode-btn");
 const evaluationPane = document.getElementById("evaluation-pane");
@@ -128,17 +138,34 @@ const evaluationCampaignSummary = document.getElementById("evaluation-campaign-s
 const evaluationCampaignList = document.getElementById("evaluation-campaign-list");
 const evaluationLiveFeed = document.getElementById("evaluation-live-feed");
 let evaluationPoll = null;
+=======
+const remoteJobsDemoBadge = document.getElementById("remote-jobs-demo-badge");
+const remoteJobPopover = document.createElement("div");
+remoteJobPopover.className = "remote-job-detail";
+remoteJobPopover.id = "remote-job-detail-popover";
+remoteJobPopover.setAttribute("role", "dialog");
+remoteJobPopover.setAttribute("aria-label", "Remote job details");
+document.body.appendChild(remoteJobPopover);
+>>>>>>> origin/devel
 let knowledgeReviewPoll = null;
 let remoteJobsPoll = null;
-let workspaceTerminal = null;
-let workspaceTerminalFit = null;
-let workspaceTerminalSocket = null;
-let workspaceTerminalPointerDown = false;
-let workspaceTerminalSelectionReleasedAt = 0;
-let workspaceTerminalCtrlCKeyAt = 0;
+let remoteJobPopoverHideTimer = null;
+let visibleRemoteJobCard = null;
 const structureTabs = new Map();
 let structureViewerModulePromise = null;
 let svelteRuntimePromise = null;
+
+const {
+  addMessage,
+  appendLiveTurnChild,
+  applyUserAvatarToEl,
+  createAgentAvatarEl,
+  createJsonBlock,
+  isChatNearBottom,
+  renderMarkdown,
+  scrollToBottom,
+  setUserAvatar,
+} = createChatRenderer({ chatArea });
 
 const settingsController = createSettingsController({ state, applyLogin });
 
@@ -148,6 +175,7 @@ const skillGraphController = createSkillGraphController({
   centerTabPanels,
   activateCenterTab,
   renderMarkdown,
+  knowledgeReviewBanner,
 });
 
 const { render: renderSessionFilesTree } = createSessionFileTree({
@@ -1215,6 +1243,7 @@ function hideLocalAuthControls() {
 // Session list management
 // ---------------------------------------------------------------------------
 
+<<<<<<< HEAD
 async function loadSessions() {
   if (!state.userId) return;
   try {
@@ -1309,6 +1338,20 @@ function renderSessionList(sessions) {
       sessionListEl.appendChild(li);
     });
 }
+=======
+const { loadSessions, rerender: rerenderSessionList } = createSessionListController({
+  state,
+  sessionListEl,
+  refreshButton: refreshSessionsBtn,
+  filterElement: sessionStatusFilter,
+  activeSessionRequest: (key) => state.activeRequests.get(key),
+  sessionRequestKey,
+  switchSession,
+  deleteSession,
+  downloadSessionLog,
+  sessionDisplayStatus,
+});
+>>>>>>> origin/devel
 
 function sessionDisplayStatus(session, owner) {
   if (state.activeRequests.get(sessionRequestKey(session.id, owner))) return "running";
@@ -1336,11 +1379,11 @@ async function switchSession(sessionId, owner = state.userId) {
   hidePlanGraph();
   startRemoteJobsPolling(sessionId, owner);
   const [activeRun] = await Promise.all([
-    discoverManagedRun(sessionId, owner),
-    loadSession(sessionId, owner),
+    sessionRuntime.discoverManagedRun(sessionId, owner),
+    sessionRuntime.loadSession(sessionId, owner),
     loadRemoteJobs(sessionId, owner),
   ]);
-  if (activeRun) startManagedRunReconnect(activeRun, sessionId, owner);
+  if (activeRun) sessionRuntime.startManagedRunReconnect(activeRun, sessionId, owner);
   void loadSessions();
   agentGraph.startPolling(sessionId);
   planGraph.startPolling(sessionId);
@@ -1357,6 +1400,13 @@ function startRemoteJobsPolling(sessionId, owner) {
 
 async function loadRemoteJobs(sessionId = state.sessionId, owner = state.activeSessionUserId || state.userId) {
   if (!sessionId || !owner) return;
+  if (DUMMY_REMOTE_JOBS) {
+    state.remoteJobs = getDummyRemoteJobs(sessionId, owner);
+    remoteJobsDemoBadge?.classList.remove("hidden");
+    renderRemoteJobs();
+    rerenderSessionList();
+    return;
+  }
   try {
     const response = await fetch(remoteJobsUrl(sessionId, owner));
     if (!response.ok) return;
@@ -1364,13 +1414,45 @@ async function loadRemoteJobs(sessionId = state.sessionId, owner = state.activeS
     if (sessionId !== state.sessionId || owner !== state.activeSessionUserId) return;
     state.remoteJobs = Array.isArray(data.jobs) ? data.jobs : [];
     renderRemoteJobs();
+    rerenderSessionList();
   } catch (_) {
     // The control plane may be restarting; retain the last visible snapshot.
   }
 }
 
+function getDummyRemoteJobs(sessionId, owner) {
+  const key = `${owner}:${sessionId}`;
+  if (!dummyRemoteJobsBySession.has(key)) {
+    dummyRemoteJobsBySession.set(key, [
+      {
+        job_id: "demo-running-job",
+        external_id: "sandbox-demo-running",
+        provider: "e2b",
+        status: "running",
+        snapshot: { provider_status: "running" },
+      },
+      {
+        job_id: "demo-paused-job",
+        external_id: "sandbox-demo-paused",
+        provider: "e2b",
+        status: "paused",
+        snapshot: { provider_status: "paused" },
+      },
+      {
+        job_id: "demo-complete-job",
+        external_id: "sandbox-demo-complete",
+        provider: "e2b",
+        status: "collected",
+        snapshot: { provider_status: "completed" },
+      },
+    ]);
+  }
+  return dummyRemoteJobsBySession.get(key);
+}
+
 function renderRemoteJobs() {
   if (!remoteJobListEl) return;
+  hideRemoteJobPopover();
   remoteJobListEl.innerHTML = "";
   if (!state.remoteJobs.length) {
     remoteJobListEl.innerHTML = '<li class="empty">No remote jobs in this session</li>';
@@ -1381,6 +1463,8 @@ function renderRemoteJobs() {
     const providerStatus = job.snapshot?.provider_status;
     const lifecycle = remoteJobLifecycle(job.status);
     item.className = `remote-job status-${lifecycle.key}`;
+    item.tabIndex = 0;
+    item.title = "Hover for job details";
     const header = document.createElement("div");
     header.className = "remote-job-header";
     const provider = document.createElement("span");
@@ -1394,21 +1478,78 @@ function renderRemoteJobs() {
     identifier.className = "remote-job-id";
     identifier.textContent = job.external_id || job.job_id;
     item.append(header, identifier);
-    if (providerStatus) {
-      const providerDetail = document.createElement("div");
-      providerDetail.className = "remote-job-provider-detail";
-      providerDetail.textContent = `Sandbox: ${providerStatus}`;
-      item.appendChild(providerDetail);
-    }
     if (job.error) {
       const error = document.createElement("div");
       error.className = "remote-job-error";
       error.textContent = job.error;
       item.appendChild(error);
     }
+    const showDetails = () => showRemoteJobPopover(item, job, providerStatus);
+    item.addEventListener("mouseenter", showDetails);
+    item.addEventListener("mouseleave", scheduleRemoteJobPopoverHide);
+    item.addEventListener("focusin", showDetails);
+    item.addEventListener("focusout", scheduleRemoteJobPopoverHide);
     remoteJobListEl.appendChild(item);
   }
 }
+
+function showRemoteJobPopover(card, job, providerStatus) {
+  clearTimeout(remoteJobPopoverHideTimer);
+  if (visibleRemoteJobCard && visibleRemoteJobCard !== card) {
+    visibleRemoteJobCard.classList.remove("is-detail-open");
+  }
+  visibleRemoteJobCard = card;
+  card.classList.add("is-detail-open");
+  remoteJobPopover.replaceChildren(createRemoteJobDetail(job, providerStatus));
+  remoteJobPopover.classList.add("is-visible");
+  const rect = card.getBoundingClientRect();
+  const width = Math.min(280, window.innerWidth - 16);
+  const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+  const top = Math.min(rect.bottom + 8, window.innerHeight - 150);
+  remoteJobPopover.style.left = `${left}px`;
+  remoteJobPopover.style.top = `${Math.max(8, top)}px`;
+}
+
+function scheduleRemoteJobPopoverHide() {
+  clearTimeout(remoteJobPopoverHideTimer);
+  remoteJobPopoverHideTimer = setTimeout(hideRemoteJobPopover, 150);
+}
+
+function hideRemoteJobPopover() {
+  clearTimeout(remoteJobPopoverHideTimer);
+  if (visibleRemoteJobCard) {
+    visibleRemoteJobCard.classList.remove("is-detail-open");
+  }
+  remoteJobPopover.classList.remove("is-visible");
+  visibleRemoteJobCard = null;
+}
+
+function createRemoteJobDetail(job, providerStatus) {
+  const detail = document.createDocumentFragment();
+  const fields = [
+    ["Provider", job.provider || "remote"],
+    ["Status", remoteJobLifecycle(job.status).label],
+    ["Sandbox", job.external_id || "—"],
+    ["Job ID", job.job_id || "—"],
+  ];
+  if (providerStatus) fields.splice(2, 0, ["Provider status", providerStatus]);
+  for (const [label, value] of fields) {
+    const row = document.createElement("div");
+    const key = document.createElement("span");
+    key.textContent = label;
+    const content = document.createElement("code");
+    content.textContent = String(value);
+    row.append(key, content);
+    detail.appendChild(row);
+  }
+  return detail;
+}
+
+remoteJobPopover.addEventListener("mouseenter", () => clearTimeout(remoteJobPopoverHideTimer));
+remoteJobPopover.addEventListener("mouseleave", scheduleRemoteJobPopoverHide);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") hideRemoteJobPopover();
+});
 
 function remoteJobLifecycle(status) {
   const normalized = String(status || "unknown").toLowerCase();
@@ -1439,6 +1580,7 @@ function setRemoteJobsExpanded(expanded) {
   remoteJobsToggleBtn?.setAttribute("aria-expanded", String(state.remoteJobsExpanded));
   remoteJobsToggleBtn?.classList.toggle("is-expanded", state.remoteJobsExpanded);
   remoteJobsPane?.classList.toggle("is-expanded", state.remoteJobsExpanded);
+  graphRail?.classList.toggle("remote-jobs-expanded", state.remoteJobsExpanded);
 }
 
 function createRemoteJobActions(job) {
@@ -1446,22 +1588,32 @@ function createRemoteJobActions(job) {
   actions.className = "remote-job-actions";
   const active = ["queued", "running", "submitting", "resuming"].includes(job.status);
   const refresh = document.createElement("button");
-  refresh.className = "remote-job-action";
-  refresh.textContent = "↺";
+  refresh.className = "remote-job-action refresh-button";
+  refresh.innerHTML = '<svg class="refresh-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M18.5 9A7 7 0 1 0 19 15"></path><path d="M18.5 5v4h-4"></path></svg>';
   refresh.title = "Refresh sandbox status";
-  refresh.addEventListener("click", () => void controlRemoteJob(job, "refresh", refresh));
+  refresh.setAttribute("aria-label", "Refresh sandbox status");
+  refresh.addEventListener("click", (event) => {
+    event.stopPropagation();
+    void controlRemoteJob(job, "refresh", refresh);
+  });
   const pause = document.createElement("button");
   pause.className = "remote-job-action";
   pause.textContent = "Ⅱ";
   pause.title = "Pause sandbox";
   pause.disabled = !active;
-  pause.addEventListener("click", () => void controlRemoteJob(job, "pause", pause));
+  pause.addEventListener("click", (event) => {
+    event.stopPropagation();
+    void controlRemoteJob(job, "pause", pause);
+  });
   const terminate = document.createElement("button");
   terminate.className = "remote-job-action terminate";
   terminate.textContent = "■";
   terminate.title = "Terminate sandbox";
   terminate.disabled = !active && job.status !== "paused";
-  terminate.addEventListener("click", () => void controlRemoteJob(job, "terminate", terminate));
+  terminate.addEventListener("click", (event) => {
+    event.stopPropagation();
+    void controlRemoteJob(job, "terminate", terminate);
+  });
   actions.append(refresh, pause, terminate);
   return actions;
 }
@@ -1471,6 +1623,17 @@ async function controlRemoteJob(job, action, button) {
   if (!owner || !job?.job_id) return;
   button.disabled = true;
   try {
+    if (DUMMY_REMOTE_JOBS) {
+      if (action === "pause") {
+        job.status = "paused";
+        job.snapshot = { ...job.snapshot, provider_status: "paused" };
+      } else if (action === "terminate") {
+        job.status = "terminated";
+        job.snapshot = { ...job.snapshot, provider_status: "terminated" };
+      }
+      await loadRemoteJobs(state.sessionId, owner);
+      return;
+    }
     const url = `/api/sessions/${encodeURIComponent(state.sessionId)}/remote-jobs/${encodeURIComponent(job.job_id)}/${action}?user_id=${encodeURIComponent(owner)}`;
     const response = await fetch(url, { method: "POST" });
     if (response.ok) await loadRemoteJobs(state.sessionId, owner);
@@ -1549,12 +1712,6 @@ async function deleteSession(sessionId) {
     // silently ignore
   }
 }
-
-refreshSessionsBtn.addEventListener("click", (e) => { e.stopPropagation(); loadSessions(); });
-sessionStatusFilter?.addEventListener("change", () => {
-  state.sessionStatusFilter = sessionStatusFilter.value || "all";
-  renderSessionList._lastSessions && renderSessionList(renderSessionList._lastSessions);
-});
 
 async function downloadSessionLog(sessionId, owner = state.userId) {
   if (!sessionId) return;
@@ -1933,192 +2090,6 @@ function pathToApiUrl(path) {
 // Chat helpers
 // ---------------------------------------------------------------------------
 
-// Post-process marked output: wrap ASCII art (box-drawing chars) in <pre>.
-const BOX_RE = /[┌┐└┘├┤┬┴┼│━─]/;
-function renderMarkdown(text) {
-  if (!text) return "";
-  let html = marked.parse(text);
-  html = html.replace(/<pre><code>([\s\S]*?)<\/code><\/pre>/gi, (match, inner) => {
-    const decoded = inner.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
-    return BOX_RE.test(decoded) ? `<pre class="ascii-art">${decoded}</pre>` : match;
-  });
-  html = html.replace(/<p>([\s\S]*?)<\/p>/gi, (match, inner) => {
-    const decoded = inner.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
-    return BOX_RE.test(decoded) ? `<pre class="ascii-art">${decoded}</pre>` : match;
-  });
-  return html;
-}
-
-// Unescape common escape sequences in text content.
-// Converts literal \n, \t, \r, \\ to actual characters.
-function unescapeText(text) {
-  if (!text) return "";
-  return text
-    .replace(/\\\\/g, "\x00")    // protect literal backslashes
-    .replace(/\\n/g, "\n")
-    .replace(/\\t/g, "\t")
-    .replace(/\\r/g, "\r")
-    .replace(/\\"/g, '"')
-    .replace(/\x00/g, "\\");     // restore literal backslashes
-}
-
-// Cached character widths for wrap calculation (ASCII and CJK)
-let _asciiWidth = 0;
-let _cjkWidth = 0;
-function getCharWidths() {
-  if (_asciiWidth) return { ascii: _asciiWidth, cjk: _cjkWidth };
-  const s = document.createElement("span");
-  s.style.cssText = "position:absolute;visibility:hidden;font:14px 'Courier New',Consolas,monospace;white-space:pre;";
-  document.body.appendChild(s);
-  s.textContent = "x";
-  _asciiWidth = s.getBoundingClientRect().width;
-  s.textContent = "中";
-  _cjkWidth = s.getBoundingClientRect().width;
-  document.body.removeChild(s);
-  return { ascii: _asciiWidth, cjk: _cjkWidth };
-}
-
-const CJK_RE = /[一-鿿㐀-䶿豈-﫿　-〿＀-￯]/;
-function measureLine(line) {
-  const { ascii, cjk } = getCharWidths();
-  let w = 0;
-  for (const ch of line) {
-    w += CJK_RE.test(ch) ? cjk : ascii;
-  }
-  return w;
-}
-
-// Create a <pre class="json-block"> with unescaped content.
-// Strips leading/trailing { } from JSON-like strings for cleaner display.
-// Uses ResizeObserver to adapt wrap markers to container width.
-function createJsonBlock(content) {
-  const pre = document.createElement("pre");
-  pre.className = "json-block";
-  let rawText = unescapeText(content);
-  rawText = rawText.replace(/^\{\s*/, "").replace(/\s*\}$/, "");
-  pre.dataset.raw = rawText;
-  applyWrapMarkers(pre);
-  const ro = new ResizeObserver(() => applyWrapMarkers(pre));
-  ro.observe(pre);
-  return pre;
-}
-
-function applyWrapMarkers(pre) {
-  const raw = pre.dataset.raw;
-  if (!raw) return;
-  const containerW = pre.clientWidth - 16; // subtract padding
-  if (containerW <= 0) return;
-  const { ascii, cjk } = getCharWidths();
-  const markerW = ascii * 3; // " ↵" approx 3 ascii chars wide
-  const lines = raw.split("\n");
-  const out = [];
-  for (const line of lines) {
-    const lineW = measureLine(line);
-    if (lineW <= containerW) {
-      out.push(line);
-    } else {
-      // Split line by pixel width
-      let w = 0, start = 0;
-      for (let i = 0; i < line.length; i++) {
-        const chW = CJK_RE.test(line[i]) ? cjk : ascii;
-        if (w + chW > containerW - markerW) {
-          out.push(line.slice(start, i) + " ↵");
-          start = i;
-          w = chW;
-        } else {
-          w += chW;
-        }
-      }
-      if (start < line.length) out.push(line.slice(start));
-    }
-  }
-  pre.textContent = out.join("\n");
-}
-
-const AGENT_AVATAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="rgba(125,211,252,0.9)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-  <rect x="3" y="8" width="18" height="11" rx="2"/>
-  <path d="M8 8V6a4 4 0 0 1 8 0v2"/>
-  <circle cx="9" cy="14" r="1" fill="rgba(125,211,252,0.9)" stroke="none"/>
-  <circle cx="15" cy="14" r="1" fill="rgba(125,211,252,0.9)" stroke="none"/>
-  <path d="M7 19v2M17 19v2"/>
-</svg>`;
-
-const USER_AVATAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="rgba(168,85,247,0.9)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-  <circle cx="12" cy="8" r="4"/>
-  <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
-</svg>`;
-
-function getUserAvatar() {
-  return localStorage.getItem("user-avatar-url") || null;
-}
-
-function setUserAvatar(dataUrl) {
-  localStorage.setItem("user-avatar-url", dataUrl);
-  document.querySelectorAll(".user-avatar").forEach(applyUserAvatarToEl);
-}
-
-function applyUserAvatarToEl(el) {
-  const url = getUserAvatar();
-  el.innerHTML = url ? `<img src="${url}" alt="User">` : USER_AVATAR_SVG;
-}
-
-function createAgentAvatarEl() {
-  const el = document.createElement("div");
-  el.className = "message-avatar agent-avatar";
-  el.innerHTML = AGENT_AVATAR_SVG;
-  return el;
-}
-
-function createUserAvatarEl() {
-  const el = document.createElement("div");
-  el.className = "message-avatar user-avatar";
-  applyUserAvatarToEl(el);
-  return el;
-}
-
-function scrollToBottom() {
-  chatArea.scrollTop = chatArea.scrollHeight;
-}
-
-function isChatNearBottom() {
-  return chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight < 80;
-}
-
-function appendLiveTurnChild(container, child) {
-  if (container === chatArea || !container?.dataset?.stepLiveRegion) {
-    container.appendChild(child);
-    return;
-  }
-
-  const firstStepCard = [...container.children].find((el) => el.dataset.stepStartTime !== undefined);
-  if (firstStepCard) {
-    container.insertBefore(child, firstStepCard);
-  } else {
-    container.appendChild(child);
-  }
-}
-
-function addMessage(role, content, msgIndex, container = chatArea) {
-  const div = document.createElement("div");
-  div.className = `message ${role}-message`;
-  if (msgIndex !== undefined) div.dataset.msgIndex = String(msgIndex);
-
-  const avatar = role === "agent" ? createAgentAvatarEl() : createUserAvatarEl();
-  div.appendChild(avatar);
-
-  const bubble = document.createElement("div");
-  bubble.className = "message-bubble";
-  const inner = document.createElement("div");
-  inner.className = "markdown-content";
-  inner.innerHTML = renderMarkdown(content || "");
-  bubble.appendChild(inner);
-  div.appendChild(bubble);
-
-  appendLiveTurnChild(container, div);
-  scrollToBottom();
-  return div;
-}
-
 function getFunctionCall(part) {
   return part?.functionCall || part?.function_call || null;
 }
@@ -2232,7 +2203,7 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
         if (Array.isArray(item.stepNodes) && item.stepNodes.length) {
           item.stepNodes.forEach((node) => stepExecutionFeed.appendStatic(node, inlineHost));
         } else if (activeSessionRequest()) {
-          stepExecutionFeed.attachLiveToolHost(inlineHost);
+          if (!stepExecutionFeed.attachLiveToolHost(inlineHost)) inlineHost.remove();
         }
       }
     } else if (item.type === "function_response") {
@@ -2278,7 +2249,9 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
 // chatArea, and return the inner container for live updates.
 function addAgentTimelineMessage(timeline, shownPlotPaths = null, msgIndex, container = chatArea) {
   const outer = document.createElement("div");
-  outer.className = "message agent-message";
+  // A live turn starts before the server has sent its first event. Keep its
+  // empty shell out of view until it contains a timeline item or step card.
+  outer.className = "message agent-message is-pending";
   if (msgIndex !== undefined) outer.dataset.msgIndex = String(msgIndex);
   outer.appendChild(createAgentAvatarEl());
   const bubble = document.createElement("div");
@@ -2287,9 +2260,88 @@ function addAgentTimelineMessage(timeline, shownPlotPaths = null, msgIndex, cont
   inner.className = "timeline-container";
   bubble.appendChild(inner);
   outer.appendChild(bubble);
+  const revealWhenPopulated = () => {
+    const liveRegion = outer.querySelector(".step-feed-live-region");
+    if (!inner.childElementCount && !liveRegion?.childElementCount) return;
+    outer.classList.remove("is-pending");
+    observer.disconnect();
+  };
+  const observer = new MutationObserver(revealWhenPopulated);
+  observer.observe(outer, { childList: true, subtree: true });
   appendLiveTurnChild(container, outer);
   renderTimeline(inner, timeline, shownPlotPaths);
+  revealWhenPopulated();
   return inner;
+}
+
+function addPlanApprovalActions(timelineContainer) {
+  const agentMessage = timelineContainer?.closest(".agent-message");
+  if (!agentMessage || agentMessage.nextElementSibling?.classList.contains("plan-approval-message")) return;
+  const responseMessage = document.createElement("div");
+  responseMessage.className = "message user-message plan-approval-message";
+  const bubble = document.createElement("div");
+  bubble.className = "message-bubble";
+  const prompt = document.createElement("div");
+  prompt.className = "plan-approval-prompt";
+  prompt.textContent = "How would you like to proceed?";
+  const actions = document.createElement("div");
+  actions.className = "plan-approval-actions";
+  actions.setAttribute("role", "group");
+  actions.setAttribute("aria-label", "Plan actions");
+
+  const disableControls = () => responseMessage.querySelectorAll("button, input").forEach((item) => { item.disabled = true; });
+  [["yes", "Approve plan", "Approve this plan and start execution", "is-approve"], ["replan", "Revise plan", "Ask the agent to revise this plan", "is-replan"]]
+    .forEach(([message, label, title, variant]) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `plan-approval-btn ${variant}`;
+      button.textContent = label;
+      button.title = title;
+      button.addEventListener("click", () => {
+        disableControls();
+        messageStreamController.send(message);
+      });
+      actions.appendChild(button);
+    });
+
+  const feedback = document.createElement("div");
+  feedback.className = "plan-feedback";
+  const feedbackLabel = document.createElement("label");
+  feedbackLabel.className = "plan-feedback-label";
+  feedbackLabel.textContent = "Or describe what you’d like changed";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "plan-feedback-input";
+  input.placeholder = "Other feedback or changes…";
+  input.setAttribute("aria-label", "Other feedback about this plan");
+  const sendFeedback = () => {
+    const message = input.value.trim();
+    if (!message) return;
+    disableControls();
+    messageStreamController.send(message);
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      sendFeedback();
+    }
+  });
+  const submit = document.createElement("button");
+  submit.type = "button";
+  submit.className = "plan-approval-btn plan-feedback-submit";
+  submit.textContent = "Send";
+  submit.title = "Send feedback about this plan";
+  submit.disabled = true;
+  input.addEventListener("input", () => {
+    submit.disabled = !input.value.trim();
+  });
+  submit.addEventListener("click", sendFeedback);
+  feedbackLabel.appendChild(input);
+  feedback.append(feedbackLabel, submit);
+  bubble.append(prompt, actions, feedback);
+  responseMessage.appendChild(bubble);
+  agentMessage.after(responseMessage);
+  scrollToBottom();
 }
 
 function formatStepDuration(node) {
@@ -2350,170 +2402,20 @@ function renderStepToolCall(tc) {
   return details;
 }
 
-function setWorkspaceCliOpen(open) {
-  workspaceCli?.classList.toggle("hidden", !open);
-  workspaceCliToggle?.classList.toggle("is-active", open);
-  workspaceCliToggle?.setAttribute("aria-expanded", String(open));
-  if (open) {
-    startWorkspaceTerminal();
-  } else {
-    stopWorkspaceTerminal();
-  }
-}
-
-function terminalWebSocketUrl() {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const params = new URLSearchParams();
-  if (state.deploymentMode === "server" && state.userId) params.set("user_id", state.userId);
-  const qs = params.toString();
-  return `${protocol}//${window.location.host}/api/workspace/terminal${qs ? `?${qs}` : ""}`;
-}
-
-function resizeWorkspaceTerminal() {
-  if (!workspaceTerminal || !workspaceTerminalFit || !workspaceTerminalSocket) return;
-  try {
-    workspaceTerminalFit.fit();
-    if (workspaceTerminalSocket.readyState === WebSocket.OPEN) {
-      workspaceTerminalSocket.send(JSON.stringify({
-        type: "resize",
-        rows: workspaceTerminal.rows,
-        cols: workspaceTerminal.cols,
-      }));
-    }
-  } catch (_) { /* terminal may not be visible yet */ }
-}
-
-function handleWorkspaceTerminalCopy(event) {
-  if (!workspaceTerminal?.hasSelection?.()) return;
-  const selectedText = workspaceTerminal.getSelection();
-  if (!selectedText) return;
-  event.preventDefault();
-  event.clipboardData?.setData("text/plain", selectedText);
-  navigator.clipboard?.writeText(selectedText).catch(() => {});
-}
-
-function writeWorkspaceTerminalSelectionToClipboard() {
-  if (!workspaceTerminal?.hasSelection?.()) return false;
-  const selectedText = workspaceTerminal.getSelection();
-  if (!selectedText) return false;
-  navigator.clipboard?.writeText(selectedText).catch(() => {});
-  return true;
-}
-
-function handleWorkspaceTerminalKeydown(event) {
-  const isCopyKey = (event.ctrlKey || event.metaKey) && event.key?.toLowerCase?.() === "c";
-  if (!isCopyKey) return;
-  workspaceTerminalCtrlCKeyAt = Date.now();
-  if (!workspaceTerminal?.hasSelection?.()) return;
-  event.preventDefault();
-  event.stopPropagation();
-  writeWorkspaceTerminalSelectionToClipboard();
-}
-
-function handleWorkspaceTerminalPointerDown() {
-  workspaceTerminalPointerDown = true;
-}
-
-function handleWorkspaceTerminalPointerUp() {
-  if (workspaceTerminalPointerDown && workspaceTerminal?.hasSelection?.()) {
-    workspaceTerminalSelectionReleasedAt = Date.now();
-  }
-  workspaceTerminalPointerDown = false;
-}
-
-function shouldSuppressWorkspaceTerminalInput(data) {
-  if (data !== "\x03") return false;
-  const now = Date.now();
-  const afterMouseSelection = now - workspaceTerminalSelectionReleasedAt < 500;
-  const fromKeyboardShortcut = now - workspaceTerminalCtrlCKeyAt < 500;
-  return afterMouseSelection && !fromKeyboardShortcut;
-}
-
-function startWorkspaceTerminal() {
-  if (!workspaceTerminalEl) return;
-  if (workspaceTerminalSocket && workspaceTerminalSocket.readyState === WebSocket.OPEN) {
-    workspaceTerminal?.focus();
-    resizeWorkspaceTerminal();
-    return;
-  }
-  workspaceTerminalEl.innerHTML = "";
-  workspaceTerminal = new Terminal({
-    cursorBlink: true,
-    convertEol: true,
-    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
-    fontSize: 12,
-    theme: {
-      background: "#030712",
-      foreground: "#d1fae5",
-      cursor: "#7dd3fc",
-      selectionBackground: "#1e40af88",
-    },
-  });
-  workspaceTerminalFit = new FitAddon();
-  workspaceTerminal.loadAddon(workspaceTerminalFit);
-  workspaceTerminal.open(workspaceTerminalEl);
-  workspaceTerminalEl.removeEventListener("copy", handleWorkspaceTerminalCopy);
-  workspaceTerminalEl.addEventListener("copy", handleWorkspaceTerminalCopy);
-  workspaceTerminalEl.removeEventListener("keydown", handleWorkspaceTerminalKeydown, true);
-  workspaceTerminalEl.addEventListener("keydown", handleWorkspaceTerminalKeydown, true);
-  workspaceTerminalEl.removeEventListener("pointerdown", handleWorkspaceTerminalPointerDown);
-  workspaceTerminalEl.addEventListener("pointerdown", handleWorkspaceTerminalPointerDown);
-  workspaceTerminalEl.removeEventListener("pointerup", handleWorkspaceTerminalPointerUp);
-  workspaceTerminalEl.addEventListener("pointerup", handleWorkspaceTerminalPointerUp);
-  workspaceTerminal.write("\r\nStarting workspace terminal...\r\n");
-  workspaceTerminalFit.fit();
-  workspaceTerminal.focus();
-
-  workspaceTerminalSocket = new WebSocket(terminalWebSocketUrl());
-  workspaceTerminalSocket.addEventListener("open", () => {
-    resizeWorkspaceTerminal();
-  });
-  workspaceTerminalSocket.addEventListener("message", (event) => {
-    try {
-      const message = JSON.parse(event.data);
-      if (message.type === "output") workspaceTerminal.write(message.data || "");
-    } catch (_) {
-      workspaceTerminal.write(String(event.data || ""));
-    }
-  });
-  workspaceTerminalSocket.addEventListener("close", () => {
-    workspaceTerminal?.write("\r\n[terminal closed]\r\n");
-  });
-  workspaceTerminalSocket.addEventListener("error", () => {
-    workspaceTerminal?.write("\r\n[terminal connection error]\r\n");
-  });
-  workspaceTerminal.onData((data) => {
-    if (shouldSuppressWorkspaceTerminalInput(data)) return;
-    if (workspaceTerminalSocket?.readyState === WebSocket.OPEN) {
-      workspaceTerminalSocket.send(JSON.stringify({ type: "input", data }));
-    }
-  });
-}
-
-function stopWorkspaceTerminal() {
-  if (workspaceTerminalSocket) {
-    workspaceTerminalSocket.close();
-    workspaceTerminalSocket = null;
-  }
-  workspaceTerminal?.dispose();
-  workspaceTerminal = null;
-  workspaceTerminalFit = null;
-  workspaceTerminalEl?.removeEventListener("copy", handleWorkspaceTerminalCopy);
-  workspaceTerminalEl?.removeEventListener("keydown", handleWorkspaceTerminalKeydown, true);
-  workspaceTerminalEl?.removeEventListener("pointerdown", handleWorkspaceTerminalPointerDown);
-  workspaceTerminalEl?.removeEventListener("pointerup", handleWorkspaceTerminalPointerUp);
-  if (workspaceTerminalEl) workspaceTerminalEl.innerHTML = "";
-}
+const workspaceTerminalController = createWorkspaceTerminalController({
+  state,
+  container: workspaceTerminalEl,
+  panel: workspaceCli,
+  toggleButton: workspaceCliToggle,
+});
 
 workspaceCliToggle?.addEventListener("click", () => {
-  setWorkspaceCliOpen(workspaceCli?.classList.contains("hidden"));
+  workspaceTerminalController.setOpen(workspaceCli?.classList.contains("hidden"));
 });
 
 skillGraphOpenBtn?.addEventListener("click", () => {
   skillGraphController.open({ force: true });
 });
-
-window.addEventListener("resize", resizeWorkspaceTerminal);
 
 async function refreshSessionFiles(sessionId = state.sessionId, owner = state.activeSessionUserId || state.userId) {
   if (!sessionId || !state.sessionReady) return;
@@ -2525,6 +2427,59 @@ async function refreshSessionFiles(sessionId = state.sessionId, owner = state.ac
     renderSessionFilesTree(data.files || []);
   } catch (_) {}
 }
+
+const sessionRuntime = createSessionRuntime({
+  state,
+  chatArea,
+  stepExecutionFeed,
+  sessionRequestKey,
+  activeSessionRequest,
+  releaseSessionRequest,
+  updateSendButtonState,
+  managedRunEventsUrl,
+  isExecutorLauncherTool,
+  getFunctionResponse,
+  displayMessageFromStoredUserText,
+  addMessage,
+  addAgentTimelineMessage,
+  addPlanApprovalActions,
+  renderSessionBanner,
+  renderSessionFilesTree,
+  refreshSessionFiles,
+  generateSessionSummary,
+  workdirDisplay: document.getElementById("session-workdir-display"),
+});
+
+const messageStreamController = createMessageStreamController({
+  state,
+  appName: APP_NAME,
+  chatArea,
+  textInput,
+  activeSessionRequest,
+  sessionRequestKey,
+  activeSessionBackendUserId,
+  canWriteActiveSession,
+  showLoginModal,
+  createSession,
+  addMessage,
+  addAgentTimelineMessage,
+  addPlanApprovalActions,
+  renderTimeline,
+  messageWithUploadNames,
+  messageWithUploadContext,
+  clearCurrentUploads,
+  autoResizeTextInput,
+  stepExecutionFeed,
+  agentGraph,
+  planGraph,
+  updateSendButtonState,
+  releaseSessionRequest,
+  managedRunEventsUrl,
+  shouldRefreshPlanGraphForTool,
+  generateSessionSummary,
+  refreshSessionFiles,
+  sessionRuntime,
+});
 
 function setUploadStatus(message, tone = "idle") {
   if (!uploadStatus) return;
@@ -2772,7 +2727,7 @@ function startSummaryEdit() {
         renderSessionBanner("");
         await saveSessionSummary(state.sessionId, "");
       }
-      renderSessionList._lastSessions && renderSessionList(renderSessionList._lastSessions);
+      rerenderSessionList();
     } else if (!save) {
       renderSessionBanner(original || state.sessionSummaries[state.sessionId] || "");
     }
@@ -2822,7 +2777,7 @@ async function generateSessionSummary(sessionId) {
         renderSessionBanner(data.summary);
       }
       // Refresh session list to show summary
-      renderSessionList._lastSessions && renderSessionList(renderSessionList._lastSessions);
+      rerenderSessionList();
     }
   } catch (_) {
     // silently ignore — summary is non-critical
@@ -2861,71 +2816,6 @@ async function createSession() {
     await loadSessions();
   } catch (err) {
     console.error("Failed to create session:", err);
-  }
-}
-
-async function discoverManagedRun(sessionId, owner = state.activeSessionUserId || state.userId) {
-  if (!owner || !sessionId) return null;
-  try {
-    const query = new URLSearchParams({ user_id: owner, session_id: sessionId });
-    const resp = await fetch(`/api/runs/active?${query}`);
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    return data.run || null;
-  } catch (_) {
-    return null;
-  }
-}
-
-function startManagedRunReconnect(activeRun, sessionId, owner = state.activeSessionUserId || state.userId) {
-  if (!activeRun?.run_id) return;
-  const key = sessionRequestKey(sessionId, owner);
-  if (state.activeRequests.get(key)) return;
-  const request = {
-    key,
-    sessionId,
-    owner,
-    backendUserId: owner,
-    controller: new AbortController(),
-    lastSequence: activeRun.latest_sequence || 0,
-    runId: activeRun.run_id,
-  };
-  state.activeRequests.set(request.key, request);
-  updateSendButtonState();
-  void streamManagedRunEvents(request);
-}
-
-async function streamManagedRunEvents(request) {
-  try {
-    const resp = await fetch(managedRunEventsUrl(request), {
-      headers: { "Accept": "text/event-stream" },
-      signal: request.controller.signal,
-    });
-    if (!resp.ok) return;
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let eventBuf = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      eventBuf += decoder.decode(value, { stream: true });
-      const lines = eventBuf.split("\n");
-      eventBuf = lines.pop();
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data: ")) continue;
-        try {
-          const event = JSON.parse(trimmed.slice(6));
-          if (event.type === "event") request.lastSequence = event.sequence || request.lastSequence;
-          if (event.type === "snapshot_required") await loadSession(request.sessionId, request.owner);
-        } catch (_) {}
-      }
-    }
-  } catch (_) {
-    // reconnect is best-effort; a normal send path will surface hard errors.
-  } finally {
-    releaseSessionRequest(request);
-    await loadSession(request.sessionId, request.owner);
   }
 }
 
@@ -3043,240 +2933,12 @@ async function patchSessionAgentMode(mode) {
   }
 }
 
-async function fetchSessionData(sessionId) {
-  const owner = state.activeSessionUserId || state.userId;
-  const resp = await fetch(
-    `/api/users/${encodeURIComponent(owner)}/sessions/${encodeURIComponent(sessionId)}`,
-    { headers: { "Content-Type": "application/json" } }
-  );
-  if (!resp.ok) return null;
-  return resp.json();
-}
-
-async function fetchSessionStepNodes(sessionId) {
-  try {
-    const graphResp = await fetch(`/api/agent-graph/${encodeURIComponent(sessionId)}`);
-    if (!graphResp.ok) return [];
-    const graphData = await graphResp.json();
-    return Object.values(graphData.nodes || {})
-      .filter((node) => node.type === "step")
-      .sort((a, b) => stepNodeTimestamp(a) - stepNodeTimestamp(b));
-  } catch (_) {
-    return [];
-  }
-}
-
-function eventTimestamp(event, fallbackOrder) {
-  if (event.timestamp) {
-    const raw = Number(event.timestamp);
-    return raw < 1e12 ? raw * 1000 : raw;
-  }
-  if (event.createTime) return new Date(event.createTime).getTime();
-  return fallbackOrder;
-}
-
-function stepNodeTimestamp(node) {
-  return node.start_time ? new Date(node.start_time).getTime() : Infinity;
-}
-
-function buildSessionTimeline(events, stepNodes) {
-  const timeline = [];
-  events.forEach((event, idx) => {
-    timeline.push({ type: "event", data: event, ts: eventTimestamp(event, idx), order: idx });
-  });
-  stepNodes.forEach((node, idx) => {
-    timeline.push({ type: "step", data: node, ts: stepNodeTimestamp(node), order: 1e9 + idx });
-  });
-  timeline.sort((a, b) => a.ts - b.ts || a.order - b.order);
-  return timeline;
-}
-
-function assignStepNodesToExecutorCalls(timeline, pendingStepNodes) {
-  for (const item of timeline) {
-    if (item.type !== "function_call" || !isExecutorLauncherTool(item.name)) continue;
-    const nextStep = pendingStepNodes.shift();
-    if (nextStep) item.stepNodes = [nextStep];
-  }
-  return timeline;
-}
-
-function collectFunctionResponsesById(events) {
-  const frById = {};
-  for (const event of events) {
-    for (const part of (event.content?.parts || [])) {
-      const fr = getFunctionResponse(part);
-      if (fr?.id) frById[fr.id] = fr;
-    }
-  }
-  return frById;
-}
-
-function eventToTimelineParts(event, frById, pairedResponseIds = new Set()) {
-  const parts = event.content?.parts || [];
-  const evtTimeline = [];
-  let accText = "";
-
-  for (const part of parts) {
-    if (part.thought) {
-      evtTimeline.push({ type: "thought", text: part.text || "" });
-    } else if (getFunctionCall(part)) {
-      const fc = getFunctionCall(part);
-      const matchedFr = frById[fc.id];
-      evtTimeline.push({
-        type: "function_call",
-        id: fc.id,
-        name: fc.name || "Unknown",
-        args: fc.args || {},
-      });
-      if (matchedFr) {
-        if (matchedFr.id) pairedResponseIds.add(matchedFr.id);
-        evtTimeline.push({
-          type: "function_response",
-          id: matchedFr.id,
-          name: matchedFr.name || "Unknown",
-          response: matchedFr.response || {},
-        });
-      }
-    } else if (getFunctionResponse(part)) {
-      const fr = getFunctionResponse(part);
-      if (fr.id && pairedResponseIds.has(fr.id)) continue;
-      const alreadyMatched = evtTimeline.some(
-        (item) => item.type === "function_response" && item.id === fr.id
-      );
-      if (!alreadyMatched) {
-        evtTimeline.push({
-          type: "function_response",
-          id: fr.id,
-          name: fr.name || "Unknown",
-          response: fr.response || {},
-        });
-      }
-    } else if (part.text && !part.thought) {
-      accText += part.text;
-      const last = evtTimeline[evtTimeline.length - 1];
-      if (last?.type === "text") {
-        last.text = accText;
-      } else {
-        evtTimeline.push({ type: "text", text: accText });
-      }
-    }
-  }
-
-  return evtTimeline;
-}
-
-function renderSessionTimeline(events, stepNodes) {
-  chatArea.innerHTML = "";
-  stepExecutionFeed.reset();
-  stepExecutionFeed.setHierarchy(stepNodes || []);
-
-  const sortedEvents = (events || [])
-    .map((event, idx) => ({ event, ts: eventTimestamp(event, idx), order: idx }))
-    .sort((a, b) => a.ts - b.ts || a.order - b.order)
-    .map((item) => item.event);
-  const pendingStepNodes = (stepNodes || [])
-    .filter((node) => stepExecutionFeed.isRootStep(node))
-    .slice()
-    .sort((a, b) => stepNodeTimestamp(a) - stepNodeTimestamp(b));
-  const frById = collectFunctionResponsesById(events);
-  const pairedResponseIds = new Set();
-  let shownPlotPaths = new Set();
-  let msgIdx = 0;
-
-  for (const event of sortedEvents) {
-    const role = event.author === "user" ? "user" : "agent";
-    if (role === "user") {
-      const text = displayMessageFromStoredUserText(
-        (event.content?.parts || []).map((part) => part.text || "").join("")
-      );
-      if (text) addMessage("user", text, msgIdx++);
-      shownPlotPaths = new Set();
-      continue;
-    }
-
-    const evtTimeline = assignStepNodesToExecutorCalls(
-      eventToTimelineParts(event, frById, pairedResponseIds),
-      pendingStepNodes,
-    );
-    if (evtTimeline.length > 0) {
-      addAgentTimelineMessage(evtTimeline, shownPlotPaths, msgIdx++);
-    }
-  }
-
-  pendingStepNodes.forEach((node) => stepExecutionFeed.appendStatic(node));
-}
-
 function renderSessionSnapshot(snapshot) {
   if (!snapshot) return;
   renderSessionBanner(snapshot.summary || "");
-  renderSessionTimeline(snapshot.events || [], snapshot.graphNodes || []);
+  sessionRuntime.renderSessionTimeline(snapshot.events || [], snapshot.graphNodes || []);
   renderSessionFilesTree(snapshot.files || []);
-  updateSessionWorkdirDisplay(snapshot.sessionData || {});
-}
-
-function updateSessionWorkdirDisplay(sessionData) {
-  const workdirDisplay = document.getElementById("session-workdir-display");
-  if (!workdirDisplay) return;
-  const workdir = sessionData.state?.workdir || sessionData.state?.custom_workdir || state.defaultWorkdir || "";
-  workdirDisplay.textContent = workdir;
-  workdirDisplay.style.display = workdir ? "" : "none";
-}
-
-// Reload full session history from the ADK server and re-render the chat,
-// mirroring Streamlit's load_session() called after send_message_sse().
-async function loadSession(sessionId, owner = state.activeSessionUserId || state.userId) {
-  const viewKey = sessionRequestKey(sessionId, owner);
-  const requestAtStart = activeSessionRequest();
-  const viewIsCurrent = () => sessionRequestKey() === viewKey;
-  try {
-    const [sessionData, graphNodes] = await Promise.all([
-      fetchSessionData(sessionId),
-      fetchSessionStepNodes(sessionId),
-    ]);
-    if (!sessionData) {
-      if (!viewIsCurrent()) return;
-      state.sessionReady = false;
-      return;
-    }
-    if (!viewIsCurrent()) return;
-    state.sessionReady = true;
-    if (state.deploymentMode === "local" && sessionData.userId) {
-      state.activeSessionUserId = sessionData.userId;
-    }
-    const events = sessionData.events || [];
-
-    // Show the session summary in the Chat tab when available.
-    if (sessionData.summary) {
-      state.sessionSummaries[sessionId] = sessionData.summary;
-      state.summaryGeneratedFor.add(sessionId);
-    }
-    const sessionSummary = sessionData.summary || state.sessionSummaries[sessionId] || "";
-    renderSessionBanner(sessionSummary);
-
-    renderSessionTimeline(events, graphNodes);
-    state.sessionViewCache.set(viewKey, {
-      sessionData,
-      events,
-      graphNodes,
-      files: [],
-      summary: sessionSummary,
-    });
-    if (state.sessionViewCache.size > 10) {
-      const oldestKey = state.sessionViewCache.keys().next().value;
-      state.sessionViewCache.delete(oldestKey);
-    }
-
-    const hasUserMessage = events.some((event) => event?.author === "user");
-    if (hasUserMessage && !sessionSummary && !state.summaryGeneratedFor.has(sessionId)) {
-      generateSessionSummary(sessionId);
-    }
-
-    if (requestAtStart && requestAtStart !== activeSessionRequest()) return;
-    void refreshSessionFiles(sessionId, owner);
-    updateSessionWorkdirDisplay(sessionData);
-  } catch (err) {
-    console.error("Failed to load session:", err);
-  }
+  sessionRuntime.updateSessionWorkdirDisplay(snapshot.sessionData || {});
 }
 
 // ---------------------------------------------------------------------------
@@ -3287,231 +2949,6 @@ async function loadSession(sessionId, owner = state.activeSessionUserId || state
 // Message sending + SSE streaming
 // ---------------------------------------------------------------------------
 
-function stopCurrentMessage() {
-  const request = activeSessionRequest();
-  if (!request) return;
-  const query = new URLSearchParams({ user_id: request.owner || state.userId });
-  fetch(`/api/sessions/${state.sessionId}/cancel?${query}`, { method: "POST" }).catch(() => {});
-  request.controller.abort();
-  pollCancellationConfirmed(state.sessionId);
-}
-
-function pollCancellationConfirmed(sessionId, attempts = 0) {
-  const MAX_ATTEMPTS = 20;  // 20 × 2s = 40s timeout
-  const INTERVAL_MS = 2000;
-
-  if (attempts >= MAX_ATTEMPTS) {
-    addMessage("agent", "⚠️ Stop requested but execution may still be running in the background.");
-    return;
-  }
-
-  setTimeout(async () => {
-    try {
-      const res = await fetch(`/api/sessions/${sessionId}/cancel`);
-      const data = await res.json();
-      if (!data.cancellation_requested) {
-        addMessage("agent", "✓ Execution stopped.");
-        return;
-      }
-    } catch (_) { /* ignore transient network errors */ }
-    pollCancellationConfirmed(sessionId, attempts + 1);
-  }, INTERVAL_MS);
-}
-
-async function sendMessage(message) {
-  if (!message.trim()) return;
-  if (activeSessionRequest()) return;
-  if (!state.userId) { showLoginModal(); return; }
-  if (!canWriteActiveSession()) {
-    addMessage("agent", `Admin view is read-only for ${state.activeSessionUserId}'s session.`);
-    return;
-  }
-
-  // Clear any stale cancellation flag left over from a previous stop so that
-  // step executors launched in this new run don't abort immediately.
-  try { await fetch(`/api/sessions/${state.sessionId}/cancel`, { method: "DELETE" }); } catch (_) {}
-
-  const uploadsForMessage = state.currentUploads.slice();
-  const userMessageEl = addMessage("user", messageWithUploadNames(message, uploadsForMessage));
-  const liveStartedAt = Date.now();
-  const backendMessage = messageWithUploadContext(message, uploadsForMessage);
-  textInput.value = "";
-  clearCurrentUploads();
-  autoResizeTextInput();
-
-  if (!state.sessionReady) await createSession();
-  if (!state.sessionReady) {
-    addMessage("agent", "Failed to create session — the backend may still be loading. Please try again in a moment.");
-    stepExecutionFeed.finishLiveTurn();
-    return;
-  }
-  const previousPlanGraphKey = planGraph.currentGraphKey();
-  agentGraph.reset();
-  planGraph.reset();
-  const liveTurnContainer = stepExecutionFeed.startLiveTurn(userMessageEl, liveStartedAt);
-  agentGraph.startPolling(state.sessionId);
-  planGraph.startPolling(state.sessionId, {
-    autoOpenOnNewGraph: true,
-    autoOpenBaselineKey: previousPlanGraphKey,
-  });
-
-  const controller = new AbortController();
-  const owner = state.activeSessionUserId || state.userId;
-  const request = {
-    key: sessionRequestKey(state.sessionId, owner),
-    sessionId: state.sessionId,
-    owner,
-    backendUserId: activeSessionBackendUserId(),
-    controller,
-    lastSequence: 0,
-    runId: null,
-  };
-  state.activeRequests.set(request.key, request);
-  updateSendButtonState();
-  const payload = {
-    app_name: APP_NAME,
-    user_id: request.backendUserId,
-    session_id: request.sessionId,
-    new_message: {
-      role: "user",
-      parts: [{ text: backendMessage }],
-    },
-  };
-
-  const timeline = [];
-  let timelineContainer = null;
-  let accText = "";
-  let summaryTriggered = false;
-  const shownPlotPaths = new Set();
-  let lineBuf = "";
-
-  const handleAdkData = (dataStr) => {
-    if (dataStr === "[DONE]") return;
-    try {
-      const evt = JSON.parse(dataStr);
-      const parts = evt?.content?.parts || [];
-      for (const p of parts) {
-        if (p.thought) {
-          upsertTimelineThought(timeline, p.text || "");
-        } else if (p.functionCall) {
-          const fc = p.functionCall;
-          upsertTimelineEvent(timeline, {
-            type: "function_call",
-            id: fc.id,
-            name: fc.name || "Unknown",
-            args: fc.args || {},
-          });
-        } else if (p.functionResponse) {
-          const fr = p.functionResponse;
-          upsertTimelineEvent(timeline, {
-            type: "function_response",
-            id: fr.id,
-            name: fr.name || "Unknown",
-            response: fr.response || {},
-          });
-          if (shouldRefreshPlanGraphForTool(fr.name)) {
-            planGraph.refresh(request.sessionId);
-          }
-        } else if (p.text) {
-          accText = mergeReplayedText(accText, p.text);
-          upsertTimelineText(timeline, compactRepeatedPrefixSnapshots(accText));
-          if (!summaryTriggered && !state.summaryGeneratedFor.has(request.sessionId) && !state.sessionSummaries[request.sessionId]) {
-            summaryTriggered = true;
-            generateSessionSummary(request.sessionId, request.owner);
-          }
-        }
-
-        if (timeline.length > 0 && !timelineContainer) {
-          timelineContainer = addAgentTimelineMessage(timeline, shownPlotPaths, undefined, liveTurnContainer);
-        } else if (timelineContainer) {
-          renderTimeline(timelineContainer, timeline, shownPlotPaths);
-        }
-      }
-    } catch (_) {
-      // ignore malformed lines
-    }
-  };
-
-  const handleAdkChunk = (chunkText) => {
-    lineBuf += chunkText;
-    const lines = lineBuf.split("\n");
-    lineBuf = lines.pop();
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data: ")) continue;
-      handleAdkData(trimmed.slice(6));
-    }
-  };
-
-  try {
-    const startResp = await fetch("/api/runs", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-      signal: request.controller.signal,
-    });
-    if (!startResp.ok) throw new Error(`HTTP ${startResp.status}`);
-    const activeRun = await startResp.json();
-    request.runId = activeRun.run_id;
-
-    const eventsResp = await fetch(managedRunEventsUrl(request), {
-      headers: { "Accept": "text/event-stream" },
-      signal: request.controller.signal,
-    });
-    if (!eventsResp.ok) throw new Error(`HTTP ${eventsResp.status}`);
-    const reader = eventsResp.body.getReader();
-    const decoder = new TextDecoder();
-    let eventBuf = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      eventBuf += decoder.decode(value, { stream: true });
-      const lines = eventBuf.split("\n");
-      eventBuf = lines.pop();
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data: ")) continue;
-        try {
-          const runEvent = JSON.parse(trimmed.slice(6));
-          if (runEvent.type === "event") {
-            request.lastSequence = runEvent.sequence || request.lastSequence;
-            handleAdkChunk(runEvent.data || "");
-          } else if (runEvent.type === "snapshot_required") {
-            await loadSession(request.sessionId, request.owner);
-          } else if (runEvent.type === "terminal") {
-            request.lastSequence = runEvent.latest_sequence || request.lastSequence;
-          }
-        } catch (_) {
-          // ignore malformed lines
-        }
-      }
-    }
-    // Flush remaining data in the line buffer
-    if (lineBuf.trim().startsWith("data: ")) {
-      const dataStr = lineBuf.trim().slice(6);
-      handleAdkData(dataStr);
-    }
-  } catch (err) {
-    if (err?.name === "AbortError") {
-      addMessage("agent", "Stopping execution…", undefined, liveTurnContainer);
-    } else {
-      addMessage("agent", `Backend error: ${err}`, undefined, liveTurnContainer);
-    }
-  } finally {
-    releaseSessionRequest(request);
-    await agentGraph._poll(request.sessionId);
-    agentGraph.stopPolling();
-    await planGraph._poll(request.sessionId);
-    planGraph.stopPolling();
-    await refreshSessionFiles(request.sessionId, request.owner);
-    stepExecutionFeed.finishLiveTurn();
-    await loadSession(request.sessionId, request.owner);
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Structure viewer
 // ---------------------------------------------------------------------------
 
@@ -3761,16 +3198,16 @@ layoutController.init();
 
 sendBtn.addEventListener("click", () => {
   if (activeSessionRequest()) {
-    stopCurrentMessage();
+    messageStreamController.stop();
     return;
   }
-  sendMessage(textInput.value);
+  messageStreamController.send(textInput.value);
 });
 textInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     if (activeSessionRequest()) return;
-    sendMessage(textInput.value);
+    messageStreamController.send(textInput.value);
   }
 });
 
@@ -3798,31 +3235,94 @@ if (avatarUploadBtn && avatarUploadInput) {
   });
 }
 
-Array.from(document.querySelectorAll("[data-quick]"))
-  .forEach((btn) => btn.addEventListener("click", () => sendMessage(btn.dataset.quick || "")));
-
 // Agent mode selector
 function updateComposerModeState(mode) {
   if (!inputContainer) return;
   inputContainer.dataset.agentMode = mode || "normal";
 }
 
-if (modeSelector) {
-  modeSelector.querySelectorAll(".mode-btn").forEach((btn) => {
-    btn.classList.toggle("mode-btn-active", btn.dataset.mode === state.agentMode);
-  });
-  updateComposerModeState(state.agentMode);
-  modeSelector.addEventListener("click", (e) => {
-    const btn = e.target.closest(".mode-btn");
-    if (!btn) return;
-    const mode = btn.dataset.mode;
+if (modeSelector && modeTrigger && modeMenu) {
+  const modeDetails = {
+    flash: { label: "Flash", icon: '<svg viewBox="0 0 24 24"><path d="m13 2-9 12h7l-1 8 10-13h-7z"/></svg>' },
+    normal: { label: "Standard", icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2"/></svg>' },
+    bench: { label: "Bench", icon: '<svg viewBox="0 0 24 24"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3M8 16h8"/></svg>' },
+  };
+  const modeButtons = [...modeSelector.querySelectorAll(".mode-btn")];
+  const modeLabel = modeTrigger.querySelector(".mode-trigger-label");
+  const modeIcon = modeTrigger.querySelector(".mode-trigger-icon");
+  let closeTimer = null;
+  let menuPinned = false;
+
+  function setMenuOpen(open, { pinned = menuPinned, focusSelected = false } = {}) {
+    window.clearTimeout(closeTimer);
+    menuPinned = open && pinned;
+    modeSelector.classList.toggle("is-open", open);
+    modeTrigger.setAttribute("aria-expanded", String(open));
+    if (open && focusSelected) {
+      modeButtons.find((btn) => btn.dataset.mode === state.agentMode)?.focus();
+    }
+  }
+
+  function renderMode(mode) {
+    const detail = modeDetails[mode] || modeDetails.normal;
+    modeLabel.textContent = detail.label;
+    modeIcon.innerHTML = detail.icon;
+    modeSelector.dataset.selectedMode = mode;
+    modeButtons.forEach((btn) => {
+      const selected = btn.dataset.mode === mode;
+      btn.classList.toggle("mode-btn-active", selected);
+      btn.setAttribute("aria-checked", String(selected));
+    });
+  }
+
+  function selectMode(mode) {
     state.agentMode = mode;
     localStorage.setItem(AGENT_MODE_KEY, mode);
-    modeSelector.querySelectorAll(".mode-btn").forEach((b) =>
-      b.classList.toggle("mode-btn-active", b.dataset.mode === mode)
-    );
+    renderMode(mode);
     updateComposerModeState(mode);
     patchSessionAgentMode(mode);
+    setMenuOpen(false, { pinned: false });
+    modeTrigger.focus();
+  }
+
+  renderMode(state.agentMode);
+  updateComposerModeState(state.agentMode);
+
+  modeTrigger.addEventListener("click", () => {
+    const open = !modeSelector.classList.contains("is-open");
+    setMenuOpen(open, { pinned: open });
+  });
+  modeSelector.addEventListener("click", (e) => {
+    const btn = e.target.closest(".mode-btn");
+    if (btn) selectMode(btn.dataset.mode);
+  });
+  modeSelector.addEventListener("keydown", (e) => {
+    const currentIndex = modeButtons.indexOf(document.activeElement);
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setMenuOpen(false, { pinned: false });
+      modeTrigger.focus();
+    } else if ((e.key === "Enter" || e.key === " ") && document.activeElement === modeTrigger) {
+      e.preventDefault();
+      const open = !modeSelector.classList.contains("is-open");
+      setMenuOpen(open, { pinned: open, focusSelected: open });
+    } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) {
+      e.preventDefault();
+      const nextIndex = e.key === "Home" ? 0 : e.key === "End" ? modeButtons.length - 1 : (currentIndex < 0 ? modeButtons.findIndex((btn) => btn.dataset.mode === state.agentMode) : currentIndex + (e.key === "ArrowDown" ? 1 : -1) + modeButtons.length) % modeButtons.length;
+      setMenuOpen(true, { pinned: true });
+      modeButtons[nextIndex].focus();
+    } else if ((e.key === "Enter" || e.key === " ") && currentIndex >= 0) {
+      e.preventDefault();
+      selectMode(modeButtons[currentIndex].dataset.mode);
+    }
+  });
+  document.addEventListener("pointerdown", (e) => {
+    if (!modeSelector.contains(e.target)) setMenuOpen(false, { pinned: false });
+  });
+  modeSelector.addEventListener("focusout", () => {
+    window.setTimeout(() => {
+      if (!modeSelector.contains(document.activeElement)) setMenuOpen(false, { pinned: false });
+    });
   });
 }
 

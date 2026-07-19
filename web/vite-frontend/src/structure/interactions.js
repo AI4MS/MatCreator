@@ -21,6 +21,14 @@ export function installStructureInteractions(state, container) {
   const mouse = new THREE.Vector2();
   let down = null;
   let outsidePointerDown = false;
+  let bondRebuildFrame = null;
+  const scheduleBondRebuild = () => {
+    if (bondRebuildFrame !== null) return;
+    bondRebuildFrame = requestAnimationFrame(() => {
+      bondRebuildFrame = null;
+      state.bonds?.rebuild();
+    });
+  };
 
   const handleTransformDragging = (event) => {
     state.controls.enabled = !event.value;
@@ -68,7 +76,7 @@ export function installStructureInteractions(state, container) {
         mesh.position.copy(start).add(delta);
       }
     }
-    state.bonds?.rebuild();
+    scheduleBondRebuild();
   };
 
   state.transform.addEventListener("dragging-changed", handleTransformDragging);
@@ -174,6 +182,7 @@ export function installStructureInteractions(state, container) {
   window.addEventListener("pointerup", finishPointerGesture);
 
   return () => {
+    if (bondRebuildFrame !== null) cancelAnimationFrame(bondRebuildFrame);
     state.transform.removeEventListener("dragging-changed", handleTransformDragging);
     state.transform.removeEventListener("mouseDown", startTransform);
     state.transform.removeEventListener("mouseUp", finishTransform);
