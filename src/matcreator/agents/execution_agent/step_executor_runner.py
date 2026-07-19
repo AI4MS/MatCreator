@@ -27,6 +27,7 @@ from .step_executor import (
 )
 from .recovery import finish_node_attempt, heartbeat_node_attempt, start_node_attempt
 from ..graph_logger import AgentGraphLogger
+from ..execution_graph_state import get_execution_graph, set_execution_graph
 from ..session_log import (
     append_session_log_entry,
     collect_artifact_paths,
@@ -556,9 +557,10 @@ async def run_step_executor(
         action=action,
         suggested_skills=suggested_skills,
         prior_context=prior_context,
+        graph_id=(get_execution_graph(tool_context.state) or {}).get("graph_id"),
     )
     if node_id:
-        graph_state = tool_context.state.get("execution_graph") or {}
+        graph_state = get_execution_graph(tool_context.state) or {}
         graph_nodes = graph_state.get("nodes") or {}
         if node_id in graph_nodes:
             graph_nodes[node_id]["status"] = "running"
@@ -566,7 +568,7 @@ async def run_step_executor(
                 "status": "running",
                 "started_at": _now(),
             }
-            tool_context.state["execution_graph"] = graph_state
+            set_execution_graph(tool_context.state, graph_state)
 
     # Pre-step cancellation check — abort before creating the runner if flagged
     if is_cancellation_requested(session_id) or is_step_cancellation_requested(session_id, step_number):

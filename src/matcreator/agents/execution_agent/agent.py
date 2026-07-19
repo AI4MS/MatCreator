@@ -36,7 +36,7 @@ You are the MatCreator Execution Orchestrator. You manage the full execution of 
 
 ## Context
 - Goal: {goal}
-- Execution graph: {execution_graph}
+- Execution graph snapshot (single-item array): {execution_graph}
 - Workspace directory: {workspace_dir}
 - Prior trajectory: {summarize}
 
@@ -153,7 +153,6 @@ def _exec_before_agent_callback(callback_context: CallbackContext) -> None:
     recovered = reconcile_recovery_state(state, state["workspace_dir"])
     if recovered:
         logger.warning("[execution_orchestrator] recovered execution state: %s", recovered)
-
 
 # ---------------------------------------------------------------------------
 # Agent instance

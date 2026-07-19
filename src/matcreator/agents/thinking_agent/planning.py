@@ -7,6 +7,7 @@ DAG-based execution graphs and (legacy) linear execution plans.
 from __future__ import annotations
 
 import logging
+import uuid
 from enum import Enum
 from typing import Dict, List, Optional
 
@@ -14,6 +15,7 @@ from google.adk.tools.tool_context import ToolContext
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from ...skill import ALL_SKILLS
+from ..execution_graph_state import get_execution_graph, set_execution_graph
 
 logger = logging.getLogger(__name__)
 
@@ -263,13 +265,24 @@ def validate_graph(graph: dict, tool_context: ToolContext) -> dict:
                      (predecessor must complete before successor starts)
           - 'additional_notes': optional string
     """
+    if tool_context.state.get("execution_approved", False):
+        return {
+            "status": "error",
+            "message": "Execution is already approved; hand control back to the orchestrator.",
+        }
+
     try:
         validated = ExecutionGraph(**graph)
-        tool_context.state["execution_graph"] = validated.model_dump()
+        committed_graph = validated.model_dump()
+        # Recovery records are keyed by session and node ID on disk.  A fresh
+        # graph may legitimately reuse a node ID from an earlier failed plan,
+        # so give every committed graph its own recovery namespace identity.
+        committed_graph["graph_id"] = uuid.uuid4().hex
+        set_execution_graph(tool_context.state, committed_graph)
         tool_context.state["plan_exec_id"] = None  # force new execution namespace
         return {
             "status": "ok",
-            "execution_graph": validated.model_dump(),
+            "execution_graph": committed_graph,
             "message": f"Graph validated: {len(validated.nodes)} nodes, {len(validated.edges)} edges.",
         }
     except ValidationError as exc:
@@ -296,7 +309,7 @@ def get_ready_nodes(tool_context: ToolContext) -> dict:
     Call at the start of each execution batch. Dispatch ALL returned nodes in a
     single response turn to enable concurrent parallel execution.
     """
-    graph = tool_context.state.get("execution_graph") or {}
+    graph = get_execution_graph(tool_context.state) or {}
     nodes = graph.get("nodes") or {}
     edges = graph.get("edges") or []
 
@@ -344,13 +357,13 @@ def set_node_status(
         status:  New status: 'success', 'failed', 'running', 'waiting', 'blocked', or 'cancelled'.
         result:  Optional concise summary (success) or failure reason.
     """
-    graph = tool_context.state.get("execution_graph")
+    graph = get_execution_graph(tool_context.state)
     if not graph or node_id not in (graph.get("nodes") or {}):
         return {"status": "error", "message": f"Node '{node_id}' not found in execution_graph."}
     graph["nodes"][node_id]["status"] = status
     if result is not None:
         graph["nodes"][node_id]["result"] = result
-    tool_context.state["execution_graph"] = graph
+    set_execution_graph(tool_context.state, graph)
     logger.debug("[set_node_status] %s → %s", node_id, status)
     return {"status": "ok", "node_id": node_id, "new_status": status}
 
@@ -368,7 +381,7 @@ def mark_dependents_blocked(failed_node_id: str, tool_context: ToolContext) -> d
     Args:
         failed_node_id: The node_id of the node that failed.
     """
-    graph = tool_context.state.get("execution_graph") or {}
+    graph = get_execution_graph(tool_context.state) or {}
     nodes = graph.get("nodes") or {}
     edges = graph.get("edges") or []
 
@@ -389,7 +402,7 @@ def mark_dependents_blocked(failed_node_id: str, tool_context: ToolContext) -> d
     for nid in blocked:
         if nodes.get(nid, {}).get("status") == "pending":
             nodes[nid]["status"] = "blocked"
-    tool_context.state["execution_graph"] = graph
+    set_execution_graph(tool_context.state, graph)
     return {
         "status": "ok",
         "blocked_count": len(blocked),

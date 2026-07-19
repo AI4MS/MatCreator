@@ -23,7 +23,7 @@ export function createSessionRuntime({
   // Plan approval is UI-derived from persisted events. A cancelled turn can
   // still contain a successful validation event, so remember that its prompt
   // was dismissed until the user deliberately starts another turn.
-  const suppressedPlanApprovalSessions = new Set();
+  const suppressedPlanApprovalTurns = new Map();
 
   async function fetchSessionData(sessionId) {
     const owner = state.activeSessionUserId || state.userId;
@@ -108,31 +108,49 @@ export function createSessionRuntime({
     return timeline;
   }
 
-  function latestTurnHasValidatedPlan(events) {
+  function latestTurnPendingPlan(events) {
     const latestUserIndex = events.reduce((index, event, current) => event?.author === "user" ? current : index, -1);
-    if (latestUserIndex < 0) return false;
-    return events.slice(latestUserIndex + 1).some((event) => (event.content?.parts || []).some((part) => {
-      const response = getFunctionResponse(part);
-      return response?.name === "validate_graph" && response.response?.status === "ok";
-    }));
+    if (latestUserIndex < 0) return null;
+    let pendingPlan = null;
+    events.slice(latestUserIndex + 1).forEach((event) => {
+      (event.content?.parts || []).forEach((part) => {
+        const response = getFunctionResponse(part);
+        if ((response?.name === "validate_graph" || response?.name === "validate_plan")
+          && response.response?.status === "ok") {
+          pendingPlan = { event, response, userEvent: events[latestUserIndex] };
+        } else if ((response?.name === "confirm_plan_and_start_execution" || response?.name === "resume_execution")
+          && response.response?.status === "ok") {
+          // Approval consumes the most recently validated plan. This must be
+          // derived in event order because a persisted snapshot can contain
+          // both validation and approval responses from the same user turn.
+          pendingPlan = null;
+        }
+      });
+    });
+    return pendingPlan;
   }
 
   function shouldShowPlanApprovalActions(sessionId, sessionData, events) {
-    // This is deliberately UI-derived state. A successful validate_graph in
-    // the latest user turn is the UI event that a plan was presented; no new
-    // orchestration state is written for this feature.
+    // This is deliberately UI-derived state. A validation creates a pending
+    // prompt, while a later approval in the same turn consumes it.
     const state = sessionData?.state || {};
-    return !suppressedPlanApprovalSessions.has(sessionId)
-      && (state.agent_mode || "normal") === "normal"
-      && latestTurnHasValidatedPlan(events);
+    const pendingPlan = latestTurnPendingPlan(events);
+    const suppressedTurn = suppressedPlanApprovalTurns.get(sessionId);
+    const latestUserText = (pendingPlan?.userEvent?.content?.parts || [])
+      .map((part) => part.text || "").join("");
+    const validationBelongsToNewTurn = !suppressedTurn
+      || (suppressedTurn.userText && latestUserText === suppressedTurn.userText);
+    return (state.agent_mode || "normal") === "normal"
+      && pendingPlan !== null
+      && validationBelongsToNewTurn;
   }
 
-  function suppressPlanApproval(sessionId) {
-    if (sessionId) suppressedPlanApprovalSessions.add(sessionId);
+  function suppressPlanApproval(sessionId, userText = "") {
+    if (sessionId) suppressedPlanApprovalTurns.set(sessionId, { userText });
   }
 
   function restorePlanApproval(sessionId) {
-    if (sessionId) suppressedPlanApprovalSessions.delete(sessionId);
+    if (sessionId) suppressedPlanApprovalTurns.delete(sessionId);
   }
 
   function renderSessionTimeline(events, stepNodes, awaitingPlanApproval = false) {

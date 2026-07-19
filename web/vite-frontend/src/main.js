@@ -1476,6 +1476,7 @@ const messageStreamController = createMessageStreamController({
   createSession,
   addMessage,
   addAgentTimelineMessage,
+  addPlanApprovalActions,
   renderTimeline,
   messageWithUploadNames,
   messageWithUploadContext,

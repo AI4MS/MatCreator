@@ -11,7 +11,7 @@ export function createMessageStreamController(deps) {
   const {
     state, appName, chatArea, textInput, activeSessionRequest, sessionRequestKey, activeSessionBackendUserId,
     canWriteActiveSession, showLoginModal, createSession, addMessage, addAgentTimelineMessage,
-    renderTimeline, messageWithUploadNames, messageWithUploadContext, clearCurrentUploads,
+    addPlanApprovalActions, renderTimeline, messageWithUploadNames, messageWithUploadContext, clearCurrentUploads,
     autoResizeTextInput, stepExecutionFeed, agentGraph, planGraph, updateSendButtonState,
     releaseSessionRequest, managedRunEventsUrl, shouldRefreshPlanGraphForTool,
     generateSessionSummary, refreshSessionFiles, sessionRuntime,
@@ -51,13 +51,15 @@ export function createMessageStreamController(deps) {
       addMessage("agent", `Admin view is read-only for ${state.activeSessionUserId}'s session.`);
       return;
     }
-    sessionRuntime.restorePlanApproval(state.sessionId);
-    try { await fetch(`/api/sessions/${state.sessionId}/cancel`, { method: "DELETE" }); } catch (_) {}
-
     const uploads = state.currentUploads.slice();
+    const backendMessage = messageWithUploadContext(message, uploads);
+    // Sending any reply consumes the currently displayed plan prompt.  Keep it
+    // suppressed until this exact new user turn validates a fresh plan.
+    sessionRuntime.suppressPlanApproval(state.sessionId, backendMessage);
+    chatArea.querySelectorAll(".plan-approval-message").forEach((item) => item.remove());
+    try { await fetch(`/api/sessions/${state.sessionId}/cancel`, { method: "DELETE" }); } catch (_) {}
     const userMessage = addMessage("user", messageWithUploadNames(message, uploads));
     const startedAt = Date.now();
-    const backendMessage = messageWithUploadContext(message, uploads);
     textInput.value = "";
     clearCurrentUploads();
     autoResizeTextInput();
@@ -89,6 +91,8 @@ export function createMessageStreamController(deps) {
     let accumulatedText = "";
     let lineBuffer = "";
     let summaryTriggered = false;
+    let validatedPlanThisTurn = false;
+    let executionApprovedThisTurn = false;
     const renderPendingTimeline = () => {
       if (timeline.length) renderTimeline(timelineContainer, timeline, shownPlotPaths);
     };
@@ -102,6 +106,10 @@ export function createMessageStreamController(deps) {
             const response = part.functionResponse;
             upsertTimelineEvent(timeline, { type: "function_response", id: response.id, name: response.name || "Unknown", response: response.response || {} });
             if (shouldRefreshPlanGraphForTool(response.name)) planGraph.refresh(request.sessionId);
+            if ((response.name === "validate_graph" || response.name === "validate_plan")
+              && response.response?.status === "ok") validatedPlanThisTurn = true;
+            if ((response.name === "confirm_plan_and_start_execution" || response.name === "resume_execution")
+              && response.response?.status === "ok") executionApprovedThisTurn = true;
           } else if (part.text) {
             accumulatedText = mergeReplayedText(accumulatedText, part.text);
             upsertTimelineText(timeline, compactRepeatedPrefixSnapshots(accumulatedText));
@@ -185,6 +193,17 @@ export function createMessageStreamController(deps) {
       await refreshSessionFiles(request.sessionId, request.owner);
       stepExecutionFeed.finishLiveTurn();
       await reloadSessionSnapshot();
+      // Do not depend on session DB timing for the prompt.  The live ADK
+      // response is authoritative; the persisted snapshot remains a fallback
+      // for page refreshes and reconnects.
+      if (validatedPlanThisTurn && !executionApprovedThisTurn
+        && sessionRequestKey(request.sessionId, request.owner) === sessionRequestKey()) {
+        sessionRuntime.restorePlanApproval(request.sessionId);
+        const latestTimeline = timelineContainer.isConnected
+          ? timelineContainer
+          : Array.from(chatArea.querySelectorAll(".agent-message .timeline-container")).at(-1);
+        if (latestTimeline) addPlanApprovalActions(latestTimeline);
+      }
     }
   }
 
