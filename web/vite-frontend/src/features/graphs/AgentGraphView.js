@@ -832,6 +832,8 @@ export class StepExecutionFeed {
     this._chatArea = dependencies.chatArea;
     this._isSending = dependencies.isSending;
     this._isChatNearBottom = dependencies.isChatNearBottom;
+    this._captureScrollPosition = dependencies.captureScrollPosition;
+    this._restoreScrollPosition = dependencies.restoreScrollPosition;
     this._scrollToBottom = dependencies.scrollToBottom;
     this._createAgentAvatarEl = dependencies.createAgentAvatarEl;
     this._stepFeedTitle = dependencies.stepFeedTitle;
@@ -931,8 +933,10 @@ export class StepExecutionFeed {
     }
 
     const shouldStick = this._isChatNearBottom();
+    const scrollPosition = shouldStick ? null : this._captureScrollPosition();
     rootSteps.forEach((node) => this._upsert(node));
-    if (shouldStick) this._scrollToBottom();
+    if (shouldStick) this._scrollToBottom({ preserveUserPosition: true });
+    else this._restoreScrollPosition(scrollPosition);
   }
 
   setHierarchy(stepNodes) {
@@ -991,10 +995,10 @@ export class StepExecutionFeed {
       outer = this._createCard(node);
       this._cards.set(node.id, outer);
       this._placeCard(outer, node);
-    } else if (this._isSending() || outer.dataset.stepStartTime !== String(nextSortTime)) {
+    } else if (outer.dataset.stepStartTime !== String(nextSortTime)) {
       this._placeCard(outer, node);
     }
-    this._renderCard(outer, node);
+    this._renderCardIfChanged(outer, node);
   }
 
   appendStatic(node, container = this._chatArea) {
@@ -1005,7 +1009,7 @@ export class StepExecutionFeed {
     }
     outer.dataset.stepStartTime = String(this._stepSortTime(node));
     container.appendChild(outer);
-    this._renderCard(outer, node);
+    this._renderCardIfChanged(outer, node);
     return outer;
   }
 
@@ -1035,8 +1039,34 @@ export class StepExecutionFeed {
     }
     outer.classList.add("step-feed-child-message");
     this._insertIntoLiveContainer(container, outer, node);
-    this._renderCard(outer, node, ancestors);
+    this._renderCardIfChanged(outer, node, ancestors);
     return outer;
+  }
+
+  _renderKey(node, ancestors = new Set([node.id])) {
+    const children = (this._childNodes.get(node.id) || [])
+      .filter((child) => !ancestors.has(child.id))
+      .map((child) => {
+        const nextAncestors = new Set(ancestors);
+        nextAncestors.add(child.id);
+        return this._renderKey(child, nextAncestors);
+      });
+    return JSON.stringify({
+      status: node.status,
+      summary: node.summary,
+      input: node.input,
+      conversation: node.conversation,
+      toolCalls: node.tool_calls,
+      artifacts: node.artifacts,
+      children,
+    });
+  }
+
+  _renderCardIfChanged(outer, node, ancestors = new Set([node.id])) {
+    const renderKey = this._renderKey(node, ancestors);
+    if (outer._stepRenderKey === renderKey) return;
+    outer._stepRenderKey = renderKey;
+    this._renderCard(outer, node, ancestors);
   }
 
   _insertIntoLiveContainer(container, outer, node) {

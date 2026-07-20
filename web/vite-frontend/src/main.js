@@ -156,10 +156,12 @@ const {
   addMessage,
   appendLiveTurnChild,
   applyUserAvatarToEl,
+  captureScrollPosition,
   createAgentAvatarEl,
   createJsonBlock,
   isChatNearBottom,
   renderMarkdown,
+  restoreScrollPosition,
   scrollToBottom,
   setUserAvatar,
 } = createChatRenderer({ chatArea });
@@ -772,6 +774,8 @@ const stepExecutionFeed = new StepExecutionFeed({
   chatArea,
   isSending: () => Boolean(activeSessionRequest()),
   isChatNearBottom,
+  captureScrollPosition,
+  restoreScrollPosition,
   scrollToBottom,
   createAgentAvatarEl,
   stepFeedTitle,
@@ -2075,6 +2079,11 @@ function isExecutorLauncherTool(name) {
 // collapsible <details> blocks; text parts render as markdown;
 // plot_path responses render as inline images.
 function renderTimeline(container, timeline, shownPlotPaths = null) {
+  // Capture this before replacing the timeline: after its height grows,
+  // checking proximity would incorrectly report that the reader is away from
+  // the bottom.
+  const shouldStick = isChatNearBottom();
+  const scrollPosition = shouldStick ? null : captureScrollPosition();
   container.innerHTML = "";
   const containerPlotPaths = container._plotPaths || new Set();
   const visiblePlotPaths = new Set();
@@ -2146,7 +2155,8 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
   }
   container._plotPaths = visiblePlotPaths;
   visiblePlotPaths.forEach((path) => shownPlotPaths?.add(path));
-  scrollToBottom();
+  if (shouldStick) scrollToBottom({ preserveUserPosition: true });
+  else restoreScrollPosition(scrollPosition);
 }
 
 // Create an agent message div with an inner timeline container, append to
@@ -2245,7 +2255,11 @@ function addPlanApprovalActions(timelineContainer) {
   bubble.append(prompt, actions, feedback);
   responseMessage.appendChild(bubble);
   agentMessage.after(responseMessage);
-  scrollToBottom();
+  // This is an explicit request for user input, so make it visible even when
+  // the reader was reviewing earlier messages.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => responseMessage.scrollIntoView({ block: "center" }));
+  });
 }
 
 function formatStepDuration(node) {
@@ -3108,6 +3122,11 @@ sendBtn.addEventListener("click", () => {
   messageStreamController.send(textInput.value);
 });
 textInput.addEventListener("keydown", (e) => {
+  // Enter confirms the active candidate in an IME (for example Chinese
+  // pinyin) and must not also send the message. Some browsers expose this
+  // only through the legacy keyCode 229 during composition.
+  if (e.isComposing || e.keyCode === 229) return;
+
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     if (activeSessionRequest()) return;
