@@ -556,6 +556,29 @@ def _user_workspace_root(user_id: str) -> Path:
     return _user_matcreator_home(user_id) / "workspace"
 
 
+def _custom_skill_roots(user_id: str = "") -> list[Path]:
+    """Return the workspace skill roots that belong to one user.
+
+    In server mode the control plane may see its data directory at a different
+    path from Docker.  Keep both locations in sync: workers mount the host
+    location, while the control plane reads the container location.
+    """
+    if _MATCREATOR_MODE != "server":
+        return [workspace_skills_dir()]
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required in server mode")
+
+    roots = [
+        _user_workspace_root(user_id) / "skills",
+        _user_matcreator_home(user_id, host=True) / "workspace" / "skills",
+    ]
+    unique_roots: list[Path] = []
+    for root in roots:
+        if root not in unique_roots:
+            unique_roots.append(root)
+    return unique_roots
+
+
 def _worker_target_url(user_id: str, port: int | None = None) -> str:
     if _WORKER_CONNECT_MODE == "host-port":
         if port is None:
@@ -3884,10 +3907,12 @@ async def delete_skill_graph_attachment(skill_name: str, path: str = Query(...))
 @app.get("/api/skills")
 async def list_skills(user_id: str = Query(default="")) -> JSONResponse:
     """Return all loaded skills with their planning_enabled status and parent skill (if any)."""
+    from google.adk.skills import load_skill_from_dir  # noqa: PLC0415
     from matcreator.skill import _MODULE_SKILLS_ROOT, _discover_skill_dirs  # noqa: PLC0415
 
     parent_map: dict[str, str] = {}
-    for root in [_MODULE_SKILLS_ROOT, official_skills_dir(), workspace_skills_dir()]:
+    workspace_roots = _custom_skill_roots(user_id)
+    for root in [_MODULE_SKILLS_ROOT, official_skills_dir(), *workspace_roots]:
         for path in _discover_skill_dirs(root):
             parent_skill_md = path.parent / "SKILL.md"
             if parent_skill_md.is_file():
@@ -3898,8 +3923,12 @@ async def list_skills(user_id: str = Query(default="")) -> JSONResponse:
     planning_skills = set((config.get("planning") or {}).get("extra_skills") or [])
     disabled_skills = set((config.get("skills") or {}).get("disabled") or [])
     skills = []
+    seen_names: set[str] = set()
     for s in sorted(ALL_SKILLS, key=lambda s: s.name):
         source = get_skill_source(s.name)
+        if _MATCREATOR_MODE == "server" and source and source.name in {"custom", "workspace"}:
+            continue
+        seen_names.add(s.name)
         skills.append({
             "name": s.name,
             "description": s.description or "",
@@ -3912,6 +3941,31 @@ async def list_skills(user_id: str = Query(default="")) -> JSONResponse:
             "trusted": bool(source and source.trusted),
             "is_custom": bool(source and source.name in {"custom", "workspace"}),
         })
+
+    if _MATCREATOR_MODE == "server":
+        for root in workspace_roots:
+            for path in _discover_skill_dirs(root):
+                if path.name in seen_names:
+                    continue
+                try:
+                    skill = load_skill_from_dir(path)
+                except Exception as exc:
+                    logger.warning("Failed to load custom skill '%s' for user %s: %s", path.name, user_id, exc)
+                    continue
+                seen_names.add(skill.name)
+                skills.append({
+                    "name": skill.name,
+                    "description": skill.description or "",
+                    "planning_enabled": skill.name in planning_skills,
+                    "enabled": skill.name not in disabled_skills,
+                    "parent": parent_map.get(skill.name),
+                    "source": "workspace",
+                    "editable": True,
+                    "managed": False,
+                    "trusted": False,
+                    "is_custom": True,
+                })
+        skills.sort(key=lambda skill: skill["name"])
     return JSONResponse(skills)
 
 
@@ -3950,6 +4004,7 @@ async def create_custom_skill(
     skill_md: UploadFile = File(...),
     references: List[UploadFile] = File(default=[]),
     scripts: List[UploadFile] = File(default=[]),
+    user_id: str = Query(default=""),
 ) -> JSONResponse:
     """Upload a custom skill to the workspace skills directory."""
     name = name.strip()
@@ -3964,8 +4019,9 @@ async def create_custom_skill(
             detail=f"'{name}' is a built-in default skill. Custom skills cannot use the same name.",
         )
 
-    skill_dir = workspace_skills_dir() / name
-    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_dirs = [root / name for root in _custom_skill_roots(user_id)]
+    for skill_dir in skill_dirs:
+        skill_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         skill_md_content = await skill_md.read()
@@ -3973,26 +4029,31 @@ async def create_custom_skill(
             _validate_skill_md_name(skill_md_content, name)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
-        (skill_dir / "SKILL.md").write_bytes(skill_md_content)
+        for skill_dir in skill_dirs:
+            (skill_dir / "SKILL.md").write_bytes(skill_md_content)
 
         ref_names = []
         non_empty_refs = [r for r in references if r.filename]
         if non_empty_refs:
-            ref_dir = skill_dir / "references"
-            ref_dir.mkdir(exist_ok=True)
             for ref_file in non_empty_refs:
                 safe_name = _safe_upload_filename(ref_file.filename or "ref")
-                (ref_dir / safe_name).write_bytes(await ref_file.read())
+                content = await ref_file.read()
+                for skill_dir in skill_dirs:
+                    ref_dir = skill_dir / "references"
+                    ref_dir.mkdir(exist_ok=True)
+                    (ref_dir / safe_name).write_bytes(content)
                 ref_names.append(safe_name)
 
         script_names = []
         non_empty_scripts = [s for s in scripts if s.filename]
         if non_empty_scripts:
-            scripts_dir = skill_dir / "scripts"
-            scripts_dir.mkdir(exist_ok=True)
             for script_file in non_empty_scripts:
                 safe_name = _safe_upload_filename(script_file.filename or "script")
-                (scripts_dir / safe_name).write_bytes(await script_file.read())
+                content = await script_file.read()
+                for skill_dir in skill_dirs:
+                    scripts_dir = skill_dir / "scripts"
+                    scripts_dir.mkdir(exist_ok=True)
+                    (scripts_dir / safe_name).write_bytes(content)
                 script_names.append(safe_name)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to write skill files: {exc}")
@@ -4003,16 +4064,23 @@ async def create_custom_skill(
         for s in scripts:
             await s.close()
 
-    try:
-        refresh_skills()
-    except Exception as exc:
-        shutil.rmtree(skill_dir, ignore_errors=True)
-        raise HTTPException(status_code=422, detail=f"Skill files were written but failed to load: {exc}")
+    if _MATCREATOR_MODE == "server":
+        try:
+            await asyncio.to_thread(remove_worker, user_id)
+            await asyncio.to_thread(ensure_worker_running, user_id)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Skill was saved but the worker could not restart: {exc}")
+    else:
+        try:
+            refresh_skills()
+        except Exception as exc:
+            shutil.rmtree(skill_dirs[0], ignore_errors=True)
+            raise HTTPException(status_code=422, detail=f"Skill files were written but failed to load: {exc}")
     return JSONResponse({"status": "ok", "name": name, "references": ref_names, "scripts": script_names})
 
 
 @app.delete("/api/skills/custom/{skill_name}")
-async def delete_custom_skill(skill_name: str) -> JSONResponse:
+async def delete_custom_skill(skill_name: str, user_id: str = Query(default="")) -> JSONResponse:
     """Delete a custom workspace skill. Default skills cannot be deleted."""
     if not _SKILL_NAME_RE.match(skill_name):
         raise HTTPException(status_code=400, detail=f"Invalid skill name: '{skill_name}'.")
@@ -4021,21 +4089,31 @@ async def delete_custom_skill(skill_name: str) -> JSONResponse:
             status_code=400,
             detail=f"'{skill_name}' is a built-in default skill and cannot be deleted.",
         )
-    root = workspace_skills_dir()
-    skill_dir = root / skill_name
-    if skill_dir.resolve() == root.resolve() or not skill_dir.resolve().is_relative_to(root.resolve()):
-        raise HTTPException(status_code=400, detail="Invalid skill path.")
-    if not skill_dir.exists():
+    roots = _custom_skill_roots(user_id)
+    skill_dirs = [root / skill_name for root in roots]
+    for root, skill_dir in zip(roots, skill_dirs):
+        if skill_dir.resolve() == root.resolve() or not skill_dir.resolve().is_relative_to(root.resolve()):
+            raise HTTPException(status_code=400, detail="Invalid skill path.")
+    if not any(skill_dir.exists() for skill_dir in skill_dirs):
         raise HTTPException(status_code=404, detail=f"Custom skill '{skill_name}' not found in workspace.")
     try:
-        shutil.rmtree(skill_dir)
+        for skill_dir in skill_dirs:
+            if skill_dir.exists():
+                shutil.rmtree(skill_dir)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to delete skill: {exc}")
 
-    try:
-        refresh_skills()
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Skill deleted but registry reload failed: {exc}")
+    if _MATCREATOR_MODE == "server":
+        try:
+            await asyncio.to_thread(remove_worker, user_id)
+            await asyncio.to_thread(ensure_worker_running, user_id)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Skill was deleted but the worker could not restart: {exc}")
+    else:
+        try:
+            refresh_skills()
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Skill deleted but registry reload failed: {exc}")
     return JSONResponse({"status": "ok", "deleted": skill_name})
 
 

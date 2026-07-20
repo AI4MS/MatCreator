@@ -32,6 +32,18 @@ class _FakeDockerClient:
         self.images = _FakeImages(image_id)
 
 
+class _UploadFile:
+    def __init__(self, content: bytes, filename: str):
+        self._content = content
+        self.filename = filename
+
+    async def read(self) -> bytes:
+        return self._content
+
+    async def close(self) -> None:
+        return None
+
+
 def _load_web_main(monkeypatch, matcreator_home: Path | None = None):
     root = Path(__file__).resolve().parents[1]
     monkeypatch.setenv("MATCREATOR_MODE", "local")
@@ -215,6 +227,58 @@ def test_server_env_config_writes_worker_mounted_user_config(monkeypatch, tmp_pa
     container_config = data_root / "users" / "alice" / ".matcreator" / "config.yaml"
     assert "FRONTEND_SET_FLAG: visible-to-worker" in host_config.read_text(encoding="utf-8")
     assert "FRONTEND_SET_FLAG: visible-to-worker" in container_config.read_text(encoding="utf-8")
+
+
+def test_server_custom_skill_upload_writes_user_worker_mount_and_restarts(monkeypatch, tmp_path):
+    control_home = tmp_path / "control-plane" / ".matcreator"
+    control_home.mkdir(parents=True)
+    data_root = tmp_path / "container-data"
+    host_data_root = tmp_path / "host-data"
+    web_main = _load_web_main_server(monkeypatch, control_home, data_root, host_data_root)
+    restarted = []
+
+    async def run_inline(func, *args):
+        return func(*args)
+
+    monkeypatch.setattr(web_main.asyncio, "to_thread", run_inline)
+    monkeypatch.setattr(web_main, "remove_worker", lambda user_id: restarted.append(("remove", user_id)))
+    monkeypatch.setattr(web_main, "ensure_worker_running", lambda user_id: restarted.append(("start", user_id)))
+
+    skill_md = b"---\nname: demo-skill\ndescription: Demo skill\n---\n\n# Demo\n"
+    response = asyncio.run(web_main.create_custom_skill(
+        name="demo-skill",
+        skill_md=_UploadFile(skill_md, "SKILL.md"),
+        references=[],
+        scripts=[],
+        user_id="alice",
+    ))
+
+    assert response.status_code == 200
+    assert restarted == [("remove", "alice"), ("start", "alice")]
+    assert (host_data_root / "users" / "alice" / ".matcreator" / "workspace" / "skills" / "demo-skill" / "SKILL.md").read_bytes() == skill_md
+    assert (data_root / "users" / "alice" / ".matcreator" / "workspace" / "skills" / "demo-skill" / "SKILL.md").read_bytes() == skill_md
+    assert not (control_home / "workspace" / "skills" / "demo-skill").exists()
+
+
+def test_server_custom_skill_list_is_scoped_to_user(monkeypatch, tmp_path):
+    control_home = tmp_path / "control-plane" / ".matcreator"
+    control_home.mkdir(parents=True)
+    data_root = tmp_path / "container-data"
+    host_data_root = tmp_path / "host-data"
+    web_main = _load_web_main_server(monkeypatch, control_home, data_root, host_data_root)
+    alice_skill = data_root / "users" / "alice" / ".matcreator" / "workspace" / "skills" / "alice-skill"
+    bob_skill = data_root / "users" / "bob" / ".matcreator" / "workspace" / "skills" / "bob-skill"
+    alice_skill.mkdir(parents=True)
+    bob_skill.mkdir(parents=True)
+    (alice_skill / "SKILL.md").write_text("---\nname: alice-skill\ndescription: Alice only\n---\n\n# Alice\n", encoding="utf-8")
+    (bob_skill / "SKILL.md").write_text("---\nname: bob-skill\ndescription: Bob only\n---\n\n# Bob\n", encoding="utf-8")
+
+    response = asyncio.run(web_main.list_skills(user_id="alice"))
+    skills = json.loads(response.body)
+    names = {skill["name"] for skill in skills}
+
+    assert "alice-skill" in names
+    assert "bob-skill" not in names
 
 
 def test_server_session_summaries_are_scoped_to_user_home(monkeypatch, tmp_path):
