@@ -3,7 +3,7 @@ name: equation-of-states
 description: Skill for computing equation of states (energy-volume curve).
 metadata:
   dependent_skills:
-    - ase-deepmd
+    - ase
     - deepmd
     - mattersim
     - concepts/machine-learning-force-field
