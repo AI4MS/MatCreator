@@ -20,15 +20,18 @@ export function createSessionListController({
   let lastSessions = [];
 
   async function loadSessions() {
-    if (!state.userId) return;
+    if (!state.userId) return null;
     try {
       const response = state.isAdmin
         ? await fetch(`/api/admin/sessions?user_id=${encodeURIComponent(state.userId)}`)
         : await fetch(`/api/users/${encodeURIComponent(state.userId)}/sessions`);
-      if (!response.ok) return;
-      render(await response.json());
+      if (!response.ok) return null;
+      const sessions = await response.json();
+      render(sessions);
+      return Array.isArray(sessions) ? sessions : [];
     } catch (_) {
       // The API may be unavailable while the frontend is starting.
+      return null;
     }
   }
 

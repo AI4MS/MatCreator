@@ -19,12 +19,14 @@ import "./styles/index.css";
 const APP_NAME = "MatCreator";
 
 const AGENT_MODE_KEY = "mat_agentMode";
+const SESSION_ID_KEY = "mat_sessionId";
+const SESSION_OWNER_KEY = "mat_sessionOwnerId";
 const THEME_KEY = "mat_theme";
 const DUMMY_REMOTE_JOBS = import.meta.env.VITE_DUMMY_REMOTE_JOBS === "true";
 const dummyRemoteJobsBySession = new Map();
 
 const state = {
-  sessionId: localStorage.getItem("mat_sessionId") || newSessionId(),
+  sessionId: localStorage.getItem(SESSION_ID_KEY) || newSessionId(),
   userId: localStorage.getItem("mat_userId") || "",
   displayName: localStorage.getItem("mat_displayName") || localStorage.getItem("mat_userId") || "",
   activeSessionUserId: localStorage.getItem("mat_userId") || "",
@@ -857,6 +859,31 @@ function updateSendButtonState() {
   sendBtn.classList.toggle("is-stopping", running);
 }
 
+function storeSessionSelection(sessionId, owner) {
+  localStorage.setItem(SESSION_ID_KEY, sessionId);
+  localStorage.setItem(SESSION_OWNER_KEY, owner);
+}
+
+function clearStoredSessionSelection() {
+  localStorage.removeItem(SESSION_ID_KEY);
+  localStorage.removeItem(SESSION_OWNER_KEY);
+}
+
+function validatedStoredSession(sessions, sessionId, storedOwner) {
+  if (!sessionId || !Array.isArray(sessions)) return null;
+  let owner = state.userId;
+  if (state.deploymentMode === "server" && state.isAdmin) {
+    if (!storedOwner) return null;
+    owner = storedOwner;
+  } else if (state.deploymentMode === "server" && storedOwner && storedOwner !== state.userId) {
+    return null;
+  }
+  const found = sessions.some((session) => (
+    session.id === sessionId && (session.userId || state.userId) === owner
+  ));
+  return found ? { sessionId, owner } : null;
+}
+
 function managedRunEventsUrl(request) {
   return `/api/runs/${request.runId}/events` + `?after=${request.lastSequence}`;
 }
@@ -959,7 +986,7 @@ async function logout() {
   state.sessionReady = false;
   localStorage.removeItem("mat_userId");
   localStorage.removeItem("mat_displayName");
-  localStorage.removeItem("mat_sessionId");
+  clearStoredSessionSelection();
   localStorage.removeItem("mat_deploymentMode");
   userDisplay.textContent = "—";
   chatArea.innerHTML = "";
@@ -1023,12 +1050,13 @@ function _applySession(result) {
   state.activeSessionUserId = result.user_id;
   state.sessionId = newSessionId();
   state.sessionReady = false;
+  updateSendButtonState();
   state.isAdmin = Boolean(result.is_admin);
   loginUuidDisplay.textContent = `UUID: ${result.user_id}`;
   localStorage.setItem("mat_deploymentMode", state.deploymentMode);
   localStorage.setItem("mat_userId", result.user_id);
   localStorage.setItem("mat_displayName", result.display_name);
-  localStorage.setItem("mat_sessionId", state.sessionId);
+  clearStoredSessionSelection();
   sessionIdEl.textContent = state.sessionId;
   chatArea.innerHTML = "";
   stepExecutionFeed.reset();
@@ -1172,7 +1200,7 @@ savePasswordBtn.addEventListener("click", savePassword);
 function clearStoredIdentity() {
   localStorage.removeItem("mat_userId");
   localStorage.removeItem("mat_displayName");
-  localStorage.removeItem("mat_sessionId");
+  clearStoredSessionSelection();
 }
 
 function applyLocalIdentity(resetSession = false) {
@@ -1184,7 +1212,7 @@ function applyLocalIdentity(resetSession = false) {
   state.sessionReady = false;
   if (resetSession) {
     state.sessionId = newSessionId();
-    localStorage.setItem("mat_sessionId", state.sessionId);
+    clearStoredSessionSelection();
   }
   localStorage.setItem("mat_deploymentMode", "local");
   localStorage.setItem("mat_userId", "user");
@@ -1212,6 +1240,8 @@ function hideLocalAuthControls() {
   state.deploymentMode = serverMode === "server" ? "server" : "local";
   const storedMode = localStorage.getItem("mat_deploymentMode") || "";
   const storedId = localStorage.getItem("mat_userId") || "";
+  const storedSessionId = localStorage.getItem(SESSION_ID_KEY) || "";
+  const storedSessionOwner = localStorage.getItem(SESSION_OWNER_KEY) || "";
 
   if (state.deploymentMode === "local") {
     hideLocalAuthControls();
@@ -1233,10 +1263,18 @@ function hideLocalAuthControls() {
   sessionIdEl.textContent = state.sessionId;
   await refreshAccess();
   renderUserDisplay();
-  await loadSessions();
-  // Don't auto-restore previous session on page load — start fresh
-  // User can click a session in the sidebar to switch to it
-  localStorage.removeItem("mat_sessionId");
+  const sessions = await loadSessions();
+  const storedSession = validatedStoredSession(sessions, storedSessionId, storedSessionOwner);
+  if (storedSession) {
+    await switchSession(storedSession.sessionId, storedSession.owner);
+  } else if (sessions && storedSessionId) {
+    clearStoredSessionSelection();
+    state.sessionId = newSessionId();
+    state.activeSessionUserId = state.userId;
+    state.sessionReady = false;
+    sessionIdEl.textContent = state.sessionId;
+    updateSendButtonState();
+  }
 })();
 
 // ---------------------------------------------------------------------------
@@ -1272,7 +1310,8 @@ async function switchSession(sessionId, owner = state.userId) {
   state.sessionId = sessionId;
   state.activeSessionUserId = owner;
   state.sessionReady = true;
-  localStorage.setItem("mat_sessionId", sessionId);
+  updateSendButtonState();
+  storeSessionSelection(sessionId, owner);
   sessionIdEl.textContent = sessionId;
   const cachedView = state.sessionViewCache.get(viewKey);
   if (cachedView) renderSessionSnapshot(cachedView);
@@ -1601,7 +1640,8 @@ async function deleteSession(sessionId) {
       state.sessionId = newSessionId();
       state.activeSessionUserId = state.userId;
       state.sessionReady = false;
-      localStorage.setItem("mat_sessionId", state.sessionId);
+      updateSendButtonState();
+      clearStoredSessionSelection();
       sessionIdEl.textContent = state.sessionId;
       chatArea.innerHTML = "";
       stepExecutionFeed.reset();
@@ -2716,6 +2756,8 @@ async function createSession() {
       }
     }
     state.sessionReady = true;
+    storeSessionSelection(sessionId, state.activeSessionUserId);
+    if (resp.status !== 409) await startKnowledgeReview(sessionId);
     await loadSessions();
   } catch (err) {
     console.error("Failed to create session:", err);
@@ -3238,7 +3280,8 @@ async function _doNewSession(customWorkdir) {
   state.sessionId = newSessionId();
   state.activeSessionUserId = state.userId;
   state.sessionReady = false;
-  localStorage.setItem("mat_sessionId", state.sessionId);
+  updateSendButtonState();
+  clearStoredSessionSelection();
   sessionIdEl.textContent = state.sessionId;
   chatArea.innerHTML = "";
   stepExecutionFeed.reset();

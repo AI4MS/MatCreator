@@ -84,10 +84,9 @@ environment variables only for deployment/runtime knobs.
 From the repository root:
 
 ```bash
-docker compose build
-
 export MATCREATOR_HOST_DATA_ROOT="$(pwd)/server-data"
 touch config.yaml
+docker compose -f docker-compose.server.yml build control-plane worker-image
 docker compose -f docker-compose.server.yml up -d
 ```
 
@@ -98,6 +97,20 @@ http://localhost
 ```
 
 Register a user and log in. The first login/register starts a dedicated worker.
+
+Server mode builds separate images for the control plane and dynamically
+provisioned workers. By default they are tagged `matcreator-control-plane:latest`
+and `matcreator-worker:latest`. The worker image has no Node.js or frontend
+bundle. The `worker-image` Compose service is build-only, so normal `up` does
+not start a shared worker.
+
+Override published image tags when needed:
+
+```bash
+export MATCREATOR_CONTROL_PLANE_IMAGE=registry.example/matcreator-control-plane:v2
+export MATCREATOR_WORKER_IMAGE=registry.example/matcreator-worker:v2
+docker compose -f docker-compose.server.yml up -d
+```
 
 ## Data layout
 
@@ -282,7 +295,7 @@ If you still see `Forbidden: origin not allowed`, rebuild and recreate the stack
 so the latest control-plane code is running:
 
 ```bash
-docker compose build
+docker compose -f docker-compose.server.yml build control-plane worker-image
 docker compose -f docker-compose.server.yml up -d --force-recreate
 ```
 

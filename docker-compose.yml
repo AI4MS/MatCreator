@@ -1,6 +1,8 @@
 services:
   matcreator:
-    build: .
+    build:
+      context: .
+      target: local
     image: matcreator:latest
     container_name: matcreator
     ports:
