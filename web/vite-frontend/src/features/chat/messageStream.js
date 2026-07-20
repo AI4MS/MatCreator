@@ -39,9 +39,10 @@ export function createMessageStreamController(deps) {
     const request = activeSessionRequest();
     if (!request) return;
     sessionRuntime.suppressPlanApproval(request.sessionId);
-    fetch(`/api/sessions/${state.sessionId}/cancel`, { method: "POST" }).catch(() => {});
+    const query = new URLSearchParams({ user_id: request.owner || state.userId });
+    fetch(`/api/sessions/${request.sessionId}/cancel?${query}`, { method: "POST" }).catch(() => {});
     request.controller.abort();
-    pollCancellationConfirmed(state.sessionId);
+    pollCancellationConfirmed(request.sessionId);
   }
 
   async function send(message) {
