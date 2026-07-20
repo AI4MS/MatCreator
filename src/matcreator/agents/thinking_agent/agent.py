@@ -324,6 +324,9 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
 - NEVER execute plan nodes.
 - When the user asks to keep outputs in a session-specific folder, call
     `set_session_output_dir` with a relative subdirectory under the workspace before execution.
+    Every call creates a new directory; if the requested name exists, the tool adds a numeric
+    suffix such as `_01`. Always use and report the output path returned by the tool rather than
+    assuming the requested name was created.
     The executor can still read shared files from the workspace root, but generated files
     should be written under the configured output directory.
 - Keep responses concise; reference absolute file paths where relevant.

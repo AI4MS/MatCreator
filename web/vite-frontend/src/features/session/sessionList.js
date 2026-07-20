@@ -15,6 +15,7 @@ export function createSessionListController({
   deleteSession,
   downloadSessionLog,
   sessionDisplayStatus: getSessionDisplayStatus,
+  showDraft,
 }) {
   let lastSessions = [];
 
@@ -84,7 +85,10 @@ export function createSessionListController({
     } else {
       content.append(idLine);
     }
-    item.append(content, createLogButton(session.id, owner), createDeleteButton(session.id));
+    const buttons = [createLogButton(session.id, owner)];
+    if (showDraft) buttons.push(createDraftButton(session.id, owner, status));
+    buttons.push(createDeleteButton(session.id));
+    item.append(content, ...buttons);
     item.title = summary ? `${summary}\n${label}` : label;
     item.addEventListener("click", () => switchSession(session.id, owner));
     sessionListEl.appendChild(item);
@@ -98,6 +102,19 @@ export function createSessionListController({
     button.addEventListener("click", (event) => {
       event.stopPropagation();
       downloadSessionLog(sessionId, owner);
+    });
+    return button;
+  }
+
+  function createDraftButton(sessionId, owner, status) {
+    const button = document.createElement("button");
+    button.className = "session-item-draft";
+    button.textContent = "GENERATE";
+    button.title = "Generate a staged benchmark question from this session";
+    button.disabled = status === "running";
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      showDraft(sessionId, owner);
     });
     return button;
   }

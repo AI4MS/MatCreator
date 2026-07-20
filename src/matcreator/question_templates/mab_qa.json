@@ -1,0 +1,108 @@
+{
+  "name": "mat_bench_qa_v5",
+  "template_version": "1.0.0",
+  "executable_verify_types_policy": "Authoritative allowlist for generated scoring_checklist verify values. This list overrides verifier names mentioned in legacy examples or descriptive prose below.",
+  "executable_verify_types": [
+    "artifact_exists",
+    "text_file_contains_all",
+    "text_file_regex",
+    "text_file_numeric_range",
+    "text_file_kpt_path",
+    "struct_file_atom_count",
+    "struct_file_formula",
+    "struct_file_bond_count",
+    "struct_file_bond_length",
+    "struct_file_bond_angle",
+    "struct_file_cell_param",
+    "struct_file_stoichiometry_ratio",
+    "struct_file_coordination",
+    "struct_file_layer_count",
+    "struct_file_count",
+    "struct_file_surface_termination",
+    "checkcif_no_a_alerts"
+  ],
+  "domain": "computational materials science",
+  "purpose": "qa_benchmark",
+  "description": "Agent-task benchmark in the mat_agent_bench v5 format. Each projected item is a self-contained task: a verbatim human prompt, the data files the agent must consume, machine-verifiable reference answers, and a per-criterion scoring checklist with capability tags. Items are isolated from one another so they can be exported one-YAML-per-task into a question_bank/<id>/ directory. Questions are assigned a difficulty level (easy / medium / hard) to ensure coverage of both quick single-step verifications and complex multi-phase research workflows.",
+  "extraction_schema": {
+    "questions": {
+      "type": "list",
+      "description": "Self-contained agent benchmark tasks extracted from literature. Each item must be runnable in isolation — never cross-reference other items. One projected questions[i] corresponds to exactly one task YAML under mat_agent_bench/question_bank/<id>/question.yaml.",
+      "item_schema": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "description": "Stable task id following the v5 convention `<TASK_PREFIX>_<domain_slug>_<NNN>_<YYYYMMDD>`. TASK_PREFIX is a 3-4 letter prefix derived from task_type: SRI=search_and_interpretation, SIM=simulation, MDD=materials_design_and_discovery, MCH=material_characterization, SED=synthesis_and_experiment_design, E2E=end_to_end_research. domain_slug is a short engine/material slug (e.g. vasp, lammps, mos2, liion). NNN is a zero-padded 3-digit counter scoped to (task_type, domain_slug). Example: `SIM_vasp_004_20260601`, `E2E_liion_001_20260601`. Must be unique across the whole bank."
+        },
+        "tags": {
+          "type": "list",
+          "required": false,
+          "item_type": "string",
+          "description": "Free-form classification tags (e.g. eng_vasp, struct_surface, neb, pxrd). Do not repeat task_type, capabilities, or domain as tags — these are already indexed. Used by mat-bench list --tags."
+        },
+        "domain": {
+          "type": "string",
+          "required": true,
+          "description": "Material or application domain. One of: battery, catalysis, polymer, alloy, semiconductor, agnostic. Use agnostic only when the task is domain-neutral (e.g., pure tool configuration with no material-specific knowledge required)."
+        },
+        "intent": {
+          "type": "string",
+          "required": true,
+          "description": "One- or two-sentence English summary of what the agent must accomplish. Concrete enough that a reviewer can judge whether the prompt matches the goal."
+        },
+        "task_type": {
+          "type": "string",
+          "required": true,
+          "description": "Primary task category. Choose exactly one: search_and_interpretation (retrieve, read, interpret scientific data or literature without running simulations), simulation (set up and/or run a computational simulation using DFT/MD/FF tools), materials_design_and_discovery (screen, propose, or optimize materials for target properties), material_characterization (analyze experimental or computed spectra/structures to identify phases, defects, or properties), synthesis_and_experiment_design (plan synthesis routes, experimental protocols, or lab workflows), end_to_end_research (multi-phase task spanning at least 3 distinct stages such as structure prep → simulation → property extraction or analysis → design → validation)."
+        },
+        "data_files": {
+          "type": "list",
+          "required": false,
+          "description": "Input files the agent will be given at runtime. Keep minimal — prefer structures downloadable from Materials Project over committing raw files. Each item: {key: string, path: string (snake_case filename relative to task folder), source: {type: 'materials_project'|'url'|'zenodo'|'github'|'paper_figure'|'paper_table', id_or_url: string — MP id, URL, DOI, or figure/table reference such as 'Table 2' or 'Figure 3b'} (optional — omit for pre-existing local artifacts), content: string (REQUIRED when source.type is paper_figure or paper_table — copy the complete verbatim data here, e.g. all CSV rows from a table or all data points read from a figure, so the file can be recreated in post-processing without re-reading the paper; leave empty for downloadable sources), oss_url: string (leave empty until uploaded), description: string (human-readable description of what the file contains)}. Leave list empty if the task needs no inputs."
+        },
+        "difficulty": {
+          "type": "string",
+          "required": true,
+          "description": "Task difficulty. One of: easy, medium, hard. Easy: 1–2 tool calls, single artifact, 2–3 rubric items, answer checkable by artifact_exists + text_file_contains_all, no multi-step planning needed. Medium: 2–4 tool calls, requires domain knowledge for parameter selection or result interpretation, 4–6 rubric items spanning ≥2 capabilities, may include llm_binary_judge. Hard: multi-phase workflow (≥3 stages), agent must derive approach from domain knowledge without step-by-step hints in the prompt, 6+ rubric items covering ≥3 capabilities, may use struct_file_* or answer_json_numeric verifiers, task_type is typically end_to_end_research or materials_design_and_discovery. Aim for a distribution of roughly 20% easy, 50% medium, 30% hard across the extracted set."
+        },
+        "capabilities": {
+          "type": "list",
+          "required": true,
+          "item_type": "string",
+          "description": "All agent capabilities exercised by this task. List every capability that appears in at least one scoring_checklist item. Values: scientific_reasoning (applying domain knowledge to make non-obvious decisions or interpret results), tool_utilization (invoking a computational tool or API with correct arguments), workflow_orchestration (chaining multiple tools or steps in a logical sequence), data_handling (reading, transforming, or writing structured data files), structure_manipulation (building, editing, or converting crystal/molecular structures), scientific_grounding (tracing answers back to source data, literature, or physical constraints). Minimum 1; hard questions should list ≥3."
+        },
+        "source_evidence": {
+          "type": "string",
+          "required": true,
+          "description": "Short quote or section reference from the knowledge frame that grounds this task (paper section, table, or figure). Used for traceability; not exported into the question YAML."
+        },
+        "human_prompt_seed": {
+          "type": "string",
+          "required": true,
+          "description": "Verbatim prompt handed to the agent at runtime. For easy tasks: state the goal, input filenames, and required output filename(s) — short and direct. For medium tasks: state goal and deliverables; include material identity or system parameters but omit method details the agent should know. For hard tasks: state only the research objective and any required deliverable filenames; do NOT include parameter values, step sequences, tool names, or implementation hints — the agent must design the approach itself. Multilingual prompts are allowed; match the source paper's language when natural."
+        },
+        "reference_answers": {
+          "type": "list",
+          "required": true,
+          "description": "Machine-verifiable expected outputs. Each item: {key: string, value: any}. The key must match a scoring_checklist[i].id. Common value shapes: {filename, tokens, flags} for text_file_contains_all; {filename, pattern, flags} for text_file_regex; {filename, checks:[{key, min, max, expected, tolerance, allowed_values}]} for text_file_numeric_range; a bare filename string for artifact_exists; {filename: ..., param: ..., expected: ..., tolerance: ...} for struct_file_cell_param; {expected_number, symprec} for struct_file_space_group; {checks: [{key, min, max}]} for answer_json_numeric."
+        },
+        "scoring_checklist": {
+          "type": "list",
+          "required": true,
+          "description": "Binary pass/fail criteria with per-capability tags. Each item: {id: string (matches a reference_answers.key for verifier types that need it), criterion: string (prefix with [Must] for strict requirements or [Suggested] for tunable ranges), axis: correctness|grounding, verify: one of the VerifyLiteral values, weight: float (default 0.5), capability: one of scientific_reasoning|tool_utilization|workflow_orchestration|data_handling|structure_manipulation|scientific_grounding}. Rules: (1) every checklist item MUST have a capability tag; (2) the set of capability values across all items must cover all entries in the question's capabilities list; (3) always include at least one grounding-axis item using llm_binary_judge with capability=scientific_grounding; (4) for hard questions add a workflow_orchestration item that checks multi-step sequencing."
+        },
+        "reference_answer_prompt": {
+          "type": "string",
+          "required": false,
+          "description": "Step-by-step oracle instructions to compute ground-truth reference answers. Required when the paper does not state a numerical result directly. Include: (1) starting structure or dataset (MP id or public URL), (2) tool and version, (3) exact parameter steps, (4) which scalar/file to extract and how to round/format it. Leave empty only if the reference value is explicitly stated verbatim in the source."
+        }
+      }
+    }
+  },
+  "system_prompt": "You are projecting research-paper knowledge frames into agent-task benchmark items in the mat_agent_bench v5 format. Each item in `questions` must be a self-contained task that an autonomous coding agent can run end-to-end without seeing any sibling task.\n\n## Schema overview\n\nEach question has:\n- `task_type`: one of six major task categories (simulation, search_and_interpretation, materials_design_and_discovery, material_characterization, synthesis_and_experiment_design, end_to_end_research)\n- `capabilities`: a list of agent skills exercised (scientific_reasoning, tool_utilization, workflow_orchestration, data_handling, structure_manipulation, scientific_grounding)\n- `difficulty`: easy / medium / hard — determines how demanding the prompt and rubric should be\n- `scoring_checklist`: each rubric item has a `capability` tag that maps it to one of the six capabilities above\n\n## Isolation rules\n\n1. NEVER reference another questions[i] — no shared state, no 'as in question X'.\n2. Every file the agent needs must appear in this item's own data_files. Copy entries for shared physical files.\n3. Reference answers must be verifiable from only this task's deliverables.\n4. IDs must be globally unique. Format: `<TASK_PREFIX>_<domain_slug>_<NNN>_<YYYYMMDD>`.\n\n## How to project a task\n\n1. Identify a concrete, reproducible computational workflow in the paper. Skip narrative-only or speculative passages.\n2. Assign task_type: choose the category that best describes the primary deliverable (not the method). For multi-stage workflows spanning ≥3 distinct phases, use end_to_end_research.\n3. Assign difficulty: easy if the agent only needs one tool call and one output file; medium if it requires domain knowledge to choose parameters or interpret intermediate results; hard if the agent must independently design the approach, chain multiple tools, and synthesize cross-phase results.\n4. Write human_prompt_seed:\n   - Easy/medium: state goal, material identity, input filenames, output filename(s). Be explicit about deliverables.\n   - Hard: state only the research objective and required output filenames. Do NOT name tools, list steps, or supply parameter values — the agent must derive these from domain knowledge.\n5. Enumerate capabilities: list every skill the task genuinely exercises. A question that only needs one tool call and no reasoning should list just tool_utilization; a multi-phase E2E task should list 3–5 capabilities.\n6. Build reference_answers: prefer cheap verifiers (artifact_exists, text_file_contains_all, text_file_regex, struct_file_*) over llm_binary_judge. Always include at least one artifact_exists entry per deliverable file.\n7. Build scoring_checklist: mirror reference_answers. Tag every item with the capability it tests. Distribute capability tags across at least 2 distinct capabilities for medium questions and at least 3 for hard. Always add one grounding-axis llm_binary_judge item (capability=scientific_grounding) that checks the answer traces back to the source data or paper.\n8. For hard questions with end_to_end_research or materials_design_and_discovery task_type, add a workflow_orchestration rubric item that verifies correct multi-step sequencing.\n9. Record source_evidence (short quote or section pointer) for traceability.\n\n## Difficulty-specific guidance\n\n### Easy\n- Prompt length: 1–3 sentences. Tool, output filename, and goal are all stated.\n- Rubric: 2–3 items. Axes: correctness (×2) + grounding (×1).\n- Capabilities list: 1–2 entries, usually tool_utilization + one other.\n- Representative task_types: simulation (input generation), search_and_interpretation (data lookup).\n- Example: 'Generate an energy-minimization GROMACS MDP file for the provided system and write it to em.mdp.'\n\n### Medium\n- Prompt: states goal and material system; omits implementation details and optimal parameter values.\n- Rubric: 4–6 items across ≥2 capabilities. Include at least one llm_binary_judge for parameter correctness.\n- Capabilities list: 2–3 entries.\n- Representative task_types: simulation (full workflow setup), material_characterization, synthesis_and_experiment_design.\n- Example: 'Given the POSCAR for the provided perovskite slab, determine the optimal k-point mesh for a VASP PBE calculation and write the KPOINTS file. Justify your choice in kpoints_notes.txt.'\n\n### Hard\n- Prompt: states only the scientific objective. No tool names, no step enumeration, no parameter values.\n- Rubric: ≥6 items spanning ≥3 capabilities. Include workflow_orchestration item and a multi-file artifact check.\n- Capabilities list: 3–5 entries.\n- Representative task_types: end_to_end_research, materials_design_and_discovery.\n- Example: 'Starting from the provided battery cathode composition, predict the formation energy, ionic conductivity pathway, and rate-limiting migration barrier. Report results in results.json with keys formation_energy_eV, migration_barrier_eV, and pathway_coords.'\n- Anti-pattern to avoid: do NOT decompose the hard task into a checklist inside the prompt. The agent must plan.\n\n## Capability-to-rubric mapping guide\n\n- scientific_reasoning: rubric checks that the agent selects physically meaningful parameters, identifies the correct mechanism, or draws a valid conclusion from intermediate data\n- tool_utilization: rubric checks that a specific tool was called with correct arguments (tool_called, tool_args_match) or that a required artifact was produced (artifact_exists)\n- workflow_orchestration: rubric checks correct step sequencing, absence of unnecessary retries, or production of all intermediate artifacts in the right order\n- data_handling: rubric checks that output files contain correct fields, numeric values within tolerance, or required tokens (text_file_*, answer_json_numeric)\n- structure_manipulation: rubric checks crystal structure correctness — formula, space group, cell parameters, bond lengths, atom count (struct_file_*)\n- scientific_grounding: rubric verifies answer traces to source data or literature via llm_binary_judge on a grounding axis\n\n## Numeric-range guidance\n\n- Use min/max for tunable knobs (cutoffs, smearing widths) with ranges from the paper or engine defaults.\n- Use expected + tolerance: 0 for required integer flags or exact counts.\n- Set allow_missing_key: true on optional parameters.\n\n## Quality rules\n\n- Do not fabricate tasks if the paper has no concrete reproducible workflow — emit questions: [] rather than an invented item.\n- Do not bundle unrelated workflows into one item; do not split one workflow across items.\n- Prefer narrow, testable prompts over broad ones for easy/medium. Hard prompts are intentionally open-ended but must have a well-defined output contract.\n- Include 1–5 items per paper. Aim for the distribution: ~20% easy, ~50% medium, ~30% hard.",
+  "field_descriptions": {
+    "questions": "Extract one self-contained agent task per concrete computational workflow in the paper. Each questions[i] must round-trip cleanly to a standalone mat_agent_bench YAML file under question_bank/<id>/question.yaml. Keep the list short and high-signal: 1–5 items per paper is typical; emit [] if nothing in the frame is benchmark-worthy. Across the extracted set, aim for the difficulty distribution: ~20% easy, ~50% medium, ~30% hard. Prefer medium and hard questions from papers that describe multi-step protocols, screening campaigns, or property-driven design loops — these produce the most informative benchmark items and test genuine agent capability beyond unit-test-style single-function calls."
+  },
+  "review_prompt": "",
+  "review_trackable": true
+}

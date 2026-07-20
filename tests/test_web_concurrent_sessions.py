@@ -203,3 +203,27 @@ def test_session_list_supports_status_indicators_and_filtering() -> None:
     assert "sessionDisplayStatus(session, owner)" in content
     assert "session-status-indicator status-${status}" in content
     assert "state.sessionStatusFilter" in content
+
+
+def test_evaluation_sidebar_prioritizes_runs_and_collapses_configuration() -> None:
+    content = _main_js()
+    index = INDEX_HTML.read_text(encoding="utf-8")
+    styles = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "styles" / "evaluation.css").read_text(encoding="utf-8")
+
+    question_sets_start = index.index('<details class="panel-block evaluation-disclosure evaluation-question-sets"')
+    generated_questions_start = index.index('<details class="panel-block evaluation-disclosure evaluation-generated-questions"')
+
+    assert '<section class="evaluation-runs-pane" aria-label="Evaluation runs">' in index
+    assert 'class="evaluation-runs-list-body"' in index
+    assert 'class="evaluation-start-area"' in index
+    assert 'id="evaluation-campaign-list"' in index
+    assert 'id="evaluation-create-start"' in index
+    assert " open" not in index[question_sets_start:index.index(">", question_sets_start)]
+    assert " open" not in index[generated_questions_start:index.index(">", generated_questions_start)]
+    assert '<summary class="block-header">Question sets</summary>' in index[question_sets_start:generated_questions_start]
+    assert '<summary class="block-header">Generated questions</summary>' in index[generated_questions_start:]
+    assert ".evaluation-runs-list-body" in styles
+    assert "overflow-y: auto;" in styles
+    assert ".evaluation-start-area" in styles
+    assert "margin-top: auto;" in styles
+    assert 'button.classList.toggle("is-active", isActive);' in content
