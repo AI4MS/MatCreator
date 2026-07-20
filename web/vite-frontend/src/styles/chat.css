@@ -1295,11 +1295,26 @@ details.step-feed-nested {
 
 /* Keep the composer visually separate from the chat surface in dark mode. */
 body[data-theme="dark"] .input-container,
-body[data-theme="dark"] .input-container[data-agent-mode="flash"],
-body[data-theme="dark"] .input-container[data-agent-mode="bench"] {
+body[data-theme="dark"] .input-container[data-agent-mode="normal"] {
   background: var(--bg-elevated);
   border-color: var(--border-default);
   box-shadow: inset 0 1px 0 rgba(235, 238, 236, 0.04), 0 4px 14px rgba(0, 0, 0, 0.2);
+}
+
+body[data-theme="dark"] .input-container[data-agent-mode="flash"] {
+  background:
+    linear-gradient(rgba(125, 211, 252, 0.1), rgba(125, 211, 252, 0.1)),
+    var(--bg-elevated);
+  border-color: rgba(125, 211, 252, 0.72);
+  box-shadow: inset 0 1px 0 rgba(125, 211, 252, 0.1), 0 4px 14px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(125, 211, 252, 0.16);
+}
+
+body[data-theme="dark"] .input-container[data-agent-mode="bench"] {
+  background:
+    linear-gradient(rgba(245, 158, 11, 0.1), rgba(245, 158, 11, 0.1)),
+    var(--bg-elevated);
+  border-color: rgba(245, 158, 11, 0.72);
+  box-shadow: inset 0 1px 0 rgba(245, 158, 11, 0.1), 0 4px 14px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(245, 158, 11, 0.16);
 }
 
 .composer-input-row,
