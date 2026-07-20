@@ -79,7 +79,6 @@ from matcreator.agents.cancellation import (  # noqa: E402
     request_step_cancellation,
 )
 from matcreator.agents.graph_logger import AgentGraphLogger  # noqa: E402
-from matcreator.agents.execution_graph_state import decode_execution_graph  # noqa: E402
 from matcreator.agents.session_log import build_session_log_export  # noqa: E402
 from matcreator.skill import (  # noqa: E402
     ALL_SKILLS,
@@ -104,6 +103,7 @@ from matcreator.control_plane.evaluation_runtime import RuntimeOutcome, RuntimeS
 from matcreator.control_plane.evaluation_service import EvaluationService  # noqa: E402
 from matcreator.control_plane.evaluations import EvaluationStore  # noqa: E402
 from matcreator.control_plane.runs import ManagedRun, ManagedRunRegistry  # noqa: E402
+from matcreator.control_plane.worker_supervisor import WorkerSupervisor  # noqa: E402
 from matcreator.control_plane.session_question_generator import (  # noqa: E402
     BuiltinLlmQuestionGeneratorPlugin,
     CallableSessionQuestionGenerator,
@@ -273,7 +273,7 @@ def _runtime_env_value(env_key: str) -> str:
 # to the correct worker and manages the container lifecycle.
 
 # _ADK_LOCAL_PORT is resolved at call time via get_adk_port() (env > config.yaml > default).
-_WORKER_IMAGE = os.environ.get("MATCREATOR_WORKER_IMAGE", "matcreator:latest")
+_WORKER_IMAGE = os.environ.get("MATCREATOR_WORKER_IMAGE", "matcreator-worker:latest")
 _WORKER_NETWORK = os.environ.get("MATCREATOR_WORKER_NETWORK", "matcreator-net")
 _WORKER_CONNECT_MODE = os.environ.get("MATCREATOR_WORKER_CONNECT_MODE", "network").lower()
 _WORKER_BASE_PORT = get_worker_base_port()
@@ -285,11 +285,6 @@ _WORKER_SHARED_MOUNTS = os.environ.get("MATCREATOR_WORKER_SHARED_MOUNTS", "")
 _WORKSPACE_CLI_TIMEOUT_SECONDS = int(os.environ.get("MATCREATOR_WORKSPACE_CLI_TIMEOUT_SECONDS", "30"))
 _WORKSPACE_CLI_OUTPUT_LIMIT = int(os.environ.get("MATCREATOR_WORKSPACE_CLI_OUTPUT_LIMIT", "20000"))
 
-_worker_registry: dict[str, str] = {}   # user_id → base URL
-_worker_ports: dict[str, int] = {}      # user_id → host port (host-port connect mode)
-_worker_last_used: dict[str, float] = {}
-_worker_registry_lock = threading.Lock()
-_docker_client = None
 
 
 def _safe_user_dir_name(user_id: str) -> str:
@@ -633,28 +628,9 @@ def _load_session_state(session_id: str, user_id: str | None = None) -> tuple[st
     return None, {}
 
 
-def _get_docker():
-    global _docker_client
-    if _docker_client is None:
-        try:
-            import docker as _docker
-            _docker_client = _docker.from_env()
-        except Exception as exc:
-            raise RuntimeError(f"Docker unavailable: {exc}") from exc
-    return _docker_client
-
-
 def _worker_container_name(user_id: str) -> str:
     safe = re.sub(r"[^a-zA-Z0-9_-]", "-", user_id)[:64]
     return f"matcreator-worker-{safe}"
-
-
-def _next_free_port() -> int:
-    used = set(_worker_ports.values())
-    port = _WORKER_BASE_PORT
-    while port in used:
-        port += 1
-    return port
 
 
 def _worker_image_id(dc) -> str:
@@ -680,18 +656,6 @@ def _worker_container_uses_current_image(dc, container) -> bool:
     return bool(current_image_id and container_image_id and current_image_id == container_image_id)
 
 
-def _remove_worker_container(user_id: str, container=None) -> None:
-    try:
-        dc = _get_docker()
-        target = container or dc.containers.get(_worker_container_name(user_id))
-        target.remove(force=True)
-    except Exception as exc:
-        logger.warning("Failed to remove worker for user %s: %s", user_id, exc)
-    _worker_registry.pop(user_id, None)
-    _worker_ports.pop(user_id, None)
-    _worker_last_used.pop(user_id, None)
-
-
 def _worker_env_vars() -> dict[str, str]:
     """Default environment to forward into each worker container.
 
@@ -715,155 +679,48 @@ def _worker_env_vars() -> dict[str, str]:
     return env_vars
 
 
+# The supervisor is server-only in practice: local routes never invoke these
+# operations, preserving the direct local ADK workflow.
+_worker_supervisor = WorkerSupervisor(
+    image=_WORKER_IMAGE,
+    network=_WORKER_NETWORK,
+    connect_mode=_WORKER_CONNECT_MODE,
+    base_port=_WORKER_BASE_PORT,
+    adk_port=get_adk_port,
+    user_home=lambda user_id, host: _user_matcreator_home(user_id, host=host),
+    worker_environment=_worker_env_vars,
+    shared_mounts=_worker_shared_mounts,
+    memory_limit=_WORKER_MEM_LIMIT,
+    cpus=_WORKER_CPUS,
+    pids_limit=_WORKER_PIDS_LIMIT,
+)
+
+
 def ensure_worker_running(user_id: str) -> str:
-    """Ensure the worker container for *user_id* is running.
-
-    Returns the base URL the worker's ADK server is reachable on.
-    Creates the container if it doesn't exist.
-    """
-    import docker as _docker
-
-    with _worker_registry_lock:
-        _safe_user_dir_name(user_id)
-        name = _worker_container_name(user_id)
-        dc = _get_docker()
-
-        # If we already know the target, verify the container is still running.
-        if user_id in _worker_registry:
-            target = _worker_registry[user_id]
-            try:
-                c = dc.containers.get(name)
-                if not _worker_container_uses_current_image(dc, c):
-                    _remove_worker_container(user_id, c)
-                else:
-                    if c.status != "running":
-                        c.start()
-                    _worker_last_used[user_id] = time.time()
-                    return target
-            except _docker.errors.NotFound:
-                del _worker_registry[user_id]
-                _worker_ports.pop(user_id, None)
-
-        # Container might exist from a previous server start.
-        try:
-            c = dc.containers.get(name)
-            if not _worker_container_uses_current_image(dc, c):
-                _remove_worker_container(user_id, c)
-                c = None
-            port = None
-            if c is not None and _WORKER_CONNECT_MODE == "host-port":
-                bindings = c.ports.get(f"{get_adk_port()}/tcp") or []
-                if not bindings:
-                    c.remove(force=True)
-                    c = None
-                else:
-                    port = int(bindings[0]["HostPort"])
-                    _worker_ports[user_id] = port
-            if c is not None:
-                target = _worker_target_url(user_id, port)
-                _worker_registry[user_id] = target
-                if c.status != "running":
-                    c.start()
-                _worker_last_used[user_id] = time.time()
-                return target
-        except _docker.errors.NotFound:
-            pass
-
-        # Create a fresh worker container.
-        port = _next_free_port() if _WORKER_CONNECT_MODE == "host-port" else None
-        user_home_container = _user_matcreator_home(user_id)
-        user_home_host = _user_matcreator_home(user_id, host=True)
-        user_home_container.mkdir(parents=True, exist_ok=True)
-
-        env_vars = _worker_env_vars()
-        env_vars["MATCREATOR_MODE"] = "server"
-        env_vars["MATCREATOR_USER_ID"] = user_id
-
-        adk_port = get_adk_port()
-        volumes = {
-            str(user_home_host): {
-                "bind": str(_WORKER_MATCREATOR_HOME),
-                "mode": "rw",
-            },
-        }
-        volumes.update(_worker_shared_mounts())
-        run_kwargs: dict = dict(
-            image=_WORKER_IMAGE,
-            command=["matcreator", "api-server", "--host", "0.0.0.0", "--port", str(adk_port)],
-            name=name,
-            environment=env_vars,
-            volumes=volumes,
-            detach=True,
-            restart_policy={"Name": "unless-stopped"},
-        )
-        if port is not None:
-            run_kwargs["ports"] = {f"{adk_port}/tcp": port}
-        if _WORKER_NETWORK:
-            run_kwargs["network"] = _WORKER_NETWORK
-        if _WORKER_MEM_LIMIT:
-            run_kwargs["mem_limit"] = _WORKER_MEM_LIMIT
-        if _WORKER_CPUS:
-            run_kwargs["nano_cpus"] = int(float(_WORKER_CPUS) * 1_000_000_000)
-        if _WORKER_PIDS_LIMIT:
-            run_kwargs["pids_limit"] = int(_WORKER_PIDS_LIMIT)
-
-        dc.containers.run(**run_kwargs)
-        target = _worker_target_url(user_id, port)
-        _worker_registry[user_id] = target
-        if port is not None:
-            _worker_ports[user_id] = port
-        _worker_last_used[user_id] = time.time()
-        return target
+    """Ensure the server-mode worker for *user_id* is running."""
+    _safe_user_dir_name(user_id)
+    return _worker_supervisor.ensure_running(user_id)
 
 
 def stop_worker(user_id: str) -> None:
-    """Stop (but keep) the worker container for *user_id*."""
-    try:
-        import docker as _docker
-        dc = _get_docker()
-        dc.containers.get(_worker_container_name(user_id)).stop(timeout=10)
-    except Exception as exc:
-        logger.warning("Failed to stop worker for user %s: %s", user_id, exc)
+    """Stop (but retain) the server-mode worker for *user_id*."""
+    _worker_supervisor.stop(user_id)
 
 
 def remove_worker(user_id: str) -> None:
-    """Stop and remove the worker container and clean up the registry."""
-    _remove_worker_container(user_id)
+    """Stop and remove the server-mode worker for *user_id*."""
+    _worker_supervisor.remove(user_id)
 
 
 def _list_workers() -> list[dict]:
-    """Return status info for all known worker containers."""
-    try:
-        import docker as _docker
-        dc = _get_docker()
-        results = []
-        for user_id, target in list(_worker_registry.items()):
-            name = _worker_container_name(user_id)
-            try:
-                c = dc.containers.get(name)
-                status = c.status
-            except _docker.errors.NotFound:
-                status = "missing"
-            results.append({"user_id": user_id, "container": name,
-                             "target": target, "port": _worker_ports.get(user_id),
-                             "status": status, "last_used": _worker_last_used.get(user_id)})
-        return results
-    except Exception as exc:
-        return [{"error": str(exc)}]
+    return _worker_supervisor.list_workers()
 
 
 async def _idle_worker_reaper() -> None:
-    """Stop idle workers when MATCREATOR_WORKER_IDLE_TIMEOUT_SECONDS is set."""
+    """Stop workers that have been idle longer than the configured timeout."""
     while True:
         await asyncio.sleep(min(max(_WORKER_IDLE_TIMEOUT_SECONDS // 2, 60), 600))
-        cutoff = time.time() - _WORKER_IDLE_TIMEOUT_SECONDS
-        with _worker_registry_lock:
-            idle_users = [
-                user_id
-                for user_id, last_used in _worker_last_used.items()
-                if last_used < cutoff
-            ]
-        for user_id in idle_users:
+        for user_id in _worker_supervisor.idle_users(_WORKER_IDLE_TIMEOUT_SECONDS):
             await asyncio.to_thread(stop_worker, user_id)
 
 
@@ -1939,7 +1796,7 @@ def _run_worker_workspace_cli(user_id: str, command: str, cwd: str) -> dict:
     rel_cwd = _normalize_cli_cwd(cwd)
     ensure_worker_running(user_id)
 
-    dc = _get_docker()
+    dc = _worker_supervisor.docker_client()
     container = dc.containers.get(_worker_container_name(user_id))
     workdir = (_WORKER_WORKSPACE_ROOT / rel_cwd).as_posix()
     container.exec_run(["mkdir", "-p", workdir])
@@ -2094,7 +1951,7 @@ async def _local_terminal_session(websocket: WebSocket) -> None:
 
 def _docker_exec_socket(user_id: str):
     ensure_worker_running(user_id)
-    dc = _get_docker()
+    dc = _worker_supervisor.docker_client()
     container = dc.containers.get(_worker_container_name(user_id))
     workspace = _WORKER_WORKSPACE_ROOT.as_posix()
     container.exec_run(["mkdir", "-p", workspace])
@@ -2865,8 +2722,10 @@ def _load_execution_graph(session_id: str) -> dict:
                 if row is None:
                     continue
                 state = _load_json_field(row["state"], {})
-                raw = decode_execution_graph(state.get("execution_graph"))
-                if raw is None:
+                raw = state.get("execution_graph")
+                if isinstance(raw, str):
+                    raw = _load_json_field(raw, None)
+                if not isinstance(raw, dict):
                     return {"nodes": {}, "edges": []}
                 return raw
         except sqlite3.Error:
@@ -4370,8 +4229,7 @@ async def get_backend_status(user_id: str = Query(default="")) -> JSONResponse:
     In local mode: checks the configured ADK port on localhost.
     """
     if _MATCREATOR_MODE == "server" and user_id:
-        with _worker_registry_lock:
-            target = _worker_registry.get(user_id)
+        target = _worker_supervisor.target_for(user_id)
         if target is None:
             return JSONResponse({"ready": False})
         try:

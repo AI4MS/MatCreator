@@ -7,8 +7,8 @@ Server mode is intended for a shared group server. It runs a control plane behin
 | Service | Purpose |
 | --- | --- |
 | `proxy` | nginx entrypoint on port 80. Routes UI, API, and SSE traffic to the control plane. |
-| `control-plane` | FastAPI app for auth, settings, session browsing, admin APIs, and worker lifecycle. |
-| `matcreator-worker-<user_id>` | Per-user worker container with that user's mounted MatCreator home. |
+| `control-plane` | FastAPI app, built frontend, auth, settings, session browsing, admin APIs, and worker lifecycle. |
+| `matcreator-worker-<user_id>` | Per-user Python-only agent runtime with that user's mounted MatCreator home. |
 
 Each worker sees:
 
@@ -21,8 +21,15 @@ Workers are disposable. User data persists because it is mounted from the host.
 ## Prerequisites
 
 1. Docker Engine and Docker Compose plugin.
-2. A built MatCreator image.
+2. Built control-plane and worker images.
 3. Server defaults in a config file. By default, server mode uses `./config.yaml` from the repository root.
+
+Server mode uses two images:
+
+| Image | Default tag | Contents |
+| --- | --- | --- |
+| Control plane | `matcreator-control-plane:latest` | FastAPI application and compiled frontend bundle. |
+| Worker | `matcreator-worker:latest` | MatCreator agent runtime; no Node.js or frontend bundle. |
 
 ## Server Defaults
 
@@ -122,10 +129,9 @@ deployment/runtime knobs such as ports, data roots, and worker limits.
 From the repository root:
 
 ```bash
-docker compose build
-
 export MATCREATOR_HOST_DATA_ROOT="$(pwd)/server-data"
 touch config.yaml
+docker compose -f docker-compose.server.yml build control-plane worker-image
 docker compose -f docker-compose.server.yml up -d
 ```
 
@@ -136,6 +142,16 @@ http://localhost
 ```
 
 Register a user and log in. The first login or register request starts a dedicated worker for that user.
+The `worker-image` Compose service is build-only and does not start a shared
+worker container during normal `up` operations.
+
+Override either image tag when publishing images to a registry:
+
+```bash
+export MATCREATOR_CONTROL_PLANE_IMAGE=registry.example/matcreator-control-plane:v2
+export MATCREATOR_WORKER_IMAGE=registry.example/matcreator-worker:v2
+docker compose -f docker-compose.server.yml up -d
+```
 
 ## Data Layout
 
@@ -221,13 +237,13 @@ docker exec -it matcreator-worker-<user_id> bash
 Rebuild and redeploy after code changes:
 
 ```bash
-docker build -t matcreator:latest .
+docker compose -f docker-compose.server.yml build control-plane worker-image
 docker compose -f docker-compose.server.yml up -d --force-recreate control-plane proxy
 ```
 
 Worker containers are recreated automatically when the control plane detects
-that their image ID differs from the current `matcreator:latest`. To force all
-workers to be recreated immediately:
+that their image ID differs from the configured `MATCREATOR_WORKER_IMAGE`. To
+force all workers to be recreated immediately:
 
 ```bash
 docker ps -a --filter "name=matcreator-worker-" --format "{{.Names}}" | xargs -r docker rm -f

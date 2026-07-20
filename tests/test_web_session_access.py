@@ -171,6 +171,17 @@ def test_worker_image_check_detects_stale_container(monkeypatch, tmp_path):
     ) is True
 
 
+def test_server_worker_image_uses_deployment_override(monkeypatch, tmp_path):
+    control_home = tmp_path / "control-plane" / ".matcreator"
+    control_home.mkdir(parents=True)
+    monkeypatch.setenv("MATCREATOR_WORKER_IMAGE", "registry.example/matcreator-worker:v2")
+
+    web_main = _load_web_main_server(monkeypatch, control_home, tmp_path / "server-data")
+
+    assert web_main._WORKER_IMAGE == "registry.example/matcreator-worker:v2"
+    assert web_main._worker_supervisor.image == "registry.example/matcreator-worker:v2"
+
+
 def test_server_worker_shared_mounts_parse_extra_binds(monkeypatch, tmp_path):
     control_home = tmp_path / "control-plane" / ".matcreator"
     control_home.mkdir(parents=True)
