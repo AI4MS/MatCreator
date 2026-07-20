@@ -1221,7 +1221,11 @@ details.step-feed-nested {
   --mode-glow-soft-2: rgba(168, 85, 247, 0.16);
   border-color: rgba(125, 211, 252, 0.72);
   box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(125, 211, 252, 0.16);
-  background: rgba(125, 211, 252, 0.045);
+  /* Keep the composer surface opaque; the previous tint-only background
+     exposed the chat behind it in non-dark themes. */
+  background:
+    linear-gradient(rgba(125, 211, 252, 0.06), rgba(125, 211, 252, 0.06)),
+    rgba(var(--panel-rgb), 0.95);
 }
 .input-container[data-agent-mode="bench"] {
   --mode-glow: rgba(245, 158, 11, 0.98);
@@ -1230,7 +1234,9 @@ details.step-feed-nested {
   --mode-glow-soft-2: rgba(248, 113, 113, 0.15);
   border-color: rgba(245, 158, 11, 0.72);
   box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(245, 158, 11, 0.16);
-  background: rgba(245, 158, 11, 0.045);
+  background:
+    linear-gradient(rgba(245, 158, 11, 0.06), rgba(245, 158, 11, 0.06)),
+    rgba(var(--panel-rgb), 0.95);
 }
 
 .input-container[data-agent-mode="flash"]::before,
