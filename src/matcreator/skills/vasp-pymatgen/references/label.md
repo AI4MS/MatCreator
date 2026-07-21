@@ -20,21 +20,6 @@ The `scripts/prepare_matpes.py` script wraps `MatPESStaticSet` with structure sa
 - Geometry relaxation → use `prepare_relaxation`
 - Standard SCF that needs `CHGCAR`/`WAVECAR` for follow-up NSCF → use `prepare_scf`
 
-## Prerequisites
-
-1. **`PMG_VASP_PSP_DIR`** — path to the VASP pseudopotential library (required for `POTCAR` generation):
-   ```bash
-   echo $PMG_VASP_PSP_DIR    # verify: should print a directory path
-   ```
-   > If not set, the script exits with an error. Export it or add to `~/.bashrc`.
-
-2. **Python packages**: `pymatgen`, `ase`, `numpy` (all in the project's `requirements.txt`):
-   ```bash
-   python -c "from pymatgen.io.vasp.sets import MatPESStaticSet; print('OK')"
-   python -c "from ase.io import read; print('OK')"
-   ```
-
-3. **Structure file** readable by ASE — extxyz, POSCAR, CIF, or any ASE-supported format.
 
 ## Usage
 

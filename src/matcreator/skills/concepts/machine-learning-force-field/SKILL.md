@@ -4,7 +4,6 @@ description: Concept skill for Machine Learning Force Fields (MLFFs). Describes 
 metadata:
   dependent_skills:
     - deepmd
-    - dpa4
     - mattersim
     - ase-deepmd
   tags:
@@ -39,8 +38,7 @@ A Machine Learning Force Field (MLFF) is a surrogate model trained on DFT refere
 
 | Skill        | Framework          | Best For                                                     |
 |--------------|--------------------|--------------------------------------------------------------|
-| `deepmd`     | DeePMD-kit         | Training and fine-tuning DPA-1/DPA-2 models; PFD workflow    |
-| `dpa4`       | DeePMD-kit (DPA-4) | Fine-tuning DPA-4 (SeZM/dpa4) models on Bohrium; early stage |
+| `deepmd`     | DeePMD-kit         | Training and fine-tuning DPA-1/DPA-2/DPA-3/DPA-4 models; PFD workflow    |
 | `mattersim`  | MatterSim          | Pre-trained universal MLFF; structure relaxation and MD      |
 | `ase-deepmd` | ASE + DeePMD       | Running MD with a trained DeePMD model via ASE interface     |
 
@@ -48,8 +46,7 @@ Load the appropriate tool skill for detailed instructions (e.g., `load_skill("de
 
 ## Choosing a Framework
 
-- Use `deepmd` when you need to **train or fine-tune** a DPA-1/DPA-2 model on your own DFT dataset.
-- Use `dpa4` when you need to **fine-tune a DPA-4 (SeZM/dpa4) model** — runs exclusively on Bohrium; currently in early stage.
+- Use `deepmd` when you need to **train or fine-tune** a DPA-1/DPA-2/DPA-3/DPA-4 model on your own DFT dataset.
 - Use `mattersim` when you want a **pre-trained universal model** without retraining.
 - Use `ase-deepmd` when you need to run **MD simulations** with a trained DeePMD potential.
 

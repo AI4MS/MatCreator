@@ -41,9 +41,21 @@ a full INCAR dict from scratch.
 
 > Load the reference file for the specific command you are about to run (see per-command pointers below).
 
-**Prerequisites:**
-- `PMG_VASP_PSP_DIR` — path to VASP pseudopotential library. **Verify:** `echo $PMG_VASP_PSP_DIR`.
-- `pymatgen` and `ase` available in the Python environment.
+## Prerequisites
+
+1. **`PMG_VASP_PSP_DIR`** — path to the VASP pseudopotential library (required for `POTCAR` generation):
+   ```bash
+   echo $PMG_VASP_PSP_DIR    # verify: should print a directory path
+   ```
+
+2. **Python packages**: `pymatgen`, `ase`, `numpy` :
+   ```bash
+   python -c "from pymatgen.io.vasp.sets import MatPESStaticSet; print('OK')"
+   python -c "from ase.io import read; print('OK')"
+   ```
+
+3. **Structure file** readable by ASE — extxyz, POSCAR, CIF, or any ASE-supported format.
+
 - The `bohrium` skill loaded (for job submission).
 
 > **Stop and tell the user** if `PMG_VASP_PSP_DIR` is not set or dependencies are missing.
