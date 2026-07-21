@@ -158,10 +158,12 @@ const {
   addMessage,
   appendLiveTurnChild,
   applyUserAvatarToEl,
+  captureScrollPosition,
   createAgentAvatarEl,
   createJsonBlock,
   isChatNearBottom,
   renderMarkdown,
+  restoreScrollPosition,
   scrollToBottom,
   setUserAvatar,
 } = createChatRenderer({ chatArea });
@@ -774,6 +776,8 @@ const stepExecutionFeed = new StepExecutionFeed({
   chatArea,
   isSending: () => Boolean(activeSessionRequest()),
   isChatNearBottom,
+  captureScrollPosition,
+  restoreScrollPosition,
   scrollToBottom,
   createAgentAvatarEl,
   stepFeedTitle,
@@ -2115,6 +2119,8 @@ function isExecutorLauncherTool(name) {
 // collapsible <details> blocks; text parts render as markdown;
 // plot_path responses render as inline images.
 function renderTimeline(container, timeline, shownPlotPaths = null) {
+  const shouldStick = isChatNearBottom();
+  const scrollPosition = shouldStick ? null : captureScrollPosition();
   container.innerHTML = "";
   const containerPlotPaths = container._plotPaths || new Set();
   const visiblePlotPaths = new Set();
@@ -2186,7 +2192,8 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
   }
   container._plotPaths = visiblePlotPaths;
   visiblePlotPaths.forEach((path) => shownPlotPaths?.add(path));
-  scrollToBottom();
+  if (shouldStick) scrollToBottom({ preserveUserPosition: true });
+  else restoreScrollPosition(scrollPosition);
 }
 
 // Create an agent message div with an inner timeline container, append to
@@ -2285,7 +2292,10 @@ function addPlanApprovalActions(timelineContainer) {
   bubble.append(prompt, actions, feedback);
   responseMessage.appendChild(bubble);
   agentMessage.after(responseMessage);
-  scrollToBottom();
+  // A plan approval is an explicit request for input, so always reveal it.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => responseMessage.scrollIntoView({ block: "center" }));
+  });
 }
 
 function formatStepDuration(node) {
@@ -3149,6 +3159,11 @@ sendBtn.addEventListener("click", () => {
   messageStreamController.send(textInput.value);
 });
 textInput.addEventListener("keydown", (e) => {
+  // A Chinese/Japanese/Korean IME uses Enter to confirm its active candidate.
+  // Do not treat that keypress as a chat submission. `keyCode === 229` is a
+  // compatibility fallback for browsers that do not set `isComposing` here.
+  if (e.isComposing || e.keyCode === 229) return;
+
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     if (activeSessionRequest()) return;
