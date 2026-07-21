@@ -157,3 +157,21 @@ class TestValidateIncar:
         incar = dict(GOOD_INCAR, LCHARG=True)
         errs = pm.validate_incar(incar, spin=False)
         assert any("LCHARG" in e for e in errs)
+
+
+from pathlib import Path
+
+
+class TestValidateDir:
+    def test_empty_dir_reports_all_missing(self, tmp_path):
+        errs = pm.validate_dir(tmp_path, spin=False)
+        assert len(errs) == 3
+        assert any("INCAR" in e for e in errs)
+        assert any("POSCAR" in e for e in errs)
+        assert any("POTCAR" in e for e in errs)
+
+    def test_missing_potcar_only(self, tmp_path):
+        (tmp_path / "INCAR").write_text("ISPIN = 1\n")
+        (tmp_path / "POSCAR").write_text("x\n")
+        errs = pm.validate_dir(tmp_path, spin=False)
+        assert errs == ["missing POTCAR"]

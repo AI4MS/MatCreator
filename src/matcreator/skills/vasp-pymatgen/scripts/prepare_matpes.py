@@ -8,6 +8,8 @@ ENCUT=600, LMIXTAU off, LORBIT removed.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 BASE_OVERRIDES = {
     "ISPIN": 1,
     "ENCUT": 600,
@@ -89,4 +91,32 @@ def validate_incar(incar: dict, spin: bool) -> list[str]:
         errors.append("INCAR missing MAGMOM (required with --spin)")
     if not spin and "MAGMOM" in incar:
         errors.append("INCAR contains MAGMOM (should be removed when ISPIN=1)")
+    return errors
+
+
+def validate_dir(calc_dir: Path, spin: bool) -> list[str]:
+    from pymatgen.io.vasp.inputs import Incar, Poscar, Potcar
+
+    calc_dir = Path(calc_dir)
+    errors = [
+        f"missing {name}"
+        for name in ("INCAR", "POSCAR", "POTCAR")
+        if not (calc_dir / name).is_file()
+    ]
+    if errors:
+        return errors
+
+    incar = Incar.from_file(calc_dir / "INCAR")
+    errors.extend(validate_incar(incar, spin))
+
+    if "KSPACING" in incar and (calc_dir / "KPOINTS").is_file():
+        errors.append("KPOINTS file present although KSPACING is set")
+
+    poscar = Poscar.from_file(calc_dir / "POSCAR")
+    potcar = Potcar.from_file(str(calc_dir / "POTCAR"))
+    potcar_elements = [p.element for p in potcar]
+    if potcar_elements != poscar.site_symbols:
+        errors.append(
+            f"POTCAR elements {potcar_elements} != POSCAR {poscar.site_symbols}"
+        )
     return errors
