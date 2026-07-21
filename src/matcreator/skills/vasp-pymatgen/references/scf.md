@@ -51,4 +51,4 @@ This writes `INCAR`, `POSCAR`, `KPOINTS`, and `POTCAR` into the job directory.
 
 - Include `CHGCAR` in `backward_files` to retrieve it after the job
 - For SOC calculations, also include `WAVECAR` in both `forward_files` and `backward_files`
-- NCORE ≈ √(cores): 8 cores → 4, 16 cores → 4, 32 cores → 6
+

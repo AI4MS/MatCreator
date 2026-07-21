@@ -47,4 +47,3 @@ This writes `INCAR`, `POSCAR`, `KPOINTS`, and `POTCAR` into the job directory.
 ## Notes
 
 - Include `CONTCAR` and `OUTCAR` in `backward_files` to retrieve the relaxed structure
-- NCORE ≈ √(cores): 8 cores → 3, 16 cores → 4, 32 cores → 6
