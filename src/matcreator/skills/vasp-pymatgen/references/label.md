@@ -46,6 +46,8 @@ The `scripts/prepare_matpes.py` script wraps `MatPESStaticSet` with structure sa
 | `-o, --output-dir` | Output directory | `matpes_job` |
 | `--spin` | Enable spin polarization (`ISPIN=2`, keep MatPES `MAGMOM` guesses) | off (`ISPIN=1`) |
 | `--frames START:STOP:STEP` | Frame slice for multi-frame files | all frames |
+| `--incar KEY=VALUE` | Extra INCAR override, repeatable (e.g. `--incar NCORE=4`); policy keys (ISPIN, ENCUT, LCHARG, ...) rejected | — |
+| `--potcar {PBE_64,PBE_54,PBE}` | POTCAR functional generation; must match your `PMG_VASP_PSP_DIR` layout | `PBE_64` |
 | `--validate-only DIR...` | Validate existing calc dirs, skip generation | — |
 
 ### Outputs
@@ -97,6 +99,22 @@ python scripts/prepare_matpes.py --validate-only job_si job_fe
 ```
 
 Checks existing calculation directories for INCAR correctness, file completeness, and POTCAR/POSCAR element consistency. Prints `[OK]` or `[FAIL]` per directory. Exit code 0 = all pass.
+
+### Parallelization and Extra INCAR Tags
+
+```bash
+python scripts/prepare_matpes.py structure.extxyz -o job --incar NCORE=4
+```
+
+`--incar KEY=VALUE` is repeatable and passes extra `user_incar_settings` (values auto-parsed to int/float/bool). Use it for machine-dependent tags like `NCORE` (≈ √cores). Policy-managed keys (`ISPIN`, `ENCUT`, `LCHARG`, `LAECHG`, `LMIXTAU`, `LORBIT`, `MAGMOM`) are rejected to protect dataset consistency — use `--spin` for magnetism.
+
+### POTCAR Library Selection
+
+```bash
+python scripts/prepare_matpes.py structure.extxyz -o job --potcar PBE_54
+```
+
+Default is `PBE_64` (the MatPES recommendation, requires `POT_PAW_PBE_64` in `PMG_VASP_PSP_DIR`). Pass `PBE_54` or `PBE` if your library uses an older layout. See pitfall 7 below.
 
 ## Key INCAR Settings
 
@@ -151,6 +169,7 @@ No special submission requirements: labeling jobs are standard VASP static runs 
 4. **Expecting `CHGCAR` or `WAVECAR` output** — this is a labeling run. Neither file is written. If you need charge density for follow-up NSCF, use `prepare_scf` with `MPStaticSet` instead.
 5. **Pointing `from_prev_calc()` at a labeling directory** — label directories contain no `CHGCAR`/`WAVECAR`. NSCF jobs that require these files must point at an `MPStaticSet` SCF directory instead.
 6. **Forgetting `--frames` on a multi-frame extxyz** — without `--frames`, the script loads all frames. For a 10,000-frame trajectory this will create 10,000 directories. Always use `--frames` to slice large trajectories.
+7. **POTCAR functional mismatch (`PBE_64` vs `PBE.54`)** — the script defaults to `--potcar PBE_64` (the MatPES recommendation), which requires `POT_PAW_PBE_64` subdirectories in `PMG_VASP_PSP_DIR`. Many POTCAR libraries (e.g. `potpaw_PBE.54`) use older layouts; pass `--potcar PBE_54` or `--potcar PBE` to match your library. pymatgen warnings about functional inconsistency (`... is inconsistent with the recommended PBE_64`) are expected and harmless with non-default choices. Keep the whole training set on ONE functional generation — mixing POTCAR generations introduces systematic energy offsets.
 
 ## Verification Checklist
 
