@@ -27,6 +27,11 @@ _graph: Optional[KnowDoGraph] = None
 _migration_result: dict[str, int] | None = None
 
 
+def _is_virtual(entry: Entry) -> bool:
+    """Return whether an entry is a non-executable topology placeholder."""
+    return bool(entry.metadata.custom.get("virtual"))
+
+
 def _configure_auto_review(graph: KnowDoGraph) -> None:
     """Attach KDG's policy-controlled durable-node review scheduler."""
     enabled = os.environ.get("MATCREATOR_AUTO_REVIEW", "1").strip().lower()
@@ -213,7 +218,7 @@ def query_knowledge_graph(query: str, depth: int = 2, top_k: int = 15) -> str:
                 mode="hybrid",
                 include_procedures=True,
             )
-            if entry.entry_type != EntryType.memory
+            if entry.entry_type != EntryType.memory and not _is_virtual(entry)
         ][:top_k]
         for entry in durable:
             increment_usage(graph, entry)
@@ -294,6 +299,7 @@ def search_skills(query: str, top_k: int = 5) -> str:
             )
             if "matcreator-skill" in entry.tags
             and entry.title not in disabled
+            and not _is_virtual(entry)
         ][:top_k]
         for entry in results:
             increment_usage(graph, entry)
@@ -333,6 +339,8 @@ def search_skill_context(
             start = matches[0] if matches else None
         if start is None:
             return f"No L1/L2 node found matching '{skill}'."
+        if _is_virtual(start):
+            return f"Skill '{start.title}' is a virtual node; its backing skill is not installed."
 
         sections = [f"### Selected Node\n{_format_durable([start])}"]
         used_entries: list[Entry] = []

@@ -119,3 +119,14 @@ def test_docker_compose_server_healthcheck_uses_web_port() -> None:
     assert curl_with_env, (
         "Healthcheck curl command should reference ${MATCREATOR_WEB_PORT}"
     )
+
+
+def test_docker_compose_server_separates_control_plane_and_worker_images() -> None:
+    """Server mode must build distinct control-plane and worker image targets."""
+    content = _read_compose_file("docker-compose.server.yml")
+
+    assert "target: control-plane" in content
+    assert "target: worker" in content
+    assert "${MATCREATOR_CONTROL_PLANE_IMAGE:-matcreator-control-plane:latest}" in content
+    assert "${MATCREATOR_WORKER_IMAGE:-matcreator-worker:latest}" in content
+    assert "MATCREATOR_WORKER_IMAGE=${MATCREATOR_WORKER_IMAGE:-matcreator-worker:latest}" in content

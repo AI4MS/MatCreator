@@ -685,6 +685,29 @@ details summary:hover { color: var(--text); }
   border-color: var(--accent-secondary);
   color: var(--accent-secondary);
 }
+
+/* The dark theme's general accent palette is intentionally warm, but the
+   mode picker uses semantic colors: Flash is blue and Bench is yellow. */
+body[data-theme="dark"] .mode-btn[data-mode="flash"].mode-btn-active {
+  background: rgba(125, 211, 252, 0.14);
+  color: #7dd3fc;
+}
+body[data-theme="dark"] .mode-btn[data-mode="bench"].mode-btn-active {
+  background: rgba(245, 158, 11, 0.14);
+  color: #fbbf24;
+}
+body[data-theme="dark"] .mode-selector[data-selected-mode="flash"] .mode-trigger {
+  background: rgba(125, 211, 252, 0.1);
+  border-color: #7dd3fc;
+  color: #7dd3fc;
+  box-shadow: 0 0 0 2px rgba(125, 211, 252, 0.16);
+}
+body[data-theme="dark"] .mode-selector[data-selected-mode="bench"] .mode-trigger {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: #fbbf24;
+  color: #fbbf24;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.16);
+}
 .mode-check { visibility: hidden; font-size: 13px; text-align: right; }
 .mode-btn-active .mode-check { visibility: visible; }
 

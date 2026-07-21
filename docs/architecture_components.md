@@ -48,15 +48,25 @@ sequenceDiagram
     ADK-->>MW: Session response
     MW-->>FE: Session response
 
-    FE->>MW: POST /run_sse
-    MW->>ADK: Proxy /run_sse stream
+    FE->>MW: POST /api/runs
+    MW->>ADK: Start /run_sse producer
     ADK->>AG: Run agent turn
     AG-->>ADK: Stream events
-    ADK-->>MW: SSE chunks
-    MW-->>FE: SSE chunks
+    ADK-->>MW: SSE chunks buffered by managed run
+    FE->>MW: GET /api/runs/{run}/events
+    MW-->>FE: Replayable managed-run events
 ```
 
-Important current limitation: the browser owns the live `/run_sse` stream. If the tab closes or the request is aborted, the frontend-side stream consumer disappears. This is the main reason a future resilient control-plane layer is useful.
+The middleware owns the live `/run_sse` producer through a managed run. Closing
+the tab or losing the browser SSE subscription does not cancel that producer.
+On reload, the frontend validates its last selected session and owner against
+the sessions visible to the signed-in user, reopens that session, discovers an
+active managed run, and reconnects from the latest available sequence.
+
+Managed-run metadata, replay events, and producer tasks are process-local. A
+middleware/control-plane shutdown cancels active runs, so execution does not
+survive a server restart. Persisted ADK session history remains available after
+restart, but there is no durable scheduler that resumes the interrupted turn.
 
 ## 2. Middleware
 
@@ -128,8 +138,8 @@ The current boundaries can be summarized like this:
 
 | Layer | Owns | Does Not Own |
 | --- | --- | --- |
-| Frontend | UI state, rendering, user input, direct SSE consumption | Durable execution lifecycle |
-| FastAPI middleware | MatCreator APIs, auth/session views, file/config/structure APIs, ADK proxying, worker routing | Agent reasoning and durable scheduling |
+| Frontend | UI state, rendering, user input, managed-run subscription and browser-reload reconnect | Durable execution lifecycle |
+| FastAPI middleware | MatCreator APIs, auth/session views, file/config/structure APIs, ADK proxying, process-local managed runs, worker routing | Agent reasoning and durable scheduling across process restarts |
 | ADK agent framework | Agent invocation, session state, planning/execution loop, step execution | Browser reconnect semantics or frontend state |
 | Tools/skills | Concrete scientific/file/remote-job operations | Session scheduling policy |
 
@@ -169,7 +179,8 @@ flowchart LR
 Remote jobs outlive a frontend request and agent reconnection because their
 records and provider sandbox IDs are persisted. The monitor's polling schedule
 is process-local, but it rediscovers active records after restart. The broader
-agent-run lifecycle remains request/stream oriented. See [Remote Job
+agent-run lifecycle supports browser reconnection but remains process-local and
+cannot resume after a middleware restart. See [Remote Job
 Monitoring](remote_job_monitoring.md) for the state model, concurrency rules,
 ownership, and APIs.
 

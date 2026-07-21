@@ -68,3 +68,39 @@ ADK session state and the default Know-Do Graph database live under:
 ```
 
 Workspace-specific sessions and artifacts live under the workspace selected with `--workspace` or `MATCLAW_WORKSPACE`.
+
+### Session-Derived Benchmark Questions
+
+The session list can generate a review-only benchmark question draft from bounded observable session evidence. Drafts are staged under the user's evaluation workspace and require an explicit YAML review, approval, and export before they can be discovered by `mat-agent-bench`.
+
+Question generation uses a file-oriented plugin. The host writes a versioned `session.json`, passes it and the maintained `question_templates/mab_qa.json` authoring template to the plugin, and validates the plugin's `question.yaml` output. The default `builtin_llm` plugin uses the same `llm` settings as the rest of MatCreator:
+
+```yaml
+session_question_generator:
+  plugin: builtin_llm
+  # Optional development override; the packaged template is used by default.
+  template_path: /absolute/path/to/mab_qa.json
+```
+
+Plugins do not read `~/.matcreator/.adk/session.db` directly. Session authorization and database access remain host responsibilities, so providers can be replaced without depending on the ADK SQLite schema.
+
+Generated drafts are saved independently of the active workspace under:
+
+```text
+~/.matcreator/evals/question-drafts/<draft-id>/<question-id>/question.yaml
+```
+
+Server mode uses the equivalent path inside each user's `.matcreator` home. Drafts created by older versions under `workspace/evaluations/question-drafts` remain readable and move to the stable location on their next edit, refinement, approval, or export. The review dialog's **Drafts** action lists saved drafts so they can be reopened after closing the dialog.
+
+**Refine with feedback** sends the complete current question, MatCreator validation errors, bounded source-session evidence, and an optional user instruction through the same configured plugin. The revised `question.yaml` is validated and replaces the current draft atomically. Refinement metadata retains hashes, feedback, status, and timestamps but not previous full YAML revisions. Refining an approved question requires approval again.
+
+Configure the live benchmark bank with either `MAT_BENCH_QUESTION_BANK_ROOT` or the following user configuration value:
+
+```yaml
+benchmark:
+  question_bank_root: /absolute/path/to/mat_agent_bench/question_bank
+```
+
+Generation, review, approval, and export always perform MatCreator's executable-verifier validation. They do not require importing `mat_bench`; its `QuestionItem` schema can be used as an optional compatibility check by integrations that install that package. Generated data files are not exported in the current implementation; questions requiring input files must be completed through the benchmark-bank authoring workflow.
+
+For local development, MatCreator can automatically request and save `benchmark.token` when it is absent. Start the benchmark server with `--allow-token-registration` and configure only `benchmark.server_url`. The first catalog load or evaluation start registers a token through `POST /token` and persists it to `~/.matcreator/config.yaml`. This fallback is intentionally unavailable when the benchmark server disables registration; production deployments should configure `benchmark.token` or `MAT_BENCH_TOKEN` explicitly.

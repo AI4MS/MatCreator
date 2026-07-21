@@ -35,10 +35,14 @@ from ..cancellation import clear_cancellation
 from ...knowledge.extractor import run_knowledge_extractor
 from ...knowledge.synthesizer import run_knowledge_synthesizer
 from ...knowledge.kg_state import increment_exec_count, record_synthesizer_run
+from ...knowledge_schedule import is_knowledge_run_due, knowledge_frequency
 from ..execution_agent.recovery import reconcile_recovery_state
 from ..execution_graph_state import get_execution_graph
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_MEMORIZATION_FREQUENCY = 1
+_DEFAULT_REVIEW_FREQUENCY = 10
 
 
 # ---------------------------------------------------------------------------
@@ -194,19 +198,36 @@ class PlanningExecutionOrchestrator(BaseAgent):
                     graph.log_node_complete(exec_id, "success")
                     state["_node_exec_counter"] = 0
 
-                    # Extract knowledge from the completed session
-                    try:
-                        extraction_result = run_knowledge_extractor(ctx.session.id)
-                        logger.info("[orchestrator] knowledge extractor: %s", extraction_result.get("message"))
+                    # Knowledge processes are scheduled across completed executions.
+                    exec_count = increment_exec_count()
+                    memorization_frequency = knowledge_frequency(
+                        "MATCREATOR_MEMORIZATION_FREQUENCY",
+                        _DEFAULT_MEMORIZATION_FREQUENCY,
+                        logger=logger,
+                    )
+                    review_frequency = knowledge_frequency(
+                        "MATCREATOR_REVIEW_FREQUENCY",
+                        _DEFAULT_REVIEW_FREQUENCY,
+                        logger=logger,
+                    )
 
-                        # Run synthesizer every 10 completed executions (counted across sessions)
-                        exec_count = increment_exec_count()
-                        if exec_count % 10 == 0:
+                    if is_knowledge_run_due(exec_count, memorization_frequency):
+                        try:
+                            extraction_result = run_knowledge_extractor(ctx.session.id)
+                            logger.info(
+                                "[orchestrator] knowledge extractor: %s",
+                                extraction_result.get("message"),
+                            )
+                        except Exception as _kg_exc:
+                            logger.warning("[orchestrator] knowledge extraction failed: %s", _kg_exc)
+
+                    if is_knowledge_run_due(exec_count, review_frequency):
+                        try:
                             synth_result = run_knowledge_synthesizer()
                             record_synthesizer_run()
                             logger.info("[orchestrator] knowledge synthesizer: %s", synth_result.get("message"))
-                    except Exception as _kg_exc:
-                        logger.warning("[orchestrator] knowledge extraction failed: %s", _kg_exc)
+                        except Exception as _kg_exc:
+                            logger.warning("[orchestrator] knowledge review failed: %s", _kg_exc)
                 else:
                     logger.info("[orchestrator] execution returned with incomplete graph")
                     graph.log_node_complete(

@@ -53,6 +53,7 @@ where = ["src"]
     "knowledge/MEMORY.md",
     "agents/subagent.yaml",
     "guides/*.md",
+    "question_templates/*.json",
 ]
 
 [tool.semantic_release]

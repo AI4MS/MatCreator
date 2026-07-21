@@ -71,7 +71,8 @@ PID_API=$!
 sleep 1
 
 echo "Starting FastAPI middle layer (port $MATCREATOR_WEB_PORT)..."
-python web/main.py >"$LOG_DIR/web-main.log" 2>&1 &
+MATCREATOR_WEB_LOG_LEVEL="${MATCREATOR_WEB_LOG_LEVEL:-info}"
+python -m uvicorn web.main:app --host "$MATCREATOR_WEB_HOST" --port "$MATCREATOR_WEB_PORT" --log-level "$MATCREATOR_WEB_LOG_LEVEL" >"$LOG_DIR/web-main.log" 2>&1 &
 PID_WEB=$!
 sleep 1
 

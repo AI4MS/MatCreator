@@ -81,6 +81,8 @@ YAML_TO_ENV: dict[str, str] = {
     "compute.deepmd_machine": "BOHRIUM_DEEPMD_MACHINE",
     "compute.deepmd_model_path": "DEEPMD_MODEL_PATH",
     "skills.module_root":     "MATCREATOR_MODULE_SKILLS_ROOT",
+    "knowledge.memorization_frequency": "MATCREATOR_MEMORIZATION_FREQUENCY",
+    "knowledge.review_frequency": "MATCREATOR_REVIEW_FREQUENCY",
 }
 
 ENV_TO_YAML: dict[str, str] = {v: k for k, v in YAML_TO_ENV.items()}

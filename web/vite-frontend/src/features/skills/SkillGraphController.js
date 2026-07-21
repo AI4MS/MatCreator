@@ -21,6 +21,14 @@ export function createSkillGraphController({
     tool: { background: "#06B6D4", border: "#0891B2", highlight: { background: "#22D3EE", border: "#67E8F9" } },
     generic: { background: "#475569", border: "#64748B", highlight: { background: "#64748B", border: "#94A3B8" } },
   };
+  const VIRTUAL_NODE_COLOR = {
+    background: "rgba(239, 68, 68, 0.10)",
+    border: "rgba(248, 113, 113, 0.78)",
+    highlight: {
+      background: "rgba(239, 68, 68, 0.18)",
+      border: "rgba(252, 165, 165, 0.95)",
+    },
+  };
 
   function hexToRgb(hex) {
     const value = hex.replace("#", "");
@@ -36,7 +44,8 @@ export function createSkillGraphController({
     return `rgba(${r}, ${g}, ${b}, ${alpha})`;
   }
 
-  function skillGraphNodeColor(type, enabled = true, skillLevel = null) {
+  function skillGraphNodeColor(type, enabled = true, skillLevel = null, virtual = false) {
+    if (virtual) return VIRTUAL_NODE_COLOR;
     const kind = skillGraphNodeKindFor(type, skillLevel).value;
     const color = SKILL_GRAPH_COLORS[kind] || SKILL_GRAPH_COLORS[type] || SKILL_GRAPH_COLORS.generic;
     if (enabled !== false) return color;
@@ -887,6 +896,7 @@ export function createSkillGraphController({
     meta.className = "skill-graph-detail-meta";
     const metaItems = [
       skillGraphDisplayNodeType(node.entry_type, metadata?.skill_level),
+      node.virtual ? "virtual / backing skill missing" : null,
       node.enabled === false ? "disabled" : "enabled",
       node.verification_status,
       node.refinement_status,
@@ -908,6 +918,7 @@ export function createSkillGraphController({
       ["Slug", node.slug],
       ["Skill", node.skill_name],
       ["Enabled", node.enabled !== false],
+      ["Virtual", node.virtual === true],
       ["Type", skillGraphDisplayNodeType(node.entry_type, metadata.skill_level)],
       ["Aliases", node.aliases],
     ]);
@@ -1051,9 +1062,16 @@ export function createSkillGraphController({
       id: node.id,
       label: node.label,
       title: `${node.title}\n${nodeKind.label.toLowerCase()}${node.enabled === false ? "\ndisabled" : ""}`,
-      color: skillGraphNodeColor(node.entry_type, node.enabled, node.metadata?.skill_level),
+      color: skillGraphNodeColor(
+        node.entry_type,
+        node.enabled,
+        node.metadata?.skill_level,
+        node.virtual,
+      ),
       font: {
-        color: node.enabled === false
+        color: node.virtual
+          ? (state.theme === "light" ? "rgba(153, 27, 27, 0.62)" : "rgba(254, 202, 202, 0.66)")
+          : node.enabled === false
           ? (state.theme === "light" ? "rgba(19, 32, 51, 0.42)" : "rgba(231, 237, 247, 0.42)")
           : (state.theme === "light" ? "#132033" : "#e7edf7"),
         size: 13,
@@ -1061,7 +1079,10 @@ export function createSkillGraphController({
       },
       shape: "dot",
       size: nodeKind.value === "basic" || nodeKind.value === "workflow" ? 18 : 14,
-      borderWidth: node.enabled === false ? 1 : 2,
+      borderWidth: node.virtual ? 2 : node.enabled === false ? 1 : 2,
+      shapeProperties: node.virtual
+        ? { borderDashes: [6, 5] }
+        : { borderDashes: false },
       ...(position ? { x: position.x, y: position.y } : {}),
     };
   }

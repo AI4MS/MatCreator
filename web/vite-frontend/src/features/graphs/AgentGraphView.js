@@ -886,18 +886,18 @@ export class StepExecutionFeed {
   }
 
   attachLiveToolHost(hostEl) {
-    // The live feed now has a permanent host in the active assistant bubble.
-    // Do not move cards into a transient timeline entry when it arrives.
-    if (this._liveContainerEl?.isConnected) return false;
-    if (!hostEl || this._liveToolHostEl === hostEl) return false;
+    if (!hostEl || !this._liveContainerEl) return false;
+
+    // The timeline is rebuilt for every streamed event. Its inline host is
+    // therefore transient, but the live feed and its cards are not. Move that
+    // persistent region into the current host for the executor tool call so
+    // cards appear at their chronological point in the assistant message,
+    // rather than remaining at the bottom of the bubble.
+    if (this._liveToolHostEl?.isConnected && this._liveToolHostEl !== hostEl) return false;
+    if (this._liveToolHostEl === hostEl && this._liveContainerEl.parentElement === hostEl) return true;
+
+    hostEl.appendChild(this._liveContainerEl);
     this._liveToolHostEl = hostEl;
-    for (const [nodeId, card] of this._cards.entries()) {
-      const node = this._stepById.get(nodeId);
-      if (node && !this.isRootStep(node)) continue;
-      if (card.dataset.stepStartTime !== undefined) {
-        hostEl.appendChild(card);
-      }
-    }
     return true;
   }
 
@@ -1018,6 +1018,16 @@ export class StepExecutionFeed {
     }
     if (this._isSending() && this._liveContainerEl) {
       this._insertIntoLiveContainer(this._liveContainerEl, outer, node);
+      return;
+    }
+
+    // A reconnect snapshot can restore cards into an inline region before
+    // graph polling resumes. The active request makes _upsert call _placeCard
+    // on every poll; retain that restored in-bubble host instead of moving the
+    // card back to the chat root until the run finishes.
+    const existingHost = outer.parentElement;
+    if (existingHost && existingHost !== this._chatArea && this._chatArea.contains(existingHost)) {
+      this._insertIntoLiveContainer(existingHost, outer, node);
       return;
     }
     this._insertSorted(outer, node);

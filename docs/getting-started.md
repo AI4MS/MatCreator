@@ -49,6 +49,23 @@ npx vite --version
 
 ## Start the CLI
 
+Automatic knowledge extraction and review keep their existing defaults of every
+1 and 10 successful completed executions. During development, either process can
+be slowed down or disabled (`0`) as a persistent graph setting:
+
+```bash
+matcreator graph --memorize_frequency 0 --review_frequency 0
+matcreator graph --memorize-frequency 5 --review-frequency 20
+```
+
+The command stores these values in `~/.matcreator/config.yaml`. Explicit
+environment variables are also supported and take precedence in local mode:
+
+```bash
+export MATCREATOR_MEMORIZATION_FREQUENCY=0
+export MATCREATOR_REVIEW_FREQUENCY=20
+```
+
 Start an interactive session in the current project workspace:
 
 ```bash

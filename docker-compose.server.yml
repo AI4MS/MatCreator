@@ -11,14 +11,15 @@
 # Usage:
 #   export MATCREATOR_HOST_DATA_ROOT="$(pwd)/server-data"
 #   export MATCREATOR_HOST_CONFIG_PATH="$(pwd)/config.yaml"   # optional; default shown
+#   docker compose -f docker-compose.server.yml build control-plane worker-image
 #   docker compose -f docker-compose.server.yml up -d
 #
 # Prerequisites:
-#   - Build the image first:  docker compose build
+#   - Build the control-plane and worker images with the command above.
 #   - Put service defaults in ${MATCREATOR_HOST_CONFIG_PATH:-./config.yaml}
 
 x-worker-defaults: &worker-defaults
-  image: matcreator:latest
+  image: ${MATCREATOR_WORKER_IMAGE:-matcreator-worker:latest}
   restart: unless-stopped
   environment:
     - MATCREATOR_MODE=server
@@ -27,6 +28,15 @@ x-worker-defaults: &worker-defaults
     - matcreator-net
 
 services:
+
+  # Build-only service for the dynamically provisioned per-user worker image.
+  # It is profile-gated so normal `up` never creates a shared worker container.
+  worker-image:
+    build:
+      context: .
+      target: worker
+    image: ${MATCREATOR_WORKER_IMAGE:-matcreator-worker:latest}
+    profiles: ["build"]
 
   # --------------------------------------------------------------------------
   # Reverse proxy — routes browser traffic to the control plane
@@ -59,8 +69,10 @@ services:
   # Mounts /var/run/docker.sock so it can spawn/stop worker containers.
   # --------------------------------------------------------------------------
   control-plane:
-    image: matcreator:latest
-    command: python web/main.py
+    build:
+      context: .
+      target: control-plane
+    image: ${MATCREATOR_CONTROL_PLANE_IMAGE:-matcreator-control-plane:latest}
     environment:
       - MATCREATOR_MODE=server
       - MATCREATOR_DATA_ROOT=/data/matcreator
@@ -75,6 +87,7 @@ services:
       - MATCREATOR_MODULE_SKILLS_ROOT=${MATCREATOR_MODULE_SKILLS_ROOT:-}
       - MATCREATOR_WORKER_CONNECT_MODE=network
       - MATCREATOR_WORKER_NETWORK=matcreator-net
+      - MATCREATOR_WORKER_IMAGE=${MATCREATOR_WORKER_IMAGE:-matcreator-worker:latest}
       # Worker resource controls. Empty CPU/memory values mean "Docker default".
       - MATCREATOR_WORKER_IDLE_TIMEOUT_SECONDS=${MATCREATOR_WORKER_IDLE_TIMEOUT_SECONDS:-1800}
       - MATCREATOR_WORKER_MEM_LIMIT=${MATCREATOR_WORKER_MEM_LIMIT:-}

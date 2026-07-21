@@ -43,6 +43,27 @@ matcreator knowledge distill --min-evidence 3
 
 Nodes marked as peer-reviewed or community-tested are protected from mutation during review.
 
+## Maintenance
+
+Clear only session memory while preserving skills and durable graph nodes:
+
+```bash
+matcreator graph clear-memory
+```
+
+Reset learned graph data and rebuild from the currently installed built-in,
+official, user-global, and workspace custom skill files:
+
+```bash
+matcreator graph reset
+```
+
+Both commands ask for confirmation and create a timestamped SQLite backup in a
+`backups/` directory beside the active graph database. Pass `--yes` for
+non-interactive use or `--no-backup` to explicitly skip the backup. A reset
+treats the skill files as the source of truth, so current custom skills and
+their attachments are restored while deleted custom skills stay removed.
+
 ## Useful Commands
 
 ```bash

@@ -40,6 +40,7 @@ from .config import get_llm_config, get_bohrium_config, get_compute_config, get_
 _llm_cfg = get_llm_config()
 _bohrium_cfg = get_bohrium_config()
 _compute_cfg = get_compute_config()
+_knowledge_cfg = load_config().get("knowledge", {})
 
 _yaml_to_env: dict[str, str | None] = {
     "LLM_MODEL":            _llm_cfg.get("model"),
@@ -58,6 +59,8 @@ _yaml_to_env: dict[str, str | None] = {
     "BOHRIUM_DEEPMD_IMAGE": _compute_cfg.get("deepmd_image"),
     "BOHRIUM_DEEPMD_MACHINE": _compute_cfg.get("deepmd_machine"),
     "DEEPMD_MODEL_PATH":    _compute_cfg.get("deepmd_model_path"),
+    "MATCREATOR_MEMORIZATION_FREQUENCY": _knowledge_cfg.get("memorization_frequency"),
+    "MATCREATOR_REVIEW_FREQUENCY": _knowledge_cfg.get("review_frequency"),
 }
 
 for _env_key, _yaml_val in _yaml_to_env.items():

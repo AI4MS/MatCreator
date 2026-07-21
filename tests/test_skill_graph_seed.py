@@ -152,3 +152,93 @@ def test_seed_skills_to_graph_attaches_l3_l4_nodes_for_progressive_retrieval(
     context = query.search_skill_context(base.id)
     assert "useful-heuristic" in context
     assert "known-limitation" in context
+
+
+def test_seed_resolves_path_style_dependency_to_loaded_skill_name(
+    tmp_path, monkeypatch
+) -> None:
+    skills_root = tmp_path / "skills"
+    _write_simple_skill(skills_root / "base-skill", name="base-skill")
+    _write_simple_skill(
+        skills_root / "dependent-skill",
+        name="dependent-skill",
+        dependent_skills=["concepts/base-skill"],
+    )
+    loaded_skills = [load_skill_from_dir(path) for path in sorted(skills_root.iterdir())]
+    graph = KnowDoGraph(tmp_path / "know-do.db")
+
+    monkeypatch.setattr(skill, "ALL_SKILLS", loaded_skills)
+    monkeypatch.setattr(skill, "_MODULE_SKILLS_ROOT", tmp_path / "empty-defaults")
+    monkeypatch.setattr(skill, "workspace_skills_dir", lambda: skills_root)
+    monkeypatch.setattr(guide, "ALL_GUIDES", [])
+    monkeypatch.setattr(query, "_get_kg", lambda: graph)
+
+    result = skill.seed_skills_to_graph()
+
+    dependent = next(entry for entry in graph.list(limit=20) if entry.title == "dependent-skill")
+    related = graph.related(dependent.id, relation="dependency")
+    assert [entry.title for entry in related] == ["base-skill"]
+    assert not any(entry.title == "concepts/base-skill" for entry in graph.list(limit=20))
+    assert result["virtualized"] == 0
+
+
+def test_seed_removes_stale_managed_skill_and_uses_virtual_dependency(
+    tmp_path, monkeypatch
+) -> None:
+    skills_root = tmp_path / "skills"
+    graph = KnowDoGraph(tmp_path / "know-do.db")
+    stale = graph.add(
+        "removed-skill",
+        content="Stale instructions must not remain available.",
+        entry_type="capability",
+        tags=["matcreator-skill", "managed"],
+        internal_refs=["references/stale.md"],
+    )
+    dependent_dir = skills_root / "dependent-skill"
+    _write_simple_skill(
+        dependent_dir,
+        name="dependent-skill",
+        dependent_skills=["removed-skill"],
+    )
+    dependent = load_skill_from_dir(dependent_dir)
+
+    monkeypatch.setattr(skill, "ALL_SKILLS", [dependent])
+    monkeypatch.setattr(skill, "_MODULE_SKILLS_ROOT", tmp_path / "empty-defaults")
+    monkeypatch.setattr(skill, "workspace_skills_dir", lambda: skills_root)
+    monkeypatch.setattr(guide, "ALL_GUIDES", [])
+    monkeypatch.setattr(query, "_get_kg", lambda: graph)
+
+    result = skill.seed_skills_to_graph()
+
+    assert graph.get(stale.id) is None
+    virtual = next(
+        entry
+        for entry in graph.list(limit=20)
+        if entry.title == "removed-skill"
+    )
+    virtual_id = virtual.id
+    assert result["removed"] == 1
+    assert result["virtualized"] == 1
+    assert virtual.content == ""
+    assert virtual.internal_refs == []
+    assert virtual.metadata.custom["virtual"] is True
+    assert "virtual" in virtual.tags
+    assert query.search_skills("removed-skill").startswith("No skills found")
+    assert "virtual node" in query.search_skill_context(stale.id)
+
+    skill_dir = skills_root / "removed-skill"
+    _write_simple_skill(skill_dir, name="removed-skill")
+    monkeypatch.setattr(
+        skill,
+        "ALL_SKILLS",
+        [dependent, load_skill_from_dir(skill_dir)],
+    )
+
+    skill.seed_skills_to_graph()
+
+    restored = graph.get(virtual_id)
+    assert restored is not None
+    assert restored.content == "Content for removed-skill."
+    assert restored.metadata.custom["virtual"] is False
+    assert "virtual" not in restored.tags
+    assert any(tag.startswith("skill-source:") for tag in restored.tags)

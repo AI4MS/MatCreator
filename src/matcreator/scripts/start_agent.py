@@ -15,6 +15,8 @@ Knowledge Graph Commands (matcreator graph ...):
     stats         Show graph-wide statistics (nodes, edges).
     neighbors     Show graph neighbors for a given entry ID.
     export        Export graph entries.
+    clear-memory  Delete memory nodes without changing skill nodes.
+    reset         Rebuild the graph from installed built-in and custom skills.
 
 Knowledge Management Commands (matcreator knowledge ...):
     query         Search the knowledge graph for nodes matching a query string.
@@ -214,7 +216,6 @@ def _setup_workspace(workspace: str | None) -> Path:
     return ws_root
 
 
-
 def _run_with_env(cmd: list[str], env: dict[str, str]) -> None:
     click.echo("Starting: " + " ".join(cmd))
     try:
@@ -300,9 +301,37 @@ def api_server(host, port, workspace, log_level, reload_agents, verbose, reload)
     )
 
 
-@main.group("graph", context_settings={"ignore_unknown_options": True})
-def graph_group():
+@main.group(
+    "graph",
+    context_settings={"ignore_unknown_options": True},
+    invoke_without_command=True,
+)
+@click.option(
+    "--memorize-frequency", "--memorize_frequency", "memorize_frequency",
+    type=click.IntRange(min=0), default=None, metavar="N",
+    help="Persist automatic memorization frequency; 0 disables it.",
+)
+@click.option(
+    "--review-frequency", "--review_frequency", "review_frequency",
+    type=click.IntRange(min=0), default=None, metavar="N",
+    help="Persist automatic review frequency; 0 disables it.",
+)
+@click.pass_context
+def graph_group(ctx: click.Context, memorize_frequency, review_frequency):
     """Run Know-Do Graph inspection commands against MatCreator's active database."""
+    from matcreator.config import set_config_value
+
+    changed = False
+    if memorize_frequency is not None:
+        set_config_value("knowledge.memorization_frequency", str(memorize_frequency))
+        click.echo(f"Set MATCREATOR_MEMORIZATION_FREQUENCY={memorize_frequency}")
+        changed = True
+    if review_frequency is not None:
+        set_config_value("knowledge.review_frequency", str(review_frequency))
+        click.echo(f"Set MATCREATOR_REVIEW_FREQUENCY={review_frequency}")
+        changed = True
+    if ctx.invoked_subcommand is None and not changed:
+        click.echo(ctx.get_help())
 
 
 @graph_group.command(
@@ -352,6 +381,45 @@ def graph_export(ctx: click.Context) -> None:
     env = _matcreator_kdg_env()
     cmd = [_resolve_kdg_cli(), "graph", "export", *ctx.args]
     _run_with_env(cmd, env)
+
+
+@graph_group.command("clear-memory")
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
+@click.option("--no-backup", is_flag=True, help="Do not back up the graph before clearing memory.")
+def graph_clear_memory(yes: bool, no_backup: bool) -> None:
+    """Delete all memory nodes while preserving the rest of the skill graph."""
+    if not yes:
+        click.confirm("Delete all memory nodes from the skill graph?", abort=True)
+    from matcreator.skill import clear_skill_graph_memory
+
+    try:
+        result = clear_skill_graph_memory(create_backup=not no_backup)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if result.get("backup_path"):
+        click.echo(f"Backup: {result['backup_path']}")
+    click.echo(result["message"])
+
+
+@graph_group.command("reset")
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
+@click.option("--no-backup", is_flag=True, help="Do not back up the graph before resetting it.")
+def graph_reset(yes: bool, no_backup: bool) -> None:
+    """Rebuild the graph from installed built-in and custom skill files."""
+    if not yes:
+        click.confirm(
+            "Remove learned graph data and rebuild from installed skills?",
+            abort=True,
+        )
+    from matcreator.skill import reset_skill_graph
+
+    try:
+        result = reset_skill_graph(create_backup=not no_backup)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if result.get("backup_path"):
+        click.echo(f"Backup: {result['backup_path']}")
+    click.echo(result["message"])
 
 
 # ---------------------------------------------------------------------------
@@ -481,6 +549,7 @@ async def run_agent_async(
     max_turns: int = 50,
     session_id: str | None = None,
     flash: bool = False,
+    event_log: str | None = None,
 ) -> dict:
     """Run the agent non-interactively on a single prompt.
 
@@ -514,6 +583,11 @@ async def run_agent_async(
 
     start_ms = time.monotonic_ns() // 1_000_000
     events = []
+    event_log_handle = None
+    if event_log:
+        event_log_path = Path(event_log).expanduser().resolve()
+        event_log_path.parent.mkdir(parents=True, exist_ok=True)
+        event_log_handle = event_log_path.open("a", encoding="utf-8")
     turn_count = 0
     is_error = False
     error_msg = ""
@@ -525,6 +599,13 @@ async def run_agent_async(
             new_message=user_message,
         ):
             events.append(event)
+            if event_log_handle is not None:
+                try:
+                    payload = event.model_dump(mode="json", exclude_none=True)
+                except AttributeError:
+                    payload = {"text": str(event)}
+                event_log_handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                event_log_handle.flush()
             if hasattr(event, "is_final_response") and event.is_final_response():
                 turn_count += 1
             if turn_count >= max_turns:
@@ -532,6 +613,9 @@ async def run_agent_async(
     except Exception as exc:
         is_error = True
         error_msg = str(exc)
+    finally:
+        if event_log_handle is not None:
+            event_log_handle.close()
 
     duration_ms = (time.monotonic_ns() // 1_000_000) - start_ms
 
@@ -581,7 +665,9 @@ async def run_agent_async(
               help="Custom session ID (default: auto-generated by ADK).")
 @click.option("--flash", is_flag=True, default=False,
               help="Run in Flash mode: thinking agent executes directly, no DAG or approval required.")
-def run_cmd(workspace, prompt_text, prompt_file, output_format, output_file, max_turns, session_id, flash):
+@click.option("--event-log", default=None, type=click.Path(), metavar="FILE",
+              help="Append each ADK event as JSONL while the run is active.")
+def run_cmd(workspace, prompt_text, prompt_file, output_format, output_file, max_turns, session_id, flash, event_log):
     """Run the agent non-interactively on a single prompt and print the result.
 
     Provide a prompt via -p/--prompt (inline text) or -f/--prompt-file (path to
@@ -599,7 +685,7 @@ def run_cmd(workspace, prompt_text, prompt_file, output_format, output_file, max
     ws_root = Path(workspace).expanduser().resolve() if workspace else _default_workspace()
     ws_root.mkdir(parents=True, exist_ok=True)
 
-    result = asyncio.run(run_agent_async(str(ws_root), prompt_text, max_turns, session_id, flash))
+    result = asyncio.run(run_agent_async(str(ws_root), prompt_text, max_turns, session_id, flash, event_log))
 
     if output_format == "json":
         content = json.dumps(result, ensure_ascii=False, indent=2)

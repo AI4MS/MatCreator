@@ -1,0 +1,624 @@
+"""Generate, validate, and stage session-derived benchmark question drafts."""
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import uuid
+from hashlib import sha256
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from importlib import import_module
+from pathlib import Path
+from typing import Any, Protocol
+
+import yaml
+
+
+SUPPORTED_VERIFY_TYPES = frozenset(
+    {
+        "artifact_exists",
+        "text_file_contains_all",
+        "text_file_regex",
+        "text_file_numeric_range",
+        "text_file_kpt_path",
+        "struct_file_atom_count",
+        "struct_file_formula",
+        "struct_file_bond_count",
+        "struct_file_bond_length",
+        "struct_file_bond_angle",
+        "struct_file_cell_param",
+        "struct_file_stoichiometry_ratio",
+        "struct_file_coordination",
+        "struct_file_layer_count",
+        "struct_file_count",
+        "struct_file_surface_termination",
+        "checkcif_no_a_alerts",
+    }
+)
+
+_TASK_TYPES = frozenset(
+    {
+        "search_and_interpretation",
+        "simulation",
+        "materials_design_and_discovery",
+        "material_characterization",
+        "synthesis_and_experiment_design",
+        "end_to_end_research",
+    }
+)
+_CAPABILITIES = frozenset(
+    {
+        "scientific_reasoning",
+        "tool_utilization",
+        "workflow_orchestration",
+        "data_handling",
+        "structure_manipulation",
+        "scientific_grounding",
+    }
+)
+_DOMAINS = frozenset({"battery", "catalysis", "polymer", "alloy", "semiconductor", "agnostic"})
+_DIFFICULTIES = frozenset({"easy", "medium", "hard"})
+
+
+class SessionQuestionGeneratorPlugin(Protocol):
+    """File-oriented boundary for question-authoring providers."""
+
+    name: str
+
+    async def generate(
+        self, *, template_path: Path, session_path: Path, output_path: Path
+    ) -> None: ...
+
+
+class BuiltinLlmQuestionGeneratorPlugin:
+    """Built-in authoring plugin backed by the configured MatCreator LLM."""
+
+    name = "builtin_llm"
+
+    def __init__(self, *, model: str, api_key: str | None = None, base_url: str | None = None) -> None:
+        if not model:
+            raise ValueError("The builtin_llm question generator requires an LLM model")
+        self.model = model
+        self.api_key = api_key
+        self.base_url = base_url
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> BuiltinLlmQuestionGeneratorPlugin:
+        llm = config.get("llm") if isinstance(config.get("llm"), dict) else {}
+        return cls(
+            model=os.environ.get("LLM_MODEL") or str(llm.get("model") or ""),
+            api_key=os.environ.get("LLM_API_KEY") or str(llm.get("api_key") or "") or None,
+            base_url=os.environ.get("LLM_BASE_URL") or str(llm.get("base_url") or "") or None,
+        )
+
+    async def generate(
+        self, *, template_path: Path, session_path: Path, output_path: Path
+    ) -> None:
+        from litellm import acompletion
+
+        template = json.loads(template_path.read_text(encoding="utf-8"))
+        invocation = json.loads(session_path.read_text(encoding="utf-8"))
+        operation = invocation.get("operation", "generate")
+        operation_instruction = (
+            "Generate the initial question from the observed session evidence."
+            if operation == "generate"
+            else (
+                "Refine the complete current_question using MatCreator's validation_errors and "
+                "the optional user_instruction. Preserve grounded content that is already valid, "
+                "fix the reported issues, and return a complete replacement question object."
+            )
+        )
+        response = await acompletion(
+            model=self.model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Use the following maintained question-authoring template to derive exactly "
+                        "one self-contained benchmark question from the observed session. Return only "
+                        "the question object as JSON. Do not invent unobserved inputs, artifacts, or "
+                        "reference values. The template's executable_verify_types field is the "
+                        "authoritative verifier allowlist and overrides verifier names in examples. "
+                        + operation_instruction
+                        + "\n\n"
+                        + json.dumps(template, ensure_ascii=False, sort_keys=True)
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(invocation, ensure_ascii=False, sort_keys=True),
+                },
+            ],
+            api_key=self.api_key,
+            base_url=self.base_url,
+            temperature=0.1,
+            response_format={"type": "json_object"},
+        )
+        content = response.choices[0].message.content or "{}"
+        question = json.loads(content)
+        if isinstance(question, dict) and isinstance(question.get("questions"), list):
+            questions = question["questions"]
+            if len(questions) != 1:
+                raise ValueError("Question generator must produce exactly one question")
+            question = questions[0]
+        if not isinstance(question, dict):
+            raise ValueError("Question generator did not return an object")
+        temporary = output_path.with_suffix(".tmp")
+        temporary.write_text(
+            yaml.safe_dump(question, allow_unicode=False, sort_keys=False), encoding="utf-8"
+        )
+        temporary.replace(output_path)
+
+
+class CallableSessionQuestionGenerator:
+    """Adapt an async question callable to the file-oriented plugin contract."""
+
+    name = "callable"
+
+    def __init__(self, generate: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]) -> None:
+        self._generate = generate
+
+    async def generate(
+        self, *, template_path: Path, session_path: Path, output_path: Path
+    ) -> None:
+        invocation = json.loads(session_path.read_text(encoding="utf-8"))
+        payload = invocation.get("evidence", invocation)
+        question = await self._generate(payload)
+        if not isinstance(question, dict):
+            raise ValueError("Question generator did not return an object")
+        output_path.write_text(
+            yaml.safe_dump(question, allow_unicode=False, sort_keys=False), encoding="utf-8"
+        )
+
+
+@dataclass(frozen=True)
+class GeneratedQuestionDraft:
+    draft_id: str
+    status: str
+    question: dict[str, Any]
+    evidence: dict[str, Any]
+    validation_errors: list[str]
+    staging_path: Path
+    refinement_count: int = 0
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "draft_id": self.draft_id,
+            "status": self.status,
+            "question": self.question,
+            "question_yaml": yaml.safe_dump(self.question, allow_unicode=False, sort_keys=False),
+            "evidence": self.evidence,
+            "validation_errors": self.validation_errors,
+            "staging_path": str(self.staging_path),
+            "refinement_count": self.refinement_count,
+        }
+
+
+def build_session_question_evidence(session_log: dict[str, Any]) -> dict[str, Any]:
+    """Reduce a session log to bounded, observable evidence for question authoring."""
+    nodes = session_log.get("graph", {}).get("nodes", [])
+    trajectory_steps = [node for node in nodes if isinstance(node, dict)][:20]
+    events = [event for event in session_log.get("events", []) if isinstance(event, dict)][:50]
+    return {
+        "schema_version": "matcreator.session-question-trajectory.v1",
+        "source": {
+            "session_id": str(session_log.get("session_id") or ""),
+            "owner_id": session_log.get("owner_id"),
+            "event_count": session_log.get("event_count", 0),
+            "artifact_count": session_log.get("artifact_count", 0),
+        },
+        "steps": [
+            {
+                "step_number": node.get("step_number"),
+                "action": node.get("action") or "Unnamed step",
+                "summary": node.get("summary") or "",
+                "status": node.get("status"),
+                "tool_call_count": node.get("tool_call_count", 0),
+                "artifact_count": node.get("artifact_count", 0),
+            }
+            for node in trajectory_steps
+        ],
+        "events": events,
+        "artifacts": [str(path) for path in session_log.get("artifacts", [])][:20],
+    }
+
+
+def validate_question(
+    question: dict[str, Any], *, require_benchmark_schema: bool = False
+) -> list[str]:
+    """Validate the executable subset of the mat-agent-bench question contract."""
+    errors: list[str] = []
+    required = {
+        "id", "task_type", "capabilities", "domain", "difficulty", "intent",
+        "human_prompt_seed", "scoring_checklist",
+    }
+    missing = sorted(key for key in required if not question.get(key))
+    if missing:
+        errors.append(f"Missing required question fields: {', '.join(missing)}")
+    if question.get("task_type") not in _TASK_TYPES:
+        errors.append("task_type is not supported by mat-agent-bench")
+    if question.get("domain") not in _DOMAINS:
+        errors.append("domain is not supported by mat-agent-bench")
+    if question.get("difficulty", "medium") not in _DIFFICULTIES:
+        errors.append("difficulty must be easy, medium, or hard")
+    capabilities = question.get("capabilities")
+    if not isinstance(capabilities, list) or not capabilities:
+        errors.append("capabilities must be a non-empty list")
+    elif invalid := sorted(str(value) for value in capabilities if value not in _CAPABILITIES):
+        errors.append(f"Unsupported capabilities: {', '.join(invalid)}")
+
+    references = question.get("reference_answers", [])
+    if not isinstance(references, list):
+        errors.append("reference_answers must be a list")
+        references = []
+    reference_keys = {item.get("key") for item in references if isinstance(item, dict)}
+    checks = question.get("scoring_checklist")
+    if not isinstance(checks, list) or not checks:
+        errors.append("scoring_checklist must be a non-empty list")
+        checks = []
+    for check in checks:
+        if not isinstance(check, dict):
+            errors.append("scoring_checklist entries must be objects")
+            continue
+        check_id = check.get("id")
+        verify = check.get("verify")
+        if not check_id or not check.get("criterion"):
+            errors.append("Every scoring checklist entry needs id and criterion")
+        if verify not in SUPPORTED_VERIFY_TYPES:
+            errors.append(f"Unsupported executable verifier: {verify}")
+        if check_id not in reference_keys:
+            errors.append(f"Checklist item '{check_id}' needs a matching reference answer")
+    if require_benchmark_schema:
+        try:
+            question_item = import_module("mat_bench.schemas").QuestionItem
+        except (ImportError, AttributeError):
+            errors.append("mat-agent-bench schema package is unavailable for export validation")
+        else:
+            try:
+                question_item.model_validate(question)
+            except ValueError as exc:
+                errors.append(f"mat-agent-bench schema validation failed: {exc}")
+    return errors
+
+
+def _safe_component(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip(".-")[:80]
+    return cleaned or "session-question"
+
+
+class StagedSessionQuestionService:
+    """Create durable review-only question drafts outside the live benchmark bank."""
+
+    def __init__(
+        self,
+        staging_root: str | Path,
+        generator: SessionQuestionGeneratorPlugin | None = None,
+        *,
+        template_path: str | Path | None = None,
+        legacy_roots: list[str | Path] | None = None,
+    ) -> None:
+        self.staging_root = Path(staging_root).expanduser().resolve()
+        self.generator = generator
+        self.template_path = Path(template_path).expanduser().resolve() if template_path else None
+        self.legacy_roots = [Path(root).expanduser().resolve() for root in (legacy_roots or [])]
+
+    def _draft_path(self, draft_id: str, *, migrate: bool = False) -> Path:
+        if not re.fullmatch(r"[0-9a-f]{32}", draft_id):
+            raise KeyError("Question draft was not found")
+        draft_root = None
+        source_root = None
+        for root in [self.staging_root, *self.legacy_roots]:
+            candidate = (root / draft_id).resolve()
+            if candidate.is_relative_to(root) and candidate.is_dir():
+                draft_root = candidate
+                source_root = root
+                break
+        if draft_root is None or source_root is None:
+            raise KeyError("Question draft was not found")
+        if migrate and source_root != self.staging_root:
+            self.staging_root.mkdir(parents=True, exist_ok=True)
+            target_root = (self.staging_root / draft_id).resolve()
+            if target_root.exists():
+                raise ValueError("Question draft migration target already exists")
+            draft_root.replace(target_root)
+            draft_root = target_root
+        question_paths = [path for path in draft_root.iterdir() if (path / "question.yaml").is_file()]
+        if len(question_paths) != 1:
+            raise ValueError("Question draft storage is incomplete")
+        return question_paths[0]
+
+    @staticmethod
+    def _write_json(path: Path, value: dict[str, Any]) -> None:
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
+        temporary.replace(path)
+
+    @staticmethod
+    def _write_yaml(path: Path, value: dict[str, Any]) -> None:
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(yaml.safe_dump(value, allow_unicode=False, sort_keys=False), encoding="utf-8")
+        temporary.replace(path)
+
+    def _load(
+        self, draft_id: str, *, migrate: bool = False
+    ) -> tuple[Path, dict[str, Any], dict[str, Any]]:
+        draft_path = self._draft_path(draft_id, migrate=migrate)
+        try:
+            question = yaml.safe_load((draft_path / "question.yaml").read_text(encoding="utf-8"))
+            metadata = json.loads((draft_path / "generation.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            raise ValueError("Question draft storage is invalid") from exc
+        if not isinstance(question, dict) or not isinstance(metadata, dict):
+            raise ValueError("Question draft storage is invalid")
+        return draft_path, question, metadata
+
+    @staticmethod
+    def _draft_from_values(
+        draft_path: Path, question: dict[str, Any], metadata: dict[str, Any]
+    ) -> GeneratedQuestionDraft:
+        return GeneratedQuestionDraft(
+            draft_id=str(metadata["draft_id"]),
+            status=str(metadata["status"]),
+            question=question,
+            evidence=dict(metadata.get("evidence", {"source": metadata.get("source", {})})),
+            validation_errors=list(metadata.get("validation_errors", [])),
+            staging_path=draft_path,
+            refinement_count=int(metadata.get("refinement_count", 0)),
+        )
+
+    @staticmethod
+    def _question_sha256(question: dict[str, Any]) -> str:
+        return sha256(json.dumps(question, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    def list(self) -> list[dict[str, Any]]:
+        drafts: dict[str, dict[str, Any]] = {}
+        for root in [*reversed(self.legacy_roots), self.staging_root]:
+            if not root.is_dir():
+                continue
+            for draft_root in root.iterdir():
+                if not re.fullmatch(r"[0-9a-f]{32}", draft_root.name):
+                    continue
+                try:
+                    draft_path, question, metadata = self._load(draft_root.name)
+                except (KeyError, ValueError):
+                    continue
+                drafts[draft_root.name] = {
+                    "draft_id": draft_root.name,
+                    "question_id": str(question.get("id") or ""),
+                    "intent": str(question.get("intent") or ""),
+                    "status": str(metadata.get("status") or "invalid"),
+                    "source_session_id": str(metadata.get("source", {}).get("session_id") or ""),
+                    "validation_errors": list(metadata.get("validation_errors", [])),
+                    "refinement_count": int(metadata.get("refinement_count", 0)),
+                    "updated_at": metadata.get("updated_at"),
+                    "staging_path": str(draft_path),
+                }
+        return sorted(drafts.values(), key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+
+    async def create(self, session_log: dict[str, Any]) -> GeneratedQuestionDraft:
+        if self.generator is None or self.template_path is None:
+            raise RuntimeError("Question generator is not configured")
+        if not self.template_path.is_file():
+            raise ValueError("Question authoring template was not found")
+        template_bytes = self.template_path.read_bytes()
+        try:
+            template = json.loads(template_bytes)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("Question authoring template is invalid") from exc
+        if not isinstance(template, dict):
+            raise ValueError("Question authoring template must contain an object")
+        evidence = build_session_question_evidence(session_log)
+        draft_id = uuid.uuid4().hex
+        invocation_path = (self.staging_root / f".{draft_id}.generating").resolve()
+        if not invocation_path.is_relative_to(self.staging_root):
+            raise ValueError("Question generation path escapes its configured root")
+        invocation_path.mkdir(parents=True, exist_ok=False)
+        session_path = invocation_path / "session.json"
+        output_path = invocation_path / "question.yaml"
+        self._write_json(
+            session_path,
+            {
+                "schema_version": "matcreator.session-question-invocation.v1",
+                "operation": "generate",
+                "iteration": 0,
+                "evidence": evidence,
+            },
+        )
+        try:
+            await self.generator.generate(
+                template_path=self.template_path,
+                session_path=session_path,
+                output_path=output_path,
+            )
+            if not output_path.is_file():
+                raise ValueError("Question generator did not produce question.yaml")
+            question = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+        except Exception:
+            shutil.rmtree(invocation_path, ignore_errors=True)
+            raise
+        if not isinstance(question, dict):
+            shutil.rmtree(invocation_path, ignore_errors=True)
+            raise ValueError("Generated question YAML must contain an object")
+        errors = validate_question(question)
+        question_id = _safe_component(str(question.get("id") or "session-question"))
+        draft_path = (self.staging_root / draft_id / question_id).resolve()
+        if not draft_path.is_relative_to(self.staging_root):
+            raise ValueError("Draft staging path escapes its configured root")
+        draft_path.mkdir(parents=True, exist_ok=False)
+        output_path.replace(draft_path / "question.yaml")
+        shutil.rmtree(invocation_path, ignore_errors=True)
+        metadata = {
+            "draft_id": draft_id,
+            "status": "ready_for_review" if not errors else "invalid",
+            "generator_plugin": self.generator.name,
+            "template_path": str(self.template_path),
+            "template_version": template.get("template_version"),
+            "template_sha256": sha256(template_bytes).hexdigest(),
+            "session_schema_version": evidence["schema_version"],
+            "source": evidence["source"],
+            "evidence": evidence,
+            "validation_errors": errors,
+            "refinement_count": 0,
+            "last_operation": "generate",
+            "history": [],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._write_json(draft_path / "generation.json", metadata)
+        return GeneratedQuestionDraft(
+            draft_id=draft_id,
+            status=metadata["status"],
+            question=question,
+            evidence=evidence,
+            validation_errors=errors,
+            staging_path=draft_path,
+            refinement_count=0,
+        )
+
+    def get(self, draft_id: str) -> GeneratedQuestionDraft:
+        draft_path, question, metadata = self._load(draft_id)
+        return self._draft_from_values(draft_path, question, metadata)
+
+    def update(self, draft_id: str, question_yaml: str) -> GeneratedQuestionDraft:
+        draft_path, _question, metadata = self._load(draft_id, migrate=True)
+        if metadata.get("status") == "exported":
+            raise ValueError("An exported question draft cannot be edited")
+        try:
+            question = yaml.safe_load(question_yaml)
+        except yaml.YAMLError as exc:
+            raise ValueError(f"Question YAML is invalid: {exc}") from exc
+        if not isinstance(question, dict):
+            raise ValueError("Question YAML must contain an object")
+        errors = validate_question(question)
+        metadata["status"] = "ready_for_review" if not errors else "invalid"
+        metadata["validation_errors"] = errors
+        metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self._write_yaml(draft_path / "question.yaml", question)
+        self._write_json(draft_path / "generation.json", metadata)
+        return self._draft_from_values(draft_path, question, metadata)
+
+    async def refine(
+        self, draft_id: str, user_instruction: str | None = None
+    ) -> GeneratedQuestionDraft:
+        if self.generator is None or self.template_path is None:
+            raise RuntimeError("Question generator is not configured")
+        draft_path, question, metadata = self._load(draft_id, migrate=True)
+        if metadata.get("status") == "exported":
+            raise ValueError("An exported question draft cannot be refined")
+        instruction = (user_instruction or "").strip()
+        if len(instruction) > 2000:
+            raise ValueError("Refinement instruction must be at most 2000 characters")
+        previous_errors = validate_question(question)
+        iteration = int(metadata.get("refinement_count", 0)) + 1
+        invocation_path = (self.staging_root / f".{draft_id}.refining").resolve()
+        invocation_path.mkdir(parents=True, exist_ok=False)
+        session_path = invocation_path / "session.json"
+        output_path = invocation_path / "question.yaml"
+        self._write_json(
+            session_path,
+            {
+                "schema_version": "matcreator.session-question-invocation.v1",
+                "operation": "refine",
+                "iteration": iteration,
+                "evidence": metadata.get("evidence", {}),
+                "current_question": question,
+                "validation_errors": previous_errors,
+                "user_instruction": instruction or None,
+            },
+        )
+        try:
+            await self.generator.generate(
+                template_path=self.template_path,
+                session_path=session_path,
+                output_path=output_path,
+            )
+            if not output_path.is_file():
+                raise ValueError("Question generator did not produce question.yaml")
+            revised = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+            if not isinstance(revised, dict):
+                raise ValueError("Generated question YAML must contain an object")
+        except Exception:
+            shutil.rmtree(invocation_path, ignore_errors=True)
+            raise
+        errors = validate_question(revised)
+        previous_hash = self._question_sha256(question)
+        revised_hash = self._question_sha256(revised)
+        output_path.replace(draft_path / "question.yaml")
+        shutil.rmtree(invocation_path, ignore_errors=True)
+        now = datetime.now(timezone.utc).isoformat()
+        history = list(metadata.get("history", []))[-49:]
+        history.append(
+            {
+                "iteration": iteration,
+                "timestamp": now,
+                "previous_question_sha256": previous_hash,
+                "question_sha256": revised_hash,
+                "feedback": previous_errors,
+                "validation_errors": errors,
+                "status": "ready_for_review" if not errors else "invalid",
+                "user_instruction": instruction or None,
+            }
+        )
+        metadata.update(
+            {
+                "status": "ready_for_review" if not errors else "invalid",
+                "validation_errors": errors,
+                "refinement_count": iteration,
+                "last_operation": "refine",
+                "history": history,
+                "updated_at": now,
+            }
+        )
+        self._write_json(draft_path / "generation.json", metadata)
+        return self._draft_from_values(draft_path, revised, metadata)
+
+    def approve(self, draft_id: str) -> GeneratedQuestionDraft:
+        draft_path, question, metadata = self._load(draft_id, migrate=True)
+        errors = validate_question(question)
+        if errors:
+            metadata["status"] = "invalid"
+            metadata["validation_errors"] = errors
+            self._write_json(draft_path / "generation.json", metadata)
+            raise ValueError("Question draft has validation errors and cannot be approved")
+        if metadata.get("status") not in {"ready_for_review", "approved"}:
+            raise ValueError("Only review-ready question drafts can be approved")
+        metadata["status"] = "approved"
+        metadata["validation_errors"] = []
+        metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self._write_json(draft_path / "generation.json", metadata)
+        return self._draft_from_values(draft_path, question, metadata)
+
+    def export(self, draft_id: str, question_bank_root: str | Path) -> GeneratedQuestionDraft:
+        draft_path, question, metadata = self._load(draft_id, migrate=True)
+        if metadata.get("status") != "approved":
+            raise ValueError("Question draft must be approved before export")
+        errors = validate_question(question)
+        if errors:
+            raise ValueError("Question draft has validation errors and cannot be exported")
+        if question.get("data_files"):
+            raise ValueError("Exporting generated question data files is not supported yet")
+        question_id = _safe_component(str(question.get("id") or ""))
+        if question_id != question.get("id"):
+            raise ValueError("Question id contains unsupported path characters")
+        root = Path(question_bank_root).expanduser().resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        target = (root / question_id).resolve()
+        if not target.is_relative_to(root):
+            raise ValueError("Question export path escapes its configured root")
+        if target.exists():
+            raise ValueError(f"Question id '{question_id}' already exists in the benchmark bank")
+        temporary = root / f".{question_id}-{uuid.uuid4().hex}.tmp"
+        try:
+            temporary.mkdir()
+            self._write_yaml(temporary / "question.yaml", question)
+            temporary.replace(target)
+        except OSError:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
+        metadata["status"] = "exported"
+        metadata["exported_path"] = str(target)
+        metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self._write_json(draft_path / "generation.json", metadata)
+        return self._draft_from_values(draft_path, question, metadata)

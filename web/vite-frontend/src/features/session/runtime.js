@@ -100,8 +100,29 @@ export function createSessionRuntime({
   }
 
   function attachStepNodes(timeline, pendingStepNodes) {
-    for (const item of timeline) {
-      if (item.type !== "function_call" || !isExecutorLauncherTool(item.name)) continue;
+    const launcherCalls = timeline.filter((item) => item.type === "function_call" && isExecutorLauncherTool(item.name));
+    if (!launcherCalls.length) return timeline;
+
+    // A resumed session may contain several parallel run_node_executor calls
+    // in one assistant event. Match their persisted step cards by node ID
+    // first; consuming them one-at-a-time made the remaining cards fall back
+    // to the chat root when the session was switched mid-run.
+    for (const item of launcherCalls) {
+      const requestedNodeId = item.args?.node_id;
+      const matchIndex = pendingStepNodes.findIndex((node) =>
+        requestedNodeId && (node.input?.node_id === requestedNodeId || node.id?.endsWith(`__node_${requestedNodeId}`)),
+      );
+      if (matchIndex >= 0) {
+        const [node] = pendingStepNodes.splice(matchIndex, 1);
+        item.stepNodes = [node];
+      }
+    }
+
+    // Older runs and flash-step calls do not always carry a stable node ID.
+    // Keep their cards inside an executor call bubble using chronological
+    // fallback, rather than appending standalone agent-message cards.
+    for (const item of launcherCalls) {
+      if (item.stepNodes?.length) continue;
       const nextStep = pendingStepNodes.shift();
       if (nextStep) item.stepNodes = [nextStep];
     }
@@ -177,7 +198,23 @@ export function createSessionRuntime({
       const timeline = attachStepNodes(eventToTimelineParts(event, responsesById, pairedResponseIds), pendingStepNodes);
       if (timeline.length) lastAgentTimeline = addAgentTimelineMessage(timeline, shownPlotPaths, messageIndex++);
     }
-    pendingStepNodes.forEach((node) => stepExecutionFeed.appendStatic(node));
+    // Preserve the assistant-message containment even if an older/incomplete
+    // persisted event stream cannot be matched to a specific executor call.
+    // This is particularly important while reconnecting after a session
+    // switch: standalone cards become visual siblings of the chat bubble.
+    if (pendingStepNodes.length) {
+      // A session can be switched to after the backend has recorded its user
+      // turn and graph nodes, but before it has persisted the assistant's
+      // executor function-call event. Provide that in-flight turn with a real
+      // bubble instead of rendering the recovered cards as chat-root siblings.
+      if (!lastAgentTimeline) {
+        lastAgentTimeline = addAgentTimelineMessage([], shownPlotPaths, messageIndex++);
+      }
+      const fallbackHost = document.createElement("div");
+      fallbackHost.className = "step-feed-inline-region";
+      lastAgentTimeline.appendChild(fallbackHost);
+      pendingStepNodes.forEach((node) => stepExecutionFeed.appendStatic(node, fallbackHost));
+    }
     if (awaitingPlanApproval && lastAgentTimeline) addPlanApprovalActions(lastAgentTimeline);
   }
 
@@ -243,43 +280,132 @@ export function createSessionRuntime({
     }
   }
 
+  const MANAGED_RUN_RETRY_INITIAL_DELAY_MS = 500;
+  const MANAGED_RUN_RETRY_MAX_DELAY_MS = 5000;
+  const MANAGED_RUN_REFRESH_DELAY_MS = 250;
+
   function startManagedRunReconnect(activeRun, sessionId, owner = state.activeSessionUserId || state.userId) {
     if (!activeRun?.run_id) return;
     const key = sessionRequestKey(sessionId, owner);
     if (state.activeRequests.get(key)) return;
-    const request = { key, sessionId, owner, backendUserId: owner, controller: new AbortController(), lastSequence: activeRun.latest_sequence || 0, runId: activeRun.run_id };
+    const request = {
+      key,
+      sessionId,
+      owner,
+      backendUserId: owner,
+      controller: new AbortController(),
+      lastSequence: activeRun.latest_sequence || 0,
+      runId: activeRun.run_id,
+      refreshTimer: null,
+      retryDelayMs: MANAGED_RUN_RETRY_INITIAL_DELAY_MS,
+    };
     state.activeRequests.set(key, request);
     updateSendButtonState();
     void streamManagedRunEvents(request);
   }
 
-  async function streamManagedRunEvents(request) {
+  function isCurrentManagedRunRequest(request) {
+    return state.activeRequests.get(request.key) === request;
+  }
+
+  function scheduleManagedRunRefresh(request, { immediate = false } = {}) {
+    if (!isCurrentManagedRunRequest(request)) return;
+    if (request.refreshTimer !== null) {
+      if (!immediate) return;
+      clearTimeout(request.refreshTimer);
+    }
+    const refresh = async () => {
+      request.refreshTimer = null;
+      if (isCurrentManagedRunRequest(request)) {
+        await loadSession(request.sessionId, request.owner);
+      }
+    };
+    request.refreshTimer = setTimeout(refresh, immediate ? 0 : MANAGED_RUN_REFRESH_DELAY_MS);
+  }
+
+  async function managedRunStillActive(request) {
     try {
-      const response = await fetch(managedRunEventsUrl(request), { headers: { Accept: "text/event-stream" }, signal: request.controller.signal });
-      if (!response.ok) return;
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop();
-        for (const line of lines) {
-          if (!line.trim().startsWith("data: ")) continue;
-          try {
-            const event = JSON.parse(line.trim().slice(6));
-            if (event.type === "event") request.lastSequence = event.sequence || request.lastSequence;
-            if (event.type === "snapshot_required") await loadSession(request.sessionId, request.owner);
-          } catch (_) { /* Ignore malformed SSE events. */ }
+      const response = await fetch(`/api/runs/${encodeURIComponent(request.runId)}`);
+      if (response.ok) {
+        const run = await response.json();
+        if (["starting", "running", "cancelling"].includes(run.status)) return true;
+        return false;
+      }
+      if (response.status !== 404) return true;
+    } catch (_) {
+      return true;
+    }
+    const activeRun = await discoverManagedRun(request.sessionId, request.owner);
+    if (activeRun?.run_id) {
+      request.runId = activeRun.run_id;
+      request.lastSequence = activeRun.latest_sequence || 0;
+      return true;
+    }
+    return false;
+  }
+
+  async function waitForManagedRunRetry(request) {
+    const delay = request.retryDelayMs;
+    request.retryDelayMs = Math.min(delay * 2, MANAGED_RUN_RETRY_MAX_DELAY_MS);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    return isCurrentManagedRunRequest(request) && !request.controller.signal.aborted;
+  }
+
+  async function streamManagedRunEvents(request) {
+    let shouldRetry = true;
+    try {
+      while (shouldRetry && isCurrentManagedRunRequest(request) && !request.controller.signal.aborted) {
+        try {
+          const response = await fetch(managedRunEventsUrl(request), {
+            headers: { Accept: "text/event-stream" },
+            signal: request.controller.signal,
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let terminal = false;
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop();
+            for (const line of lines) {
+              if (!line.trim().startsWith("data: ")) continue;
+              try {
+                const event = JSON.parse(line.trim().slice(6));
+                if (event.type === "event") {
+                  request.lastSequence = event.sequence || request.lastSequence;
+                  request.retryDelayMs = MANAGED_RUN_RETRY_INITIAL_DELAY_MS;
+                  scheduleManagedRunRefresh(request);
+                } else if (event.type === "snapshot_required") {
+                  request.lastSequence = event.latest_sequence || request.lastSequence;
+                  scheduleManagedRunRefresh(request, { immediate: true });
+                } else if (event.type === "terminal") {
+                  request.lastSequence = event.latest_sequence || request.lastSequence;
+                  terminal = true;
+                }
+              } catch (_) { /* Ignore malformed SSE events. */ }
+            }
+          }
+          if (terminal) {
+            shouldRetry = false;
+            continue;
+          }
+        } catch (error) {
+          if (error?.name === "AbortError") break;
+        }
+        if (!await managedRunStillActive(request) || !await waitForManagedRunRetry(request)) {
+          shouldRetry = false;
         }
       }
-    } catch (_) {
-      // Reconnect is best-effort; a normal send path surfaces hard errors.
     } finally {
-      releaseSessionRequest(request);
-      await loadSession(request.sessionId, request.owner);
+      if (request.refreshTimer !== null) clearTimeout(request.refreshTimer);
+      if (isCurrentManagedRunRequest(request)) {
+        releaseSessionRequest(request);
+        await loadSession(request.sessionId, request.owner);
+      }
     }
   }
 

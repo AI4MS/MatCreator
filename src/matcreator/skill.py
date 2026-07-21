@@ -9,7 +9,9 @@ the guide system unchanged.
 
 import logging
 import os
+import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from mimetypes import guess_type
 
 from google.adk.skills import load_skill_from_dir
@@ -265,7 +267,7 @@ def seed_skills_to_graph() -> dict:
         SkillLevel,
         VerificationStatus,
     )
-    from .knowledge.kdg_memory import connect_once, upsert_entry
+    from .knowledge.kdg_memory import connect_once, iter_entries, upsert_entry
     from .knowledge.query import _get_kg
     from .guide import ALL_GUIDES
 
@@ -273,6 +275,7 @@ def seed_skills_to_graph() -> dict:
     seeded = 0
     attachments_seeded = 0
     skill_node_ids: dict[str, str] = {}
+    active_skill_names = {skill.name for skill in ALL_SKILLS}
     skill_dirs = _skill_dir_map()
 
     for skill in ALL_SKILLS:
@@ -372,7 +375,14 @@ def seed_skills_to_graph() -> dict:
             for tag in frontmatter_metadata.get("tags", [])
             if str(tag).strip()
         ]
-        tags = list(dict.fromkeys(["matcreator-skill", "managed", *extra_tags]))
+        source = get_skill_source(skill.name)
+        source_name = source.name if source else "unknown"
+        tags = list(dict.fromkeys([
+            "matcreator-skill",
+            "managed",
+            f"skill-source:{source_name}",
+            *[tag for tag in extra_tags if tag != "virtual"],
+        ]))
         node, created = upsert_entry(
             kg,
             title=skill.name,
@@ -387,13 +397,43 @@ def seed_skills_to_graph() -> dict:
                 refinement_status=RefinementStatus.validated,
                 verification_status=VerificationStatus.peer_reviewed,
                 skill_level=skill_level,
-                custom={"managed_by": "matcreator", "kind": "skill"},
+                custom={
+                    "managed_by": "matcreator",
+                    "kind": "skill",
+                    "skill_source": source_name,
+                    "virtual": False,
+                    "virtual_reason": None,
+                },
             ),
         )
+        normalized_tags = [
+            tag
+            for tag in node.tags
+            if tag != "virtual" and not tag.startswith("skill-source:")
+        ]
+        normalized_tags.append(f"skill-source:{source_name}")
+        if normalized_tags != node.tags:
+            node = kg.update(
+                node.id,
+                tags=normalized_tags,
+            )
         skill_node_ids[skill.name] = node.id
         seeded += int(created)
         attachments_seeded += len(internal_refs) + len(assets)
 
+    # Repository-managed nodes mirror the installed skill set. Remove stale
+    # real nodes here; unresolved dependency targets are recreated below as
+    # empty virtual placeholders so broken topology remains visible.
+    removed = 0
+    for entry in list(iter_entries(kg)):
+        if (
+            "matcreator-skill" not in entry.tags
+            or "matcreator-guide" in entry.tags
+            or entry.title in active_skill_names
+        ):
+            continue
+        if "managed" in entry.tags or entry.metadata.custom.get("virtual"):
+            removed += int(kg.delete(entry.id))
     for guide in ALL_GUIDES:
         _, created = upsert_entry(
             kg,
@@ -414,6 +454,7 @@ def seed_skills_to_graph() -> dict:
     # Create edges from dependent_skills metadata. For L3/L4 nodes this field
     # means "attached parent skills" so progressive retrieval can scope them.
     edges_created = 0
+    virtualized = 0
     for skill in ALL_SKILLS:
         metadata = skill.frontmatter.metadata or {}
         deps = metadata.get("dependent_skills", [])
@@ -425,8 +466,39 @@ def seed_skills_to_graph() -> dict:
         elif entry_type_value == "constraint" or skill_level_value == "L4":
             relation = EdgeRelation.constraint_on
         src_id = skill_node_ids.get(skill.name)
-        for dep_name in deps:
+        for declared_dep in deps:
+            dep_name = str(declared_dep).strip().rstrip("/")
+            # Frontmatter may use a repository-relative path such as
+            # ``concepts/dft-calculation`` while ADK registers the skill by
+            # its SKILL.md name/basename. Prefer an exact name, then resolve
+            # a path-style reference to its installed basename.
+            if dep_name not in active_skill_names and "/" in dep_name:
+                basename = dep_name.rsplit("/", 1)[-1]
+                if basename in active_skill_names:
+                    dep_name = basename
             tgt_id = skill_node_ids.get(dep_name)
+            if src_id and not tgt_id:
+                virtual = kg.add(
+                    dep_name,
+                    content="",
+                    entry_type=EntryType.capability,
+                    tags=["matcreator-skill", "virtual"],
+                    metadata=EntryMetadata(
+                        source_provenance="dependency declaration",
+                        refinement_status=RefinementStatus.raw,
+                        verification_status=VerificationStatus.unverified,
+                        skill_level=SkillLevel.L1,
+                        custom={
+                            "managed_by": "matcreator",
+                            "kind": "virtual_dependency",
+                            "virtual": True,
+                            "virtual_reason": "referenced skill is not installed",
+                        },
+                    ),
+                )
+                tgt_id = virtual.id
+                skill_node_ids[dep_name] = tgt_id
+                virtualized += 1
             if src_id and tgt_id:
                 edges_created += int(
                     connect_once(
@@ -448,6 +520,8 @@ def seed_skills_to_graph() -> dict:
         "seeded": seeded,
         "attachments_seeded": attachments_seeded,
         "edges_created": edges_created,
+        "removed": removed,
+        "virtualized": virtualized,
     }
 
 
@@ -468,4 +542,86 @@ def refresh_skills() -> dict:
         "skills": [s.name for s in new_skills],
         "count": len(new_skills),
         "message": f"Refreshed {len(new_skills)} skills; seeded {seed_result['seeded']} nodes into knowledge graph.",
+    }
+
+
+def _backup_skill_graph(graph) -> Path:
+    """Create and return a transactionally consistent SQLite graph backup."""
+    source_path = Path(graph.path)
+    if not source_path.exists():
+        raise RuntimeError(f"Cannot back up missing skill graph database: {source_path}")
+    backup_dir = source_path.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    backup_path = backup_dir / f"{source_path.stem}-{timestamp}{source_path.suffix or '.db'}"
+    try:
+        with sqlite3.connect(source_path) as source, sqlite3.connect(backup_path) as target:
+            source.backup(target)
+    except (OSError, sqlite3.Error) as exc:
+        backup_path.unlink(missing_ok=True)
+        raise RuntimeError(f"Failed to back up skill graph: {exc}") from exc
+    return backup_path
+
+
+def clear_skill_graph_memory(*, create_backup: bool = True) -> dict:
+    """Delete every memory node while leaving durable skill graph nodes intact."""
+    from know_do_graph import EntryType
+    from .knowledge.kdg_memory import iter_entries
+    from .knowledge.query import _get_kg
+
+    graph = _get_kg()
+    backup_path = _backup_skill_graph(graph) if create_backup else None
+    memory_ids = [
+        entry.id
+        for entry in iter_entries(graph)
+        if entry.entry_type == EntryType.memory
+    ]
+    deleted = sum(int(bool(graph.delete(entry_id))) for entry_id in memory_ids)
+    graph.refresh()
+    if deleted != len(memory_ids):
+        raise RuntimeError(
+            f"Memory clear stopped after deleting {deleted}/{len(memory_ids)} nodes; "
+            "one or more memory nodes could not be removed."
+        )
+    return {
+        "status": "ok",
+        "deleted": deleted,
+        "failed": 0,
+        "backup_path": str(backup_path) if backup_path else None,
+        "message": f"Cleared {deleted} memory node(s).",
+    }
+
+
+def reset_skill_graph(*, create_backup: bool = True) -> dict:
+    """Rebuild the graph from currently installed built-in and custom skills.
+
+    Skill files are the source of truth. All graph nodes are removed first,
+    then active built-in, official, user-global, and workspace skills (plus
+    bundled guides and declared dependency topology) are freshly seeded.
+    """
+    from .knowledge.kdg_memory import iter_entries
+    from .knowledge.query import _get_kg
+
+    graph = _get_kg()
+    backup_path = _backup_skill_graph(graph) if create_backup else None
+    entry_ids = [entry.id for entry in iter_entries(graph)]
+    deleted = sum(int(bool(graph.delete(entry_id))) for entry_id in entry_ids)
+    if deleted != len(entry_ids):
+        graph.refresh()
+        raise RuntimeError(
+            f"Graph reset stopped after deleting {deleted}/{len(entry_ids)} nodes; "
+            "one or more nodes could not be removed."
+        )
+
+    graph.refresh()
+    refresh_result = refresh_skills()
+    return {
+        "status": "ok",
+        "deleted": deleted,
+        "skills": refresh_result["count"],
+        "backup_path": str(backup_path) if backup_path else None,
+        "message": (
+            f"Reset the skill graph: removed {deleted} node(s) and restored "
+            f"{refresh_result['count']} installed skill(s)."
+        ),
     }

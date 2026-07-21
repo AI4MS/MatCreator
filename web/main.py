@@ -37,13 +37,15 @@ import sys
 import termios
 import threading
 import time
+from importlib.resources import files
 from pathlib import Path
 from typing import Any, List
 from urllib.parse import unquote
 
 import httpx
 import yaml
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -77,7 +79,6 @@ from matcreator.agents.cancellation import (  # noqa: E402
     request_step_cancellation,
 )
 from matcreator.agents.graph_logger import AgentGraphLogger  # noqa: E402
-from matcreator.agents.execution_graph_state import decode_execution_graph  # noqa: E402
 from matcreator.agents.session_log import build_session_log_export  # noqa: E402
 from matcreator.skill import (  # noqa: E402
     ALL_SKILLS,
@@ -96,7 +97,18 @@ from matcreator.constants import GRAPH_AGENT_MODEL, KNOW_DO_GRAPH_DB  # noqa: E4
 from matcreator.control_plane.remote_job_monitor import RemoteJobMonitor  # noqa: E402
 from matcreator.control_plane.remote_job_service import RemoteJobService  # noqa: E402
 from matcreator.control_plane.remote_jobs import RemoteJobStore  # noqa: E402
+from matcreator.control_plane.benchmark_client import BenchmarkApiError, BenchmarkClient  # noqa: E402
+from matcreator.control_plane.evaluation_manager import EvaluationManager  # noqa: E402
+from matcreator.control_plane.evaluation_runtime import RuntimeOutcome, RuntimeSpec  # noqa: E402
+from matcreator.control_plane.evaluation_service import EvaluationService  # noqa: E402
+from matcreator.control_plane.evaluations import EvaluationStore  # noqa: E402
 from matcreator.control_plane.runs import ManagedRun, ManagedRunRegistry  # noqa: E402
+from matcreator.control_plane.worker_supervisor import WorkerSupervisor  # noqa: E402
+from matcreator.control_plane.session_question_generator import (  # noqa: E402
+    BuiltinLlmQuestionGeneratorPlugin,
+    CallableSessionQuestionGenerator,
+    StagedSessionQuestionService,
+)
 from matcreator.knowledge.query import _get_kg  # noqa: E402
 from matcreator.knowledge.review import run_review_pipeline  # noqa: E402
 from matcreator.ports import get_adk_port, get_local_adk_command, get_web_port, get_worker_base_port  # noqa: E402
@@ -105,6 +117,37 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="MatCreator Graph API", version="1.0.0")
 APP_NAME = "MatCreator"
+
+
+class EvaluationCampaignBody(BaseModel):
+    model_name: str
+    question_ids: list[str]
+    max_parallelism: int = 1
+    max_turns: int = 50
+    timeout_seconds: int = 600
+    flash: bool = False
+
+
+class EvaluationQuestionSetBody(BaseModel):
+    name: str
+    question_ids: list[str]
+    visibility: str = "private"
+
+
+class EvaluationQuestionDraftBody(BaseModel):
+    title: str
+    prompt: str
+    expected_deliverables: list[str]
+    rubrics: list[dict[str, Any]]
+    tags: list[str] = []
+
+
+class EvaluationQuestionDraftUpdateBody(BaseModel):
+    question_yaml: str
+
+
+class EvaluationQuestionDraftRefineBody(BaseModel):
+    instruction: str = ""
 _SERVER_HOST_DATA_ROOT = Path(
     os.environ.get("MATCREATOR_HOST_DATA_ROOT", str(_SERVER_DATA_ROOT))
 ).expanduser()
@@ -163,6 +206,10 @@ _knowledge_review_state = {
 _run_registry = ManagedRunRegistry()
 _remote_job_store = RemoteJobStore(_ADK_DIR / "remote-jobs.db")
 _remote_job_service = RemoteJobService(_remote_job_store)
+_evaluation_store = EvaluationStore(_ADK_DIR / "evaluations.db")
+_evaluation_manager = EvaluationManager(
+    max_concurrent_attempts=int(os.environ.get("MATCREATOR_EVALUATION_MAX_CONCURRENCY", "4"))
+)
 _remote_job_monitor = RemoteJobMonitor(_remote_job_store, _remote_job_service)
 _remote_job_monitor_task: asyncio.Task[None] | None = None
 _remote_job_monitor_stop = asyncio.Event()
@@ -170,6 +217,19 @@ _LEGACY_ENV_ALIASES = {
     "LLM_API_KEY": "MINIMAX_API_KEY",
     "LLM_BASE_URL": "MINIMAX_API_BASE",
 }
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Log validation details without logging potentially sensitive request bodies."""
+    logger.debug(
+        "Request validation failed: method=%s path=%s query=%s errors=%s",
+        request.method,
+        request.url.path,
+        dict(request.query_params),
+        exc.errors(),
+    )
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
 def _config_value_for_env_key(env_key: str) -> str:
@@ -213,7 +273,7 @@ def _runtime_env_value(env_key: str) -> str:
 # to the correct worker and manages the container lifecycle.
 
 # _ADK_LOCAL_PORT is resolved at call time via get_adk_port() (env > config.yaml > default).
-_WORKER_IMAGE = os.environ.get("MATCREATOR_WORKER_IMAGE", "matcreator:latest")
+_WORKER_IMAGE = os.environ.get("MATCREATOR_WORKER_IMAGE", "matcreator-worker:latest")
 _WORKER_NETWORK = os.environ.get("MATCREATOR_WORKER_NETWORK", "matcreator-net")
 _WORKER_CONNECT_MODE = os.environ.get("MATCREATOR_WORKER_CONNECT_MODE", "network").lower()
 _WORKER_BASE_PORT = get_worker_base_port()
@@ -225,11 +285,6 @@ _WORKER_SHARED_MOUNTS = os.environ.get("MATCREATOR_WORKER_SHARED_MOUNTS", "")
 _WORKSPACE_CLI_TIMEOUT_SECONDS = int(os.environ.get("MATCREATOR_WORKSPACE_CLI_TIMEOUT_SECONDS", "30"))
 _WORKSPACE_CLI_OUTPUT_LIMIT = int(os.environ.get("MATCREATOR_WORKSPACE_CLI_OUTPUT_LIMIT", "20000"))
 
-_worker_registry: dict[str, str] = {}   # user_id → base URL
-_worker_ports: dict[str, int] = {}      # user_id → host port (host-port connect mode)
-_worker_last_used: dict[str, float] = {}
-_worker_registry_lock = threading.Lock()
-_docker_client = None
 
 
 def _safe_user_dir_name(user_id: str) -> str:
@@ -258,6 +313,97 @@ def _remote_job_service_for_owner(owner_id: str) -> RemoteJobService:
     if store is _remote_job_store:
         return _remote_job_service
     return RemoteJobService(store)
+
+
+def _evaluation_store_for_owner(owner_id: str) -> EvaluationStore:
+    if _MATCREATOR_MODE == "server":
+        if not owner_id:
+            raise HTTPException(status_code=400, detail="user_id is required in server mode")
+        return EvaluationStore(_user_matcreator_home(owner_id) / ".adk" / "evaluations.db")
+    return _evaluation_store
+
+
+def _evaluation_workspace_for_owner(owner_id: str) -> Path:
+    if _MATCREATOR_MODE == "server":
+        if not owner_id:
+            raise HTTPException(status_code=400, detail="user_id is required in server mode")
+        return _user_workspace_root(owner_id) / "evaluations"
+    return get_workspace_root() / "evaluations"
+
+
+def _benchmark_client() -> BenchmarkClient:
+    benchmark_config = load_config().get("benchmark") or {}
+    if not isinstance(benchmark_config, dict):
+        benchmark_config = {}
+    server_url = (
+        os.environ.get("MAT_BENCH_SERVER_URL", "").strip()
+        or str(benchmark_config.get("server_url") or "").strip()
+    )
+    token = (
+        os.environ.get("MAT_BENCH_TOKEN", "").strip()
+        or str(benchmark_config.get("token") or "").strip()
+    )
+    if not server_url or not token:
+        raise HTTPException(
+            status_code=503,
+            detail="Benchmark service is not configured. Set MAT_BENCH_SERVER_URL and MAT_BENCH_TOKEN or benchmark.server_url and benchmark.token in config.yaml.",
+        )
+    return BenchmarkClient(server_url, token)
+
+
+_benchmark_token_registration_lock = asyncio.Lock()
+
+
+async def _benchmark_client_for_owner(owner_id: str = "") -> BenchmarkClient:
+    """Resolve a benchmark client, registering a development token when needed."""
+    config = _load_config_for_user(owner_id)
+    benchmark_config = config.get("benchmark") or {}
+    if not isinstance(benchmark_config, dict):
+        benchmark_config = {}
+    server_url = (
+        os.environ.get("MAT_BENCH_SERVER_URL", "").strip()
+        or str(benchmark_config.get("server_url") or "").strip()
+    )
+    token = (
+        os.environ.get("MAT_BENCH_TOKEN", "").strip()
+        or str(benchmark_config.get("token") or "").strip()
+    )
+    if not server_url:
+        raise HTTPException(
+            status_code=503,
+            detail="Benchmark service is not configured. Set MAT_BENCH_SERVER_URL or benchmark.server_url in config.yaml.",
+        )
+    if token:
+        return BenchmarkClient(server_url, token)
+    async with _benchmark_token_registration_lock:
+        # Another first-use request may have persisted the token while this request waited.
+        config = _load_config_for_user(owner_id)
+        benchmark_config = config.get("benchmark") or {}
+        if not isinstance(benchmark_config, dict):
+            benchmark_config = {}
+        token = (
+            os.environ.get("MAT_BENCH_TOKEN", "").strip()
+            or str(benchmark_config.get("token") or "").strip()
+        )
+        if token:
+            return BenchmarkClient(server_url, token)
+        try:
+            token = await BenchmarkClient.register_token(server_url)
+        except (BenchmarkApiError, ValueError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Benchmark API token is missing and automatic development-token registration failed: "
+                    f"{exc}. Start mat-agent-bench with --allow-token-registration or configure benchmark.token."
+                ),
+            ) from exc
+        updated_benchmark = dict(benchmark_config)
+        updated_benchmark["server_url"] = server_url
+        updated_benchmark["token"] = token
+        updated_config = dict(config)
+        updated_config["benchmark"] = updated_benchmark
+        _save_config_for_user(updated_config, owner_id)
+        return BenchmarkClient(server_url, token)
 
 
 async def _run_remote_job_monitor() -> None:
@@ -410,6 +556,16 @@ def _user_workspace_root(user_id: str) -> Path:
     return _user_matcreator_home(user_id) / "workspace"
 
 
+def _cancellation_workspace_root(session_id: str, user_id: str = "") -> Path | None:
+    """Resolve the workspace where the executing agent reads cancellation flags."""
+    if _MATCREATOR_MODE != "server":
+        return None
+    owner_id = user_id or _load_session_state(session_id)[0]
+    if not owner_id:
+        raise HTTPException(status_code=404, detail="Session owner was not found")
+    return _user_workspace_root(owner_id)
+
+
 def _worker_target_url(user_id: str, port: int | None = None) -> str:
     if _WORKER_CONNECT_MODE == "host-port":
         if port is None:
@@ -482,28 +638,9 @@ def _load_session_state(session_id: str, user_id: str | None = None) -> tuple[st
     return None, {}
 
 
-def _get_docker():
-    global _docker_client
-    if _docker_client is None:
-        try:
-            import docker as _docker
-            _docker_client = _docker.from_env()
-        except Exception as exc:
-            raise RuntimeError(f"Docker unavailable: {exc}") from exc
-    return _docker_client
-
-
 def _worker_container_name(user_id: str) -> str:
     safe = re.sub(r"[^a-zA-Z0-9_-]", "-", user_id)[:64]
     return f"matcreator-worker-{safe}"
-
-
-def _next_free_port() -> int:
-    used = set(_worker_ports.values())
-    port = _WORKER_BASE_PORT
-    while port in used:
-        port += 1
-    return port
 
 
 def _worker_image_id(dc) -> str:
@@ -529,18 +666,6 @@ def _worker_container_uses_current_image(dc, container) -> bool:
     return bool(current_image_id and container_image_id and current_image_id == container_image_id)
 
 
-def _remove_worker_container(user_id: str, container=None) -> None:
-    try:
-        dc = _get_docker()
-        target = container or dc.containers.get(_worker_container_name(user_id))
-        target.remove(force=True)
-    except Exception as exc:
-        logger.warning("Failed to remove worker for user %s: %s", user_id, exc)
-    _worker_registry.pop(user_id, None)
-    _worker_ports.pop(user_id, None)
-    _worker_last_used.pop(user_id, None)
-
-
 def _worker_env_vars() -> dict[str, str]:
     """Default environment to forward into each worker container.
 
@@ -564,155 +689,48 @@ def _worker_env_vars() -> dict[str, str]:
     return env_vars
 
 
+# The supervisor is server-only in practice: local routes never invoke these
+# operations, preserving the direct local ADK workflow.
+_worker_supervisor = WorkerSupervisor(
+    image=_WORKER_IMAGE,
+    network=_WORKER_NETWORK,
+    connect_mode=_WORKER_CONNECT_MODE,
+    base_port=_WORKER_BASE_PORT,
+    adk_port=get_adk_port,
+    user_home=lambda user_id, host: _user_matcreator_home(user_id, host=host),
+    worker_environment=_worker_env_vars,
+    shared_mounts=_worker_shared_mounts,
+    memory_limit=_WORKER_MEM_LIMIT,
+    cpus=_WORKER_CPUS,
+    pids_limit=_WORKER_PIDS_LIMIT,
+)
+
+
 def ensure_worker_running(user_id: str) -> str:
-    """Ensure the worker container for *user_id* is running.
-
-    Returns the base URL the worker's ADK server is reachable on.
-    Creates the container if it doesn't exist.
-    """
-    import docker as _docker
-
-    with _worker_registry_lock:
-        _safe_user_dir_name(user_id)
-        name = _worker_container_name(user_id)
-        dc = _get_docker()
-
-        # If we already know the target, verify the container is still running.
-        if user_id in _worker_registry:
-            target = _worker_registry[user_id]
-            try:
-                c = dc.containers.get(name)
-                if not _worker_container_uses_current_image(dc, c):
-                    _remove_worker_container(user_id, c)
-                else:
-                    if c.status != "running":
-                        c.start()
-                    _worker_last_used[user_id] = time.time()
-                    return target
-            except _docker.errors.NotFound:
-                del _worker_registry[user_id]
-                _worker_ports.pop(user_id, None)
-
-        # Container might exist from a previous server start.
-        try:
-            c = dc.containers.get(name)
-            if not _worker_container_uses_current_image(dc, c):
-                _remove_worker_container(user_id, c)
-                c = None
-            port = None
-            if c is not None and _WORKER_CONNECT_MODE == "host-port":
-                bindings = c.ports.get(f"{get_adk_port()}/tcp") or []
-                if not bindings:
-                    c.remove(force=True)
-                    c = None
-                else:
-                    port = int(bindings[0]["HostPort"])
-                    _worker_ports[user_id] = port
-            if c is not None:
-                target = _worker_target_url(user_id, port)
-                _worker_registry[user_id] = target
-                if c.status != "running":
-                    c.start()
-                _worker_last_used[user_id] = time.time()
-                return target
-        except _docker.errors.NotFound:
-            pass
-
-        # Create a fresh worker container.
-        port = _next_free_port() if _WORKER_CONNECT_MODE == "host-port" else None
-        user_home_container = _user_matcreator_home(user_id)
-        user_home_host = _user_matcreator_home(user_id, host=True)
-        user_home_container.mkdir(parents=True, exist_ok=True)
-
-        env_vars = _worker_env_vars()
-        env_vars["MATCREATOR_MODE"] = "server"
-        env_vars["MATCREATOR_USER_ID"] = user_id
-
-        adk_port = get_adk_port()
-        volumes = {
-            str(user_home_host): {
-                "bind": str(_WORKER_MATCREATOR_HOME),
-                "mode": "rw",
-            },
-        }
-        volumes.update(_worker_shared_mounts())
-        run_kwargs: dict = dict(
-            image=_WORKER_IMAGE,
-            command=["matcreator", "api-server", "--host", "0.0.0.0", "--port", str(adk_port)],
-            name=name,
-            environment=env_vars,
-            volumes=volumes,
-            detach=True,
-            restart_policy={"Name": "unless-stopped"},
-        )
-        if port is not None:
-            run_kwargs["ports"] = {f"{adk_port}/tcp": port}
-        if _WORKER_NETWORK:
-            run_kwargs["network"] = _WORKER_NETWORK
-        if _WORKER_MEM_LIMIT:
-            run_kwargs["mem_limit"] = _WORKER_MEM_LIMIT
-        if _WORKER_CPUS:
-            run_kwargs["nano_cpus"] = int(float(_WORKER_CPUS) * 1_000_000_000)
-        if _WORKER_PIDS_LIMIT:
-            run_kwargs["pids_limit"] = int(_WORKER_PIDS_LIMIT)
-
-        dc.containers.run(**run_kwargs)
-        target = _worker_target_url(user_id, port)
-        _worker_registry[user_id] = target
-        if port is not None:
-            _worker_ports[user_id] = port
-        _worker_last_used[user_id] = time.time()
-        return target
+    """Ensure the server-mode worker for *user_id* is running."""
+    _safe_user_dir_name(user_id)
+    return _worker_supervisor.ensure_running(user_id)
 
 
 def stop_worker(user_id: str) -> None:
-    """Stop (but keep) the worker container for *user_id*."""
-    try:
-        import docker as _docker
-        dc = _get_docker()
-        dc.containers.get(_worker_container_name(user_id)).stop(timeout=10)
-    except Exception as exc:
-        logger.warning("Failed to stop worker for user %s: %s", user_id, exc)
+    """Stop (but retain) the server-mode worker for *user_id*."""
+    _worker_supervisor.stop(user_id)
 
 
 def remove_worker(user_id: str) -> None:
-    """Stop and remove the worker container and clean up the registry."""
-    _remove_worker_container(user_id)
+    """Stop and remove the server-mode worker for *user_id*."""
+    _worker_supervisor.remove(user_id)
 
 
 def _list_workers() -> list[dict]:
-    """Return status info for all known worker containers."""
-    try:
-        import docker as _docker
-        dc = _get_docker()
-        results = []
-        for user_id, target in list(_worker_registry.items()):
-            name = _worker_container_name(user_id)
-            try:
-                c = dc.containers.get(name)
-                status = c.status
-            except _docker.errors.NotFound:
-                status = "missing"
-            results.append({"user_id": user_id, "container": name,
-                             "target": target, "port": _worker_ports.get(user_id),
-                             "status": status, "last_used": _worker_last_used.get(user_id)})
-        return results
-    except Exception as exc:
-        return [{"error": str(exc)}]
+    return _worker_supervisor.list_workers()
 
 
 async def _idle_worker_reaper() -> None:
-    """Stop idle workers when MATCREATOR_WORKER_IDLE_TIMEOUT_SECONDS is set."""
+    """Stop workers that have been idle longer than the configured timeout."""
     while True:
         await asyncio.sleep(min(max(_WORKER_IDLE_TIMEOUT_SECONDS // 2, 60), 600))
-        cutoff = time.time() - _WORKER_IDLE_TIMEOUT_SECONDS
-        with _worker_registry_lock:
-            idle_users = [
-                user_id
-                for user_id, last_used in _worker_last_used.items()
-                if last_used < cutoff
-            ]
-        for user_id in idle_users:
+        for user_id in _worker_supervisor.idle_users(_WORKER_IDLE_TIMEOUT_SECONDS):
             await asyncio.to_thread(stop_worker, user_id)
 
 
@@ -803,13 +821,16 @@ def _load_skill_graph_payload(*, limit: int = 400) -> dict:
             metadata_payload = _json_ready(metadata)
             skill_name = entry.title if "matcreator-skill" in entry.tags else None
             skill_dir = skill_dirs.get(skill_name) if skill_name else None
-            if (
+            virtual = bool(metadata.custom.get("virtual")) or bool(
                 skill_name
                 and "matcreator-guide" not in entry.tags
                 and skill_dir is None
-            ):
-                continue
-            enabled = skill_name not in disabled_skills if skill_name else True
+            )
+            enabled = (
+                skill_name not in disabled_skills and not virtual
+                if skill_name
+                else not virtual
+            )
             skill_path = str(skill_dir.resolve()) if skill_dir else None
             source = get_skill_source(skill_name) if skill_name else None
             removable = bool(
@@ -835,14 +856,15 @@ def _load_skill_graph_payload(*, limit: int = 400) -> dict:
                     "removable": removable,
                     "remove_requires_confirmation": bool(skill_name and source and source.managed),
                     "enabled": enabled,
+                    "virtual": virtual,
                     "entry_type": entry_type,
-                    "content": entry.content,
-                    "content_preview": _entry_preview(entry.content),
+                    "content": "" if virtual else entry.content,
+                    "content_preview": "" if virtual else _entry_preview(entry.content),
                     "tags": entry.tags,
                     "aliases": entry.aliases,
-                    "internal_refs": entry.internal_refs,
-                    "scripts": _json_ready(entry.scripts),
-                    "assets": _json_ready(entry.assets),
+                    "internal_refs": [] if virtual else entry.internal_refs,
+                    "scripts": [] if virtual else _json_ready(entry.scripts),
+                    "assets": [] if virtual else _json_ready(entry.assets),
                     "metadata": metadata_payload,
                     "verification_status": _entry_value(metadata.verification_status),
                     "refinement_status": _entry_value(metadata.refinement_status),
@@ -992,24 +1014,128 @@ async def _produce_managed_run(run: ManagedRun, payload: dict[str, Any], target_
                     await _run_registry.publish(run, chunk.decode("utf-8", errors="replace"))
 
 
-@app.post("/api/runs")
-async def start_managed_run(body: ManagedRunBody) -> JSONResponse:
-    payload = _body_to_dict(body)
-    owner_id = body.user_id
+async def _start_managed_run(
+    *,
+    owner_id: str,
+    session_id: str,
+    payload: dict[str, Any],
+) -> ManagedRun:
     target_url = await _target_url_for_user(owner_id)
 
     async def producer(run: ManagedRun) -> None:
         await _produce_managed_run(run, payload, target_url)
 
+    return await _run_registry.start(owner_id=owner_id, session_id=session_id, producer=producer)
+
+
+@app.post("/api/runs")
+async def start_managed_run(body: ManagedRunBody) -> JSONResponse:
+    payload = _body_to_dict(body)
     try:
-        run = await _run_registry.start(
-            owner_id=owner_id,
-            session_id=body.session_id,
-            producer=producer,
-        )
+        run = await _start_managed_run(owner_id=body.user_id, session_id=body.session_id, payload=payload)
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return JSONResponse(run.summary())
+
+
+async def _prepare_evaluation_adk_session(
+    *,
+    owner_id: str,
+    session_id: str,
+    workspace: Path,
+    flash: bool,
+) -> None:
+    target_url = await _target_url_for_user(owner_id)
+    path = f"/apps/{APP_NAME}/users/{owner_id}/sessions/{session_id}"
+    payload = {
+        "agent_mode": "flash" if flash else "bench",
+        "benchmark_mode": True,
+        "custom_workdir": str(workspace),
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(f"{target_url}{path}", json=payload)
+        if response.status_code == 409:
+            return
+        if response.is_success:
+            return
+        raise RuntimeError(
+            f"ADK session creation failed with HTTP {response.status_code}: "
+            f"{response.text[:500]}"
+        )
+
+
+def _extract_runtime_result(run: ManagedRun) -> dict[str, Any]:
+    answer = ""
+    event_count = 0
+    for _, payload in run.events:
+        for line in payload.splitlines():
+            if not line.startswith("data: "):
+                continue
+            try:
+                event = json.loads(line[6:])
+            except json.JSONDecodeError:
+                continue
+            event_count += 1
+            for part in event.get("content", {}).get("parts", []):
+                if part.get("text") and not part.get("thought"):
+                    answer = str(part["text"])
+    return {"answer": answer, "num_turns": event_count, "num_events": event_count}
+
+
+class _ManagedAdkEvaluationRuntime:
+    def __init__(self, owner_id: str) -> None:
+        self.owner_id = owner_id
+
+    async def run(self, spec: RuntimeSpec) -> RuntimeOutcome:
+        started_at = time.monotonic()
+        await _prepare_evaluation_adk_session(
+            owner_id=self.owner_id,
+            session_id=spec.session_id,
+            workspace=spec.workspace,
+            flash=spec.flash,
+        )
+        prompt = spec.prompt_path.read_text(encoding="utf-8")
+        run = await _start_managed_run(
+            owner_id=self.owner_id,
+            session_id=spec.session_id,
+            payload={
+                "app_name": APP_NAME,
+                "user_id": self.owner_id,
+                "session_id": spec.session_id,
+                "new_message": {"role": "user", "parts": [{"text": prompt}]},
+            },
+        )
+        if spec.on_managed_run_started is not None:
+            await spec.on_managed_run_started(run.run_id)
+        try:
+            await asyncio.wait_for(asyncio.shield(run.task), timeout=spec.timeout_seconds)
+        except asyncio.TimeoutError:
+            await _run_registry.request_cancel(run)
+            return RuntimeOutcome(
+                exit_code=None,
+                stdout="",
+                stderr="",
+                duration_seconds=time.monotonic() - started_at,
+                result=_extract_runtime_result(run),
+                error=f"runtime timed out after {spec.timeout_seconds}s",
+            )
+        result = _extract_runtime_result(run)
+        if run.status == "completed":
+            return RuntimeOutcome(
+                exit_code=0,
+                stdout="",
+                stderr="",
+                duration_seconds=time.monotonic() - started_at,
+                result=result,
+            )
+        return RuntimeOutcome(
+            exit_code=1,
+            stdout="",
+            stderr="",
+            duration_seconds=time.monotonic() - started_at,
+            result=result,
+            error=run.error or f"managed ADK run {run.status}",
+        )
 
 
 @app.get("/api/runs/active")
@@ -1684,7 +1810,7 @@ def _run_worker_workspace_cli(user_id: str, command: str, cwd: str) -> dict:
     rel_cwd = _normalize_cli_cwd(cwd)
     ensure_worker_running(user_id)
 
-    dc = _get_docker()
+    dc = _worker_supervisor.docker_client()
     container = dc.containers.get(_worker_container_name(user_id))
     workdir = (_WORKER_WORKSPACE_ROOT / rel_cwd).as_posix()
     container.exec_run(["mkdir", "-p", workdir])
@@ -1839,7 +1965,7 @@ async def _local_terminal_session(websocket: WebSocket) -> None:
 
 def _docker_exec_socket(user_id: str):
     ensure_worker_running(user_id)
-    dc = _get_docker()
+    dc = _worker_supervisor.docker_client()
     container = dc.containers.get(_worker_container_name(user_id))
     workspace = _WORKER_WORKSPACE_ROOT.as_posix()
     container.exec_run(["mkdir", "-p", workspace])
@@ -1909,6 +2035,191 @@ async def health_check():
     return {"status": "ok", "mode": mode}
 
 
+@app.get("/api/evaluations/catalog")
+async def list_evaluation_catalog(
+    q: str = Query(default=""),
+    capability: str = Query(default=""),
+    task_type: str = Query(default=""),
+    domain: str = Query(default=""),
+    tags: list[str] = Query(default=[]),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=500, ge=1, le=500),
+    user_id: str = Query(default=""),
+) -> JSONResponse:
+    catalog = await (await _benchmark_client_for_owner(user_id)).list_questions(
+        q=q,
+        capability=capability,
+        task_type=task_type,
+        domain=domain,
+        tags=tags,
+        offset=offset,
+        limit=limit,
+    )
+    return JSONResponse(
+        {
+            "questions": catalog["questions"],
+            "total": catalog["total"],
+            "offset": catalog["offset"] if catalog["offset"] is not None else offset,
+            "limit": catalog["limit"] if catalog["limit"] is not None else limit,
+            "facets": catalog["facets"],
+        }
+    )
+
+
+@app.get("/api/evaluations/campaigns")
+async def list_evaluation_campaigns(user_id: str = Query(...)) -> JSONResponse:
+    return JSONResponse({"campaigns": _evaluation_store_for_owner(user_id).list_campaigns(owner_id=user_id)})
+
+
+@app.get("/api/evaluations/question-sets")
+async def list_evaluation_question_sets(user_id: str = Query(...)) -> JSONResponse:
+    return JSONResponse({"question_sets": _evaluation_store_for_owner(user_id).list_question_sets(viewer_id=user_id)})
+
+
+@app.post("/api/evaluations/question-sets")
+async def create_evaluation_question_set(
+    body: EvaluationQuestionSetBody = Body(...), user_id: str = Query(...)
+) -> JSONResponse:
+    try:
+        question_set = _evaluation_store_for_owner(user_id).create_question_set(
+            owner_id=user_id, name=body.name, question_ids=body.question_ids, visibility=body.visibility
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return JSONResponse(question_set, status_code=201)
+
+
+@app.patch("/api/evaluations/question-sets/{set_id}")
+async def update_evaluation_question_set(
+    set_id: str, body: EvaluationQuestionSetBody = Body(...), user_id: str = Query(...)
+) -> JSONResponse:
+    try:
+        question_set = _evaluation_store_for_owner(user_id).update_question_set(
+            set_id=set_id, owner_id=user_id, name=body.name, question_ids=body.question_ids, visibility=body.visibility
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return JSONResponse(question_set)
+
+
+@app.delete("/api/evaluations/question-sets/{set_id}")
+async def delete_evaluation_question_set(set_id: str, user_id: str = Query(...)) -> Response:
+    try:
+        _evaluation_store_for_owner(user_id).delete_question_set(set_id=set_id, owner_id=user_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Response(status_code=204)
+
+
+@app.post("/api/evaluations/campaigns")
+async def create_evaluation_campaign(
+    body: EvaluationCampaignBody = Body(...),
+    user_id: str = Query(...),
+) -> JSONResponse:
+    service = EvaluationService(
+        _evaluation_store_for_owner(user_id),
+        _evaluation_workspace_for_owner(user_id),
+    )
+    try:
+        campaign = service.create_campaign(
+            owner_id=user_id,
+            model_name=body.model_name,
+            question_ids=body.question_ids,
+            max_parallelism=body.max_parallelism,
+            max_turns=body.max_turns,
+            timeout_seconds=body.timeout_seconds,
+            flash=body.flash,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return JSONResponse(campaign, status_code=201)
+
+
+@app.get("/api/evaluations/campaigns/{campaign_id}")
+async def get_evaluation_campaign(campaign_id: str, user_id: str = Query(...)) -> JSONResponse:
+    store = _evaluation_store_for_owner(user_id)
+    campaign = store.get_campaign(campaign_id, owner_id=user_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Evaluation campaign not found")
+    return JSONResponse({**campaign, "attempts": store.list_attempts(campaign_id)})
+
+
+@app.get("/api/evaluations/campaigns/{campaign_id}/attempts/{attempt_id}/events")
+async def get_evaluation_attempt_events(
+    campaign_id: str,
+    attempt_id: str,
+    user_id: str = Query(...),
+    after: int = Query(default=0, ge=0),
+) -> JSONResponse:
+    store = _evaluation_store_for_owner(user_id)
+    campaign = store.get_campaign(campaign_id, owner_id=user_id)
+    attempt = store.get_attempt(attempt_id)
+    if campaign is None or attempt is None or attempt["campaign_id"] != campaign_id:
+        raise HTTPException(status_code=404, detail="Evaluation attempt not found")
+    workspace = Path(attempt["workspace_path"] or "").resolve()
+    runtime_dir = workspace.parent / ".runtime" / attempt["runtime_session_id"]
+    event_log = runtime_dir / "events.jsonl"
+    events: list[dict[str, Any]] = []
+    if event_log.is_file():
+        for sequence, line in enumerate(event_log.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
+            if sequence <= after:
+                continue
+            try:
+                events.append({"sequence": sequence, "event": json.loads(line)})
+            except json.JSONDecodeError:
+                continue
+    return JSONResponse({"events": events[-200:], "latest_sequence": after + len(events)})
+
+
+@app.post("/api/evaluations/campaigns/{campaign_id}/start")
+async def start_evaluation_campaign(campaign_id: str, user_id: str = Query(...)) -> JSONResponse:
+    store = _evaluation_store_for_owner(user_id)
+    if store.get_campaign(campaign_id, owner_id=user_id) is None:
+        raise HTTPException(status_code=404, detail="Evaluation campaign not found")
+    service = EvaluationService(
+        store,
+        _evaluation_workspace_for_owner(user_id),
+        launcher=_ManagedAdkEvaluationRuntime(user_id),
+    )
+    client = await _benchmark_client_for_owner(user_id)
+    try:
+        campaign = await service.start_campaign(campaign_id, client)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await _evaluation_manager.start(campaign_id, service, client)
+    return JSONResponse(campaign)
+
+
+@app.post("/api/evaluations/campaigns/{campaign_id}/cancel")
+async def cancel_evaluation_campaign(campaign_id: str, user_id: str = Query(...)) -> JSONResponse:
+    store = _evaluation_store_for_owner(user_id)
+    campaign = store.get_campaign(campaign_id, owner_id=user_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Evaluation campaign not found")
+    service = EvaluationService(
+        store,
+        _evaluation_workspace_for_owner(user_id),
+        launcher=_ManagedAdkEvaluationRuntime(user_id),
+    )
+
+    async def cancel_managed_run(run_id: str) -> None:
+        run = _run_registry.get(run_id)
+        if run is not None:
+            await _run_registry.request_cancel(run)
+
+    try:
+        campaign = await _evaluation_manager.cancel_campaign(
+            campaign_id,
+            service,
+            cancel_managed_run=cancel_managed_run,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return JSONResponse({**campaign, "attempts": store.list_attempts(campaign_id)})
+
+
 @app.get("/api/skill-graph/data")
 async def get_skill_graph_data(
     limit: int = Query(default=400, ge=1, le=1200),
@@ -1926,9 +2237,46 @@ async def _on_startup() -> None:
     users_db.init_db()
     if _MATCREATOR_MODE != "server":
         users_db.migrate_legacy_adk_sessions(SESSION_DB_PATH, APP_NAME)
+    # Reconcile repository-managed skills before the graph UI can read stale
+    # nodes or edges.  Agent initialization also seeds the graph, but it may
+    # happen later or in a different worker process than the web frontend.
+    try:
+        await asyncio.to_thread(refresh_skills)
+    except Exception:
+        logger.exception("Failed to reconcile skill graph during web startup")
     if _MATCREATOR_MODE == "server" and _WORKER_IDLE_TIMEOUT_SECONDS > 0:
         asyncio.create_task(_idle_worker_reaper())
     _remote_job_monitor_task = asyncio.create_task(_run_remote_job_monitor())
+    if _MATCREATOR_MODE == "local":
+        try:
+            client = _benchmark_client()
+        except HTTPException:
+            logger.warning("Skipping evaluation recovery because benchmark service is not configured")
+        else:
+            for campaign in _evaluation_store.list_active_campaigns():
+                service = EvaluationService(
+                    _evaluation_store,
+                    _evaluation_workspace_for_owner(campaign["owner_id"]),
+                    launcher=_ManagedAdkEvaluationRuntime(campaign["owner_id"]),
+                )
+                await _evaluation_manager.start(campaign["campaign_id"], service, client)
+            for campaign in _evaluation_store.list_campaigns(owner_id="user"):
+                service = EvaluationService(
+                    _evaluation_store,
+                    _evaluation_workspace_for_owner(campaign["owner_id"]),
+                    launcher=_ManagedAdkEvaluationRuntime(campaign["owner_id"]),
+                )
+                if campaign["status"] == "failed":
+                    for attempt in _evaluation_store.list_attempts(campaign["campaign_id"]):
+                        if attempt["status"] in {"runtime_starting", "running", "submitting"}:
+                            _evaluation_store.transition_attempt(
+                                attempt["attempt_id"],
+                                "interrupted",
+                                error="Local evaluation runtime was interrupted before benchmark submission.",
+                            )
+                await _evaluation_manager.recover_missing_result_campaign(
+                    campaign["campaign_id"], service, client
+                )
 
 
 @app.on_event("shutdown")
@@ -2395,8 +2743,10 @@ def _load_execution_graph(session_id: str) -> dict:
                 if row is None:
                     continue
                 state = _load_json_field(row["state"], {})
-                raw = decode_execution_graph(state.get("execution_graph"))
-                if raw is None:
+                raw = state.get("execution_graph")
+                if isinstance(raw, str):
+                    raw = _load_json_field(raw, None)
+                if not isinstance(raw, dict):
                     return {"nodes": {}, "edges": []}
                 return raw
         except sqlite3.Error:
@@ -2411,6 +2761,108 @@ def _load_session_log_export(session_id: str, user_id: str | None = None) -> dic
     payload = build_session_log_export(session_id, state)
     payload["owner_id"] = owner_id
     return payload
+
+
+def _build_evaluation_question_draft(session_log: dict[str, Any]) -> dict[str, Any]:
+    """Build an editable question template from bounded, observable session evidence."""
+    nodes = session_log.get("graph", {}).get("nodes", [])
+    successful_steps = [
+        node for node in nodes
+        if isinstance(node, dict) and node.get("status") == "success"
+    ][:8]
+    artifacts = [str(path) for path in session_log.get("artifacts", [])][:20]
+    source_session_id = str(session_log["session_id"])
+    evidence_steps = [
+        {
+            "step_number": node.get("step_number"),
+            "action": node.get("action") or "Unnamed step",
+            "summary": node.get("summary") or "",
+            "tool_call_count": node.get("tool_call_count", 0),
+            "artifact_count": node.get("artifact_count", 0),
+        }
+        for node in successful_steps
+    ]
+    return {
+        "status": "draft",
+        "source": {
+            "session_id": source_session_id,
+            "owner_id": session_log.get("owner_id"),
+            "event_count": session_log.get("event_count", 0),
+            "artifact_count": session_log.get("artifact_count", 0),
+        },
+        "question": {
+            "title": f"Session-derived task: {source_session_id}",
+            "prompt": "",
+            "expected_deliverables": [],
+            "rubrics": [],
+            "tags": ["generated_from_session"],
+        },
+        "evidence": {
+            "successful_steps": evidence_steps,
+            "artifacts": artifacts,
+        },
+        "publication": {
+            "status": "local_preview",
+            "message": (
+                "This is an editable draft preview. MatBench publication is unavailable until "
+                "its custom-question authoring API and rubric schema are configured."
+            ),
+        },
+    }
+
+
+def _session_question_staging_root(owner_id: str) -> Path:
+    if _MATCREATOR_MODE == "server":
+        if not owner_id:
+            raise HTTPException(status_code=400, detail="user_id is required in server mode")
+        return _user_matcreator_home(owner_id) / "evals" / "question-drafts"
+    return _MATCREATOR_HOME / "evals" / "question-drafts"
+
+
+def _legacy_session_question_staging_root(owner_id: str) -> Path:
+    return _evaluation_workspace_for_owner(owner_id) / "question-drafts"
+
+
+def _benchmark_question_bank_root() -> Path:
+    benchmark_config = load_config().get("benchmark") or {}
+    if not isinstance(benchmark_config, dict):
+        benchmark_config = {}
+    configured = (
+        os.environ.get("MAT_BENCH_QUESTION_BANK_ROOT", "").strip()
+        or str(benchmark_config.get("question_bank_root") or "").strip()
+    )
+    if not configured:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Benchmark question-bank export is not configured. Set MAT_BENCH_QUESTION_BANK_ROOT "
+                "or benchmark.question_bank_root in config.yaml."
+            ),
+        )
+    return Path(configured).expanduser().resolve()
+
+
+def _session_question_template_path() -> Path:
+    configured = load_config().get("session_question_generator") or {}
+    if not isinstance(configured, dict):
+        configured = {}
+    override = str(configured.get("template_path") or "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path(str(files("matcreator").joinpath("question_templates/mab_qa.json"))).resolve()
+
+
+def _session_question_generator() -> BuiltinLlmQuestionGeneratorPlugin:
+    configured = load_config().get("session_question_generator") or {}
+    if not isinstance(configured, dict):
+        configured = {}
+    plugin_name = str(configured.get("plugin") or "builtin_llm")
+    if plugin_name != "builtin_llm":
+        raise HTTPException(status_code=422, detail=f"Unknown session question generator plugin: {plugin_name}")
+    try:
+        return BuiltinLlmQuestionGeneratorPlugin.from_config(load_config())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/execution-graph/{session_id}")
@@ -2433,6 +2885,168 @@ async def download_session_log(
         f'attachment; filename="matcreator-session-log-{safe_session_id}.json"'
     )
     return response
+
+
+@app.post("/api/sessions/{session_id}/evaluation-question-draft")
+async def create_evaluation_question_draft(
+    session_id: str,
+    user_id: str = Query(default="", description="Current user ID; required to scope server-mode sessions."),
+) -> JSONResponse:
+    """Create a local editable template from a session without publishing it."""
+    session_log = _load_session_log_export(session_id, user_id or None)
+    return JSONResponse(_build_evaluation_question_draft(session_log))
+
+
+@app.post("/api/sessions/{session_id}/evaluation-question-drafts")
+async def generate_evaluation_question_draft(
+    session_id: str,
+    user_id: str = Query(default="", description="Current user ID; required to scope server-mode sessions."),
+) -> JSONResponse:
+    """Generate a review-only staged benchmark question from bounded session evidence."""
+    session_log = _load_session_log_export(session_id, user_id or None)
+    owner_id = str(session_log.get("owner_id") or user_id)
+    if not owner_id:
+        raise HTTPException(status_code=422, detail="A session owner is required to stage a benchmark question")
+    model, _api_key, _base_url = _llm_config()
+    started_at = time.monotonic()
+    logger.info(
+        "Session question generation started: session_id=%s owner_id=%s model=%s",
+        session_id,
+        owner_id,
+        model or "unconfigured",
+    )
+    try:
+        service = StagedSessionQuestionService(
+            _session_question_staging_root(owner_id),
+            _session_question_generator(),
+            template_path=_session_question_template_path(),
+            legacy_roots=[_legacy_session_question_staging_root(owner_id)],
+        )
+        draft = await service.create(session_log)
+    except HTTPException as exc:
+        logger.warning(
+            "Session question generation rejected: session_id=%s owner_id=%s status_code=%s duration_seconds=%.2f",
+            session_id,
+            owner_id,
+            exc.status_code,
+            time.monotonic() - started_at,
+        )
+        raise
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "Session question generation rejected: session_id=%s owner_id=%s error_type=%s duration_seconds=%.2f",
+            session_id,
+            owner_id,
+            type(exc).__name__,
+            time.monotonic() - started_at,
+        )
+        raise HTTPException(status_code=422, detail=f"Could not generate benchmark question draft: {exc}") from exc
+    except Exception as exc:
+        logger.exception(
+            "Session question generation failed: session_id=%s owner_id=%s error_type=%s duration_seconds=%.2f",
+            session_id,
+            owner_id,
+            type(exc).__name__,
+            time.monotonic() - started_at,
+        )
+        raise HTTPException(status_code=502, detail="Question generation provider request failed") from exc
+    logger.info(
+        "Session question generation completed: session_id=%s owner_id=%s draft_id=%s status=%s duration_seconds=%.2f",
+        session_id,
+        owner_id,
+        draft.draft_id,
+        draft.status,
+        time.monotonic() - started_at,
+    )
+    return JSONResponse(draft.as_dict(), status_code=201)
+
+
+def _staged_question_service(owner_id: str) -> StagedSessionQuestionService:
+    if not owner_id:
+        raise HTTPException(status_code=422, detail="A session owner is required to access benchmark question drafts")
+    return StagedSessionQuestionService(
+        _session_question_staging_root(owner_id),
+        legacy_roots=[_legacy_session_question_staging_root(owner_id)],
+    )
+
+
+@app.get("/api/evaluation-question-drafts")
+async def list_evaluation_question_drafts(user_id: str = Query(...)) -> JSONResponse:
+    return JSONResponse({"drafts": _staged_question_service(user_id).list()})
+
+
+@app.get("/api/evaluation-question-drafts/{draft_id}")
+async def get_evaluation_question_draft(draft_id: str, user_id: str = Query(...)) -> JSONResponse:
+    try:
+        draft = _staged_question_service(user_id).get(draft_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return JSONResponse(draft.as_dict())
+
+
+@app.put("/api/evaluation-question-drafts/{draft_id}")
+async def update_evaluation_question_draft(
+    draft_id: str, body: EvaluationQuestionDraftUpdateBody, user_id: str = Query(...)
+) -> JSONResponse:
+    try:
+        draft = _staged_question_service(user_id).update(draft_id, body.question_yaml)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return JSONResponse(draft.as_dict())
+
+
+@app.post("/api/evaluation-question-drafts/{draft_id}/approve")
+async def approve_evaluation_question_draft(draft_id: str, user_id: str = Query(...)) -> JSONResponse:
+    try:
+        draft = _staged_question_service(user_id).approve(draft_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return JSONResponse(draft.as_dict())
+
+
+@app.post("/api/evaluation-question-drafts/{draft_id}/refine")
+async def refine_evaluation_question_draft(
+    draft_id: str,
+    body: EvaluationQuestionDraftRefineBody = Body(default=EvaluationQuestionDraftRefineBody()),
+    user_id: str = Query(...),
+) -> JSONResponse:
+    try:
+        service = StagedSessionQuestionService(
+            _session_question_staging_root(user_id),
+            _session_question_generator(),
+            template_path=_session_question_template_path(),
+            legacy_roots=[_legacy_session_question_staging_root(user_id)],
+        )
+        draft = await service.refine(draft_id, body.instruction)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Question refinement provider failed: draft_id=%s", draft_id)
+        raise HTTPException(status_code=502, detail="Question refinement provider request failed") from exc
+    return JSONResponse(draft.as_dict())
+
+
+@app.post("/api/evaluation-question-drafts/{draft_id}/export")
+async def export_evaluation_question_draft(draft_id: str, user_id: str = Query(...)) -> JSONResponse:
+    try:
+        draft = _staged_question_service(user_id).export(draft_id, _benchmark_question_bank_root())
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not export benchmark question: {exc}") from exc
+    return JSONResponse(draft.as_dict())
 
 
 
@@ -2898,7 +3512,13 @@ async def cancel_session_execution(
             owner_id=user_id,
             session_id=session_id,
         )
-    await asyncio.to_thread(request_cancellation, session_id, reason)
+    cancellation_root = _cancellation_workspace_root(session_id, user_id)
+    await asyncio.to_thread(
+        request_cancellation,
+        session_id,
+        reason,
+        workspace_root=cancellation_root,
+    )
     await asyncio.to_thread(
         AgentGraphLogger(session_id).mark_running_nodes_cancelled,
         summary=f"Cancelled by user ({reason})"
@@ -2914,20 +3534,27 @@ async def cancel_session_execution(
 
 
 @app.get("/api/sessions/{session_id}/cancel")
-async def get_cancellation_status(session_id: str) -> JSONResponse:
+async def get_cancellation_status(
+    session_id: str,
+    user_id: str = Query(default="", description="Current signed-in user"),
+) -> JSONResponse:
     """Check whether a cancellation is currently pending for this session."""
-    flagged = is_cancellation_requested(session_id)
+    cancellation_root = _cancellation_workspace_root(session_id, user_id)
+    flagged = is_cancellation_requested(session_id, workspace_root=cancellation_root)
     return JSONResponse({
         "session_id": session_id,
         "cancellation_requested": flagged,
-        "reason": get_cancellation_reason(session_id) if flagged else None,
+        "reason": get_cancellation_reason(session_id, workspace_root=cancellation_root) if flagged else None,
     })
 
 
 @app.delete("/api/sessions/{session_id}/cancel")
-async def clear_cancellation_flag(session_id: str) -> JSONResponse:
+async def clear_cancellation_flag(
+    session_id: str,
+    user_id: str = Query(default="", description="Current signed-in user"),
+) -> JSONResponse:
     """Manually clear a pending cancellation flag."""
-    clear_cancellation(session_id)
+    clear_cancellation(session_id, workspace_root=_cancellation_workspace_root(session_id, user_id))
     return JSONResponse({
         "status": "ok",
         "session_id": session_id,
@@ -2939,6 +3566,7 @@ async def clear_cancellation_flag(session_id: str) -> JSONResponse:
 async def cancel_individual_step(
     session_id: str,
     step_number: int,
+    user_id: str = Query(default="", description="Current signed-in user"),
     reason: str = Query(default="user_requested", description="Cancellation reason"),
 ) -> JSONResponse:
     """Cancel a specific running step without stopping the whole session.
@@ -2947,7 +3575,13 @@ async def cancel_individual_step(
     The graph node for that step is updated immediately so the frontend reflects
     the cancellation before the executor polls.
     """
-    await asyncio.to_thread(request_step_cancellation, session_id, step_number, reason)
+    await asyncio.to_thread(
+        request_step_cancellation,
+        session_id,
+        step_number,
+        reason,
+        workspace_root=_cancellation_workspace_root(session_id, user_id),
+    )
     found = await asyncio.to_thread(
         AgentGraphLogger(session_id).cancel_step_node_by_number,
         step_number, f"Cancelled by user ({reason})"
@@ -3636,8 +4270,7 @@ async def get_backend_status(user_id: str = Query(default="")) -> JSONResponse:
     In local mode: checks the configured ADK port on localhost.
     """
     if _MATCREATOR_MODE == "server" and user_id:
-        with _worker_registry_lock:
-            target = _worker_registry.get(user_id)
+        target = _worker_supervisor.target_for(user_id)
         if target is None:
             return JSONResponse({"ready": False})
         try:
