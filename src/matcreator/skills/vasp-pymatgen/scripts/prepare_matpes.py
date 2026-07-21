@@ -29,3 +29,21 @@ def build_incar_overrides(spin: bool) -> dict:
         overrides["ISPIN"] = 2
         del overrides["MAGMOM"]
     return overrides
+
+
+def check_structure(structure) -> str | None:
+    import numpy as np
+
+    n = len(structure)
+    vol_per_atom = structure.volume / n
+    if not (MIN_VOL_PER_ATOM <= vol_per_atom <= MAX_VOL_PER_ATOM):
+        return (
+            f"volume per atom {vol_per_atom:.2f} A^3 outside "
+            f"[{MIN_VOL_PER_ATOM}, {MAX_VOL_PER_ATOM}]"
+        )
+    if n > 1:
+        dm = structure.distance_matrix
+        dmin = dm[np.triu_indices(n, k=1)].min()
+        if dmin < MIN_DISTANCE:
+            return f"minimum interatomic distance {dmin:.2f} A < {MIN_DISTANCE} A"
+    return None

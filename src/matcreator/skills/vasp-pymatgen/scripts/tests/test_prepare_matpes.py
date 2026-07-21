@@ -1,4 +1,5 @@
 import prepare_matpes as pm
+from pymatgen.core import Lattice, Structure
 
 
 class TestBuildIncarOverrides:
@@ -23,3 +24,35 @@ class TestBuildIncarOverrides:
         pm.build_incar_overrides(spin=True)
         assert pm.BASE_OVERRIDES["ISPIN"] == 1
         assert "MAGMOM" in pm.BASE_OVERRIDES
+
+
+def make_si(a: float = 5.43) -> Structure:
+    return Structure(
+        Lattice.cubic(a),
+        ["Si", "Si"],
+        [[0.0, 0.0, 0.0], [0.25, 0.25, 0.25]],
+    )
+
+
+class TestCheckStructure:
+    def test_good_structure_passes(self):
+        assert pm.check_structure(make_si()) is None
+
+    def test_overlapping_atoms_flagged(self):
+        s = Structure(
+            Lattice.cubic(5.43),
+            ["Si", "Si"],
+            [[0.0, 0.0, 0.0], [0.01, 0.0, 0.0]],
+        )
+        msg = pm.check_structure(s)
+        assert msg is not None and "distance" in msg
+
+    def test_huge_volume_per_atom_flagged(self):
+        s = Structure(Lattice.cubic(30.0), ["Si"], [[0.0, 0.0, 0.0]])
+        msg = pm.check_structure(s)
+        assert msg is not None and "volume" in msg
+
+    def test_tiny_volume_per_atom_flagged(self):
+        s = Structure(Lattice.cubic(0.9), ["Si"], [[0.0, 0.0, 0.0]])
+        msg = pm.check_structure(s)
+        assert msg is not None and "volume" in msg
