@@ -56,3 +56,56 @@ class TestCheckStructure:
         s = Structure(Lattice.cubic(0.9), ["Si"], [[0.0, 0.0, 0.0]])
         msg = pm.check_structure(s)
         assert msg is not None and "volume" in msg
+
+
+import pytest
+from ase.build import bulk
+from ase.io import write as ase_write
+
+
+@pytest.fixture
+def traj_file(tmp_path):
+    atoms = bulk("Si", "diamond", a=5.43)
+    images = []
+    for i in range(5):
+        img = atoms.copy()
+        img.positions[0, 0] += 0.01 * i
+        images.append(img)
+    path = tmp_path / "traj.extxyz"
+    ase_write(path, images)
+    return str(path)
+
+
+class TestParseFramesSlice:
+    def test_full_spec(self):
+        assert pm.parse_frames_slice("0:10:2") == slice(0, 10, 2)
+
+    def test_open_ended(self):
+        assert pm.parse_frames_slice("2:") == slice(2, None, None)
+
+    def test_step_only(self):
+        assert pm.parse_frames_slice("::5") == slice(None, None, 5)
+
+    def test_invalid_raises(self):
+        with pytest.raises(ValueError):
+            pm.parse_frames_slice("1:2:3:4")
+        with pytest.raises(ValueError):
+            pm.parse_frames_slice("a:b")
+
+
+class TestLoadFrames:
+    def test_loads_all_frames(self, traj_file):
+        frames = pm.load_frames(traj_file)
+        assert len(frames) == 5
+        assert all(len(f) == 2 for f in frames)  # pymatgen Structures
+
+    def test_slice_applied(self, traj_file):
+        frames = pm.load_frames(traj_file, "1:5:2")
+        assert len(frames) == 2
+
+    def test_single_frame_file(self, tmp_path):
+        atoms = bulk("Si", "diamond", a=5.43)
+        path = tmp_path / "POSCAR"
+        ase_write(path, atoms, format="vasp")
+        frames = pm.load_frames(str(path))
+        assert len(frames) == 1

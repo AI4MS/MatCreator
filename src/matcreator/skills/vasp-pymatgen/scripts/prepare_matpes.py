@@ -47,3 +47,25 @@ def check_structure(structure) -> str | None:
         if dmin < MIN_DISTANCE:
             return f"minimum interatomic distance {dmin:.2f} A < {MIN_DISTANCE} A"
     return None
+
+
+def parse_frames_slice(spec: str) -> slice:
+    parts = spec.split(":")
+    if len(parts) > 3:
+        raise ValueError(f"invalid frame slice: {spec!r}")
+    try:
+        vals = [int(p) if p else None for p in parts]
+    except ValueError as exc:
+        raise ValueError(f"invalid frame slice: {spec!r}") from exc
+    vals += [None] * (3 - len(vals))
+    return slice(*vals)
+
+
+def load_frames(structure_file: str, frames_spec: str | None = None) -> list:
+    from ase.io import read as ase_read
+    from pymatgen.io.ase import AseAtomsAdaptor
+
+    images = ase_read(structure_file, index=":")
+    if frames_spec:
+        images = images[parse_frames_slice(frames_spec)]
+    return [AseAtomsAdaptor.get_structure(a) for a in images]
