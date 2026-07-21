@@ -6,6 +6,7 @@ import pytest
 import yaml
 
 from matcreator.control_plane.session_question_generator import (
+    QuestionTemplateStore,
     StagedSessionQuestionService,
     SUPPORTED_VERIFY_TYPES,
     validate_question,
@@ -113,6 +114,31 @@ def test_packaged_template_verifiers_match_local_validator() -> None:
     template = json.loads(template_path.read_text(encoding="utf-8"))
 
     assert set(template["executable_verify_types"]) == SUPPORTED_VERIFY_TYPES
+
+
+def test_template_store_derives_filename_from_template_name_and_renames(tmp_path) -> None:
+    default_template = (
+        Path(__file__).parents[1]
+        / "src"
+        / "matcreator"
+        / "question_templates"
+        / "mab_qa.json"
+    )
+    store = QuestionTemplateStore(tmp_path / "templates", default_template)
+    template = json.loads(default_template.read_text(encoding="utf-8"))
+    template["name"] = "My Custom Template"
+
+    saved = store.save_for_name(template)
+
+    assert saved["template_id"] == "my-custom-template"
+    assert (tmp_path / "templates" / "my-custom-template.json").is_file()
+
+    template["name"] = "Renamed Template"
+    renamed = store.save_for_name(template, previous_id=saved["template_id"])
+
+    assert renamed["template_id"] == "renamed-template"
+    assert not (tmp_path / "templates" / "my-custom-template.json").exists()
+    assert (tmp_path / "templates" / "renamed-template.json").is_file()
 
 
 def test_local_validation_does_not_require_mat_bench() -> None:

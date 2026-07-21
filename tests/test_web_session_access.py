@@ -137,6 +137,9 @@ def test_server_worker_env_uses_persistent_control_plane_config(monkeypatch, tmp
         "  model: openai/server-default\n"
         "  api_key: server-secret\n"
         "  base_url: https://server.example/v1\n"
+        "benchmark:\n"
+        "  server_url: https://bench.example\n"
+        "  token: control-plane-token\n"
         "skills:\n"
         f"  module_root: {selected_skills}\n"
         "env:\n"
@@ -151,6 +154,8 @@ def test_server_worker_env_uses_persistent_control_plane_config(monkeypatch, tmp
     assert env_vars["LLM_MODEL"] == "openai/server-default"
     assert env_vars["LLM_API_KEY"] == "server-secret"
     assert env_vars["LLM_BASE_URL"] == "https://server.example/v1"
+    assert env_vars["MAT_BENCH_SERVER_URL"] == "https://bench.example"
+    assert "MAT_BENCH_TOKEN" not in env_vars
     assert env_vars["MP_API_KEY"] == "default-mp-key"
     assert env_vars["SERVER_ONLY_FLAG"] == "enabled"
     assert env_vars["MATCREATOR_MODULE_SKILLS_ROOT"] == str(selected_skills)

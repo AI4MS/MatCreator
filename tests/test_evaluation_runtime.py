@@ -28,6 +28,7 @@ def test_local_launcher_uses_isolated_workspace_and_runtime_home(monkeypatch, tm
         return _FakeProcess()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setenv("MAT_BENCH_SERVER_URL", "https://bench.example")
     monkeypatch.setenv("MAT_BENCH_TOKEN", "must-not-reach-agent")
     workspace = tmp_path / "workspace"
     runtime_home = tmp_path / "runtime"
@@ -62,6 +63,7 @@ def test_local_launcher_uses_isolated_workspace_and_runtime_home(monkeypatch, tm
     assert captured["kwargs"]["env"]["MATCLAW_SESSION_DIR"] == str(workspace)
     assert captured["kwargs"]["env"]["MATCREATOR_HOME"] == str(runtime_home)
     assert captured["kwargs"]["env"]["LLM_MODEL"] == "test-model"
+    assert "MAT_BENCH_SERVER_URL" not in captured["kwargs"]["env"]
     assert "MAT_BENCH_TOKEN" not in captured["kwargs"]["env"]
     assert (workspace / Path()).is_dir()
     assert runtime_home.is_dir()
