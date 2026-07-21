@@ -175,3 +175,37 @@ class TestValidateDir:
         (tmp_path / "POSCAR").write_text("x\n")
         errs = pm.validate_dir(tmp_path, spin=False)
         assert errs == ["missing POTCAR"]
+
+
+import os
+
+needs_potcar = pytest.mark.skipif(
+    not os.environ.get("PMG_VASP_PSP_DIR"),
+    reason="PMG_VASP_PSP_DIR not set; POTCAR library unavailable",
+)
+
+
+@needs_potcar
+class TestGenerateInputs:
+    def test_generate_and_validate_no_spin(self, tmp_path):
+        outdir = tmp_path / "job"
+        pm.generate_inputs(make_si(), outdir, spin=False)
+        assert (outdir / "INCAR").is_file()
+        assert (outdir / "POSCAR").is_file()
+        assert (outdir / "POTCAR").is_file()
+        assert not (outdir / "KPOINTS").exists()
+        assert pm.validate_dir(outdir, spin=False) == []
+
+    def test_generate_and_validate_spin(self, tmp_path):
+        outdir = tmp_path / "job_spin"
+        pm.generate_inputs(make_si(), outdir, spin=True)
+        assert pm.validate_dir(outdir, spin=True) == []
+
+    def test_validator_catches_tampered_incar(self, tmp_path):
+        outdir = tmp_path / "job_bad"
+        pm.generate_inputs(make_si(), outdir, spin=False)
+        incar_path = outdir / "INCAR"
+        content = incar_path.read_text().replace("ENCUT = 600", "ENCUT = 520")
+        incar_path.write_text(content)
+        errs = pm.validate_dir(outdir, spin=False)
+        assert any("ENCUT" in e for e in errs)

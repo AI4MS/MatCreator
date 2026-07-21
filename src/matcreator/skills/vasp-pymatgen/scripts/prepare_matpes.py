@@ -120,3 +120,12 @@ def validate_dir(calc_dir: Path, spin: bool) -> list[str]:
             f"POTCAR elements {potcar_elements} != POSCAR {poscar.site_symbols}"
         )
     return errors
+
+
+def generate_inputs(structure, outdir: Path, spin: bool) -> None:
+    from pymatgen.io.vasp.sets import MatPESStaticSet
+
+    vis = MatPESStaticSet(
+        structure, user_incar_settings=build_incar_overrides(spin)
+    )
+    vis.write_input(str(outdir))
