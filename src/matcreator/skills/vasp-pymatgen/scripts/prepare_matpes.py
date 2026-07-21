@@ -27,13 +27,47 @@ MIN_DISTANCE = 0.5        # Angstrom
 MIN_VOL_PER_ATOM = 1.0    # Angstrom^3
 MAX_VOL_PER_ATOM = 1000.0
 
+POTCAR_FUNCTIONALS = ("PBE_64", "PBE_54", "PBE")
 
-def build_incar_overrides(spin: bool) -> dict:
+
+def build_incar_overrides(spin: bool, extra: dict | None = None) -> dict:
     overrides = dict(BASE_OVERRIDES)
     if spin:
         overrides["ISPIN"] = 2
         del overrides["MAGMOM"]
+    if extra:
+        protected = set(BASE_OVERRIDES)
+        clashes = protected & set(extra)
+        if clashes:
+            raise ValueError(
+                f"--incar may not override protected keys: {sorted(clashes)} "
+                "(managed by --spin and the labeling policy)"
+            )
+        overrides.update(extra)
     return overrides
+
+
+def parse_incar_kv(pairs: list[str]) -> dict:
+    """Parse KEY=VALUE strings; values become int/float/bool when possible."""
+    extra = {}
+    for pair in pairs:
+        key, sep, raw = pair.partition("=")
+        if not sep or not key or not raw:
+            raise ValueError(f"invalid --incar {pair!r}, expected KEY=VALUE")
+        if raw.lower() in ("true", ".true."):
+            value = True
+        elif raw.lower() in ("false", ".false."):
+            value = False
+        else:
+            try:
+                value = int(raw)
+            except ValueError:
+                try:
+                    value = float(raw)
+                except ValueError:
+                    value = raw
+        extra[key.upper()] = value
+    return extra
 
 
 def check_structure(structure) -> str | None:
@@ -76,7 +110,7 @@ def load_frames(structure_file: str, frames_spec: str | None = None) -> list:
     return [AseAtomsAdaptor.get_structure(a) for a in images]
 
 
-def validate_incar(incar: dict, spin: bool) -> list[str]:
+def validate_incar(incar: dict, spin: bool, extra: dict | None = None) -> list[str]:
     errors = []
     expected = {
         "ISPIN": 2 if spin else 1,
@@ -85,6 +119,8 @@ def validate_incar(incar: dict, spin: bool) -> list[str]:
         "LAECHG": False,
         "LMIXTAU": False,
     }
+    if extra:
+        expected.update(extra)
     for key, val in expected.items():
         if incar.get(key) != val:
             errors.append(f"INCAR {key}={incar.get(key)!r}, expected {val!r}")
@@ -97,7 +133,7 @@ def validate_incar(incar: dict, spin: bool) -> list[str]:
     return errors
 
 
-def validate_dir(calc_dir: Path, spin: bool) -> list[str]:
+def validate_dir(calc_dir: Path, spin: bool, extra: dict | None = None) -> list[str]:
     from pymatgen.io.vasp.inputs import Incar, Poscar, Potcar
 
     calc_dir = Path(calc_dir)
@@ -110,7 +146,7 @@ def validate_dir(calc_dir: Path, spin: bool) -> list[str]:
         return errors
 
     incar = Incar.from_file(calc_dir / "INCAR")
-    errors.extend(validate_incar(incar, spin))
+    errors.extend(validate_incar(incar, spin, extra))
 
     if "KSPACING" in incar and (calc_dir / "KPOINTS").is_file():
         errors.append("KPOINTS file present although KSPACING is set")
@@ -125,11 +161,19 @@ def validate_dir(calc_dir: Path, spin: bool) -> list[str]:
     return errors
 
 
-def generate_inputs(structure, outdir: Path, spin: bool) -> None:
+def generate_inputs(
+    structure,
+    outdir: Path,
+    spin: bool,
+    extra: dict | None = None,
+    potcar_functional: str = "PBE_64",
+) -> None:
     from pymatgen.io.vasp.sets import MatPESStaticSet
 
     vis = MatPESStaticSet(
-        structure, user_incar_settings=build_incar_overrides(spin)
+        structure,
+        user_incar_settings=build_incar_overrides(spin, extra),
+        user_potcar_functional=potcar_functional,
     )
     vis.write_input(str(outdir))
 
@@ -155,6 +199,21 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="frame slice START:STOP:STEP for multi-frame files",
     )
     parser.add_argument(
+        "--incar",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="extra INCAR override, repeatable (e.g. --incar NCORE=4); "
+        "policy-managed keys (ISPIN, ENCUT, LCHARG, ...) are rejected",
+    )
+    parser.add_argument(
+        "--potcar",
+        choices=POTCAR_FUNCTIONALS,
+        default="PBE_64",
+        help="POTCAR functional/library generation (default: PBE_64, "
+        "the MatPES recommendation; use PBE_54/PBE for older libraries)",
+    )
+    parser.add_argument(
         "--validate-only",
         nargs="+",
         metavar="DIR",
@@ -169,10 +228,17 @@ def parse_args(argv=None) -> argparse.Namespace:
 def main(argv=None) -> int:
     args = parse_args(argv)
 
+    try:
+        extra = parse_incar_kv(args.incar)
+        build_incar_overrides(args.spin, extra)  # reject protected keys early
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
     if args.validate_only:
         n_failed = 0
         for d in args.validate_only:
-            errs = validate_dir(Path(d), args.spin)
+            errs = validate_dir(Path(d), args.spin, extra)
             if errs:
                 n_failed += 1
                 for e in errs:
@@ -200,8 +266,8 @@ def main(argv=None) -> int:
             print(f"[SKIP] frame {i}: {warning}")
             skipped.append(i)
             continue
-        generate_inputs(structure, target, args.spin)
-        errs = validate_dir(target, args.spin)
+        generate_inputs(structure, target, args.spin, extra, args.potcar)
+        errs = validate_dir(target, args.spin, extra)
         if errs:
             for e in errs:
                 print(f"[FAIL] {target}: {e}")

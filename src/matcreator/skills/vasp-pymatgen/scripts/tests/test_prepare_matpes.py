@@ -26,6 +26,36 @@ class TestBuildIncarOverrides:
         assert "MAGMOM" in pm.BASE_OVERRIDES
 
 
+class TestExtraIncar:
+    def test_extra_merged(self):
+        ov = pm.build_incar_overrides(spin=False, extra={"NCORE": 4})
+        assert ov["NCORE"] == 4
+        assert ov["ISPIN"] == 1
+
+    def test_protected_key_rejected(self):
+        import pytest
+        with pytest.raises(ValueError, match="ISPIN"):
+            pm.build_incar_overrides(spin=False, extra={"ISPIN": 2})
+        with pytest.raises(ValueError, match="MAGMOM"):
+            pm.build_incar_overrides(spin=True, extra={"MAGMOM": [1.0]})
+
+    def test_parse_incar_kv(self):
+        extra = pm.parse_incar_kv(
+            ["NCORE=4", "SIGMA=0.1", "LREAL=Auto", "LWAVE=False"]
+        )
+        assert extra == {
+            "NCORE": 4,
+            "SIGMA": 0.1,
+            "LREAL": "Auto",
+            "LWAVE": False,
+        }
+
+    def test_parse_incar_kv_invalid(self):
+        import pytest
+        with pytest.raises(ValueError, match="NCORE"):
+            pm.parse_incar_kv(["NCORE"])
+
+
 def make_si(a: float = 5.43) -> Structure:
     return Structure(
         Lattice.cubic(a),
@@ -158,6 +188,14 @@ class TestValidateIncar:
         errs = pm.validate_incar(incar, spin=False)
         assert any("LCHARG" in e for e in errs)
 
+    def test_extra_keys_validated(self):
+        incar = dict(GOOD_INCAR, NCORE=4)
+        assert pm.validate_incar(incar, spin=False, extra={"NCORE": 4}) == []
+        errs = pm.validate_incar(incar, spin=False, extra={"NCORE": 8})
+        assert any("NCORE" in e for e in errs)
+        errs = pm.validate_incar(dict(GOOD_INCAR), spin=False, extra={"NCORE": 4})
+        assert any("NCORE" in e for e in errs)
+
 
 from pathlib import Path
 
@@ -229,8 +267,8 @@ class TestCli:
     def test_multiframe_layout_and_summary(self, traj_file, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("PMG_VASP_PSP_DIR", "/fake")
         targets = []
-        monkeypatch.setattr(pm, "generate_inputs", lambda s, d, spin: targets.append(Path(d)))
-        monkeypatch.setattr(pm, "validate_dir", lambda d, spin: [])
+        monkeypatch.setattr(pm, "generate_inputs", lambda s, d, *a, **k: targets.append(Path(d)))
+        monkeypatch.setattr(pm, "validate_dir", lambda d, *a, **k: [])
         outdir = tmp_path / "out"
         rc = pm.main([traj_file, "-o", str(outdir)])
         assert rc == 0
@@ -245,8 +283,8 @@ class TestCli:
         ase_write(path, bulk("Si", "diamond", a=5.43))
         monkeypatch.setenv("PMG_VASP_PSP_DIR", "/fake")
         targets = []
-        monkeypatch.setattr(pm, "generate_inputs", lambda s, d, spin: targets.append(Path(d)))
-        monkeypatch.setattr(pm, "validate_dir", lambda d, spin: [])
+        monkeypatch.setattr(pm, "generate_inputs", lambda s, d, *a, **k: targets.append(Path(d)))
+        monkeypatch.setattr(pm, "validate_dir", lambda d, *a, **k: [])
         outdir = tmp_path / "single"
         rc = pm.main([str(path), "-o", str(outdir)])
         assert rc == 0
@@ -254,8 +292,8 @@ class TestCli:
 
     def test_bad_frame_skipped_not_fatal(self, traj_file, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("PMG_VASP_PSP_DIR", "/fake")
-        monkeypatch.setattr(pm, "generate_inputs", lambda s, d, spin: None)
-        monkeypatch.setattr(pm, "validate_dir", lambda d, spin: [])
+        monkeypatch.setattr(pm, "generate_inputs", lambda s, d, *a, **k: None)
+        monkeypatch.setattr(pm, "validate_dir", lambda d, *a, **k: [])
         warnings = iter(["atoms overlap", None, None, None, None])
         monkeypatch.setattr(pm, "check_structure", lambda s: next(warnings))
         rc = pm.main([traj_file, "-o", str(tmp_path / "out")])
@@ -266,8 +304,8 @@ class TestCli:
 
     def test_validation_failure_exits_1(self, traj_file, tmp_path, monkeypatch):
         monkeypatch.setenv("PMG_VASP_PSP_DIR", "/fake")
-        monkeypatch.setattr(pm, "generate_inputs", lambda s, d, spin: None)
-        monkeypatch.setattr(pm, "validate_dir", lambda d, spin: ["bad INCAR"])
+        monkeypatch.setattr(pm, "generate_inputs", lambda s, d, *a, **k: None)
+        monkeypatch.setattr(pm, "validate_dir", lambda d, *a, **k: ["bad INCAR"])
         rc = pm.main([traj_file, "-o", str(tmp_path / "out")])
         assert rc == 1
 
@@ -281,8 +319,39 @@ class TestCli:
         d1, d2 = tmp_path / "a", tmp_path / "b"
         d1.mkdir(); d2.mkdir()
         results = {str(d1): [], str(d2): ["missing INCAR"]}
-        monkeypatch.setattr(pm, "validate_dir", lambda d, spin: results[str(d)])
+        monkeypatch.setattr(pm, "validate_dir", lambda d, *a, **k: results[str(d)])
         rc = pm.main(["--validate-only", str(d1), str(d2)])
         assert rc == 1
         out = capsys.readouterr().out
         assert "[OK]" in out and "[FAIL]" in out
+
+    def test_incar_option_passed_through(self, traj_file, tmp_path, monkeypatch):
+        monkeypatch.setenv("PMG_VASP_PSP_DIR", "/fake")
+        seen = {}
+
+        def fake_generate(s, d, spin, extra=None, potcar_functional="PBE_64"):
+            seen["extra"] = extra
+            seen["potcar"] = potcar_functional
+
+        monkeypatch.setattr(pm, "generate_inputs", fake_generate)
+        monkeypatch.setattr(pm, "validate_dir", lambda d, *a, **k: [])
+        rc = pm.main(
+            [traj_file, "-o", str(tmp_path / "out"),
+             "--incar", "NCORE=4", "--incar", "SIGMA=0.1",
+             "--potcar", "PBE"]
+        )
+        assert rc == 0
+        assert seen["extra"] == {"NCORE": 4, "SIGMA": 0.1}
+        assert seen["potcar"] == "PBE"
+
+    def test_incar_protected_key_errors(self, traj_file, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("PMG_VASP_PSP_DIR", "/fake")
+        rc = pm.main(
+            [traj_file, "-o", str(tmp_path / "out"), "--incar", "ISPIN=2"]
+        )
+        assert rc == 1
+        assert "ISPIN" in capsys.readouterr().err
+
+    def test_potcar_choice_restricted(self):
+        with pytest.raises(SystemExit):
+            pm.parse_args(["x.cif", "--potcar", "LDA"])
