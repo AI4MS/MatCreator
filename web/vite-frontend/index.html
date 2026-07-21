@@ -311,15 +311,16 @@
             <button class="app-mode-btn" id="evaluation-mode-btn" type="button" aria-pressed="false">Evaluation</button>
           </div>
           <section class="evaluation-pane hidden" id="evaluation-pane" aria-live="polite">
-            <section class="evaluation-runs-pane" aria-label="Evaluation runs">
-              <div class="block-header">Evaluation runs
-                <button class="ghost" id="evaluation-refresh-campaigns" type="button" title="Refresh campaigns">↺</button>
+            <details class="panel-block evaluation-disclosure evaluation-runs-pane" aria-label="Evaluation runs">
+              <summary class="block-header">Evaluation runs</summary>
+              <button class="ghost evaluation-disclosure-refresh" id="evaluation-refresh-campaigns" type="button" title="Refresh campaigns">↺</button>
+              <div class="evaluation-disclosure-body">
+                <div class="evaluation-campaign-summary" id="evaluation-campaign-summary"></div>
+                <div class="evaluation-runs-list-body">
+                  <div class="evaluation-campaign-list" id="evaluation-campaign-list"></div>
+                </div>
               </div>
-              <div class="evaluation-campaign-summary" id="evaluation-campaign-summary"></div>
-              <div class="evaluation-runs-list-body">
-                <div class="evaluation-campaign-list" id="evaluation-campaign-list"></div>
-              </div>
-            </section>
+            </details>
             <div class="evaluation-configuration">
               <details class="panel-block evaluation-disclosure" open>
                 <summary class="block-header">Evaluation settings</summary>
@@ -366,6 +367,19 @@
                 <div class="evaluation-disclosure-body">
                   <div class="evaluation-generated-question-list" id="evaluation-generated-question-list">
                     <p class="empty">No generated questions loaded</p>
+                  </div>
+                </div>
+              </details>
+              <details class="panel-block evaluation-disclosure evaluation-question-templates" aria-label="Question templates">
+                <summary class="block-header">Question templates</summary>
+                <button class="ghost evaluation-disclosure-refresh" id="evaluation-refresh-question-templates" type="button" title="Refresh question templates">↺</button>
+                <div class="evaluation-disclosure-body">
+                  <select class="evaluation-input" id="evaluation-question-template-select" aria-label="Question template"></select>
+                  <div class="evaluation-template-actions">
+                    <button class="ghost" id="evaluation-template-new" type="button">New</button>
+                    <button class="ghost" id="evaluation-template-copy" type="button">Copy</button>
+                    <button class="ghost" id="evaluation-template-edit" type="button">Edit</button>
+                    <button class="ghost" id="evaluation-template-delete" type="button">Delete</button>
                   </div>
                 </div>
               </details>
