@@ -556,6 +556,16 @@ def _user_workspace_root(user_id: str) -> Path:
     return _user_matcreator_home(user_id) / "workspace"
 
 
+def _cancellation_workspace_root(session_id: str, user_id: str = "") -> Path | None:
+    """Resolve the workspace where the executing agent reads cancellation flags."""
+    if _MATCREATOR_MODE != "server":
+        return None
+    owner_id = user_id or _load_session_state(session_id)[0]
+    if not owner_id:
+        raise HTTPException(status_code=404, detail="Session owner was not found")
+    return _user_workspace_root(owner_id)
+
+
 def _worker_target_url(user_id: str, port: int | None = None) -> str:
     if _WORKER_CONNECT_MODE == "host-port":
         if port is None:
@@ -3502,7 +3512,13 @@ async def cancel_session_execution(
             owner_id=user_id,
             session_id=session_id,
         )
-    await asyncio.to_thread(request_cancellation, session_id, reason)
+    cancellation_root = _cancellation_workspace_root(session_id, user_id)
+    await asyncio.to_thread(
+        request_cancellation,
+        session_id,
+        reason,
+        workspace_root=cancellation_root,
+    )
     await asyncio.to_thread(
         AgentGraphLogger(session_id).mark_running_nodes_cancelled,
         summary=f"Cancelled by user ({reason})"
@@ -3518,20 +3534,27 @@ async def cancel_session_execution(
 
 
 @app.get("/api/sessions/{session_id}/cancel")
-async def get_cancellation_status(session_id: str) -> JSONResponse:
+async def get_cancellation_status(
+    session_id: str,
+    user_id: str = Query(default="", description="Current signed-in user"),
+) -> JSONResponse:
     """Check whether a cancellation is currently pending for this session."""
-    flagged = is_cancellation_requested(session_id)
+    cancellation_root = _cancellation_workspace_root(session_id, user_id)
+    flagged = is_cancellation_requested(session_id, workspace_root=cancellation_root)
     return JSONResponse({
         "session_id": session_id,
         "cancellation_requested": flagged,
-        "reason": get_cancellation_reason(session_id) if flagged else None,
+        "reason": get_cancellation_reason(session_id, workspace_root=cancellation_root) if flagged else None,
     })
 
 
 @app.delete("/api/sessions/{session_id}/cancel")
-async def clear_cancellation_flag(session_id: str) -> JSONResponse:
+async def clear_cancellation_flag(
+    session_id: str,
+    user_id: str = Query(default="", description="Current signed-in user"),
+) -> JSONResponse:
     """Manually clear a pending cancellation flag."""
-    clear_cancellation(session_id)
+    clear_cancellation(session_id, workspace_root=_cancellation_workspace_root(session_id, user_id))
     return JSONResponse({
         "status": "ok",
         "session_id": session_id,
@@ -3543,6 +3566,7 @@ async def clear_cancellation_flag(session_id: str) -> JSONResponse:
 async def cancel_individual_step(
     session_id: str,
     step_number: int,
+    user_id: str = Query(default="", description="Current signed-in user"),
     reason: str = Query(default="user_requested", description="Cancellation reason"),
 ) -> JSONResponse:
     """Cancel a specific running step without stopping the whole session.
@@ -3551,7 +3575,13 @@ async def cancel_individual_step(
     The graph node for that step is updated immediately so the frontend reflects
     the cancellation before the executor polls.
     """
-    await asyncio.to_thread(request_step_cancellation, session_id, step_number, reason)
+    await asyncio.to_thread(
+        request_step_cancellation,
+        session_id,
+        step_number,
+        reason,
+        workspace_root=_cancellation_workspace_root(session_id, user_id),
+    )
     found = await asyncio.to_thread(
         AgentGraphLogger(session_id).cancel_step_node_by_number,
         step_number, f"Cancelled by user ({reason})"

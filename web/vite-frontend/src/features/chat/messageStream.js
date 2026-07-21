@@ -17,21 +17,22 @@ export function createMessageStreamController(deps) {
     generateSessionSummary, refreshSessionFiles, sessionRuntime,
   } = deps;
 
-  function pollCancellationConfirmed(sessionId, attempts = 0) {
+  function pollCancellationConfirmed(sessionId, owner, attempts = 0) {
     if (attempts >= 20) {
       addMessage("agent", "⚠️ Stop requested but execution may still be running in the background.");
       return;
     }
     setTimeout(async () => {
       try {
-        const response = await fetch(`/api/sessions/${sessionId}/cancel`);
+        const query = new URLSearchParams({ user_id: owner || state.userId });
+        const response = await fetch(`/api/sessions/${sessionId}/cancel?${query}`);
         const result = await response.json();
         if (!result.cancellation_requested) {
           addMessage("agent", "✓ Execution stopped.");
           return;
         }
       } catch (_) { /* Ignore transient network errors. */ }
-      pollCancellationConfirmed(sessionId, attempts + 1);
+      pollCancellationConfirmed(sessionId, owner, attempts + 1);
     }, 2000);
   }
 
@@ -42,7 +43,7 @@ export function createMessageStreamController(deps) {
     const query = new URLSearchParams({ user_id: request.owner || state.userId });
     fetch(`/api/sessions/${request.sessionId}/cancel?${query}`, { method: "POST" }).catch(() => {});
     request.controller.abort();
-    pollCancellationConfirmed(request.sessionId);
+    pollCancellationConfirmed(request.sessionId, request.owner);
   }
 
   async function send(message) {
@@ -58,7 +59,10 @@ export function createMessageStreamController(deps) {
     // suppressed until this exact new user turn validates a fresh plan.
     sessionRuntime.suppressPlanApproval(state.sessionId, backendMessage);
     chatArea.querySelectorAll(".plan-approval-message").forEach((item) => item.remove());
-    try { await fetch(`/api/sessions/${state.sessionId}/cancel`, { method: "DELETE" }); } catch (_) {}
+    const cancellationQuery = new URLSearchParams({
+      user_id: state.activeSessionUserId || state.userId,
+    });
+    try { await fetch(`/api/sessions/${state.sessionId}/cancel?${cancellationQuery}`, { method: "DELETE" }); } catch (_) {}
     const userMessage = addMessage("user", messageWithUploadNames(message, uploads));
     const startedAt = Date.now();
     textInput.value = "";
