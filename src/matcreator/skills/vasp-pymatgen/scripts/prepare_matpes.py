@@ -8,6 +8,9 @@ ENCUT=600, LMIXTAU off, LORBIT removed.
 
 from __future__ import annotations
 
+import argparse
+import os
+import sys
 from pathlib import Path
 
 BASE_OVERRIDES = {
@@ -129,3 +132,91 @@ def generate_inputs(structure, outdir: Path, spin: bool) -> None:
         structure, user_incar_settings=build_incar_overrides(spin)
     )
     vis.write_input(str(outdir))
+
+
+def parse_args(argv=None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "structure_file",
+        nargs="?",
+        help="structure file readable by ASE (cif, POSCAR, extxyz, ...)",
+    )
+    parser.add_argument("-o", "--output-dir", default="matpes_job")
+    parser.add_argument(
+        "--spin",
+        action="store_true",
+        help="enable spin polarization (ISPIN=2, keep MatPES MAGMOM guesses)",
+    )
+    parser.add_argument(
+        "--frames",
+        help="frame slice START:STOP:STEP for multi-frame files",
+    )
+    parser.add_argument(
+        "--validate-only",
+        nargs="+",
+        metavar="DIR",
+        help="only validate existing calc dirs, do not generate",
+    )
+    args = parser.parse_args(argv)
+    if not args.validate_only and not args.structure_file:
+        parser.error("structure_file is required unless --validate-only is given")
+    return args
+
+
+def main(argv=None) -> int:
+    args = parse_args(argv)
+
+    if args.validate_only:
+        n_failed = 0
+        for d in args.validate_only:
+            errs = validate_dir(Path(d), args.spin)
+            if errs:
+                n_failed += 1
+                for e in errs:
+                    print(f"[FAIL] {d}: {e}")
+            else:
+                print(f"[OK] {d}")
+        return 1 if n_failed else 0
+
+    if not os.environ.get("PMG_VASP_PSP_DIR"):
+        print(
+            "error: PMG_VASP_PSP_DIR is not set (required for POTCAR generation)",
+            file=sys.stderr,
+        )
+        return 1
+
+    structures = load_frames(args.structure_file, args.frames)
+    outdir = Path(args.output_dir)
+    multi = len(structures) > 1
+
+    generated, skipped, failed = [], [], []
+    for i, structure in enumerate(structures):
+        target = outdir / f"frame_{i:04d}" if multi else outdir
+        warning = check_structure(structure)
+        if warning:
+            print(f"[SKIP] frame {i}: {warning}")
+            skipped.append(i)
+            continue
+        generate_inputs(structure, target, args.spin)
+        errs = validate_dir(target, args.spin)
+        if errs:
+            for e in errs:
+                print(f"[FAIL] {target}: {e}")
+            failed.append(str(target))
+        else:
+            generated.append(str(target))
+
+    print(
+        f"\nSummary: {len(generated)} generated, "
+        f"{len(skipped)} skipped, {len(failed)} failed"
+    )
+    if failed or not generated:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

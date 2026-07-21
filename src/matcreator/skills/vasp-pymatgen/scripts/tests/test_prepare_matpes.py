@@ -209,3 +209,80 @@ class TestGenerateInputs:
         incar_path.write_text(content)
         errs = pm.validate_dir(outdir, spin=False)
         assert any("ENCUT" in e for e in errs)
+
+
+class TestCli:
+    def test_requires_structure_file(self, capsys):
+        with pytest.raises(SystemExit):
+            pm.parse_args([])
+
+    def test_validate_only_needs_no_structure(self):
+        args = pm.parse_args(["--validate-only", "some_dir"])
+        assert args.validate_only == ["some_dir"]
+
+    def test_missing_psp_dir_errors(self, traj_file, monkeypatch, capsys):
+        monkeypatch.delenv("PMG_VASP_PSP_DIR", raising=False)
+        rc = pm.main([traj_file])
+        assert rc == 1
+        assert "PMG_VASP_PSP_DIR" in capsys.readouterr().err
+
+    def test_multiframe_layout_and_summary(self, traj_file, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("PMG_VASP_PSP_DIR", "/fake")
+        targets = []
+        monkeypatch.setattr(pm, "generate_inputs", lambda s, d, spin: targets.append(Path(d)))
+        monkeypatch.setattr(pm, "validate_dir", lambda d, spin: [])
+        outdir = tmp_path / "out"
+        rc = pm.main([traj_file, "-o", str(outdir)])
+        assert rc == 0
+        assert targets == [outdir / f"frame_{i:04d}" for i in range(5)]
+        out = capsys.readouterr().out
+        assert "5 generated, 0 skipped, 0 failed" in out
+
+    def test_single_frame_no_subdir(self, tmp_path, monkeypatch):
+        from ase.build import bulk
+        from ase.io import write as ase_write
+        path = tmp_path / "si.cif"
+        ase_write(path, bulk("Si", "diamond", a=5.43))
+        monkeypatch.setenv("PMG_VASP_PSP_DIR", "/fake")
+        targets = []
+        monkeypatch.setattr(pm, "generate_inputs", lambda s, d, spin: targets.append(Path(d)))
+        monkeypatch.setattr(pm, "validate_dir", lambda d, spin: [])
+        outdir = tmp_path / "single"
+        rc = pm.main([str(path), "-o", str(outdir)])
+        assert rc == 0
+        assert targets == [outdir]
+
+    def test_bad_frame_skipped_not_fatal(self, traj_file, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("PMG_VASP_PSP_DIR", "/fake")
+        monkeypatch.setattr(pm, "generate_inputs", lambda s, d, spin: None)
+        monkeypatch.setattr(pm, "validate_dir", lambda d, spin: [])
+        warnings = iter(["atoms overlap", None, None, None, None])
+        monkeypatch.setattr(pm, "check_structure", lambda s: next(warnings))
+        rc = pm.main([traj_file, "-o", str(tmp_path / "out")])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "4 generated, 1 skipped, 0 failed" in out
+        assert "[SKIP]" in out
+
+    def test_validation_failure_exits_1(self, traj_file, tmp_path, monkeypatch):
+        monkeypatch.setenv("PMG_VASP_PSP_DIR", "/fake")
+        monkeypatch.setattr(pm, "generate_inputs", lambda s, d, spin: None)
+        monkeypatch.setattr(pm, "validate_dir", lambda d, spin: ["bad INCAR"])
+        rc = pm.main([traj_file, "-o", str(tmp_path / "out")])
+        assert rc == 1
+
+    def test_all_frames_skipped_exits_1(self, traj_file, tmp_path, monkeypatch):
+        monkeypatch.setenv("PMG_VASP_PSP_DIR", "/fake")
+        monkeypatch.setattr(pm, "check_structure", lambda s: "bad")
+        rc = pm.main([traj_file, "-o", str(tmp_path / "out")])
+        assert rc == 1
+
+    def test_validate_only_mode(self, tmp_path, monkeypatch, capsys):
+        d1, d2 = tmp_path / "a", tmp_path / "b"
+        d1.mkdir(); d2.mkdir()
+        results = {str(d1): [], str(d2): ["missing INCAR"]}
+        monkeypatch.setattr(pm, "validate_dir", lambda d, spin: results[str(d)])
+        rc = pm.main(["--validate-only", str(d1), str(d2)])
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "[OK]" in out and "[FAIL]" in out
