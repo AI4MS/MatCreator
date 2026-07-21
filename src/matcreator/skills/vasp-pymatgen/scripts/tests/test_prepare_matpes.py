@@ -109,3 +109,51 @@ class TestLoadFrames:
         ase_write(path, atoms, format="vasp")
         frames = pm.load_frames(str(path))
         assert len(frames) == 1
+
+
+GOOD_INCAR = {
+    "ISPIN": 1,
+    "ENCUT": 600.0,
+    "LCHARG": False,
+    "LAECHG": False,
+    "LMIXTAU": False,
+    "ALGO": "Normal",
+    "KSPACING": 0.22,
+}
+
+
+class TestValidateIncar:
+    def test_good_incar_passes(self):
+        assert pm.validate_incar(dict(GOOD_INCAR), spin=False) == []
+
+    def test_wrong_ispin(self):
+        incar = dict(GOOD_INCAR, ISPIN=2)
+        errs = pm.validate_incar(incar, spin=False)
+        assert any("ISPIN" in e for e in errs)
+
+    def test_wrong_encut(self):
+        incar = dict(GOOD_INCAR, ENCUT=680.0)
+        errs = pm.validate_incar(incar, spin=False)
+        assert any("ENCUT" in e for e in errs)
+
+    def test_lorbit_present_fails(self):
+        incar = dict(GOOD_INCAR, LORBIT=11)
+        errs = pm.validate_incar(incar, spin=False)
+        assert any("LORBIT" in e for e in errs)
+
+    def test_magmom_present_without_spin_fails(self):
+        incar = dict(GOOD_INCAR, MAGMOM=[0.6, 0.6])
+        errs = pm.validate_incar(incar, spin=False)
+        assert any("MAGMOM" in e for e in errs)
+
+    def test_spin_requires_ispin2_and_magmom(self):
+        incar = dict(GOOD_INCAR, ISPIN=2, MAGMOM=[0.6, 0.6])
+        assert pm.validate_incar(incar, spin=True) == []
+        errs = pm.validate_incar(dict(GOOD_INCAR), spin=True)
+        assert any("ISPIN" in e for e in errs)
+        assert any("MAGMOM" in e for e in errs)
+
+    def test_lcharg_true_fails(self):
+        incar = dict(GOOD_INCAR, LCHARG=True)
+        errs = pm.validate_incar(incar, spin=False)
+        assert any("LCHARG" in e for e in errs)

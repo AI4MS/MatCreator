@@ -69,3 +69,24 @@ def load_frames(structure_file: str, frames_spec: str | None = None) -> list:
     if frames_spec:
         images = images[parse_frames_slice(frames_spec)]
     return [AseAtomsAdaptor.get_structure(a) for a in images]
+
+
+def validate_incar(incar: dict, spin: bool) -> list[str]:
+    errors = []
+    expected = {
+        "ISPIN": 2 if spin else 1,
+        "ENCUT": 600,
+        "LCHARG": False,
+        "LAECHG": False,
+        "LMIXTAU": False,
+    }
+    for key, val in expected.items():
+        if incar.get(key) != val:
+            errors.append(f"INCAR {key}={incar.get(key)!r}, expected {val!r}")
+    if "LORBIT" in incar:
+        errors.append("INCAR contains LORBIT (should be removed)")
+    if spin and "MAGMOM" not in incar:
+        errors.append("INCAR missing MAGMOM (required with --spin)")
+    if not spin and "MAGMOM" in incar:
+        errors.append("INCAR contains MAGMOM (should be removed when ISPIN=1)")
+    return errors
