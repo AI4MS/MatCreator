@@ -52,6 +52,8 @@ const state = {
   evaluationCatalogFacets: {},
   evaluationQuestionSets: [],
   evaluationGeneratedQuestions: [],
+  evaluationQuestionTemplates: [],
+  activeEvaluationQuestionTemplateId: "default",
   activeEvaluationQuestionSetId: "",
   selectedEvaluationQuestions: new Set(),
   activeEvaluationCampaign: null,
@@ -242,6 +244,170 @@ function setEvaluationStatus(message = "", isError = false) {
 
 function questionSetById(setId) {
   return state.evaluationQuestionSets.find((questionSet) => questionSet.set_id === setId) || null;
+}
+
+function questionTemplateById(templateId) {
+  return state.evaluationQuestionTemplates.find((template) => template.template_id === templateId) || null;
+}
+
+function renderEvaluationQuestionTemplates() {
+  const select = document.getElementById("evaluation-question-template-select");
+  const edit = document.getElementById("evaluation-template-edit");
+  const remove = document.getElementById("evaluation-template-delete");
+  if (!select) return;
+  select.innerHTML = "";
+  for (const template of state.evaluationQuestionTemplates) {
+    const option = document.createElement("option");
+    option.value = template.template_id;
+    option.textContent = `${template.name}${template.is_default ? " (default)" : ""}`;
+    select.appendChild(option);
+  }
+  if (!questionTemplateById(state.activeEvaluationQuestionTemplateId)) {
+    state.activeEvaluationQuestionTemplateId = state.evaluationQuestionTemplates[0]?.template_id || "";
+  }
+  select.value = state.activeEvaluationQuestionTemplateId;
+  const active = questionTemplateById(state.activeEvaluationQuestionTemplateId);
+  if (edit) edit.disabled = !active || active.is_default;
+  if (remove) remove.disabled = !active || active.is_default;
+}
+
+async function loadEvaluationQuestionTemplates() {
+  if (!state.userId) return;
+  try {
+    const response = await fetch(
+      `/api/evaluation-question-templates?user_id=${encodeURIComponent(state.userId)}`,
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+    state.evaluationQuestionTemplates = data.templates || [];
+    renderEvaluationQuestionTemplates();
+  } catch (error) {
+    setEvaluationStatus(`Could not load question templates: ${error.message}`, true);
+  }
+}
+
+async function fetchEvaluationQuestionTemplate(templateId) {
+  const response = await fetch(
+    `/api/evaluation-question-templates/${encodeURIComponent(templateId)}?user_id=${encodeURIComponent(state.userId)}`,
+  );
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+  return data;
+}
+
+function showEvaluationQuestionTemplateModal({ templateId = "", template = {}, copy = false } = {}) {
+  document.querySelector(".evaluation-template-overlay")?.remove();
+  const overlay = document.createElement("div");
+  overlay.className = "evaluation-draft-overlay evaluation-template-overlay";
+  const card = document.createElement("section");
+  card.className = "evaluation-draft-card";
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  const header = document.createElement("header");
+  header.className = "evaluation-draft-header";
+  const heading = document.createElement("h2");
+  heading.textContent = templateId && !copy ? "Edit question template" : "New question template";
+  const close = document.createElement("button");
+  close.className = "ghost";
+  close.type = "button";
+  close.textContent = "Close";
+  close.addEventListener("click", () => overlay.remove());
+  header.append(heading, close);
+  const json = document.createElement("textarea");
+  json.className = "evaluation-draft-yaml";
+  json.value = JSON.stringify(template, null, 2);
+  json.setAttribute("aria-label", "Question template JSON");
+  json.spellcheck = false;
+  const upload = document.createElement("input");
+  upload.type = "file";
+  upload.accept = "application/json,.json";
+  upload.addEventListener("change", async () => {
+    const file = upload.files?.[0];
+    if (!file) return;
+    try {
+      json.value = JSON.stringify(JSON.parse(await file.text()), null, 2);
+    } catch (_error) {
+      status.textContent = "The uploaded file must contain valid JSON.";
+      status.className = "evaluation-draft-action-status is-error";
+    }
+  });
+  const actions = document.createElement("div");
+  actions.className = "evaluation-draft-actions";
+  const save = document.createElement("button");
+  save.className = "evaluation-draft-export";
+  save.type = "button";
+  save.textContent = templateId && !copy ? "Save template" : "Create template";
+  const status = document.createElement("p");
+  status.className = "evaluation-draft-action-status";
+  save.addEventListener("click", async () => {
+    let parsed;
+    try {
+      parsed = JSON.parse(json.value);
+    } catch (_error) {
+      status.textContent = "Template JSON is invalid.";
+      status.className = "evaluation-draft-action-status is-error";
+      return;
+    }
+    if (!parsed.name?.trim()) {
+      status.textContent = "Template JSON needs a non-empty name.";
+      status.className = "evaluation-draft-action-status is-error";
+      return;
+    }
+    save.disabled = true;
+    try {
+      const method = templateId && !copy ? "PUT" : "POST";
+      const path = method === "PUT"
+        ? `/api/evaluation-question-templates/${encodeURIComponent(templateId)}`
+        : "/api/evaluation-question-templates";
+      const response = await fetch(`${path}?user_id=${encodeURIComponent(state.userId)}`, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ template: parsed }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+      state.activeEvaluationQuestionTemplateId = data.template_id;
+      await loadEvaluationQuestionTemplates();
+      setEvaluationStatus("Question template saved");
+      overlay.remove();
+    } catch (error) {
+      status.textContent = error.message;
+      status.className = "evaluation-draft-action-status is-error";
+      save.disabled = false;
+    }
+  });
+  actions.append(save);
+  card.append(header, upload, json, actions, status);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  json.focus();
+  overlay.addEventListener("click", (event) => { if (event.target === overlay) overlay.remove(); });
+}
+
+async function openEvaluationQuestionTemplate(templateId, copy = false) {
+  try {
+    const data = await fetchEvaluationQuestionTemplate(templateId);
+    showEvaluationQuestionTemplateModal({ templateId, template: data.template, copy });
+  } catch (error) {
+    setEvaluationStatus(`Could not open question template: ${error.message}`, true);
+  }
+}
+
+async function deleteEvaluationQuestionTemplate() {
+  const template = questionTemplateById(state.activeEvaluationQuestionTemplateId);
+  if (!template || template.is_default) return;
+  try {
+    const response = await fetch(
+      `/api/evaluation-question-templates/${encodeURIComponent(template.template_id)}?user_id=${encodeURIComponent(state.userId)}`,
+      { method: "DELETE" },
+    );
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || `HTTP ${response.status}`);
+    state.activeEvaluationQuestionTemplateId = "default";
+    await loadEvaluationQuestionTemplates();
+    setEvaluationStatus("Question template deleted");
+  } catch (error) {
+    setEvaluationStatus(`Could not delete question template: ${error.message}`, true);
+  }
 }
 
 function renderEvaluationQuestionSets() {
@@ -727,6 +893,7 @@ function setApplicationMode(mode) {
     void loadEvaluationCampaigns();
     void loadEvaluationQuestionSets();
     void loadEvaluationGeneratedQuestions();
+    void loadEvaluationQuestionTemplates();
     if (!evaluationPoll) {
       evaluationPoll = setInterval(() => {
         if (state.activeEvaluationCampaign?.campaign_id && ["draft", "starting", "active", "cancelling"].includes(state.activeEvaluationCampaign.status)) {
@@ -750,6 +917,7 @@ document.getElementById("evaluation-refresh-catalog")?.addEventListener("click",
 document.getElementById("evaluation-refresh-campaigns")?.addEventListener("click", () => void loadEvaluationCampaigns());
 document.getElementById("evaluation-refresh-question-sets")?.addEventListener("click", () => void loadEvaluationQuestionSets());
 document.getElementById("evaluation-refresh-generated-questions")?.addEventListener("click", () => void loadEvaluationGeneratedQuestions());
+document.getElementById("evaluation-refresh-question-templates")?.addEventListener("click", () => void loadEvaluationQuestionTemplates());
 document.getElementById("evaluation-create-start")?.addEventListener("click", () => void createAndStartEvaluation());
 document.getElementById("evaluation-question-set-select")?.addEventListener("change", (event) => loadSelectedQuestionSet(event.target.value));
 document.getElementById("evaluation-save-question-set")?.addEventListener("click", () => void saveEvaluationQuestionSet());
@@ -765,6 +933,22 @@ document.getElementById("evaluation-clear-selection")?.addEventListener("click",
   document.getElementById(id)?.addEventListener("change", () => void loadEvaluationCatalog());
 });
 document.getElementById("evaluation-selected-only")?.addEventListener("change", renderEvaluationQuestions);
+document.getElementById("evaluation-question-template-select")?.addEventListener("change", (event) => {
+  state.activeEvaluationQuestionTemplateId = event.target.value;
+  renderEvaluationQuestionTemplates();
+});
+document.getElementById("evaluation-template-new")?.addEventListener("click", () => {
+  showEvaluationQuestionTemplateModal();
+});
+document.getElementById("evaluation-template-copy")?.addEventListener("click", () => {
+  void openEvaluationQuestionTemplate(state.activeEvaluationQuestionTemplateId, true);
+});
+document.getElementById("evaluation-template-edit")?.addEventListener("click", () => {
+  void openEvaluationQuestionTemplate(state.activeEvaluationQuestionTemplateId);
+});
+document.getElementById("evaluation-template-delete")?.addEventListener("click", () => {
+  void deleteEvaluationQuestionTemplate();
+});
 
 // ---------------------------------------------------------------------------
 // Agent Graph Visualization
@@ -1757,6 +1941,17 @@ function showEvaluationQuestionDraftModal(draft, actionMessage = "") {
   instruction.placeholder = "Optional refinement instruction";
   instruction.setAttribute("aria-label", "Optional refinement instruction");
   instruction.disabled = draft.status === "exported";
+  const templateSelect = document.createElement("select");
+  templateSelect.className = "evaluation-input";
+  templateSelect.setAttribute("aria-label", "Refinement question template");
+  for (const template of state.evaluationQuestionTemplates) {
+    const option = document.createElement("option");
+    option.value = template.template_id;
+    option.textContent = `${template.name}${template.is_default ? " (default)" : ""}`;
+    templateSelect.appendChild(option);
+  }
+  templateSelect.value = draft.template?.template_id || state.activeEvaluationQuestionTemplateId || "default";
+  templateSelect.disabled = draft.status === "exported";
   const actionStatus = document.createElement("p");
   actionStatus.className = actionMessage
     ? "evaluation-draft-action-status is-success"
@@ -1828,7 +2023,7 @@ function showEvaluationQuestionDraftModal(draft, actionMessage = "") {
       await runDraftAction("/refine", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ instruction: instruction.value }),
+        body: JSON.stringify({ instruction: instruction.value, template_id: templateSelect.value }),
       }, refine, "Refining...", "Refined and saved to");
     } catch (_error) {
       // runDraftAction renders the actionable error in the dialog.
@@ -1874,7 +2069,7 @@ function showEvaluationQuestionDraftModal(draft, actionMessage = "") {
   const artifactCount = draft.evidence?.artifacts?.length || 0;
   artifacts.textContent = `${artifactCount} source artifact${artifactCount === 1 ? "" : "s"} available for review.`;
   evidence.appendChild(artifacts);
-  card.append(header, notice, validation, yamlHeading, yaml, instruction, actions, actionStatus, evidence);
+  card.append(header, notice, validation, yamlHeading, yaml, templateSelect, instruction, actions, actionStatus, evidence);
   overlay.appendChild(card);
   document.body.appendChild(overlay);
   close.focus();
@@ -1943,7 +2138,11 @@ async function showEvaluationQuestionDraft(sessionId, owner = state.userId) {
   try {
     const response = await fetch(
       `/api/sessions/${encodeURIComponent(sessionId)}/evaluation-question-drafts${query}`,
-      { method: "POST" },
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ template_id: state.activeEvaluationQuestionTemplateId }),
+      },
     );
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));

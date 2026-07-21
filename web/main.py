@@ -365,12 +365,25 @@ def _benchmark_client() -> BenchmarkClient:
 _benchmark_token_registration_lock = asyncio.Lock()
 
 
+def _benchmark_config_for_owner(owner_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    config = _load_config_for_user(owner_id)
+    user_benchmark = config.get("benchmark") or {}
+    if not isinstance(user_benchmark, dict):
+        user_benchmark = {}
+    default_benchmark = load_config().get("benchmark") or {}
+    if not isinstance(default_benchmark, dict):
+        default_benchmark = {}
+    resolved = {**default_benchmark, **user_benchmark}
+    user_server_url = str(user_benchmark.get("server_url") or "").strip()
+    default_server_url = str(default_benchmark.get("server_url") or "").strip()
+    if user_server_url and user_server_url != default_server_url and not user_benchmark.get("token"):
+        resolved.pop("token", None)
+    return config, resolved
+
+
 async def _benchmark_client_for_owner(owner_id: str = "") -> BenchmarkClient:
     """Resolve a benchmark client, registering a development token when needed."""
-    config = _load_config_for_user(owner_id)
-    benchmark_config = config.get("benchmark") or {}
-    if not isinstance(benchmark_config, dict):
-        benchmark_config = {}
+    config, benchmark_config = _benchmark_config_for_owner(owner_id)
     server_url = (
         os.environ.get("MAT_BENCH_SERVER_URL", "").strip()
         or str(benchmark_config.get("server_url") or "").strip()
@@ -388,10 +401,7 @@ async def _benchmark_client_for_owner(owner_id: str = "") -> BenchmarkClient:
         return BenchmarkClient(server_url, token)
     async with _benchmark_token_registration_lock:
         # Another first-use request may have persisted the token while this request waited.
-        config = _load_config_for_user(owner_id)
-        benchmark_config = config.get("benchmark") or {}
-        if not isinstance(benchmark_config, dict):
-            benchmark_config = {}
+        config, benchmark_config = _benchmark_config_for_owner(owner_id)
         token = (
             os.environ.get("MAT_BENCH_TOKEN", "").strip()
             or str(benchmark_config.get("token") or "").strip()
@@ -690,6 +700,7 @@ def _worker_env_vars() -> dict[str, str]:
         "BOHRIUM_USERNAME", "BOHRIUM_PASSWORD", "BOHRIUM_ACCESS_KEY", "BOHRIUM_API_URL", "BOHRIUM_PROJECT_ID",
         "BOHRIUM_VASP_IMAGE", "BOHRIUM_VASP_MACHINE",
         "BOHRIUM_DEEPMD_IMAGE", "BOHRIUM_DEEPMD_MACHINE", "DEEPMD_MODEL_PATH",
+        "MAT_BENCH_SERVER_URL",
         "KDG_EMBED_MODEL", "HF_HUB_OFFLINE", "MATCREATOR_MODULE_SKILLS_ROOT",
     ]
     env_vars = {k: v for k in keys if (v := _runtime_env_value(k))}

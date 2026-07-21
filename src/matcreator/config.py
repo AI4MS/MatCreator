@@ -80,6 +80,7 @@ YAML_TO_ENV: dict[str, str] = {
     "compute.deepmd_image":   "BOHRIUM_DEEPMD_IMAGE",
     "compute.deepmd_machine": "BOHRIUM_DEEPMD_MACHINE",
     "compute.deepmd_model_path": "DEEPMD_MODEL_PATH",
+    "benchmark.server_url":   "MAT_BENCH_SERVER_URL",
     "skills.module_root":     "MATCREATOR_MODULE_SKILLS_ROOT",
     "knowledge.memorization_frequency": "MATCREATOR_MEMORIZATION_FREQUENCY",
     "knowledge.review_frequency": "MATCREATOR_REVIEW_FREQUENCY",
