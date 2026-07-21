@@ -61,6 +61,8 @@ _CAPABILITIES = frozenset(
 )
 _DOMAINS = frozenset({"battery", "catalysis", "polymer", "alloy", "semiconductor", "agnostic"})
 _DIFFICULTIES = frozenset({"easy", "medium", "hard"})
+_TEMPLATE_ID_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,79}")
+DEFAULT_TEMPLATE_ID = "default"
 
 
 class SessionQuestionGeneratorPlugin(Protocol):
@@ -289,6 +291,141 @@ def _safe_component(value: str) -> str:
     return cleaned or "session-question"
 
 
+def validate_question_template(template: dict[str, Any]) -> list[str]:
+    """Validate the executable contract required of a question-authoring template."""
+    errors: list[str] = []
+    if not isinstance(template.get("name"), str) or not template["name"].strip():
+        errors.append("Question authoring template needs a non-empty name")
+    verify_types = template.get("executable_verify_types")
+    if not isinstance(verify_types, list) or not verify_types:
+        errors.append("Question authoring template needs executable_verify_types")
+    else:
+        invalid = sorted({str(value) for value in verify_types if value not in SUPPORTED_VERIFY_TYPES})
+        if invalid:
+            errors.append(f"Unsupported executable verifiers: {', '.join(invalid)}")
+    if not isinstance(template.get("system_prompt"), str) or not template["system_prompt"].strip():
+        errors.append("Question authoring template needs a non-empty system_prompt")
+    return errors
+
+
+class QuestionTemplateStore:
+    """Persist user-owned question-authoring templates beneath one trusted root."""
+
+    def __init__(self, root: str | Path, default_template_path: str | Path) -> None:
+        self.root = Path(root).expanduser().resolve()
+        self.default_template_path = Path(default_template_path).expanduser().resolve()
+
+    @staticmethod
+    def _validate_template_id(template_id: str) -> str:
+        candidate = (template_id or "").strip()
+        if not _TEMPLATE_ID_RE.fullmatch(candidate):
+            raise KeyError("Question template was not found")
+        return candidate
+
+    @classmethod
+    def template_id_for(cls, template: dict[str, Any]) -> str:
+        name = template.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Question authoring template needs a non-empty name")
+        return cls._validate_template_id(_safe_component(name.lower()))
+
+    def _path(self, template_id: str) -> Path:
+        template_id = self._validate_template_id(template_id)
+        path = (self.root / f"{template_id}.json").resolve()
+        if not path.is_relative_to(self.root):
+            raise KeyError("Question template was not found")
+        return path
+
+    @staticmethod
+    def _read_template(path: Path) -> dict[str, Any]:
+        try:
+            template = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("Question authoring template is invalid") from exc
+        if not isinstance(template, dict):
+            raise ValueError("Question authoring template must contain an object")
+        errors = validate_question_template(template)
+        if errors:
+            raise ValueError("; ".join(errors))
+        return template
+
+    @staticmethod
+    def _summary(template_id: str, template: dict[str, Any], *, is_default: bool) -> dict[str, Any]:
+        serialized = json.dumps(template, sort_keys=True, separators=(",", ":")).encode()
+        return {
+            "template_id": template_id,
+            "name": str(template["name"]),
+            "template_version": str(template.get("template_version") or ""),
+            "is_default": is_default,
+            "sha256": sha256(serialized).hexdigest(),
+        }
+
+    def list(self) -> list[dict[str, Any]]:
+        default = self._read_template(self.default_template_path)
+        templates = [self._summary(DEFAULT_TEMPLATE_ID, default, is_default=True)]
+        if not self.root.is_dir():
+            return templates
+        for path in sorted(self.root.glob("*.json")):
+            try:
+                template = self._read_template(path)
+                template_id = self._validate_template_id(path.stem)
+            except (KeyError, ValueError):
+                continue
+            templates.append(self._summary(template_id, template, is_default=False))
+        return templates
+
+    def get(self, template_id: str) -> tuple[dict[str, Any], dict[str, Any], Path]:
+        template_id = self._validate_template_id(template_id)
+        is_default = template_id == DEFAULT_TEMPLATE_ID
+        path = self.default_template_path if is_default else self._path(template_id)
+        if not path.is_file():
+            raise KeyError("Question template was not found")
+        template = self._read_template(path)
+        return template, self._summary(template_id, template, is_default=is_default), path
+
+    def save(self, template_id: str, template: dict[str, Any], *, overwrite: bool = False) -> dict[str, Any]:
+        template_id = self._validate_template_id(template_id)
+        if template_id == DEFAULT_TEMPLATE_ID:
+            raise ValueError("The default question template cannot be modified")
+        errors = validate_question_template(template)
+        if errors:
+            raise ValueError("; ".join(errors))
+        path = self._path(template_id)
+        if path.exists() and not overwrite:
+            raise FileExistsError("A question template with this id already exists")
+        self.root.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(template, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        temporary.replace(path)
+        return self._summary(template_id, template, is_default=False)
+
+    def save_for_name(self, template: dict[str, Any], *, previous_id: str = "") -> dict[str, Any]:
+        """Save a template under the filename derived from its required name."""
+        template_id = self.template_id_for(template)
+        previous_id = self._validate_template_id(previous_id) if previous_id else ""
+        if previous_id == DEFAULT_TEMPLATE_ID:
+            raise ValueError("The default question template cannot be modified")
+        if previous_id and previous_id != template_id:
+            previous_path = self._path(previous_id)
+            if not previous_path.is_file():
+                raise KeyError("Question template was not found")
+            if self._path(template_id).exists():
+                raise FileExistsError("A question template with this name already exists")
+            metadata = self.save(template_id, template)
+            previous_path.unlink()
+            return metadata
+        return self.save(template_id, template, overwrite=bool(previous_id))
+
+    def delete(self, template_id: str) -> None:
+        template_id = self._validate_template_id(template_id)
+        if template_id == DEFAULT_TEMPLATE_ID:
+            raise ValueError("The default question template cannot be deleted")
+        path = self._path(template_id)
+        if not path.is_file():
+            raise KeyError("Question template was not found")
+        path.unlink()
+
+
 class StagedSessionQuestionService:
     """Create durable review-only question drafts outside the live benchmark bank."""
 
@@ -298,11 +435,13 @@ class StagedSessionQuestionService:
         generator: SessionQuestionGeneratorPlugin | None = None,
         *,
         template_path: str | Path | None = None,
+        template_metadata: dict[str, Any] | None = None,
         legacy_roots: list[str | Path] | None = None,
     ) -> None:
         self.staging_root = Path(staging_root).expanduser().resolve()
         self.generator = generator
         self.template_path = Path(template_path).expanduser().resolve() if template_path else None
+        self.template_metadata = dict(template_metadata or {})
         self.legacy_roots = [Path(root).expanduser().resolve() for root in (legacy_roots or [])]
 
     def _draft_path(self, draft_id: str, *, migrate: bool = False) -> Path:
@@ -457,6 +596,7 @@ class StagedSessionQuestionService:
             "template_path": str(self.template_path),
             "template_version": template.get("template_version"),
             "template_sha256": sha256(template_bytes).hexdigest(),
+            "template": self.template_metadata,
             "session_schema_version": evidence["schema_version"],
             "source": evidence["source"],
             "evidence": evidence,

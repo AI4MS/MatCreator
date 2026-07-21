@@ -107,6 +107,8 @@ from matcreator.control_plane.worker_supervisor import WorkerSupervisor  # noqa:
 from matcreator.control_plane.session_question_generator import (  # noqa: E402
     BuiltinLlmQuestionGeneratorPlugin,
     CallableSessionQuestionGenerator,
+    DEFAULT_TEMPLATE_ID,
+    QuestionTemplateStore,
     StagedSessionQuestionService,
 )
 from matcreator.knowledge.query import _get_kg  # noqa: E402
@@ -148,6 +150,15 @@ class EvaluationQuestionDraftUpdateBody(BaseModel):
 
 class EvaluationQuestionDraftRefineBody(BaseModel):
     instruction: str = ""
+    template_id: str = ""
+
+
+class EvaluationQuestionGenerateBody(BaseModel):
+    template_id: str = ""
+
+
+class EvaluationQuestionTemplateBody(BaseModel):
+    template: dict[str, Any]
 _SERVER_HOST_DATA_ROOT = Path(
     os.environ.get("MATCREATOR_HOST_DATA_ROOT", str(_SERVER_DATA_ROOT))
 ).expanduser()
@@ -554,6 +565,16 @@ def _user_adk_dir(user_id: str) -> Path:
 
 def _user_workspace_root(user_id: str) -> Path:
     return _user_matcreator_home(user_id) / "workspace"
+
+
+def _cancellation_workspace_root(session_id: str, user_id: str = "") -> Path | None:
+    """Resolve the workspace where the executing agent reads cancellation flags."""
+    if _MATCREATOR_MODE != "server":
+        return None
+    owner_id = user_id or _load_session_state(session_id)[0]
+    if not owner_id:
+        raise HTTPException(status_code=404, detail="Session owner was not found")
+    return _user_workspace_root(owner_id)
 
 
 def _worker_target_url(user_id: str, port: int | None = None) -> str:
@@ -2810,6 +2831,14 @@ def _session_question_staging_root(owner_id: str) -> Path:
     return _MATCREATOR_HOME / "evals" / "question-drafts"
 
 
+def _session_question_templates_root(owner_id: str) -> Path:
+    if _MATCREATOR_MODE == "server":
+        if not owner_id:
+            raise HTTPException(status_code=400, detail="user_id is required in server mode")
+        return _user_matcreator_home(owner_id) / "evals" / "templates"
+    return _MATCREATOR_HOME / "evals" / "templates"
+
+
 def _legacy_session_question_staging_root(owner_id: str) -> Path:
     return _evaluation_workspace_for_owner(owner_id) / "question-drafts"
 
@@ -2833,20 +2862,40 @@ def _benchmark_question_bank_root() -> Path:
     return Path(configured).expanduser().resolve()
 
 
-def _session_question_template_path() -> Path:
-    configured = load_config().get("session_question_generator") or {}
-    if not isinstance(configured, dict):
-        configured = {}
-    override = str(configured.get("template_path") or "").strip()
-    if override:
-        return Path(override).expanduser().resolve()
+def _packaged_session_question_template_path() -> Path:
     return Path(str(files("matcreator").joinpath("question_templates/mab_qa.json"))).resolve()
 
 
-def _session_question_generator() -> BuiltinLlmQuestionGeneratorPlugin:
-    configured = load_config().get("session_question_generator") or {}
+def _session_question_template_store(owner_id: str) -> QuestionTemplateStore:
+    return QuestionTemplateStore(
+        _session_question_templates_root(owner_id), _packaged_session_question_template_path()
+    )
+
+
+def _session_question_config(owner_id: str) -> dict[str, Any]:
+    config = _load_config_for_user(owner_id) if _MATCREATOR_MODE == "server" else load_config()
+    configured = config.get("session_question_generator") or {}
     if not isinstance(configured, dict):
         configured = {}
+    return configured
+
+
+def _session_question_template(owner_id: str, template_id: str = "") -> tuple[Path, dict[str, Any]]:
+    selected_template_id = template_id.strip()
+    if selected_template_id:
+        _template, metadata, path = _session_question_template_store(owner_id).get(selected_template_id)
+        return path, metadata
+    configured = _session_question_config(owner_id)
+    override = str(configured.get("template_path") or "").strip()
+    if override:
+        path = Path(override).expanduser().resolve()
+        return path, {"template_id": "configured", "name": path.stem, "is_default": False}
+    _template, metadata, path = _session_question_template_store(owner_id).get(DEFAULT_TEMPLATE_ID)
+    return path, metadata
+
+
+def _session_question_generator(owner_id: str = "") -> BuiltinLlmQuestionGeneratorPlugin:
+    configured = _session_question_config(owner_id)
     plugin_name = str(configured.get("plugin") or "builtin_llm")
     if plugin_name != "builtin_llm":
         raise HTTPException(status_code=422, detail=f"Unknown session question generator plugin: {plugin_name}")
@@ -2854,6 +2903,12 @@ def _session_question_generator() -> BuiltinLlmQuestionGeneratorPlugin:
         return BuiltinLlmQuestionGeneratorPlugin.from_config(load_config())
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _session_question_generator_for_owner(owner_id: str) -> BuiltinLlmQuestionGeneratorPlugin:
+    if _MATCREATOR_MODE == "server":
+        return _session_question_generator(owner_id)
+    return _session_question_generator()
 
 
 @app.get("/api/execution-graph/{session_id}")
@@ -2891,6 +2946,7 @@ async def create_evaluation_question_draft(
 @app.post("/api/sessions/{session_id}/evaluation-question-drafts")
 async def generate_evaluation_question_draft(
     session_id: str,
+    body: EvaluationQuestionGenerateBody = Body(default=EvaluationQuestionGenerateBody()),
     user_id: str = Query(default="", description="Current user ID; required to scope server-mode sessions."),
 ) -> JSONResponse:
     """Generate a review-only staged benchmark question from bounded session evidence."""
@@ -2907,10 +2963,12 @@ async def generate_evaluation_question_draft(
         model or "unconfigured",
     )
     try:
+        template_path, template_metadata = _session_question_template(owner_id, body.template_id)
         service = StagedSessionQuestionService(
             _session_question_staging_root(owner_id),
-            _session_question_generator(),
-            template_path=_session_question_template_path(),
+            _session_question_generator_for_owner(owner_id),
+            template_path=template_path,
+            template_metadata=template_metadata,
             legacy_roots=[_legacy_session_question_staging_root(owner_id)],
         )
         draft = await service.create(session_log)
@@ -3008,10 +3066,18 @@ async def refine_evaluation_question_draft(
     user_id: str = Query(...),
 ) -> JSONResponse:
     try:
+        stored_template_id = str(body.template_id or "").strip()
+        if not stored_template_id:
+            existing = _staged_question_service(user_id).get(draft_id)
+            metadata_path = existing.staging_path / "generation.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            stored_template_id = str((metadata.get("template") or {}).get("template_id") or "")
+        template_path, template_metadata = _session_question_template(user_id, stored_template_id)
         service = StagedSessionQuestionService(
             _session_question_staging_root(user_id),
-            _session_question_generator(),
-            template_path=_session_question_template_path(),
+            _session_question_generator_for_owner(user_id),
+            template_path=template_path,
+            template_metadata=template_metadata,
             legacy_roots=[_legacy_session_question_staging_root(user_id)],
         )
         draft = await service.refine(draft_id, body.instruction)
@@ -3025,6 +3091,61 @@ async def refine_evaluation_question_draft(
         logger.exception("Question refinement provider failed: draft_id=%s", draft_id)
         raise HTTPException(status_code=502, detail="Question refinement provider request failed") from exc
     return JSONResponse(draft.as_dict())
+
+
+@app.get("/api/evaluation-question-templates")
+async def list_evaluation_question_templates(user_id: str = Query(...)) -> JSONResponse:
+    return JSONResponse({"templates": _session_question_template_store(user_id).list()})
+
+
+@app.get("/api/evaluation-question-templates/{template_id}")
+async def get_evaluation_question_template(template_id: str, user_id: str = Query(...)) -> JSONResponse:
+    try:
+        template, metadata, _path = _session_question_template_store(user_id).get(template_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return JSONResponse({"template": template, **metadata})
+
+
+@app.post("/api/evaluation-question-templates")
+async def create_evaluation_question_template(
+    body: EvaluationQuestionTemplateBody, user_id: str = Query(...)
+) -> JSONResponse:
+    try:
+        metadata = _session_question_template_store(user_id).save_for_name(body.template)
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return JSONResponse(metadata, status_code=201)
+
+
+@app.put("/api/evaluation-question-templates/{template_id}")
+async def update_evaluation_question_template(
+    template_id: str, body: EvaluationQuestionTemplateBody, user_id: str = Query(...)
+) -> JSONResponse:
+    try:
+        metadata = _session_question_template_store(user_id).save_for_name(
+            body.template, previous_id=template_id
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (FileExistsError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return JSONResponse(metadata)
+
+
+@app.delete("/api/evaluation-question-templates/{template_id}")
+async def delete_evaluation_question_template(template_id: str, user_id: str = Query(...)) -> Response:
+    try:
+        _session_question_template_store(user_id).delete(template_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return Response(status_code=204)
 
 
 @app.post("/api/evaluation-question-drafts/{draft_id}/export")
@@ -3503,7 +3624,13 @@ async def cancel_session_execution(
             owner_id=user_id,
             session_id=session_id,
         )
-    await asyncio.to_thread(request_cancellation, session_id, reason)
+    cancellation_root = _cancellation_workspace_root(session_id, user_id)
+    await asyncio.to_thread(
+        request_cancellation,
+        session_id,
+        reason,
+        workspace_root=cancellation_root,
+    )
     await asyncio.to_thread(
         AgentGraphLogger(session_id).mark_running_nodes_cancelled,
         summary=f"Cancelled by user ({reason})"
@@ -3519,20 +3646,27 @@ async def cancel_session_execution(
 
 
 @app.get("/api/sessions/{session_id}/cancel")
-async def get_cancellation_status(session_id: str) -> JSONResponse:
+async def get_cancellation_status(
+    session_id: str,
+    user_id: str = Query(default="", description="Current signed-in user"),
+) -> JSONResponse:
     """Check whether a cancellation is currently pending for this session."""
-    flagged = is_cancellation_requested(session_id)
+    cancellation_root = _cancellation_workspace_root(session_id, user_id)
+    flagged = is_cancellation_requested(session_id, workspace_root=cancellation_root)
     return JSONResponse({
         "session_id": session_id,
         "cancellation_requested": flagged,
-        "reason": get_cancellation_reason(session_id) if flagged else None,
+        "reason": get_cancellation_reason(session_id, workspace_root=cancellation_root) if flagged else None,
     })
 
 
 @app.delete("/api/sessions/{session_id}/cancel")
-async def clear_cancellation_flag(session_id: str) -> JSONResponse:
+async def clear_cancellation_flag(
+    session_id: str,
+    user_id: str = Query(default="", description="Current signed-in user"),
+) -> JSONResponse:
     """Manually clear a pending cancellation flag."""
-    clear_cancellation(session_id)
+    clear_cancellation(session_id, workspace_root=_cancellation_workspace_root(session_id, user_id))
     return JSONResponse({
         "status": "ok",
         "session_id": session_id,
@@ -3544,6 +3678,7 @@ async def clear_cancellation_flag(session_id: str) -> JSONResponse:
 async def cancel_individual_step(
     session_id: str,
     step_number: int,
+    user_id: str = Query(default="", description="Current signed-in user"),
     reason: str = Query(default="user_requested", description="Cancellation reason"),
 ) -> JSONResponse:
     """Cancel a specific running step without stopping the whole session.
@@ -3552,7 +3687,13 @@ async def cancel_individual_step(
     The graph node for that step is updated immediately so the frontend reflects
     the cancellation before the executor polls.
     """
-    await asyncio.to_thread(request_step_cancellation, session_id, step_number, reason)
+    await asyncio.to_thread(
+        request_step_cancellation,
+        session_id,
+        step_number,
+        reason,
+        workspace_root=_cancellation_workspace_root(session_id, user_id),
+    )
     found = await asyncio.to_thread(
         AgentGraphLogger(session_id).cancel_step_node_by_number,
         step_number, f"Cancelled by user ({reason})"

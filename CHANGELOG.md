@@ -2,6 +2,49 @@
 
 <!-- version list -->
 
+## v2.13.0 (2026-07-21)
+
+### Bug Fixes
+
+- Add worker supervisor to control plane
+  ([`6dbe1cc`](https://github.com/AI4MS/MatCreator/commit/6dbe1cc6021bbfe7a3310d7b346920bbdc9fda46))
+
+- Dark mode color for flash/bench
+  ([`a075f82`](https://github.com/AI4MS/MatCreator/commit/a075f82e144d8fbaf84579acb405bc34ea1ce494))
+
+- Issues with browser close
+  ([`0a13df2`](https://github.com/AI4MS/MatCreator/commit/0a13df25ef5e5e7833829adba6b33be3102bfddc))
+
+- Issues with eval front-end
+  ([`3d7c9c7`](https://github.com/AI4MS/MatCreator/commit/3d7c9c7aebf58dcde0445650d19427eff972a7ee))
+
+- Issues with session switch
+  ([`9317775`](https://github.com/AI4MS/MatCreator/commit/9317775530e10ea05c1c6943bb1e77a1054ab9b0))
+
+- Issues with the server mode
+  ([`83d4fa5`](https://github.com/AI4MS/MatCreator/commit/83d4fa506a081d813e4355f855a17fa54a6d561c))
+
+- Resolve merge conflicts with devel branch
+  ([`da592db`](https://github.com/AI4MS/MatCreator/commit/da592db61a1151aeaf1af80e461ef36393b10fa1))
+
+- Skill-graph do not auto remove history built-in nodes.
+  ([`e4107ab`](https://github.com/AI4MS/MatCreator/commit/e4107ab5843247fc97c1c6bae942a47e4d88d309))
+
+- Transparency of flash/bench mode in light mode ui.
+  ([`0e32c26`](https://github.com/AI4MS/MatCreator/commit/0e32c2697a1cfba56b7805f213d4061b05d88f5e))
+
+### Features
+
+- Add cli tools for clean the skill graph
+  ([`ab8ddb1`](https://github.com/AI4MS/MatCreator/commit/ab8ddb15702f7cc7cf4c996a6b5206e788e36e6f))
+
+- Add memory review settings cli tools
+  ([`ab0097a`](https://github.com/AI4MS/MatCreator/commit/ab0097a41185505a586ce55a09510f8f62e6c09d))
+
+- Refactor worker supervisor to support server mode
+  ([`2bbeec9`](https://github.com/AI4MS/MatCreator/commit/2bbeec9d8b332852acf9b3fe28134bfbc7039f3c))
+
+
 ## v2.12.0 (2026-07-19)
 
 ### Bug Fixes

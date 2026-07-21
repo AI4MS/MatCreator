@@ -37,6 +37,10 @@
   gap: 8px;
   min-width: 0;
 }
+.evaluation-runs-pane:not([open]) {
+  flex: 0 0 auto;
+  min-height: 0;
+}
 .evaluation-runs-list-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -102,8 +106,19 @@
   gap: 6px;
 }
 .evaluation-question-sets,
-.evaluation-generated-questions {
+.evaluation-generated-questions,
+.evaluation-question-templates {
   background: rgba(255, 255, 255, 0.02);
+}
+.evaluation-template-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+.evaluation-template-actions .ghost {
+  justify-content: center;
+  padding: 5px 4px;
+  font-size: 11px;
 }
 .evaluation-generated-question-list { display: grid; gap: 5px; max-height: 180px; overflow-y: auto; }
 .evaluation-generated-question { display: grid; gap: 4px; width: 100%; padding: 7px 8px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }

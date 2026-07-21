@@ -109,6 +109,23 @@ def test_running_session_switch_discovers_and_reconnects_managed_run() -> None:
     assert "after=${request.lastSequence}" in main
 
 
+def test_managed_run_reconnect_retries_and_refreshes_persisted_state() -> None:
+    runtime = _runtime_js()
+
+    assert "const MANAGED_RUN_RETRY_INITIAL_DELAY_MS = 500;" in runtime
+    assert "function scheduleManagedRunRefresh(request" in runtime
+    assert "await loadSession(request.sessionId, request.owner);" in runtime
+    assert "async function managedRunStillActive(request)" in runtime
+    assert 'fetch(`/api/runs/${encodeURIComponent(request.runId)}`)' in runtime
+    assert "async function waitForManagedRunRetry(request)" in runtime
+    assert "while (shouldRetry && isCurrentManagedRunRequest(request)" in runtime
+    assert "request.lastSequence = event.sequence || request.lastSequence;" in runtime
+    assert "scheduleManagedRunRefresh(request);" in runtime
+    assert "if (event.type === \"terminal\")" in runtime
+    assert "if (!await managedRunStillActive(request) || !await waitForManagedRunRetry(request))" in runtime
+    assert "if (isCurrentManagedRunRequest(request)) {\n        releaseSessionRequest(request);" in runtime
+
+
 def test_stop_request_identifies_the_active_session_owner() -> None:
     content = _message_stream_js()
     stop_message = content[
@@ -117,7 +134,26 @@ def test_stop_request_identifies_the_active_session_owner() -> None:
 
     assert "new URLSearchParams({ user_id: request.owner || state.userId })" in stop_message
     assert "cancel?${query}" in stop_message
-    assert "pollCancellationConfirmed(request.sessionId)" in stop_message
+    assert "pollCancellationConfirmed(request.sessionId, request.owner)" in stop_message
+
+
+def test_step_cancellation_identifies_the_active_session_owner() -> None:
+    content = _main_js()
+    request_step_cancellation = content[
+        content.index("async function requestStepCancellation(") : content.index("function shouldRefreshPlanGraphForTool(")
+    ]
+
+    assert "user_id: state.activeSessionUserId || state.userId," in request_step_cancellation
+    assert "cancel-step/${stepNumber}?${query}" in request_step_cancellation
+
+
+def test_server_mode_cancellation_uses_the_worker_workspace() -> None:
+    content = (Path(__file__).parents[1] / "web" / "main.py").read_text(encoding="utf-8")
+
+    assert "def _cancellation_workspace_root(session_id: str, user_id: str = \"\")" in content
+    assert "return _user_workspace_root(owner_id)" in content
+    assert "workspace_root=cancellation_root" in content
+    assert "workspace_root=_cancellation_workspace_root(session_id, user_id)" in content
 
 
 def test_remote_job_polling_is_scoped_to_the_active_session() -> None:

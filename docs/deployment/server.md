@@ -31,6 +31,11 @@ Server mode uses two images:
 | Control plane | `matcreator-control-plane:latest` | FastAPI application and compiled frontend bundle. |
 | Worker | `matcreator-worker:latest` | MatCreator agent runtime; no Node.js or frontend bundle. |
 
+The Compose `control-plane` service builds the Dockerfile's `control-plane`
+target. The profile-gated `worker-image` service builds the `worker` target
+for dynamically provisioned user workers; it is not started by normal `up`
+commands.
+
 ## Server Defaults
 
 Server-wide MatCreator settings are read from a host config file mounted into
@@ -131,7 +136,7 @@ From the repository root:
 ```bash
 export MATCREATOR_HOST_DATA_ROOT="$(pwd)/server-data"
 touch config.yaml
-docker compose -f docker-compose.server.yml build control-plane worker-image
+docker compose -f docker-compose.server.yml --profile build build control-plane worker-image
 docker compose -f docker-compose.server.yml up -d
 ```
 
@@ -237,7 +242,7 @@ docker exec -it matcreator-worker-<user_id> bash
 Rebuild and redeploy after code changes:
 
 ```bash
-docker compose -f docker-compose.server.yml build control-plane worker-image
+docker compose -f docker-compose.server.yml --profile build build control-plane worker-image
 docker compose -f docker-compose.server.yml up -d --force-recreate control-plane proxy
 ```
 

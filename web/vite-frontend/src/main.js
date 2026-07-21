@@ -816,7 +816,13 @@ const layoutController = createLayoutController({
 async function requestStepCancellation(stepNumber) {
   if (stepNumber === undefined || stepNumber === null) return false;
   try {
-    const resp = await fetch(`/api/sessions/${state.sessionId}/cancel-step/${stepNumber}`, { method: "POST" });
+    const query = new URLSearchParams({
+      user_id: state.activeSessionUserId || state.userId,
+    });
+    const resp = await fetch(
+      `/api/sessions/${state.sessionId}/cancel-step/${stepNumber}?${query}`,
+      { method: "POST" },
+    );
     return resp.ok;
   } catch (_) {
     return false;
