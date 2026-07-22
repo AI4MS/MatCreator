@@ -12,6 +12,14 @@ const USER_AVATAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24
 export function createChatRenderer({ chatArea }) {
   let asciiWidth = 0;
   let cjkWidth = 0;
+  let userScrollIntent = 0;
+  let pendingScrollFrame = null;
+
+  ["pointerdown", "touchstart", "wheel"].forEach((eventName) => {
+    chatArea.addEventListener(eventName, () => {
+      userScrollIntent += 1;
+    }, { passive: true });
+  });
 
   function renderMarkdown(text) {
     if (!text) return "";
@@ -107,14 +115,54 @@ export function createChatRenderer({ chatArea }) {
     applyUserAvatarToEl(element);
     return element;
   }
-  function scrollToBottom() { chatArea.scrollTop = chatArea.scrollHeight; }
+  function scrollToBottom({ preserveUserPosition = false } = {}) {
+    const userIntentAtRequest = userScrollIntent;
+    if (pendingScrollFrame !== null) cancelAnimationFrame(pendingScrollFrame);
+
+    // <details> blocks finish contributing their full height after layout.
+    // Waiting two frames ensures the bottom target includes every collapsed
+    // label and its surrounding layout.
+    pendingScrollFrame = requestAnimationFrame(() => {
+      pendingScrollFrame = requestAnimationFrame(() => {
+        pendingScrollFrame = null;
+        if (preserveUserPosition && userScrollIntent !== userIntentAtRequest) return;
+        chatArea.scrollTop = chatArea.scrollHeight;
+      });
+    });
+  }
   function isChatNearBottom() { return chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight < 80; }
+  function captureScrollPosition() {
+    if (isChatNearBottom()) return null;
+    const chatTop = chatArea.getBoundingClientRect().top;
+    const anchorEl = [...chatArea.children].find((element) => element.getBoundingClientRect().bottom > chatTop);
+    return {
+      scrollTop: chatArea.scrollTop,
+      anchorEl,
+      anchorOffset: anchorEl ? anchorEl.getBoundingClientRect().top - chatTop : 0,
+      userScrollIntent,
+    };
+  }
+  function restoreScrollPosition(snapshot) {
+    if (!snapshot) return;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (snapshot.userScrollIntent !== userScrollIntent || isChatNearBottom()) return;
+        if (snapshot.anchorEl?.isConnected) {
+          const currentOffset = snapshot.anchorEl.getBoundingClientRect().top - chatArea.getBoundingClientRect().top;
+          chatArea.scrollTop += currentOffset - snapshot.anchorOffset;
+        } else {
+          chatArea.scrollTop = snapshot.scrollTop;
+        }
+      });
+    });
+  }
   function appendLiveTurnChild(container, child) {
     if (container === chatArea || !container?.dataset?.stepLiveRegion) return container.appendChild(child);
     const firstStepCard = [...container.children].find((element) => element.dataset.stepStartTime !== undefined);
     return firstStepCard ? container.insertBefore(child, firstStepCard) : container.appendChild(child);
   }
   function addMessage(role, content, msgIndex, container = chatArea) {
+    const shouldStick = role === "user" || isChatNearBottom();
     const message = document.createElement("div");
     message.className = `message ${role}-message`;
     if (msgIndex !== undefined) message.dataset.msgIndex = String(msgIndex);
@@ -127,9 +175,9 @@ export function createChatRenderer({ chatArea }) {
     bubble.append(inner);
     message.append(bubble);
     appendLiveTurnChild(container, message);
-    scrollToBottom();
+    if (shouldStick) scrollToBottom({ preserveUserPosition: role !== "user" });
     return message;
   }
 
-  return { addMessage, appendLiveTurnChild, applyUserAvatarToEl, createAgentAvatarEl, createJsonBlock, isChatNearBottom, renderMarkdown, scrollToBottom, setUserAvatar };
+  return { addMessage, appendLiveTurnChild, applyUserAvatarToEl, captureScrollPosition, createAgentAvatarEl, createJsonBlock, isChatNearBottom, renderMarkdown, restoreScrollPosition, scrollToBottom, setUserAvatar };
 }

@@ -129,6 +129,41 @@ Environment variables are no longer read from `agents/MatCreator/.env` for
 MatCreator application settings. Use process environment variables only for
 deployment/runtime knobs such as ports, data roots, and worker limits.
 
+## Benchmark Configuration
+
+Configure the `mat-agent-bench` service in the server-wide `config.yaml`:
+
+```yaml
+benchmark:
+  server_url: http://host.docker.internal:8080/bench
+  token: your-benchmark-api-token
+```
+
+`benchmark.server_url` and `benchmark.token` are defaults for the control
+plane and every user worker. Resolution is environment variable, then a user's
+mounted config, then this server-wide config. `MAT_BENCH_SERVER_URL` and
+`MAT_BENCH_TOKEN` are therefore optional deployment overrides, not required
+when the YAML values are set.
+
+The URL must be reachable from Docker containers. On Docker Desktop, use
+`host.docker.internal` for a benchmark service running on the host. On a Linux
+Docker Engine deployment, use a host address reachable from the worker network
+or place the benchmark service on a shared Docker network. `0.0.0.0` is a
+server bind address, not a client destination. Start the benchmark service with
+an externally reachable bind, for example:
+
+```bash
+mat-bench serve --host 0.0.0.0 --port 8080
+```
+
+Existing workers retain the environment from their creation time. After
+changing benchmark settings, recreate active workers so their injected
+`MAT_BENCH_SERVER_URL` is updated:
+
+```bash
+docker ps -a --filter "name=matcreator-worker-" --format "{{.Names}}" | xargs -r docker rm -f
+```
+
 ## Quick Start
 
 From the repository root:
