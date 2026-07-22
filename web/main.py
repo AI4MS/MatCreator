@@ -105,11 +105,16 @@ from matcreator.control_plane.evaluations import EvaluationStore  # noqa: E402
 from matcreator.control_plane.runs import ManagedRun, ManagedRunRegistry  # noqa: E402
 from matcreator.control_plane.worker_supervisor import WorkerSupervisor  # noqa: E402
 from matcreator.control_plane.session_question_generator import (  # noqa: E402
-    BuiltinLlmQuestionGeneratorPlugin,
     CallableSessionQuestionGenerator,
     DEFAULT_TEMPLATE_ID,
+    NoQuestionExtracted,
+    QuestionGenerationDiagnosticError,
     QuestionTemplateStore,
+    SessionQuestionGeneratorPlugin,
     StagedSessionQuestionService,
+    build_session_question_generator,
+    has_session_question_generator,
+    list_session_question_generators,
 )
 from matcreator.knowledge.query import _get_kg  # noqa: E402
 from matcreator.knowledge.review import run_review_pipeline  # noqa: E402
@@ -155,6 +160,7 @@ class EvaluationQuestionDraftRefineBody(BaseModel):
 
 class EvaluationQuestionGenerateBody(BaseModel):
     template_id: str = ""
+    generator_id: str = ""
 
 
 class EvaluationQuestionTemplateBody(BaseModel):
@@ -2905,21 +2911,24 @@ def _session_question_template(owner_id: str, template_id: str = "") -> tuple[Pa
     return path, metadata
 
 
-def _session_question_generator(owner_id: str = "") -> BuiltinLlmQuestionGeneratorPlugin:
+def _session_question_generator(
+    owner_id: str = "", generator_id: str = ""
+) -> SessionQuestionGeneratorPlugin:
     configured = _session_question_config(owner_id)
-    plugin_name = str(configured.get("plugin") or "builtin_llm")
-    if plugin_name != "builtin_llm":
-        raise HTTPException(status_code=422, detail=f"Unknown session question generator plugin: {plugin_name}")
+    selected_generator_id = generator_id.strip() or str(configured.get("plugin") or "builtin_llm")
+    config = _load_config_for_user(owner_id) if _MATCREATOR_MODE == "server" else load_config()
     try:
-        return BuiltinLlmQuestionGeneratorPlugin.from_config(load_config())
+        return build_session_question_generator(selected_generator_id, config)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-def _session_question_generator_for_owner(owner_id: str) -> BuiltinLlmQuestionGeneratorPlugin:
+def _session_question_generator_for_owner(
+    owner_id: str, generator_id: str = ""
+) -> SessionQuestionGeneratorPlugin:
     if _MATCREATOR_MODE == "server":
-        return _session_question_generator(owner_id)
-    return _session_question_generator()
+        return _session_question_generator(owner_id, generator_id) if generator_id else _session_question_generator(owner_id)
+    return _session_question_generator(generator_id=generator_id) if generator_id else _session_question_generator()
 
 
 @app.get("/api/execution-graph/{session_id}")
@@ -2977,7 +2986,7 @@ async def generate_evaluation_question_draft(
         template_path, template_metadata = _session_question_template(owner_id, body.template_id)
         service = StagedSessionQuestionService(
             _session_question_staging_root(owner_id),
-            _session_question_generator_for_owner(owner_id),
+            _session_question_generator_for_owner(owner_id, body.generator_id),
             template_path=template_path,
             template_metadata=template_metadata,
             legacy_roots=[_legacy_session_question_staging_root(owner_id)],
@@ -2992,6 +3001,34 @@ async def generate_evaluation_question_draft(
             time.monotonic() - started_at,
         )
         raise
+    except NoQuestionExtracted as exc:
+        logger.info(
+            "Session question generation found no grounded task: session_id=%s owner_id=%s duration_seconds=%.2f",
+            session_id,
+            owner_id,
+            time.monotonic() - started_at,
+        )
+        return JSONResponse(
+            {
+                "status": "no_qa_extracted",
+                "session_id": session_id,
+                "generator_id": body.generator_id or None,
+                "reason": exc.reason,
+            }
+        )
+    except QuestionGenerationDiagnosticError as exc:
+        logger.warning(
+            "Session question generation rejected: session_id=%s owner_id=%s generator=%s stage=%s duration_seconds=%.2f",
+            session_id,
+            owner_id,
+            exc.diagnostics.get("generator", "unknown"),
+            exc.diagnostics.get("stage", "unknown"),
+            time.monotonic() - started_at,
+        )
+        raise HTTPException(
+            status_code=422,
+            detail={"message": f"Could not generate benchmark question draft: {exc}", "diagnostics": exc.diagnostics},
+        ) from exc
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         logger.warning(
             "Session question generation rejected: session_id=%s owner_id=%s error_type=%s duration_seconds=%.2f",
@@ -3019,6 +3056,20 @@ async def generate_evaluation_question_draft(
         time.monotonic() - started_at,
     )
     return JSONResponse(draft.as_dict(), status_code=201)
+
+
+@app.get("/api/session-question-generators")
+async def list_session_question_generator_options(
+    user_id: str = Query(default="", description="Current user ID; scopes the configured default in server mode."),
+) -> JSONResponse:
+    configured = _session_question_config(user_id)
+    selected_generator_id = str(configured.get("plugin") or "builtin_llm")
+    return JSONResponse(
+        {
+            "generators": list_session_question_generators(),
+            "selected_generator_id": selected_generator_id,
+        }
+    )
 
 
 def _staged_question_service(owner_id: str) -> StagedSessionQuestionService:
@@ -3078,15 +3129,18 @@ async def refine_evaluation_question_draft(
 ) -> JSONResponse:
     try:
         stored_template_id = str(body.template_id or "").strip()
+        existing = _staged_question_service(user_id).get(draft_id)
+        metadata_path = existing.staging_path / "generation.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         if not stored_template_id:
-            existing = _staged_question_service(user_id).get(draft_id)
-            metadata_path = existing.staging_path / "generation.json"
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             stored_template_id = str((metadata.get("template") or {}).get("template_id") or "")
         template_path, template_metadata = _session_question_template(user_id, stored_template_id)
+        stored_generator_id = str((metadata.get("generator_plugin") or "").strip())
         service = StagedSessionQuestionService(
             _session_question_staging_root(user_id),
-            _session_question_generator_for_owner(user_id),
+            _session_question_generator_for_owner(
+                user_id, stored_generator_id if has_session_question_generator(stored_generator_id) else ""
+            ),
             template_path=template_path,
             template_metadata=template_metadata,
             legacy_roots=[_legacy_session_question_staging_root(user_id)],

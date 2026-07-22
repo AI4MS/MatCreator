@@ -84,6 +84,27 @@ session_question_generator:
 
 Plugins do not read `~/.matcreator/.adk/session.db` directly. Session authorization and database access remain host responsibilities, so providers can be replaced without depending on the ADK SQLite schema.
 
+`mkb_projection` is available when the pinned `mat-know-base[materials]` dependency is installed. It uses MKB's `qa_benchmark` projection prompt and agent runner, but receives the bounded MatCreator session payload directly rather than creating MKB projects, frames, or database records. By default it uses the same `llm.model`, `llm.api_key`, and `llm.base_url` as MatCreator's other agents. Use plugin or MKB environment values only when an explicit override is needed:
+
+```yaml
+session_question_generator:
+  plugin: mkb_projection
+  # Optional: defaults to llm.model.
+  model: openai/qwen3-plus
+  # Optional: defaults to llm.api_key and llm.base_url.
+  api_key: your-mkb-specific-api-key
+  base_url: https://api.example.com/v1
+```
+
+```bash
+export MKB_LLM_API_KEY=your-api-key
+export MKB_LLM_API_BASE=https://api.example.com/v1
+```
+
+`MKB_EXTRACTION_MODEL`, `MKB_LLM_API_KEY`, and `MKB_LLM_API_BASE` override the respective plugin and MatCreator values when set. The MKB adapter has no database tools, returns one bare JSON question object, and writes it as MatCreator's validated `question.yaml`; all draft review, refinement, approval, and export remain in MatCreator.
+
+When generating from the session list, MatCreator presents a generator dropdown. Its options are supplied by the backend registry, so additional extraction agents only need a registered definition (identifier, display metadata, and factory) and automatically appear in the UI. A draft keeps its selected generator for later refinement.
+
 Generated drafts are saved independently of the active workspace under:
 
 ```text
