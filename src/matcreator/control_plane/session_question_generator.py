@@ -75,6 +75,22 @@ class SessionQuestionGeneratorPlugin(Protocol):
     ) -> None: ...
 
 
+class QuestionGenerationDiagnosticError(ValueError):
+    """A user-safe generation failure with structured UI diagnostics."""
+
+    def __init__(self, message: str, *, diagnostics: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics
+
+
+class NoQuestionExtracted(ValueError):
+    """The selected session does not support one grounded benchmark question."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason.strip() or "No grounded benchmark question could be extracted."
+        super().__init__(self.reason)
+
+
 class BuiltinLlmQuestionGeneratorPlugin:
     """Built-in authoring plugin backed by the configured MatCreator LLM."""
 
@@ -164,6 +180,297 @@ class BuiltinLlmQuestionGeneratorPlugin:
         temporary.replace(output_path)
 
 
+class MkbProjectionQuestionGeneratorPlugin:
+    """Generate one draft through MKB's template-driven projection agent stack.
+
+    MKB's stock projection runner owns an MKB knowledge-frame database. Session
+    evidence deliberately remains in MatCreator instead, so this adapter reuses
+    MKB's public projection prompt and runner without pretending a session is an
+    MKB frame or creating a second persistence system. By default it uses the
+    same model and credentials as MatCreator's configured agent.
+    """
+
+    name = "mkb_projection"
+
+    def __init__(
+        self, *, model: str, api_key: str | None = None, base_url: str | None = None
+    ) -> None:
+        if not model:
+            raise ValueError("The mkb_projection question generator requires an LLM model")
+        self.model = model
+        self.api_key = api_key
+        self.base_url = base_url
+
+    @classmethod
+    def from_config(
+        cls, config: dict[str, Any], generator_config: dict[str, Any] | None = None
+    ) -> MkbProjectionQuestionGeneratorPlugin:
+        """Use MKB-specific values only as explicit overrides of MatCreator LLM settings."""
+        if generator_config is None:
+            candidate = config.get("session_question_generator")
+            generator_config = candidate if isinstance(candidate, dict) else config
+        llm = config.get("llm") if isinstance(config.get("llm"), dict) else {}
+        return cls(
+            model=(
+                os.environ.get("MKB_EXTRACTION_MODEL")
+                or str(generator_config.get("model") or "")
+                or os.environ.get("LLM_MODEL")
+                or str(llm.get("model") or "")
+            ),
+            api_key=(
+                os.environ.get("MKB_LLM_API_KEY")
+                or str(generator_config.get("api_key") or "")
+                or os.environ.get("LLM_API_KEY")
+                or str(llm.get("api_key") or "")
+                or None
+            ),
+            base_url=(
+                os.environ.get("MKB_LLM_API_BASE")
+                or str(generator_config.get("base_url") or "")
+                or os.environ.get("LLM_BASE_URL")
+                or str(llm.get("base_url") or "")
+                or None
+            ),
+        )
+
+    @staticmethod
+    def _load_mkb_components() -> tuple[Any, Any, Any, Any]:
+        """Import optional MKB components only when this plugin is selected."""
+        try:
+            prompt_builder = import_module("mkb.agents.prompts.projection").build_projection_prompt
+            agent_runner = import_module("mkb.agents.runner").AgentRunner
+            agent = import_module("google.adk.agents").Agent
+            lite_llm = import_module("google.adk.models.lite_llm").LiteLlm
+        except (ImportError, AttributeError) as exc:
+            raise RuntimeError(
+                "The mkb_projection question generator requires mat-know-base with its "
+                "materials extra. Reinstall MatCreator's dependencies."
+            ) from exc
+        return prompt_builder, agent_runner, agent, lite_llm
+
+    @staticmethod
+    def _question_from_response(content: str) -> dict[str, Any]:
+        """Decode a single question from an LLM response without trusting prose.
+
+        MKB's standard projection prompt describes a ``questions`` JSON
+        document, while this session adapter asks for its one item directly.
+        Providers commonly add a Markdown fence or a one-line introduction
+        despite the latter instruction. Accept those harmless wrappers, plus
+        YAML (the target authoring format), but still require a mapping below.
+        """
+        text = (content or "").strip()
+        candidates = [text]
+        candidates.extend(
+            match.strip()
+            for match in re.findall(r"```(?:json|ya?ml)?\s*\n?(.*?)```", text, flags=re.IGNORECASE | re.DOTALL)
+            if match.strip()
+        )
+
+        question: Any = None
+        for candidate in candidates:
+            try:
+                question = json.loads(candidate)
+                break
+            except json.JSONDecodeError:
+                pass
+
+        if question is None:
+            decoder = json.JSONDecoder()
+            for match in re.finditer(r"[\[{]", text):
+                try:
+                    value, _end = decoder.raw_decode(text[match.start() :])
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, dict):
+                    question = value
+                    break
+
+        if question is None:
+            for candidate in candidates:
+                try:
+                    value = yaml.safe_load(candidate)
+                except yaml.YAMLError:
+                    continue
+                if isinstance(value, dict):
+                    question = value
+                    break
+
+        if question is None:
+            preview_limit = 4_000
+            preview = text[:preview_limit]
+            if len(text) > preview_limit:
+                preview += "\n… response truncated for display"
+            raise QuestionGenerationDiagnosticError(
+                "MKB projection agent did not return a JSON or YAML question object",
+                diagnostics={
+                    "generator": "mkb_projection",
+                    "stage": "parse_response",
+                    "response_length": len(text),
+                    "response_preview": preview or "(The model returned no text.)",
+                    "expected_format": "One JSON or YAML question object (or a questions list with exactly one item).",
+                },
+            )
+        if isinstance(question, dict):
+            if question.get("no_qa_extracted") is True:
+                raise NoQuestionExtracted(str(question.get("reason") or ""))
+            if isinstance(question.get("questions"), list):
+                questions = question["questions"]
+                if not questions:
+                    raise NoQuestionExtracted(
+                        str(question.get("reason") or "The session did not contain a grounded benchmark task.")
+                    )
+                if len(questions) != 1:
+                    raise ValueError("MKB projection agent must produce exactly one question")
+                question = questions[0]
+        if not isinstance(question, dict):
+            raise ValueError("MKB projection agent did not return an object")
+        return question
+
+    async def generate(
+        self, *, template_path: Path, session_path: Path, output_path: Path
+    ) -> None:
+        template = json.loads(template_path.read_text(encoding="utf-8"))
+        if not isinstance(template, dict):
+            raise ValueError("Question authoring template must contain an object")
+        invocation = json.loads(session_path.read_text(encoding="utf-8"))
+        if not isinstance(invocation, dict):
+            raise ValueError("Session question invocation must contain an object")
+
+        prompt_builder, agent_runner_class, agent_class, lite_llm_class = self._load_mkb_components()
+        extraction_schema = template.get("extraction_schema")
+        if not isinstance(extraction_schema, dict):
+            extraction_schema = {}
+        allowed_verify_types = template.get("executable_verify_types")
+        if not isinstance(allowed_verify_types, list):
+            allowed_verify_types = []
+        instruction = prompt_builder(
+            domain=str(template.get("domain") or "computational materials science"),
+            system_prompt=str(template.get("system_prompt") or ""),
+            extraction_schema=extraction_schema,
+            purpose=str(template.get("purpose") or "qa_benchmark"),
+            source_type="session",
+        )
+        instruction += (
+            "\n\n---\n\n# MatCreator session adapter\n"
+            "You are receiving bounded MatCreator session evidence directly in the user message, "
+            "not an MKB knowledge frame. Do not call or expect MKB tools, database records, "
+            "or source identifiers. Derive exactly one self-contained benchmark question from "
+            "the observed evidence. If no grounded question can be extracted, return only "
+            "{\"no_qa_extracted\": true, \"reason\": \"brief explanation\"}; never invent "
+            "unobserved inputs, artifacts, or reference values. Otherwise return only one bare "
+            "JSON question object; never a `questions` wrapper or Markdown.\n\n"
+            "MatCreator's executable verifier allowlist is authoritative and overrides any "
+            "conflicting MKB/template prose. Use only: "
+            + json.dumps(allowed_verify_types)
+            + ".\n"
+        )
+        if invocation.get("operation") == "refine":
+            instruction += (
+                "For a refinement, return a complete replacement of current_question. Preserve "
+                "grounded valid content, correct validation_errors, and follow user_instruction.\n"
+            )
+
+        agent = agent_class(
+            name="matcreator_session_question_projection",
+            model=lite_llm_class(
+                model=self.model,
+                api_key=self.api_key,
+                base_url=self.base_url,
+            ),
+            instruction=instruction,
+            tools=[],
+        )
+        runner = agent_runner_class(
+            agent=agent,
+            app_name="matcreator_session_question_generator",
+            max_llm_calls=1,
+        )
+        session_id = f"session-question-{uuid.uuid4().hex}"
+        await runner.create_session(session_id=session_id, user_id="matcreator")
+        result = await runner.run(
+            session_id=session_id,
+            user_id="matcreator",
+            message=json.dumps(invocation, ensure_ascii=False, sort_keys=True),
+        )
+        if not result.success:
+            raise RuntimeError(f"MKB projection agent failed: {result.error or 'unknown error'}")
+        question = self._question_from_response(result.final_text)
+        temporary = output_path.with_suffix(".tmp")
+        temporary.write_text(
+            yaml.safe_dump(question, allow_unicode=False, sort_keys=False), encoding="utf-8"
+        )
+        temporary.replace(output_path)
+
+
+@dataclass(frozen=True)
+class SessionQuestionGeneratorDefinition:
+    """Declarative registration for a selectable question-extraction agent."""
+
+    generator_id: str
+    label: str
+    description: str
+    factory: Callable[[dict[str, Any], dict[str, Any]], SessionQuestionGeneratorPlugin]
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "generator_id": self.generator_id,
+            "label": self.label,
+            "description": self.description,
+        }
+
+
+def _build_builtin_llm_generator(
+    config: dict[str, Any], _generator_config: dict[str, Any]
+) -> SessionQuestionGeneratorPlugin:
+    return BuiltinLlmQuestionGeneratorPlugin.from_config(config)
+
+
+def _build_mkb_projection_generator(
+    config: dict[str, Any], generator_config: dict[str, Any]
+) -> SessionQuestionGeneratorPlugin:
+    return MkbProjectionQuestionGeneratorPlugin.from_config(config, generator_config)
+
+
+# Register a new extraction agent here. The web UI discovers this registry via
+# the control-plane API; no frontend switch statement is required.
+SESSION_QUESTION_GENERATORS: dict[str, SessionQuestionGeneratorDefinition] = {
+    "builtin_llm": SessionQuestionGeneratorDefinition(
+        generator_id="builtin_llm",
+        label="MatCreator LLM",
+        description="Generate a question directly with MatCreator's configured LLM.",
+        factory=_build_builtin_llm_generator,
+    ),
+    "mkb_projection": SessionQuestionGeneratorDefinition(
+        generator_id="mkb_projection",
+        label="MKB projection agent",
+        description="Use MKB's template-driven QA benchmark projection agent.",
+        factory=_build_mkb_projection_generator,
+    ),
+}
+
+
+def list_session_question_generators() -> list[dict[str, str]]:
+    """Return UI-safe metadata for every registered extraction agent."""
+    return [definition.as_dict() for definition in SESSION_QUESTION_GENERATORS.values()]
+
+
+def has_session_question_generator(generator_id: str) -> bool:
+    return generator_id in SESSION_QUESTION_GENERATORS
+
+
+def build_session_question_generator(
+    generator_id: str, config: dict[str, Any]
+) -> SessionQuestionGeneratorPlugin:
+    """Instantiate a registered generator from application and plugin settings."""
+    definition = SESSION_QUESTION_GENERATORS.get(generator_id)
+    if definition is None:
+        raise ValueError(f"Unknown session question generator plugin: {generator_id}")
+    generator_config = config.get("session_question_generator")
+    if not isinstance(generator_config, dict):
+        generator_config = {}
+    return definition.factory(config, generator_config)
+
+
 class CallableSessionQuestionGenerator:
     """Adapt an async question callable to the file-oriented plugin contract."""
 
@@ -235,6 +542,14 @@ def build_session_question_evidence(session_log: dict[str, Any]) -> dict[str, An
         "events": events,
         "artifacts": [str(path) for path in session_log.get("artifacts", [])][:20],
     }
+
+
+def has_observable_session_question_evidence(evidence: dict[str, Any]) -> bool:
+    """Whether a session has material from which a grounded task can be authored."""
+    return any(
+        isinstance(evidence.get(key), list) and evidence[key]
+        for key in ("steps", "events", "artifacts")
+    )
 
 
 def validate_question(
@@ -559,6 +874,12 @@ class StagedSessionQuestionService:
         if not isinstance(template, dict):
             raise ValueError("Question authoring template must contain an object")
         evidence = build_session_question_evidence(session_log)
+        if not has_observable_session_question_evidence(evidence):
+            raise NoQuestionExtracted(
+                "The selected session has no observable execution steps, events, or artifacts. "
+                "Run work in that session or select a session with completed activity before "
+                "generating a benchmark question."
+            )
         draft_id = uuid.uuid4().hex
         invocation_path = (self.staging_root / f".{draft_id}.generating").resolve()
         if not invocation_path.is_relative_to(self.staging_root):
