@@ -102,6 +102,12 @@ class BuiltinLlmQuestionGeneratorPlugin:
         from litellm import acompletion
 
         template = json.loads(template_path.read_text(encoding="utf-8"))
+        item_schema = (
+            template.get("extraction_schema", {})
+            .get("questions", {})
+            .get("item_schema", {})
+        )
+        allowed_question_keys = sorted(item_schema) if isinstance(item_schema, dict) else []
         invocation = json.loads(session_path.read_text(encoding="utf-8"))
         operation = invocation.get("operation", "generate")
         operation_instruction = (
@@ -121,9 +127,12 @@ class BuiltinLlmQuestionGeneratorPlugin:
                     "content": (
                         "Use the following maintained question-authoring template to derive exactly "
                         "one self-contained benchmark question from the observed session. Return only "
-                        "the question object as JSON. Do not invent unobserved inputs, artifacts, or "
-                        "reference values. The template's executable_verify_types field is the "
-                        "authoritative verifier allowlist and overrides verifier names in examples. "
+                        "one bare question object as JSON, not a questions wrapper. Its top-level keys "
+                        "must be a subset of the keys defined by extraction_schema.questions.item_schema: "
+                        + json.dumps(allowed_question_keys)
+                        + ". Do not add keys that are absent from that schema. Do not invent unobserved "
+                        "inputs, artifacts, or reference values. The template's executable_verify_types "
+                        "field is the authoritative verifier allowlist and overrides verifier names in examples. "
                         + operation_instruction
                         + "\n\n"
                         + json.dumps(template, ensure_ascii=False, sort_keys=True)
