@@ -3,7 +3,7 @@ name: molecular-dynamics
 description: Concept skill for Molecular Dynamics (MD) simulation. Describes MD ensembles, key parameters, and which tool skills to invoke for MD runs. Use this to understand MD concepts before selecting a specific simulation tool.
 metadata:
   dependent_skills:
-    - ase-deepmd
+    - ase
     - mattersim
   tags:
     - MD
@@ -46,7 +46,7 @@ Molecular Dynamics simulates the time evolution of a system of atoms by numerica
 
 | Skill | Best For |
 |-------|---------|
-| `ase-deepmd` | MD with a trained DeePMD potential via ASE |
+| `ase` | MD with a trained DeePMD potential via ASE |
 | `mattersim` | MD with the pre-trained MatterSim universal potential |
 
-Load the appropriate tool skill for step-by-step instructions (e.g., `load_skill("ase-deepmd")`).
+Load the appropriate tool skill for step-by-step instructions (e.g., `load_skill("ase")`).

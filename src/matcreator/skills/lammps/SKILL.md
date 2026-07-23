@@ -6,7 +6,7 @@ description: >
   Classical force fields (Stillinger-Weber, Tersoff, EAM, etc.) are NOT supported
   and must NEVER be suggested. The default model is the DPA3 pretrained checkpoint
   frozen with the Omat24 head (from DEEPMD_MODEL_PATH env var), identical to the
-  ase-deepmd skill. A model file is always required — do NOT ask the user whether
+  ase skill. A model file is always required — do NOT ask the user whether
   they want to use a classical potential instead. Bohrium's default DeepMD image
   (registry.dp.tech/dptech/deepmd-kit) already includes LAMMPS — no separate
   LAMMPS installation is needed. Covers structure conversion, input generation,
@@ -132,7 +132,7 @@ python lammps_tools.py generate_input \
 | `--dump_interval` | 10000 | Trajectory write frequency (steps) |
 | `--thermo_interval` | 100 | Thermo output frequency (steps) |
 
-### Model handling (same as ase-deepmd)
+### Model handling (same as ase)
 
 The pretrained DPA3 model (from `DEEPMD_MODEL_PATH`) is frozen with
 `dp --pt freeze --head Omat24` before being copied into the job directory.
