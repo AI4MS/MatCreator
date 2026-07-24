@@ -21,6 +21,10 @@ import yaml
 _TEMPLATE_ID_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,79}")
 DEFAULT_TEMPLATE_ID = "default"
 
+# A draft is read-only once it has left MatCreator's review workspace, either by
+# filesystem export to the shared bank root or by publishing to a custom bank.
+LOCKED_DRAFT_STATUSES = frozenset({"exported", "published"})
+
 
 class SessionQuestionGeneratorPlugin(Protocol):
     """File-oriented boundary for question-authoring providers."""
@@ -30,6 +34,20 @@ class SessionQuestionGeneratorPlugin(Protocol):
     async def generate(
         self, *, template_path: Path, session_path: Path, output_path: Path
     ) -> None: ...
+
+
+class BenchmarkBankClient(Protocol):
+    """Boundary for publishing an approved question to a token-owned custom bank."""
+
+    async def ensure_bank(self, bank_id: str, *, display_name: str | None = None) -> dict[str, Any]: ...
+
+    async def publish_question(
+        self,
+        bank_id: str,
+        *,
+        question: dict[str, Any],
+        data_files: list[tuple[str, Path]] | None = None,
+    ) -> dict[str, Any]: ...
 
 
 class QuestionGenerationDiagnosticError(ValueError):
@@ -458,6 +476,8 @@ class GeneratedQuestionDraft:
     validation_errors: list[str]
     staging_path: Path
     refinement_count: int = 0
+    published_bank_id: str | None = None
+    published_question_id: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -469,6 +489,8 @@ class GeneratedQuestionDraft:
             "validation_errors": self.validation_errors,
             "staging_path": str(self.staging_path),
             "refinement_count": self.refinement_count,
+            "published_bank_id": self.published_bank_id,
+            "published_question_id": self.published_question_id,
         }
 
 
@@ -777,6 +799,8 @@ class StagedSessionQuestionService:
             validation_errors=list(metadata.get("validation_errors", [])),
             staging_path=draft_path,
             refinement_count=int(metadata.get("refinement_count", 0)),
+            published_bank_id=metadata.get("published_bank_id"),
+            published_question_id=metadata.get("published_question_id"),
         )
 
     @staticmethod
@@ -805,8 +829,11 @@ class StagedSessionQuestionService:
                     "refinement_count": int(metadata.get("refinement_count", 0)),
                     "updated_at": metadata.get("updated_at"),
                     "staging_path": str(draft_path),
+                    "published_bank_id": metadata.get("published_bank_id"),
                 }
         return sorted(drafts.values(), key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+
+
 
     async def create(self, session_log: dict[str, Any]) -> GeneratedQuestionDraft:
         if self.generator is None or self.template_path is None:
@@ -902,8 +929,8 @@ class StagedSessionQuestionService:
         self, draft_id: str, declared_path: str, content: bytes
     ) -> GeneratedQuestionDraft:
         draft_path, question, metadata = self._load(draft_id, migrate=True)
-        if metadata.get("status") == "exported":
-            raise ValueError("An exported question draft cannot be changed")
+        if metadata.get("status") in LOCKED_DRAFT_STATUSES:
+            raise ValueError("An exported or published question draft cannot be changed")
         if not isinstance(content, bytes):
             raise ValueError("Question data-file upload must contain bytes")
         declared_paths = self._declared_data_file_paths(question)
@@ -924,8 +951,8 @@ class StagedSessionQuestionService:
 
     def update(self, draft_id: str, question_yaml: str) -> GeneratedQuestionDraft:
         draft_path, _question, metadata = self._load(draft_id, migrate=True)
-        if metadata.get("status") == "exported":
-            raise ValueError("An exported question draft cannot be edited")
+        if metadata.get("status") in LOCKED_DRAFT_STATUSES:
+            raise ValueError("An exported or published question draft cannot be edited")
         try:
             question = yaml.safe_load(question_yaml)
         except yaml.YAMLError as exc:
@@ -946,8 +973,8 @@ class StagedSessionQuestionService:
         if self.generator is None or self.template_path is None:
             raise RuntimeError("Question generator is not configured")
         draft_path, question, metadata = self._load(draft_id, migrate=True)
-        if metadata.get("status") == "exported":
-            raise ValueError("An exported question draft cannot be refined")
+        if metadata.get("status") in LOCKED_DRAFT_STATUSES:
+            raise ValueError("An exported or published question draft cannot be refined")
         instruction = (user_instruction or "").strip()
         if len(instruction) > 2000:
             raise ValueError("Refinement instruction must be at most 2000 characters")
@@ -1027,6 +1054,39 @@ class StagedSessionQuestionService:
             raise ValueError("Only review-ready question drafts can be approved")
         metadata["status"] = "approved"
         metadata["validation_errors"] = []
+        metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self._write_json(draft_path / "generation.json", metadata)
+        return self._draft_from_values(draft_path, question, metadata)
+
+    async def publish(
+        self,
+        draft_id: str,
+        client: BenchmarkBankClient,
+        bank_id: str,
+        *,
+        display_name: str | None = None,
+    ) -> GeneratedQuestionDraft:
+        """Publish an approved draft to a token-owned custom question bank over HTTP."""
+        draft_path, question, metadata = self._load(draft_id, migrate=True)
+        if metadata.get("status") != "approved":
+            raise ValueError("Question draft must be approved before it can be published")
+        errors = validate_question(question)
+        if errors:
+            raise ValueError("Question draft has validation errors and cannot be published")
+        declared_paths = self._declared_data_file_paths(question)
+        data_files: list[tuple[str, Path]] = []
+        for declared_path in declared_paths:
+            source = self._data_file_path(draft_path, declared_path)
+            if source.is_symlink() or not source.is_file():
+                raise ValueError(
+                    f"Question data file '{declared_path}' is missing from the staged draft"
+                )
+            data_files.append((declared_path, source))
+        await client.ensure_bank(bank_id, display_name=display_name)
+        result = await client.publish_question(bank_id, question=question, data_files=data_files)
+        metadata["status"] = "published"
+        metadata["published_bank_id"] = bank_id
+        metadata["published_question_id"] = str(result.get("question_id") or question.get("id") or "")
         metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
         self._write_json(draft_path / "generation.json", metadata)
         return self._draft_from_values(draft_path, question, metadata)

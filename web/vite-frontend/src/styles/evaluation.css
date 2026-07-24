@@ -388,6 +388,8 @@
 .evaluation-draft-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .evaluation-draft-export { border: 1px solid var(--accent); border-radius: 6px; background: var(--accent); color: var(--panel); padding: 6px 10px; cursor: pointer; font-size: 12px; font-weight: 650; }
 .evaluation-draft-export:disabled { cursor: not-allowed; opacity: 0.45; }
+.evaluation-draft-publish { border: 1px solid var(--accent); border-radius: 6px; background: transparent; color: var(--accent); padding: 6px 10px; cursor: pointer; font-size: 12px; font-weight: 650; }
+.evaluation-draft-publish:disabled { cursor: not-allowed; opacity: 0.45; }
 .evaluation-draft-action-status { min-height: 18px; margin: 8px 0 0; font-size: 12px; overflow-wrap: anywhere; }
 .evaluation-draft-action-status.is-success { color: #15803d; }
 .evaluation-draft-action-status.is-error { color: #dc2626; }

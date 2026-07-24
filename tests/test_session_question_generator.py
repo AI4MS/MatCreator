@@ -21,6 +21,30 @@ from matcreator.control_plane.session_question_generator import (
 )
 
 
+class FakeBenchmarkBankClient:
+    """Records bank/question publish calls for assertions."""
+
+    def __init__(self) -> None:
+        self.ensured_banks: list[tuple[str, str | None]] = []
+        self.published: list[dict] = []
+
+    async def ensure_bank(self, bank_id: str, *, display_name: str | None = None) -> dict:
+        self.ensured_banks.append((bank_id, display_name))
+        return {"bank_id": bank_id, "display_name": display_name}
+
+    async def publish_question(
+        self, bank_id: str, *, question: dict, data_files: list[tuple[str, Path]] | None = None
+    ) -> dict:
+        self.published.append(
+            {
+                "bank_id": bank_id,
+                "question": question,
+                "data_files": [(path, source.read_bytes()) for path, source in (data_files or [])],
+            }
+        )
+        return {"question_id": question["id"], "bank_id": bank_id}
+
+
 def _question() -> dict:
     return {
         "id": "session_run_in",
@@ -428,6 +452,83 @@ def test_service_does_not_export_when_declared_data_file_is_missing(tmp_path) ->
         service.export(updated.draft_id, tmp_path / "question-bank")
 
     assert not (tmp_path / "question-bank" / question["id"]).exists()
+    assert service.get(updated.draft_id).status == "approved"
+
+
+def test_service_publishes_approved_draft_to_custom_bank(tmp_path) -> None:
+    template_path = tmp_path / "template.json"
+    template_path.write_text('{"template_version": "test-v1"}', encoding="utf-8")
+    service = StagedSessionQuestionService(
+        tmp_path / "staging", RecordingPlugin(), template_path=template_path
+    )
+    draft = asyncio.run(
+        service.create(
+            {"session_id": "session-1", "graph": {"nodes": []}, "events": [{"type": "tool"}]}
+        )
+    )
+    question = _question()
+    question["data_files"] = [{"key": "parameters", "path": "inputs/parameters.json"}]
+    updated = service.update(draft.draft_id, yaml.safe_dump(question, sort_keys=False))
+    service.stage_data_file(updated.draft_id, "inputs/parameters.json", b'{"encut": 320}\n')
+    service.approve(updated.draft_id)
+
+    client = FakeBenchmarkBankClient()
+    published = asyncio.run(
+        service.publish(updated.draft_id, client, "user-alice", display_name="alice's questions")
+    )
+
+    assert published.status == "published"
+    assert published.published_bank_id == "user-alice"
+    assert published.published_question_id == question["id"]
+    assert client.ensured_banks == [("user-alice", "alice's questions")]
+    assert client.published[0]["bank_id"] == "user-alice"
+    assert client.published[0]["question"]["id"] == question["id"]
+    assert client.published[0]["data_files"] == [("inputs/parameters.json", b'{"encut": 320}\n')]
+
+    with pytest.raises(ValueError, match="review-ready"):
+        service.approve(updated.draft_id)
+
+
+def test_service_requires_approved_status_before_publish(tmp_path) -> None:
+    template_path = tmp_path / "template.json"
+    template_path.write_text('{"template_version": "test-v1"}', encoding="utf-8")
+    service = StagedSessionQuestionService(
+        tmp_path / "staging", RecordingPlugin(), template_path=template_path
+    )
+    draft = asyncio.run(
+        service.create(
+            {"session_id": "session-1", "graph": {"nodes": []}, "events": [{"type": "tool"}]}
+        )
+    )
+    question = _question()
+    updated = service.update(draft.draft_id, yaml.safe_dump(question, sort_keys=False))
+
+    client = FakeBenchmarkBankClient()
+    with pytest.raises(ValueError, match="approved"):
+        asyncio.run(service.publish(updated.draft_id, client, "user-alice"))
+    assert client.ensured_banks == []
+
+
+def test_service_does_not_publish_when_declared_data_file_is_missing(tmp_path) -> None:
+    template_path = tmp_path / "template.json"
+    template_path.write_text('{"template_version": "test-v1"}', encoding="utf-8")
+    service = StagedSessionQuestionService(
+        tmp_path / "staging", RecordingPlugin(), template_path=template_path
+    )
+    draft = asyncio.run(
+        service.create(
+            {"session_id": "session-1", "graph": {"nodes": []}, "events": [{"type": "tool"}]}
+        )
+    )
+    question = _question()
+    question["data_files"] = [{"key": "parameters", "path": "inputs/parameters.json"}]
+    updated = service.update(draft.draft_id, yaml.safe_dump(question, sort_keys=False))
+    service.approve(updated.draft_id)
+
+    client = FakeBenchmarkBankClient()
+    with pytest.raises(ValueError, match="missing from the staged draft"):
+        asyncio.run(service.publish(updated.draft_id, client, "user-alice"))
+    assert client.published == []
     assert service.get(updated.draft_id).status == "approved"
 
 

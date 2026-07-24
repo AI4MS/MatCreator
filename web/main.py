@@ -97,7 +97,7 @@ from matcreator.constants import GRAPH_AGENT_MODEL, KNOW_DO_GRAPH_DB  # noqa: E4
 from matcreator.control_plane.remote_job_monitor import RemoteJobMonitor  # noqa: E402
 from matcreator.control_plane.remote_job_service import RemoteJobService  # noqa: E402
 from matcreator.control_plane.remote_jobs import RemoteJobStore  # noqa: E402
-from matcreator.control_plane.benchmark_client import BenchmarkApiError, BenchmarkClient  # noqa: E402
+from matcreator.control_plane.benchmark_client import BenchmarkApiError, BenchmarkClient, sanitize_bank_id  # noqa: E402
 from matcreator.control_plane.evaluation_manager import EvaluationManager  # noqa: E402
 from matcreator.control_plane.evaluation_runtime import RuntimeOutcome, RuntimeSpec  # noqa: E402
 from matcreator.control_plane.evaluation_service import EvaluationService  # noqa: E402
@@ -3246,6 +3246,45 @@ async def export_evaluation_question_draft(draft_id: str, user_id: str = Query(.
         raise HTTPException(status_code=500, detail=f"Could not export benchmark question: {exc}") from exc
     return JSONResponse(draft.as_dict())
 
+
+def _custom_bank_id_for_owner(owner_id: str) -> str:
+    if not owner_id:
+        raise HTTPException(status_code=422, detail="A session owner is required to use a custom benchmark bank")
+    return sanitize_bank_id(owner_id)
+
+
+@app.get("/api/evaluation-benchmark-bank")
+async def get_evaluation_benchmark_bank(user_id: str = Query(...)) -> JSONResponse:
+    bank_id = _custom_bank_id_for_owner(user_id)
+    try:
+        client = await _benchmark_client_for_owner(user_id)
+        banks = await client.list_banks()
+    except BenchmarkApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    existing = next((bank for bank in banks if bank.get("bank_id") == bank_id), None)
+    return JSONResponse({"bank_id": bank_id, "exists": existing is not None, "bank": existing})
+
+
+@app.post("/api/evaluation-question-drafts/{draft_id}/publish")
+async def publish_evaluation_question_draft(draft_id: str, user_id: str = Query(...)) -> JSONResponse:
+    bank_id = _custom_bank_id_for_owner(user_id)
+    try:
+        client = await _benchmark_client_for_owner(user_id)
+        draft = await _staged_question_service(user_id).publish(
+            draft_id,
+            client,
+            bank_id,
+            display_name=f"{user_id}'s questions",
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not publish benchmark question: {exc}") from exc
+    except BenchmarkApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return JSONResponse(draft.as_dict())
 
 
 @app.get("/api/agent-graph/{session_id}")

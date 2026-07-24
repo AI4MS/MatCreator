@@ -422,6 +422,85 @@ def test_session_question_draft_can_be_edited_approved_and_exported(monkeypatch,
     assert client.post(f"/api/evaluation-question-drafts/{draft_id}/export?user_id=alice").status_code == 409
 
 
+def test_session_question_draft_can_be_published_to_custom_bank(monkeypatch, tmp_path) -> None:
+    class FakeBenchmarkClient:
+        def __init__(self) -> None:
+            self.ensured: list[tuple[str, str | None]] = []
+            self.published: list[dict] = []
+
+        async def list_banks(self):
+            return [{"bank_id": "user-alice"}] if self.ensured else []
+
+        async def ensure_bank(self, bank_id, *, display_name=None):
+            self.ensured.append((bank_id, display_name))
+            return {"bank_id": bank_id, "display_name": display_name}
+
+        async def publish_question(self, bank_id, *, question, data_files=None):
+            self.published.append({"bank_id": bank_id, "question": question})
+            return {"question_id": question["id"], "bank_id": bank_id}
+
+    fake_client = FakeBenchmarkClient()
+
+    async def benchmark_client_for_owner(_owner: str):
+        return fake_client
+
+    monkeypatch.setattr(
+        main,
+        "_load_session_log_export",
+        lambda session_id, user_id: {
+            "session_id": session_id,
+            "owner_id": user_id,
+            "graph": {"nodes": []},
+            "events": [{"type": "tool"}],
+        },
+    )
+    monkeypatch.setattr(main, "_session_question_staging_root", lambda _owner: tmp_path / "staging")
+    monkeypatch.setattr(main, "_benchmark_client_for_owner", benchmark_client_for_owner)
+
+    async def generate(_evidence):
+        return {
+            "id": "session_question",
+            "task_type": "simulation",
+            "capabilities": ["tool_utilization"],
+            "domain": "agnostic",
+            "difficulty": "easy",
+            "intent": "Generate an input file.",
+            "human_prompt_seed": "Create input.txt.",
+            "reference_answers": [{"key": "input", "value": "input.txt"}],
+            "scoring_checklist": [{
+                "id": "input",
+                "criterion": "Generate input.txt.",
+                "verify": "artifact_exists",
+            }],
+        }
+
+    monkeypatch.setattr(
+        main,
+        "_session_question_generator",
+        lambda: main.CallableSessionQuestionGenerator(generate),
+    )
+    client = TestClient(main.app)
+
+    status = client.get("/api/evaluation-benchmark-bank?user_id=alice")
+    assert status.status_code == 200, status.json()
+    assert status.json() == {"bank_id": "user-alice", "exists": False, "bank": None}
+
+    created = client.post("/api/sessions/session-1/evaluation-question-drafts?user_id=alice")
+    draft_id = created.json()["draft_id"]
+    client.post(f"/api/evaluation-question-drafts/{draft_id}/approve?user_id=alice")
+
+    published = client.post(f"/api/evaluation-question-drafts/{draft_id}/publish?user_id=alice")
+    assert published.status_code == 200, published.json()
+    assert published.json()["status"] == "published"
+    assert published.json()["published_bank_id"] == "user-alice"
+    assert fake_client.ensured == [("user-alice", "alice's questions")]
+    assert fake_client.published[0]["bank_id"] == "user-alice"
+    assert client.post(f"/api/evaluation-question-drafts/{draft_id}/publish?user_id=alice").status_code == 409
+
+    status_after = client.get("/api/evaluation-benchmark-bank?user_id=alice")
+    assert status_after.json()["exists"] is True
+
+
 def test_session_question_draft_uploads_data_file_and_exports_it(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         main,
@@ -557,5 +636,6 @@ def test_session_question_draft_can_be_listed_and_refined(monkeypatch, tmp_path)
             "refinement_count": 1,
             "updated_at": listed.json()["drafts"][0]["updated_at"],
             "staging_path": refined.json()["staging_path"],
+            "published_bank_id": None,
         }
     ]

@@ -1925,6 +1925,7 @@ function showEvaluationQuestionDraftModal(draft, actionMessage = "") {
   close.addEventListener("click", () => overlay.remove());
   header.append(heading, close);
 
+  const isLocked = draft.status === "exported" || draft.status === "published";
   const notice = document.createElement("p");
   notice.className = "evaluation-draft-notice";
   const statusNotices = {
@@ -1932,10 +1933,11 @@ function showEvaluationQuestionDraftModal(draft, actionMessage = "") {
     invalid: "This saved draft has validation issues. Edit it manually or refine it with MatCreator feedback.",
     approved: "This draft is approved and saved. Export it to add it to the configured benchmark bank.",
     exported: "This draft has been exported to the configured benchmark bank and is now read-only.",
+    published: "This draft has been published to your custom benchmark bank and is now read-only.",
   };
   notice.textContent = statusNotices[draft.status] || "This question draft is saved for review.";
   const validation = document.createElement("div");
-  const isValid = ["ready_for_review", "approved", "exported"].includes(draft.status);
+  const isValid = ["ready_for_review", "approved", "exported", "published"].includes(draft.status);
   validation.className = `evaluation-draft-validation ${isValid ? "is-valid" : "is-invalid"}`;
   validation.textContent = isValid
     ? "Schema and executable-verifier checks passed"
@@ -1965,7 +1967,7 @@ function showEvaluationQuestionDraftModal(draft, actionMessage = "") {
   instruction.maxLength = 2000;
   instruction.placeholder = "Optional refinement instruction";
   instruction.setAttribute("aria-label", "Optional refinement instruction");
-  instruction.disabled = draft.status === "exported";
+  instruction.disabled = isLocked;
   const templateSelect = document.createElement("select");
   templateSelect.className = "evaluation-input";
   templateSelect.setAttribute("aria-label", "Refinement question template");
@@ -1976,7 +1978,7 @@ function showEvaluationQuestionDraftModal(draft, actionMessage = "") {
     templateSelect.appendChild(option);
   }
   templateSelect.value = draft.template?.template_id || state.activeEvaluationQuestionTemplateId || "default";
-  templateSelect.disabled = draft.status === "exported";
+  templateSelect.disabled = isLocked;
   const actionStatus = document.createElement("p");
   actionStatus.className = actionMessage
     ? "evaluation-draft-action-status is-success"
@@ -2000,7 +2002,7 @@ function showEvaluationQuestionDraftModal(draft, actionMessage = "") {
       label.textContent = path || "Invalid declared path";
       const picker = document.createElement("input");
       picker.type = "file";
-      picker.disabled = draft.status === "exported" || !path;
+      picker.disabled = isLocked || !path;
       picker.setAttribute("aria-label", `Upload ${path}`);
       const upload = document.createElement("button");
       upload.type = "button";
@@ -2065,11 +2067,12 @@ function showEvaluationQuestionDraftModal(draft, actionMessage = "") {
     } catch (error) {
       activeButton.textContent = originalLabel;
       buttons.forEach((button) => { button.disabled = false; });
-      save.disabled = draft.status === "exported";
-      refine.disabled = draft.status === "exported";
-      approve.disabled = draft.status === "exported";
+      save.disabled = isLocked;
+      refine.disabled = isLocked;
+      approve.disabled = isLocked;
       exportButton.disabled = draft.status !== "approved";
-      instruction.disabled = draft.status === "exported";
+      publishButton.disabled = draft.status !== "approved";
+      instruction.disabled = isLocked;
       card.removeAttribute("aria-busy");
       actionStatus.className = "evaluation-draft-action-status is-error";
       actionStatus.textContent = error.message || "The action failed.";
@@ -2081,7 +2084,7 @@ function showEvaluationQuestionDraftModal(draft, actionMessage = "") {
   save.type = "button";
   save.className = "ghost";
   save.textContent = "Save YAML";
-  save.disabled = draft.status === "exported";
+  save.disabled = isLocked;
   save.addEventListener("click", () => void runDraftAction("", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -2092,7 +2095,7 @@ function showEvaluationQuestionDraftModal(draft, actionMessage = "") {
   refine.type = "button";
   refine.className = "ghost";
   refine.textContent = "Refine with feedback";
-  refine.disabled = draft.status === "exported";
+  refine.disabled = isLocked;
   refine.addEventListener("click", () => void (async () => {
     try {
       let current = draft;
@@ -2118,7 +2121,7 @@ function showEvaluationQuestionDraftModal(draft, actionMessage = "") {
   approve.type = "button";
   approve.className = "ghost";
   approve.textContent = draft.status === "approved" ? "Approved" : "Approve";
-  approve.disabled = draft.status === "exported";
+  approve.disabled = isLocked;
   approve.title = draft.status === "invalid"
     ? "Validate this saved YAML and show why it cannot be approved"
     : "Approve this saved YAML";
@@ -2135,7 +2138,17 @@ function showEvaluationQuestionDraftModal(draft, actionMessage = "") {
     "/export", { method: "POST" }, exportButton, "Exporting...", "Exported from",
   ));
   actions.appendChild(exportButton);
-  buttons.push(save, refine, approve, exportButton);
+  const publishButton = document.createElement("button");
+  publishButton.type = "button";
+  publishButton.className = "evaluation-draft-publish";
+  publishButton.textContent = draft.status === "published" ? "Published" : "Publish to my bank";
+  publishButton.title = "Publish this approved question to your own custom benchmark bank";
+  publishButton.disabled = draft.status !== "approved";
+  publishButton.addEventListener("click", () => void runDraftAction(
+    "/publish", { method: "POST" }, publishButton, "Publishing...", "Published from",
+  ));
+  actions.appendChild(publishButton);
+  buttons.push(save, refine, approve, exportButton, publishButton);
   const evidence = document.createElement("div");
   evidence.className = "evaluation-draft-evidence";
   const stepsHeading = document.createElement("h3");
