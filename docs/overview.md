@@ -84,6 +84,27 @@ session_question_generator:
 
 Plugins do not read `~/.matcreator/.adk/session.db` directly. Session authorization and database access remain host responsibilities, so providers can be replaced without depending on the ADK SQLite schema.
 
+`mkb_projection` is available when the pinned `mat-know-base[materials]` dependency is installed. It uses MKB's `qa_benchmark` projection prompt and agent runner, but receives the bounded MatCreator session payload directly rather than creating MKB projects, frames, or database records. By default it uses the same `llm.model`, `llm.api_key`, and `llm.base_url` as MatCreator's other agents. Use plugin or MKB environment values only when an explicit override is needed:
+
+```yaml
+session_question_generator:
+  plugin: mkb_projection
+  # Optional: defaults to llm.model.
+  model: openai/qwen3-plus
+  # Optional: defaults to llm.api_key and llm.base_url.
+  api_key: your-mkb-specific-api-key
+  base_url: https://api.example.com/v1
+```
+
+```bash
+export MKB_LLM_API_KEY=your-api-key
+export MKB_LLM_API_BASE=https://api.example.com/v1
+```
+
+`MKB_EXTRACTION_MODEL`, `MKB_LLM_API_KEY`, and `MKB_LLM_API_BASE` override the respective plugin and MatCreator values when set. The MKB adapter has no database tools, returns one bare JSON question object, and writes it as MatCreator's validated `question.yaml`; all draft review, refinement, approval, and export remain in MatCreator.
+
+When generating from the session list, MatCreator presents a generator dropdown. Its options are supplied by the backend registry, so additional extraction agents only need a registered definition (identifier, display metadata, and factory) and automatically appear in the UI. A draft keeps its selected generator for later refinement.
+
 Generated drafts are saved independently of the active workspace under:
 
 ```text
@@ -101,6 +122,14 @@ benchmark:
   question_bank_root: /absolute/path/to/mat_agent_bench/question_bank
 ```
 
-Generation, review, approval, and export always perform MatCreator's executable-verifier validation. They do not require importing `mat_bench`; its `QuestionItem` schema can be used as an optional compatibility check by integrations that install that package. Generated data files are not exported in the current implementation; questions requiring input files must be completed through the benchmark-bank authoring workflow.
+Generation, review, approval, and export always perform `mat_bench` schema and executable-verifier validation. Questions with `data_files` can be exported: list each required relative path in the draft YAML, upload the corresponding file through the review dialog, then approve and export. MatCreator publishes `question.yaml` and the uploaded files together under `question_bank_root/<question-id>/`, preserving each declared relative path. Export refuses missing, unsafe, or symlinked files and does not publish a partial question directory.
+
+The benchmark server must be able to read the same question-bank directory. In local development, point both services at the same host path. For a containerized benchmark server, mount the configured question bank into its container at the path used by the server. Reload or restart the benchmark server catalog after exporting so it discovers the new `<question-id>/question.yaml`.
 
 For local development, MatCreator can automatically request and save `benchmark.token` when it is absent. Start the benchmark server with `--allow-token-registration` and configure only `benchmark.server_url`. The first catalog load or evaluation start registers a token through `POST /token` and persists it to `~/.matcreator/config.yaml`. This fallback is intentionally unavailable when the benchmark server disables registration; production deployments should configure `benchmark.token` or `MAT_BENCH_TOKEN` explicitly.
+
+### Publishing to a per-user custom bank
+
+As an alternative to filesystem export, an approved draft can be **published** directly to a custom benchmark bank owned by the current user, using the same per-user `BenchmarkClient` token as the catalog and evaluation runs. `GET /api/evaluation-benchmark-bank` reports whether the caller's bank (`user-<sanitized-user-id>`) already exists, and the review dialog's **Publish to my bank** button calls `POST /api/evaluation-question-drafts/{draft_id}/publish`, which lazily creates the bank on first use and then uploads the question and any staged `data_files` to it. Like export, publish requires an `approved` draft, is one-shot (the draft moves to a terminal `published` status and can no longer be edited, refined, or exported), and refuses to publish declared data files that were never staged.
+
+This relies on multi-bank REST endpoints (`GET /banks`, `POST /banks`, `POST /banks/{bank_id}/questions`) on the benchmark server side. As of this writing these endpoints do not yet exist in `mat_agent_bench`; they need to be added there (a separate repository) before the publish flow will work end-to-end. The `sanitize_bank_id` helper and `BenchmarkClient.list_banks`/`create_bank`/`ensure_bank`/`publish_question` methods in `matcreator.control_plane.benchmark_client` define MatCreator's expected contract for those endpoints.
