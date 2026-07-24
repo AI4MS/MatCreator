@@ -122,6 +122,8 @@ benchmark:
   question_bank_root: /absolute/path/to/mat_agent_bench/question_bank
 ```
 
-Generation, review, approval, and export always perform MatCreator's executable-verifier validation. They do not require importing `mat_bench`; its `QuestionItem` schema can be used as an optional compatibility check by integrations that install that package. Generated data files are not exported in the current implementation; questions requiring input files must be completed through the benchmark-bank authoring workflow.
+Generation, review, approval, and export always perform `mat_bench` schema and executable-verifier validation. Questions with `data_files` can be exported: list each required relative path in the draft YAML, upload the corresponding file through the review dialog, then approve and export. MatCreator publishes `question.yaml` and the uploaded files together under `question_bank_root/<question-id>/`, preserving each declared relative path. Export refuses missing, unsafe, or symlinked files and does not publish a partial question directory.
+
+The benchmark server must be able to read the same question-bank directory. In local development, point both services at the same host path. For a containerized benchmark server, mount the configured question bank into its container at the path used by the server. Reload or restart the benchmark server catalog after exporting so it discovers the new `<question-id>/question.yaml`.
 
 For local development, MatCreator can automatically request and save `benchmark.token` when it is absent. Start the benchmark server with `--allow-token-registration` and configure only `benchmark.server_url`. The first catalog load or evaluation start registers a token through `POST /token` and persists it to `~/.matcreator/config.yaml`. This fallback is intentionally unavailable when the benchmark server disables registration; production deployments should configure `benchmark.token` or `MAT_BENCH_TOKEN` explicitly.

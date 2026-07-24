@@ -17,7 +17,6 @@ from matcreator.control_plane.session_question_generator import (
     has_observable_session_question_evidence,
     list_session_question_generators,
     StagedSessionQuestionService,
-    SUPPORTED_VERIFY_TYPES,
     validate_question,
 )
 
@@ -96,7 +95,16 @@ def test_builtin_generator_prompt_limits_keys_to_template_schema(monkeypatch, tm
     assert "Do not add keys that are absent from that schema" in prompt
 
 
-def test_generator_registry_exposes_selectable_agents() -> None:
+def test_generator_registry_exposes_selectable_agents(monkeypatch) -> None:
+    for variable in (
+        "MKB_EXTRACTION_MODEL",
+        "MKB_LLM_API_KEY",
+        "MKB_LLM_API_BASE",
+        "LLM_MODEL",
+        "LLM_API_KEY",
+        "LLM_BASE_URL",
+    ):
+        monkeypatch.delenv(variable, raising=False)
     generators = list_session_question_generators()
 
     assert [generator["generator_id"] for generator in generators] == [
@@ -300,7 +308,7 @@ def test_service_rejects_missing_plugin_output_and_cleans_up(tmp_path) -> None:
     assert not list((tmp_path / "staging").glob(".*.generating"))
 
 
-def test_packaged_template_verifiers_match_local_validator() -> None:
+def test_packaged_template_verifiers_match_benchmark_schema() -> None:
     template_path = (
         Path(__file__).parents[1]
         / "src"
@@ -310,7 +318,9 @@ def test_packaged_template_verifiers_match_local_validator() -> None:
     )
     template = json.loads(template_path.read_text(encoding="utf-8"))
 
-    assert set(template["executable_verify_types"]) == SUPPORTED_VERIFY_TYPES
+    from mat_bench.schemas import VerifyLiteral
+
+    assert set(template["executable_verify_types"]) <= set(VerifyLiteral.__args__)
 
 
 def test_template_store_derives_filename_from_template_name_and_renames(tmp_path) -> None:
@@ -338,8 +348,87 @@ def test_template_store_derives_filename_from_template_name_and_renames(tmp_path
     assert (tmp_path / "templates" / "renamed-template.json").is_file()
 
 
-def test_local_validation_does_not_require_mat_bench() -> None:
+def test_question_validation_accepts_benchmark_verifiers() -> None:
     assert validate_question(_question()) == []
+    question = _question()
+    question["scoring_checklist"][0]["verify"] = "llm_binary_judge"
+
+    assert validate_question(question) == []
+
+
+def test_question_validation_rejects_unknown_verifiers() -> None:
+    question = _question()
+    question["scoring_checklist"][0]["verify"] = "unsupported_verifier"
+
+    assert any("unsupported_verifier" in error for error in validate_question(question))
+
+
+def test_service_exports_staged_declared_data_files(tmp_path) -> None:
+    template_path = tmp_path / "template.json"
+    template_path.write_text('{"template_version": "test-v1"}', encoding="utf-8")
+    service = StagedSessionQuestionService(
+        tmp_path / "staging", RecordingPlugin(), template_path=template_path
+    )
+    draft = asyncio.run(
+        service.create(
+            {"session_id": "session-1", "graph": {"nodes": []}, "events": [{"type": "tool"}]}
+        )
+    )
+    question = _question()
+    question["data_files"] = [{"key": "parameters", "path": "inputs/parameters.json"}]
+    updated = service.update(draft.draft_id, yaml.safe_dump(question, sort_keys=False))
+
+    service.stage_data_file(updated.draft_id, "inputs/parameters.json", b'{"encut": 320}\n')
+    service.approve(updated.draft_id)
+    exported = service.export(updated.draft_id, tmp_path / "question-bank")
+
+    target = tmp_path / "question-bank" / question["id"]
+    assert exported.status == "exported"
+    assert yaml.safe_load((target / "question.yaml").read_text(encoding="utf-8")) == question
+    assert (target / "inputs" / "parameters.json").read_bytes() == b'{"encut": 320}\n'
+
+
+@pytest.mark.parametrize("declared_path", ["../secret.txt", "/tmp/secret.txt", "inputs\\secret.txt", "."])
+def test_service_rejects_unsafe_data_file_paths(tmp_path, declared_path) -> None:
+    template_path = tmp_path / "template.json"
+    template_path.write_text('{"template_version": "test-v1"}', encoding="utf-8")
+    service = StagedSessionQuestionService(
+        tmp_path / "staging", RecordingPlugin(), template_path=template_path
+    )
+    draft = asyncio.run(
+        service.create(
+            {"session_id": "session-1", "graph": {"nodes": []}, "events": [{"type": "tool"}]}
+        )
+    )
+    question = _question()
+    question["data_files"] = [{"key": "unsafe", "path": declared_path}]
+    updated = service.update(draft.draft_id, yaml.safe_dump(question, sort_keys=False))
+
+    with pytest.raises(ValueError, match="data-file path"):
+        service.stage_data_file(updated.draft_id, declared_path, b"secret")
+
+
+def test_service_does_not_export_when_declared_data_file_is_missing(tmp_path) -> None:
+    template_path = tmp_path / "template.json"
+    template_path.write_text('{"template_version": "test-v1"}', encoding="utf-8")
+    service = StagedSessionQuestionService(
+        tmp_path / "staging", RecordingPlugin(), template_path=template_path
+    )
+    draft = asyncio.run(
+        service.create(
+            {"session_id": "session-1", "graph": {"nodes": []}, "events": [{"type": "tool"}]}
+        )
+    )
+    question = _question()
+    question["data_files"] = [{"key": "parameters", "path": "inputs/parameters.json"}]
+    updated = service.update(draft.draft_id, yaml.safe_dump(question, sort_keys=False))
+    service.approve(updated.draft_id)
+
+    with pytest.raises(ValueError, match="missing from the staged draft"):
+        service.export(updated.draft_id, tmp_path / "question-bank")
+
+    assert not (tmp_path / "question-bank" / question["id"]).exists()
+    assert service.get(updated.draft_id).status == "approved"
 
 
 def test_refine_passes_current_question_and_validation_feedback(tmp_path) -> None:
@@ -375,16 +464,18 @@ def test_refine_passes_current_question_and_validation_feedback(tmp_path) -> Non
 
     assert refining_plugin.session["operation"] == "refine"
     assert refining_plugin.session["current_question"]["scoring_checklist"][0]["verify"] == "unsupported_verifier"
-    assert refining_plugin.session["validation_errors"] == [
-        "Unsupported executable verifier: unsupported_verifier"
-    ]
+    assert any(
+        "unsupported_verifier" in error
+        for error in refining_plugin.session["validation_errors"]
+    )
     assert refining_plugin.session["user_instruction"] == "Fix the verifier."
     assert refined.status == "ready_for_review"
     assert refined.refinement_count == 1
     metadata = json.loads((refined.staging_path / "generation.json").read_text(encoding="utf-8"))
-    assert metadata["history"][0]["feedback"] == [
-        "Unsupported executable verifier: unsupported_verifier"
-    ]
+    assert any(
+        "unsupported_verifier" in error
+        for error in metadata["history"][0]["feedback"]
+    )
     assert "current_question" not in metadata["history"][0]
 
 

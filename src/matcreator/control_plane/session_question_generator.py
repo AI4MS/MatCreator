@@ -12,55 +12,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, get_args
 
+from mat_bench.schemas import QuestionItem, VerifyLiteral
 import yaml
 
 
-SUPPORTED_VERIFY_TYPES = frozenset(
-    {
-        "artifact_exists",
-        "text_file_contains_all",
-        "text_file_regex",
-        "text_file_numeric_range",
-        "text_file_kpt_path",
-        "struct_file_atom_count",
-        "struct_file_formula",
-        "struct_file_bond_count",
-        "struct_file_bond_length",
-        "struct_file_bond_angle",
-        "struct_file_cell_param",
-        "struct_file_stoichiometry_ratio",
-        "struct_file_coordination",
-        "struct_file_layer_count",
-        "struct_file_count",
-        "struct_file_surface_termination",
-        "checkcif_no_a_alerts",
-    }
-)
-
-_TASK_TYPES = frozenset(
-    {
-        "search_and_interpretation",
-        "simulation",
-        "materials_design_and_discovery",
-        "material_characterization",
-        "synthesis_and_experiment_design",
-        "end_to_end_research",
-    }
-)
-_CAPABILITIES = frozenset(
-    {
-        "scientific_reasoning",
-        "tool_utilization",
-        "workflow_orchestration",
-        "data_handling",
-        "structure_manipulation",
-        "scientific_grounding",
-    }
-)
-_DOMAINS = frozenset({"battery", "catalysis", "polymer", "alloy", "semiconductor", "agnostic"})
-_DIFFICULTIES = frozenset({"easy", "medium", "hard"})
 _TEMPLATE_ID_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,79}")
 DEFAULT_TEMPLATE_ID = "default"
 
@@ -552,62 +509,17 @@ def has_observable_session_question_evidence(evidence: dict[str, Any]) -> bool:
     )
 
 
-def validate_question(
-    question: dict[str, Any], *, require_benchmark_schema: bool = False
-) -> list[str]:
-    """Validate the executable subset of the mat-agent-bench question contract."""
-    errors: list[str] = []
-    required = {
-        "id", "task_type", "capabilities", "domain", "difficulty", "intent",
-        "human_prompt_seed", "scoring_checklist",
-    }
-    missing = sorted(key for key in required if not question.get(key))
-    if missing:
-        errors.append(f"Missing required question fields: {', '.join(missing)}")
-    if question.get("task_type") not in _TASK_TYPES:
-        errors.append("task_type is not supported by mat-agent-bench")
-    if question.get("domain") not in _DOMAINS:
-        errors.append("domain is not supported by mat-agent-bench")
-    if question.get("difficulty", "medium") not in _DIFFICULTIES:
-        errors.append("difficulty must be easy, medium, or hard")
-    capabilities = question.get("capabilities")
-    if not isinstance(capabilities, list) or not capabilities:
-        errors.append("capabilities must be a non-empty list")
-    elif invalid := sorted(str(value) for value in capabilities if value not in _CAPABILITIES):
-        errors.append(f"Unsupported capabilities: {', '.join(invalid)}")
-
-    references = question.get("reference_answers", [])
-    if not isinstance(references, list):
-        errors.append("reference_answers must be a list")
-        references = []
-    reference_keys = {item.get("key") for item in references if isinstance(item, dict)}
-    checks = question.get("scoring_checklist")
-    if not isinstance(checks, list) or not checks:
-        errors.append("scoring_checklist must be a non-empty list")
-        checks = []
-    for check in checks:
-        if not isinstance(check, dict):
-            errors.append("scoring_checklist entries must be objects")
-            continue
-        check_id = check.get("id")
-        verify = check.get("verify")
-        if not check_id or not check.get("criterion"):
-            errors.append("Every scoring checklist entry needs id and criterion")
-        if verify not in SUPPORTED_VERIFY_TYPES:
-            errors.append(f"Unsupported executable verifier: {verify}")
-        if check_id not in reference_keys:
-            errors.append(f"Checklist item '{check_id}' needs a matching reference answer")
-    if require_benchmark_schema:
-        try:
-            question_item = import_module("mat_bench.schemas").QuestionItem
-        except (ImportError, AttributeError):
-            errors.append("mat-agent-bench schema package is unavailable for export validation")
-        else:
-            try:
-                question_item.model_validate(question)
-            except ValueError as exc:
-                errors.append(f"mat-agent-bench schema validation failed: {exc}")
-    return errors
+def validate_question(question: dict[str, Any]) -> list[str]:
+    """Validate a generated question against the authoritative mat-bench schema."""
+    try:
+        QuestionItem.model_validate(question)
+    except ValueError as exc:
+        return [
+            f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+            + (f" (received {error['input']!r})" if "input" in error else "")
+            for error in exc.errors()
+        ]
+    return []
 
 
 def _safe_component(value: str) -> str:
@@ -624,7 +536,8 @@ def validate_question_template(template: dict[str, Any]) -> list[str]:
     if not isinstance(verify_types, list) or not verify_types:
         errors.append("Question authoring template needs executable_verify_types")
     else:
-        invalid = sorted({str(value) for value in verify_types if value not in SUPPORTED_VERIFY_TYPES})
+        supported_verify_types = frozenset(get_args(VerifyLiteral))
+        invalid = sorted({str(value) for value in verify_types if value not in supported_verify_types})
         if invalid:
             errors.append(f"Unsupported executable verifiers: {', '.join(invalid)}")
     if not isinstance(template.get("system_prompt"), str) or not template["system_prompt"].strip():
@@ -819,6 +732,40 @@ class StagedSessionQuestionService:
         return draft_path, question, metadata
 
     @staticmethod
+    def _data_file_path(root: Path, declared_path: str) -> Path:
+        if not isinstance(declared_path, str) or not declared_path:
+            raise ValueError("Question data-file path must be a non-empty string")
+        if "\\" in declared_path:
+            raise ValueError("Question data-file path must use forward slashes")
+        relative_path = Path(declared_path)
+        if (
+            declared_path == "."
+            or relative_path.is_absolute()
+            or any(part in {"", ".", ".."} for part in relative_path.parts)
+        ):
+            raise ValueError(f"Question data-file path '{declared_path}' is unsafe")
+        resolved = (root / relative_path).resolve()
+        if not resolved.is_relative_to(root):
+            raise ValueError(f"Question data-file path '{declared_path}' escapes the question directory")
+        return resolved
+
+    @classmethod
+    def _declared_data_file_paths(cls, question: dict[str, Any]) -> set[str]:
+        data_files = question.get("data_files") or []
+        if not isinstance(data_files, list):
+            raise ValueError("Question data_files must be a list")
+        declared_paths: set[str] = set()
+        for data_file in data_files:
+            if not isinstance(data_file, dict):
+                raise ValueError("Question data_files entries must be objects")
+            path = data_file.get("path")
+            cls._data_file_path(Path("/").resolve(), path)
+            if path in declared_paths:
+                raise ValueError(f"Question data-file path '{path}' is declared more than once")
+            declared_paths.add(path)
+        return declared_paths
+
+    @staticmethod
     def _draft_from_values(
         draft_path: Path, question: dict[str, Any], metadata: dict[str, Any]
     ) -> GeneratedQuestionDraft:
@@ -951,6 +898,30 @@ class StagedSessionQuestionService:
         draft_path, question, metadata = self._load(draft_id)
         return self._draft_from_values(draft_path, question, metadata)
 
+    def stage_data_file(
+        self, draft_id: str, declared_path: str, content: bytes
+    ) -> GeneratedQuestionDraft:
+        draft_path, question, metadata = self._load(draft_id, migrate=True)
+        if metadata.get("status") == "exported":
+            raise ValueError("An exported question draft cannot be changed")
+        if not isinstance(content, bytes):
+            raise ValueError("Question data-file upload must contain bytes")
+        declared_paths = self._declared_data_file_paths(question)
+        if declared_path not in declared_paths:
+            raise ValueError(f"Question data-file path '{declared_path}' is not declared in the draft")
+        destination = self._data_file_path(draft_path, declared_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(f".{destination.name}-{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_bytes(content)
+            temporary.replace(destination)
+        except OSError:
+            temporary.unlink(missing_ok=True)
+            raise
+        metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self._write_json(draft_path / "generation.json", metadata)
+        return self._draft_from_values(draft_path, question, metadata)
+
     def update(self, draft_id: str, question_yaml: str) -> GeneratedQuestionDraft:
         draft_path, _question, metadata = self._load(draft_id, migrate=True)
         if metadata.get("status") == "exported":
@@ -1067,8 +1038,7 @@ class StagedSessionQuestionService:
         errors = validate_question(question)
         if errors:
             raise ValueError("Question draft has validation errors and cannot be exported")
-        if question.get("data_files"):
-            raise ValueError("Exporting generated question data files is not supported yet")
+        declared_paths = self._declared_data_file_paths(question)
         question_id = _safe_component(str(question.get("id") or ""))
         if question_id != question.get("id"):
             raise ValueError("Question id contains unsupported path characters")
@@ -1083,8 +1053,17 @@ class StagedSessionQuestionService:
         try:
             temporary.mkdir()
             self._write_yaml(temporary / "question.yaml", question)
+            for declared_path in declared_paths:
+                source = self._data_file_path(draft_path, declared_path)
+                if source.is_symlink() or not source.is_file():
+                    raise ValueError(
+                        f"Question data file '{declared_path}' is missing from the staged draft"
+                    )
+                destination = self._data_file_path(temporary, declared_path)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
             temporary.replace(target)
-        except OSError:
+        except (OSError, ValueError):
             shutil.rmtree(temporary, ignore_errors=True)
             raise
         metadata["status"] = "exported"

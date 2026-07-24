@@ -1984,6 +1984,65 @@ function showEvaluationQuestionDraftModal(draft, actionMessage = "") {
   actionStatus.setAttribute("role", "status");
   actionStatus.textContent = actionMessage;
   const buttons = [];
+  const declaredDataFiles = Array.isArray(draft.question?.data_files) ? draft.question.data_files : [];
+  let dataFilesSection = null;
+  if (declaredDataFiles.length) {
+    dataFilesSection = document.createElement("section");
+    dataFilesSection.className = "evaluation-draft-data-files";
+    const dataFilesHeading = document.createElement("h3");
+    dataFilesHeading.textContent = "Question input files";
+    dataFilesSection.appendChild(dataFilesHeading);
+    const dataFilesList = document.createElement("ul");
+    for (const dataFile of declaredDataFiles) {
+      const path = typeof dataFile?.path === "string" ? dataFile.path : "";
+      const item = document.createElement("li");
+      const label = document.createElement("code");
+      label.textContent = path || "Invalid declared path";
+      const picker = document.createElement("input");
+      picker.type = "file";
+      picker.disabled = draft.status === "exported" || !path;
+      picker.setAttribute("aria-label", `Upload ${path}`);
+      const upload = document.createElement("button");
+      upload.type = "button";
+      upload.className = "ghost";
+      upload.textContent = "Upload";
+      upload.disabled = picker.disabled;
+      upload.addEventListener("click", () => void (async () => {
+        const selectedFile = picker.files?.[0];
+        if (!selectedFile) {
+          actionStatus.className = "evaluation-draft-action-status is-error";
+          actionStatus.textContent = `Choose a file for ${path}.`;
+          actionStatus.focus();
+          return;
+        }
+        picker.disabled = true;
+        upload.disabled = true;
+        upload.textContent = "Uploading...";
+        try {
+          const formData = new FormData();
+          formData.append("path", path);
+          formData.append("file", selectedFile);
+          const response = await fetch(
+            `/api/evaluation-question-drafts/${encodeURIComponent(draft.draft_id)}/data-files?user_id=${encodeURIComponent(draft.evidence?.source?.owner_id || state.userId)}`,
+            { method: "POST", body: formData },
+          );
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+          showEvaluationQuestionDraftModal(data, `Staged ${path}.`);
+        } catch (error) {
+          picker.disabled = false;
+          upload.disabled = false;
+          upload.textContent = "Upload";
+          actionStatus.className = "evaluation-draft-action-status is-error";
+          actionStatus.textContent = error.message || `Could not stage ${path}.`;
+          actionStatus.focus();
+        }
+      })());
+      item.append(label, picker, upload);
+      dataFilesList.appendChild(item);
+    }
+    dataFilesSection.appendChild(dataFilesList);
+  }
   const runDraftAction = async (path, options = {}, activeButton, pendingLabel, successLabel) => {
     actionStatus.className = "evaluation-draft-action-status";
     actionStatus.textContent = "";
@@ -2094,7 +2153,19 @@ function showEvaluationQuestionDraftModal(draft, actionMessage = "") {
   const artifactCount = draft.evidence?.artifacts?.length || 0;
   artifacts.textContent = `${artifactCount} source artifact${artifactCount === 1 ? "" : "s"} available for review.`;
   evidence.appendChild(artifacts);
-  card.append(header, notice, validation, yamlHeading, yaml, templateSelect, instruction, actions, actionStatus, evidence);
+  card.append(
+    header,
+    notice,
+    validation,
+    yamlHeading,
+    yaml,
+    ...(dataFilesSection ? [dataFilesSection] : []),
+    templateSelect,
+    instruction,
+    actions,
+    actionStatus,
+    evidence,
+  );
   overlay.appendChild(card);
   document.body.appendChild(overlay);
   close.focus();

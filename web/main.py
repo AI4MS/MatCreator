@@ -3110,6 +3110,27 @@ async def update_evaluation_question_draft(
     return JSONResponse(draft.as_dict())
 
 
+@app.post("/api/evaluation-question-drafts/{draft_id}/data-files")
+async def upload_evaluation_question_draft_data_file(
+    draft_id: str,
+    path: str = Form(...),
+    file: UploadFile = File(...),
+    user_id: str = Query(...),
+) -> JSONResponse:
+    try:
+        content = await file.read()
+        draft = _staged_question_service(user_id).stage_data_file(draft_id, path, content)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not stage question data file: {exc}") from exc
+    finally:
+        await file.close()
+    return JSONResponse(draft.as_dict())
+
+
 @app.post("/api/evaluation-question-drafts/{draft_id}/approve")
 async def approve_evaluation_question_draft(draft_id: str, user_id: str = Query(...)) -> JSONResponse:
     try:

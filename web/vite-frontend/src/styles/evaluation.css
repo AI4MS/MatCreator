@@ -378,6 +378,12 @@
 .evaluation-draft-validation.is-invalid { color: #b45309; }
 .evaluation-draft-validation ul { margin: 8px 0 0; padding-left: 18px; }
 .evaluation-draft-yaml { display: block; width: 100%; min-height: 220px; max-height: 360px; resize: vertical; margin: 8px 0 0; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font: 12px/1.5 var(--mono); white-space: pre; overflow: auto; }
+.evaluation-draft-data-files { margin-top: 14px; }
+.evaluation-draft-data-files h3 { margin: 0 0 8px; font-size: 14px; }
+.evaluation-draft-data-files ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.evaluation-draft-data-files li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
+.evaluation-draft-data-files code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.evaluation-draft-data-files input[type="file"] { min-width: 0; color: var(--muted); font-size: 12px; }
 .evaluation-draft-instruction { display: block; width: 100%; resize: vertical; margin-top: 10px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font: 12px/1.45 inherit; }
 .evaluation-draft-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .evaluation-draft-export { border: 1px solid var(--accent); border-radius: 6px; background: var(--accent); color: var(--panel); padding: 6px 10px; cursor: pointer; font-size: 12px; font-weight: 650; }
