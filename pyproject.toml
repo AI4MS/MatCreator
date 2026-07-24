@@ -1,6 +1,6 @@
 [project]
 name = "matcreator"
-version = "2.13.1"
+version = "2.14.0"
 description = "A multi-agent framework for complex computational material tasks."
 readme = "README.md"
 requires-python = ">=3.12"

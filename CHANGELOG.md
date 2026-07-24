@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v2.14.0 (2026-07-24)
+
+### Bug Fixes
+
+- Update builtin question generator
+  ([`d1d0adb`](https://github.com/AI4MS/MatCreator/commit/d1d0adb8deedc6f716d414f500d8d0faeaa7b771))
+
+### Features
+
+- Editable agent-generated nodes
+  ([`6ed1006`](https://github.com/AI4MS/MatCreator/commit/6ed1006fc3892bd8ac87d9a084ba92648e33a465))
+
+
 ## v2.13.1 (2026-07-21)
 
 ### Bug Fixes
