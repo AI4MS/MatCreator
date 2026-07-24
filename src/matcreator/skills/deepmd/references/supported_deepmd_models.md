@@ -11,10 +11,10 @@ This reference file discusses currently supported DP model types and their usage
 | DPA-1      | se_atten_v2      | MatPES            | large         | DPA1-MatPES-l.pt       |
 | DPA-2      | dpa2             | 2.3.1-v3.0.0rc0   | None          | DPA-2.3.1-v3.0.0rc0.pt |
 | DPA-3      | dpa3             | 3.1-3M            | None          | DPA-3.1-3M.pt          |
-| DPA-4      | SeZM (or "dpa4") | Omat24, v20240704 | Air           | DPA4-omat24-Air.pt     |
-| DPA-4      | SeZM (or "dpa4") | Omat24, v20240704 | Neo           | DPA4-omat24-Neo.pt     |
-| DPA-4      | SeZM (or "dpa4") | Omat24, v20240704 | Mini          | DPA4-omat24-Mini.pt    |
-| DPA-4      | SeZM (or "dpa4") | Omat24, v20240704 | Nano          | DPA4-omat24-Nano.pt    |
+| DPA-4      | SeZM (or "dpa4") | Omat24, v20260704 | Air           | DPA4-omat24-Air.pt     |
+| DPA-4      | SeZM (or "dpa4") | Omat24, v20260704 | Neo           | DPA4-omat24-Neo.pt     |
+| DPA-4      | SeZM (or "dpa4") | Omat24, v20260704 | Mini          | DPA4-omat24-Mini.pt    |
+| DPA-4      | SeZM (or "dpa4") | Omat24, v20260704 | Nano          | DPA4-omat24-Nano.pt    |
 
 > The oldest DP descriptors such as se_e2_a, se_e2_r, and se_e3 are no longer supported due
 > to lack of efficiency. Here, we actually use se_atten_v2 with attn_layer=0, yielding virtually 
@@ -74,14 +74,21 @@ When using pretrained models, you should acquire the corresponding model file us
 1. Try searching under user specified directory as specified in the environment variable `MODELS_PATH`;
 2. If not found, try searching under the following default directories `/opt/models`, `~/.matcreator/models` and `~/.models`;
 3. Report a warning to the users, notify them to set the environment variable `MODELS_PATH` to the directory
-   where the models are stored; Then try visiting the provided webpage, extract the corresponding model download url,
-   and download the model file.
+   where the models are stored; Then download the model file using the direct download links below.
 
-    Models are available on the AIS Square website:
-    DPA-1 models webpage (S/M/L): https://www.aissquare.com/models/detail?pageType=models&name=DPA1-MatPES&id=429
-    DPA-2 model webpage (2.3.1-v3.0.0rc0): https://www.aissquare.com/models/detail?pageType=models&name=DPA-2.3.1-v3.0.0rc0&id=287
-    DPA-3 model webpage (3.1-3M): https://www.aissquare.com/models/detail?pageType=models&name=DPA-3.1-3M&id=343
-    DPA-4 models webpage (Omat24, v20240704, Air/Neo/Mini/Nano): https://www.aissquare.com/models/detail?pageType=models&name=DPA4-OMat24&id=423
+    Models are available on AIS Square (direct download links, no authentication required):
+
+    | Model file                    | Download URL                                                                                                  |
+    |-------------------------------|---------------------------------------------------------------------------------------------------------------|
+    | DPA1-L0-S-MatPES-v20260714.pt | https://store.aissquare.com/models/859248d2-156d-46ee-8161-fee1d7c160b3/DPA1-L0-S-MatPES-v20260714.pt         |
+    | DPA1-L0-M-MatPES-v20260714.pt | https://store.aissquare.com/models/859248d2-156d-46ee-8161-fee1d7c160b3/DPA1-L0-M-MatPES-v20260714.pt         |
+    | DPA1-L0-L-MatPES-v20260714.pt | https://store.aissquare.com/models/859248d2-156d-46ee-8161-fee1d7c160b3/DPA1-L0-L-MatPES-v20260714.pt         |
+    | DPA2_medium_28_10M_rc0.pt     | https://store.aissquare.com/models/41d1cfb7-1a98-42a2-90a8-e6257db431ea/DPA2_medium_28_10M_rc0.pt             |
+    | DPA-3.1-3M.pt                 | https://store.aissquare.com/models/35b4ce45-4f59-4868-9fd7-a0c0f5ad9464/DPA-3.1-3M.pt                         |
+    | DPA4-Air-OMat24-v20260704.pt  | https://store.aissquare.com/models/9293690b-6758-425b-ac8c-74a6cb53235a/DPA4-Air-OMat24-v20260704.pt          |
+    | DPA4-Neo-OMat24-v20260704.pt  | https://store.aissquare.com/models/9293690b-6758-425b-ac8c-74a6cb53235a/DPA4-Neo-OMat24-v20260704.pt          |
+    | DPA4-Mini-OMat24-v20260704.pt | https://store.aissquare.com/models/9293690b-6758-425b-ac8c-74a6cb53235a/DPA4-Mini-OMat24-v20260704.pt         |
+    | DPA4-Nano-OMat24-v20260704.pt | https://store.aissquare.com/models/9293690b-6758-425b-ac8c-74a6cb53235a/DPA4-Nano-OMat24-v20260704.pt         |
 
    > When downloading is required, try downloading to `/opt/models` then `~/.matcreator/models`,
    > and rename the model file as specified in the table above, for quick future reference.
