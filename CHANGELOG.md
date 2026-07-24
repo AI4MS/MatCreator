@@ -2,6 +2,22 @@
 
 <!-- version list -->
 
+## v2.15.0 (2026-07-24)
+
+### Bug Fixes
+
+- Issues with question validation
+  ([`326e58e`](https://github.com/AI4MS/MatCreator/commit/326e58e304bfc1c26b002172dd623b7ef705f99b))
+
+- Update default template
+  ([`a5df316`](https://github.com/AI4MS/MatCreator/commit/a5df3168937ec28c8b8c5c073c8848cfbfa11fc7))
+
+### Features
+
+- Implementing mkb
+  ([`3de6c35`](https://github.com/AI4MS/MatCreator/commit/3de6c35ea536f6d6300d5a9ab357623e27a6a1cb))
+
+
 ## v2.14.0 (2026-07-24)
 
 ### Bug Fixes
