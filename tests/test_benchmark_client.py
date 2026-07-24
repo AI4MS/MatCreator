@@ -5,7 +5,7 @@ import asyncio
 import httpx
 import pytest
 
-from matcreator.control_plane.benchmark_client import BenchmarkApiError, BenchmarkClient
+from matcreator.control_plane.benchmark_client import BenchmarkApiError, BenchmarkClient, sanitize_bank_id
 
 
 def test_client_uses_run_scoped_contract_and_downloads_data(tmp_path) -> None:
@@ -115,5 +115,96 @@ def test_client_preserves_catalog_envelope_metadata() -> None:
         assert catalog["questions"] == payload["items"]
         assert catalog["total"] == 42
         assert catalog["facets"] == {"tags": ["wf_batch"]}
+
+    asyncio.run(exercise())
+
+
+def test_sanitize_bank_id_produces_a_safe_stable_identifier() -> None:
+    assert sanitize_bank_id("alice") == "user-alice"
+    assert sanitize_bank_id("alice@example.com") == "user-alice-example.com"
+    assert sanitize_bank_id("") == "user-unknown"
+
+
+def test_client_creates_and_lists_custom_banks() -> None:
+    async def exercise() -> None:
+        calls: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request)
+            if request.url.path == "/banks" and request.method == "POST":
+                return httpx.Response(201, json={"bank_id": "user-alice", "display_name": "alice's questions"})
+            if request.url.path == "/banks" and request.method == "GET":
+                return httpx.Response(200, json={"banks": [{"bank_id": "user-alice"}]})
+            return httpx.Response(404, json={"detail": "not found"})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+            client = BenchmarkClient("https://bench.example", "token-1", client=http_client)
+            created = await client.create_bank("user-alice", display_name="alice's questions")
+            assert created["bank_id"] == "user-alice"
+            banks = await client.list_banks()
+            assert banks == [{"bank_id": "user-alice"}]
+
+        assert calls[0].headers["X-API-Token"] == "token-1"
+        assert calls[1].headers["X-API-Token"] == "token-1"
+
+    asyncio.run(exercise())
+
+
+def test_client_ensure_bank_is_idempotent_when_bank_already_exists() -> None:
+    async def exercise() -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/banks" and request.method == "POST":
+                return httpx.Response(409, json={"detail": "bank already exists"})
+            if request.url.path == "/banks" and request.method == "GET":
+                return httpx.Response(200, json={"banks": [{"bank_id": "user-alice", "display_name": "old"}]})
+            return httpx.Response(404, json={"detail": "not found"})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+            client = BenchmarkClient("https://bench.example", "token-1", client=http_client)
+            bank = await client.ensure_bank("user-alice")
+            assert bank == {"bank_id": "user-alice", "display_name": "old"}
+
+    asyncio.run(exercise())
+
+
+def test_client_ensure_bank_reraises_when_not_a_conflict() -> None:
+    async def exercise() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: httpx.Response(401, json={"detail": "unauthorized"}))
+        ) as http_client:
+            client = BenchmarkClient("https://bench.example", "token-1", client=http_client)
+            with pytest.raises(BenchmarkApiError, match="unauthorized"):
+                await client.ensure_bank("user-alice")
+
+    asyncio.run(exercise())
+
+
+def test_client_publishes_question_with_declared_data_files(tmp_path) -> None:
+    async def exercise() -> None:
+        captured: dict[str, httpx.Request] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/banks/user-alice/questions":
+                captured["request"] = request
+                return httpx.Response(201, json={"question_id": "question-1", "bank_id": "user-alice"})
+            return httpx.Response(404, json={"detail": "not found"})
+
+        source = tmp_path / "parameters.json"
+        source.write_text('{"encut": 320}', encoding="utf-8")
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+            client = BenchmarkClient("https://bench.example", "token-1", client=http_client)
+            result = await client.publish_question(
+                "user-alice",
+                question={"id": "question-1"},
+                data_files=[("inputs/parameters.json", source)],
+            )
+            assert result["question_id"] == "question-1"
+
+        request = captured["request"]
+        assert request.headers["X-API-Token"] == "token-1"
+        body = request.content.decode("utf-8", errors="ignore")
+        assert 'name="question"' in body
+        assert 'name="data_files"; filename="inputs/parameters.json"' in body
 
     asyncio.run(exercise())

@@ -32,7 +32,9 @@ dependencies = [
     "e2b-code-interpreter",
     "matcraft-kit",
     "know-do-graph>=0.1.8",
-    "pymatgen"
+    "pymatgen",
+    "mat-bench @ git+https://github.com/AI4MS/mat_agent_bench.git@main",
+    "mat-know-base[materials] @ git+https://github.com/theAfish/mat_know_base.git@a367f73a5c4ab0e6a459fed796d855548da33155"
 ]
 
 [build-system]

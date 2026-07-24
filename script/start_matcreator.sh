@@ -2,6 +2,10 @@
 set -euo pipefail
 
 PROJ_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Run the checkout being launched, not a potentially stale site-packages copy.
+# This keeps the FastAPI layer and the ADK subprocess on the same MatCreator
+# version during local development.
+export PYTHONPATH="$PROJ_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 MATCREATOR_HOME="${MATCREATOR_HOME:-$HOME/.matcreator}"
 MATCREATOR_HOME="${MATCREATOR_HOME/#\~/$HOME}"
 LOG_DIR="${MATCREATOR_LOG_DIR:-$MATCREATOR_HOME/logs}"
