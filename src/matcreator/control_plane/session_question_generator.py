@@ -833,8 +833,6 @@ class StagedSessionQuestionService:
                 }
         return sorted(drafts.values(), key=lambda item: str(item.get("updated_at") or ""), reverse=True)
 
-
-
     async def create(self, session_log: dict[str, Any]) -> GeneratedQuestionDraft:
         if self.generator is None or self.template_path is None:
             raise RuntimeError("Question generator is not configured")
