@@ -421,19 +421,6 @@ def seed_skills_to_graph() -> dict:
         seeded += int(created)
         attachments_seeded += len(internal_refs) + len(assets)
 
-    # Repository-managed nodes mirror the installed skill set. Remove stale
-    # real nodes here; unresolved dependency targets are recreated below as
-    # empty virtual placeholders so broken topology remains visible.
-    removed = 0
-    for entry in list(iter_entries(kg)):
-        if (
-            "matcreator-skill" not in entry.tags
-            or "matcreator-guide" in entry.tags
-            or entry.title in active_skill_names
-        ):
-            continue
-        if "managed" in entry.tags or entry.metadata.custom.get("virtual"):
-            removed += int(kg.delete(entry.id))
     for guide in ALL_GUIDES:
         _, created = upsert_entry(
             kg,
@@ -451,10 +438,132 @@ def seed_skills_to_graph() -> dict:
         )
         seeded += int(created)
 
+    # The dependency declarations in SKILL.md are authoritative.  Remove the
+    # relations previously seeded from those declarations before rebuilding
+    # them below, so deselecting a dependency in the UI actually removes the
+    # corresponding graph edge instead of leaving a stale connection behind.
+    if skill_node_ids:
+        placeholders = ",".join("?" for _ in skill_node_ids)
+        try:
+            with sqlite3.connect(kg.path) as conn:
+                conn.execute(
+                    f"""
+                    DELETE FROM edges
+                    WHERE source_id IN ({placeholders})
+                      AND relation IN ('dependency', 'heuristic_for', 'constraint_on')
+                    """,
+                    list(skill_node_ids.values()),
+                )
+                conn.commit()
+        except sqlite3.Error as exc:
+            logger.warning("Failed to refresh seeded skill dependencies: %s", exc)
+        else:
+            # ``connect_once`` consults the in-memory traversal graph, so it
+            # must not retain relations that were just removed from SQLite.
+            kg.refresh()
+
+    def normalize_dependency_name(value: object) -> str:
+        """Match the name resolution used when dependency edges are seeded."""
+
+        dep_name = str(value).strip().rstrip("/")
+        if dep_name not in active_skill_names and "/" in dep_name:
+            basename = dep_name.rsplit("/", 1)[-1]
+            if basename in active_skill_names:
+                return basename
+        return dep_name
+
+    declared_dependency_names = {
+        normalize_dependency_name(declared_dep)
+        for skill in ALL_SKILLS
+        for declared_dep in (skill.frontmatter.metadata or {}).get("dependent_skills", [])
+        if normalize_dependency_name(declared_dep)
+    }
+
+    # A missing skill is represented by a virtual node.  Do not cascade-delete
+    # it if an agent-created node still points to it: strip its backed-skill
+    # content and retain the placeholder so the user can relink or remove the
+    # attached node.  Truly unreferenced placeholders disappear.
+    removed = 0
+    virtualized = 0
+    stale_entries = [
+        entry
+        for entry in iter_entries(kg)
+        if (
+            "matcreator-skill" in entry.tags
+            and "matcreator-guide" not in entry.tags
+            and entry.title not in active_skill_names
+            and ("managed" in entry.tags or entry.metadata.custom.get("virtual"))
+        )
+    ]
+    # Be conservative if the edge inspection fails: preserving a placeholder
+    # is safe, while deleting one would lose its incident agent links.
+    connected_stale_ids: set[str] = {entry.id for entry in stale_entries}
+    if stale_entries:
+        placeholders = ",".join("?" for _ in stale_entries)
+        stale_ids = [entry.id for entry in stale_entries]
+        try:
+            with sqlite3.connect(kg.path) as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT source_id, target_id
+                    FROM edges
+                    WHERE (source_id IN ({placeholders}) OR target_id IN ({placeholders}))
+                      AND NOT (
+                        source_id IN ({placeholders})
+                        AND relation IN ('dependency', 'heuristic_for', 'constraint_on')
+                      )
+                    """,
+                    [*stale_ids, *stale_ids, *stale_ids],
+                ).fetchall()
+                conn.execute(
+                    f"""
+                    DELETE FROM edges
+                    WHERE source_id IN ({placeholders})
+                      AND relation IN ('dependency', 'heuristic_for', 'constraint_on')
+                    """,
+                    stale_ids,
+                )
+                conn.commit()
+            connected_stale_ids = {
+                node_id
+                for row in rows
+                for node_id in row
+                if node_id in stale_ids
+            }
+        except sqlite3.Error as exc:
+            logger.warning("Failed to inspect stale skill graph nodes: %s", exc)
+
+    for entry in stale_entries:
+        if entry.id not in connected_stale_ids and entry.title not in declared_dependency_names:
+            removed += int(kg.delete(entry.id))
+            continue
+        metadata = entry.metadata.model_copy(deep=True)
+        metadata.source_provenance = "missing skill backing"
+        metadata.custom = {
+            **metadata.custom,
+            "managed_by": "matcreator",
+            "kind": "virtual_dependency",
+            "virtual": True,
+            "virtual_reason": "backing skill is no longer installed",
+        }
+        virtual = kg.update(
+            entry.id,
+            content="",
+            entry_type=EntryType.capability,
+            tags=["matcreator-skill", "virtual"],
+            aliases=[],
+            internal_refs=[],
+            scripts=[],
+            assets=[],
+            metadata=metadata,
+        )
+        skill_node_ids[virtual.title] = virtual.id
+        virtualized += 1
+    kg.refresh()
+
     # Create edges from dependent_skills metadata. For L3/L4 nodes this field
     # means "attached parent skills" so progressive retrieval can scope them.
     edges_created = 0
-    virtualized = 0
     for skill in ALL_SKILLS:
         metadata = skill.frontmatter.metadata or {}
         deps = metadata.get("dependent_skills", [])
@@ -467,15 +576,7 @@ def seed_skills_to_graph() -> dict:
             relation = EdgeRelation.constraint_on
         src_id = skill_node_ids.get(skill.name)
         for declared_dep in deps:
-            dep_name = str(declared_dep).strip().rstrip("/")
-            # Frontmatter may use a repository-relative path such as
-            # ``concepts/dft-calculation`` while ADK registers the skill by
-            # its SKILL.md name/basename. Prefer an exact name, then resolve
-            # a path-style reference to its installed basename.
-            if dep_name not in active_skill_names and "/" in dep_name:
-                basename = dep_name.rsplit("/", 1)[-1]
-                if basename in active_skill_names:
-                    dep_name = basename
+            dep_name = normalize_dependency_name(declared_dep)
             tgt_id = skill_node_ids.get(dep_name)
             if src_id and not tgt_id:
                 virtual = kg.add(

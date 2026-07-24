@@ -1,11 +1,14 @@
 import asyncio
 import json
+import sys
+import types
 from pathlib import Path
 
 import pytest
 import yaml
 
 from matcreator.control_plane.session_question_generator import (
+    BuiltinLlmQuestionGeneratorPlugin,
     QuestionTemplateStore,
     StagedSessionQuestionService,
     SUPPORTED_VERIFY_TYPES,
@@ -47,6 +50,44 @@ class RecordingPlugin:
         self.template = json.loads(template_path.read_text(encoding="utf-8"))
         self.session = json.loads(session_path.read_text(encoding="utf-8"))
         output_path.write_text(yaml.safe_dump(_question(), sort_keys=False), encoding="utf-8")
+
+
+def test_builtin_generator_prompt_limits_keys_to_template_schema(monkeypatch, tmp_path) -> None:
+    template_path = tmp_path / "template.json"
+    template_path.write_text(
+        json.dumps(
+            {
+                "extraction_schema": {
+                    "questions": {"item_schema": {"id": {}, "intent": {}, "optional": {}}}
+                },
+                "executable_verify_types": ["artifact_exists"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    session_path = tmp_path / "session.json"
+    session_path.write_text('{"operation": "generate"}', encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    async def acompletion(**kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(
+            choices=[types.SimpleNamespace(message=types.SimpleNamespace(content='{"id": "question"}'))]
+        )
+
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(acompletion=acompletion))
+
+    plugin = BuiltinLlmQuestionGeneratorPlugin(model="test-model")
+    asyncio.run(plugin.generate(
+        template_path=template_path,
+        session_path=session_path,
+        output_path=tmp_path / "question.yaml",
+    ))
+
+    prompt = captured["messages"][0]["content"]
+    assert "one bare question object as JSON, not a questions wrapper" in prompt
+    assert '["id", "intent", "optional"]' in prompt
+    assert "Do not add keys that are absent from that schema" in prompt
 
 
 def test_service_passes_separate_template_and_session_files(tmp_path) -> None:
