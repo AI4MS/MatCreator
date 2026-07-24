@@ -329,7 +329,7 @@ class TestCli:
         monkeypatch.setenv("PMG_VASP_PSP_DIR", "/fake")
         seen = {}
 
-        def fake_generate(s, d, spin, extra=None, potcar_functional="PBE_64"):
+        def fake_generate(s, d, spin, extra=None, potcar_functional="PBE_54"):
             seen["extra"] = extra
             seen["potcar"] = potcar_functional
 

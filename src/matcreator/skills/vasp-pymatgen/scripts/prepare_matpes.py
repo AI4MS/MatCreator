@@ -27,7 +27,7 @@ MIN_DISTANCE = 0.5        # Angstrom
 MIN_VOL_PER_ATOM = 1.0    # Angstrom^3
 MAX_VOL_PER_ATOM = 1000.0
 
-POTCAR_FUNCTIONALS = ("PBE_64", "PBE_54", "PBE")
+POTCAR_FUNCTIONALS = ("PBE_54", "PBE_64", "PBE")
 
 
 def build_incar_overrides(spin: bool, extra: dict | None = None) -> dict:
@@ -166,7 +166,7 @@ def generate_inputs(
     outdir: Path,
     spin: bool,
     extra: dict | None = None,
-    potcar_functional: str = "PBE_64",
+    potcar_functional: str = "PBE_54",
 ) -> None:
     from pymatgen.io.vasp.sets import MatPESStaticSet
 
@@ -209,9 +209,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument(
         "--potcar",
         choices=POTCAR_FUNCTIONALS,
-        default="PBE_64",
-        help="POTCAR functional/library generation (default: PBE_64, "
-        "the MatPES recommendation; use PBE_54/PBE for older libraries)",
+        default="PBE_54",
+        help="POTCAR functional/library generation (default: PBE_54, "
+        "widely compatible with common pretrained potentials; PBE_64 is "
+        "MatPES's own choice, PBE is the oldest layout)",
     )
     parser.add_argument(
         "--validate-only",

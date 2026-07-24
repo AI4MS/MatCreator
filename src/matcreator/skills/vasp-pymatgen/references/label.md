@@ -32,7 +32,7 @@ The `scripts/prepare_matpes.py` script wraps `MatPESStaticSet` with structure sa
 | `--spin` | Enable spin polarization (`ISPIN=2`, keep MatPES `MAGMOM` guesses) | off (`ISPIN=1`) |
 | `--frames START:STOP:STEP` | Frame slice for multi-frame files | all frames |
 | `--incar KEY=VALUE` | Extra INCAR override, repeatable (e.g. `--incar NCORE=4`); policy keys (ISPIN, ENCUT, LCHARG, ...) rejected | — |
-| `--potcar {PBE_64,PBE_54,PBE}` | POTCAR functional generation; must match your `PMG_VASP_PSP_DIR` layout | `PBE_64` |
+| `--potcar {PBE_54,PBE_64,PBE}` | POTCAR functional generation; must match your `PMG_VASP_PSP_DIR` layout | `PBE_54` |
 | `--validate-only DIR...` | Validate existing calc dirs, skip generation | — |
 
 ### Outputs
@@ -96,10 +96,10 @@ python scripts/prepare_matpes.py structure.extxyz -o job --incar NCORE=4
 ### POTCAR Library Selection
 
 ```bash
-python scripts/prepare_matpes.py structure.extxyz -o job --potcar PBE_54
+python scripts/prepare_matpes.py structure.extxyz -o job --potcar PBE_64
 ```
 
-Default is `PBE_64` (the MatPES recommendation, requires `POT_PAW_PBE_64` in `PMG_VASP_PSP_DIR`). Pass `PBE_54` or `PBE` if your library uses an older layout. See pitfall 7 below.
+Default is `PBE_54` (requires `POT_PAW_PBE_54` / `potpaw_PBE.54` in `PMG_VASP_PSP_DIR`, widely compatible with common pretrained potentials). Pass `--potcar PBE_64` to match the MatPES recommendation, or `--potcar PBE` for the oldest layout. See pitfall 7 below.
 
 ## Key INCAR Settings
 
@@ -154,7 +154,7 @@ No special submission requirements: labeling jobs are standard VASP static runs 
 4. **Expecting `CHGCAR` or `WAVECAR` output** — this is a labeling run. Neither file is written. If you need charge density for follow-up NSCF, use `prepare_scf` with `MPStaticSet` instead.
 5. **Pointing `from_prev_calc()` at a labeling directory** — label directories contain no `CHGCAR`/`WAVECAR`. NSCF jobs that require these files must point at an `MPStaticSet` SCF directory instead.
 6. **Forgetting `--frames` on a multi-frame extxyz** — without `--frames`, the script loads all frames. For a 10,000-frame trajectory this will create 10,000 directories. Always use `--frames` to slice large trajectories.
-7. **POTCAR functional mismatch (`PBE_64` vs `PBE.54`)** — the script defaults to `--potcar PBE_64` (the MatPES recommendation), which requires `POT_PAW_PBE_64` subdirectories in `PMG_VASP_PSP_DIR`. Many POTCAR libraries (e.g. `potpaw_PBE.54`) use older layouts; pass `--potcar PBE_54` or `--potcar PBE` to match your library. pymatgen warnings about functional inconsistency (`... is inconsistent with the recommended PBE_64`) are expected and harmless with non-default choices. Keep the whole training set on ONE functional generation — mixing POTCAR generations introduces systematic energy offsets.
+7. **POTCAR functional mismatch (`PBE_64` vs `PBE.54`)** — the script defaults to `--potcar PBE_54`, which requires `POT_PAW_PBE_54` / `potpaw_PBE.54` subdirectories in `PMG_VASP_PSP_DIR` and is widely compatible with common pretrained potentials. Pass `--potcar PBE_64` to match the MatPES recommendation (requires `POT_PAW_PBE_64`), or `--potcar PBE` for the oldest layout. pymatgen warnings about functional inconsistency (`... is inconsistent with the recommended PBE_64`) are expected and harmless with non-default choices. Keep the whole training set on ONE functional generation — mixing POTCAR generations introduces systematic energy offsets.
 
 ## Verification Checklist
 
@@ -167,3 +167,7 @@ After generation, confirm:
 - [ ] No `KPOINTS` file exists (k-points via `KSPACING` in `INCAR`)
 - [ ] For multi-frame: `frame_XXXX` directories match the expected slice count
 - [ ] Run `python scripts/prepare_matpes.py --validate-only <dir>` for automated check
+
+**After the VASP run completes, before collecting results:**
+- [ ] Check SCF convergence for every frame: `grep "reached required accuracy" <dir>/OUTCAR` (or check `vasprun.xml` `converged_electronic`). Report any unconverged frames to the user.
+- [ ] If unconverged frames exist, **do not silently rerun or auto-adjust**. Report the unconverged frames to the user with suggested INCAR tweaks (`ALGO`, `AMIX`/`BMIX`, `AMIX_MAG`/`BMIX_MAG` for spin, `TIME`, `SYMPREC`) via `--incar KEY=VALUE`, and wait for the user to confirm the adjustment before re-generating and resubmitting.
