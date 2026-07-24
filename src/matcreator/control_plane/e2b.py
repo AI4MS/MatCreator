@@ -4,6 +4,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+import os
+
+# e2b SDK >=2.20 validates the API key format client-side (requires the
+# "e2b_" + hex pattern, see e2b.api.validate_api_key) and raises
+# AuthenticationException in ApiClient.__init__ before any network call.
+# Bohrium endpoints use bare hex keys that fail this check. Disable the
+# client-side guard by default; the key is still sent verbatim as the
+# X-API-KEY header, so server-side auth is unaffected. An explicit
+# E2B_VALIDATE_API_KEY in the environment takes precedence.
+# See skills/vasp-pymatgen/references/e2b-sandbox-execution.md.
+os.environ.setdefault("E2B_VALIDATE_API_KEY", "false")
 
 
 class E2BConfigurationError(ValueError):
@@ -80,6 +91,78 @@ class E2BSandboxAdapter:
         sandbox = self._connect(sandbox_id)
         with source_path.open("rb") as file_handle:
             sandbox.files.write(destination, file_handle)
+
+    def download_file(
+        self,
+        sandbox_id: str,
+        source: str,
+        destination: str | Path,
+        *,
+        user: str | None = None,
+    ) -> Path:
+        """Stream one sandbox file to a local destination path.
+
+        Uses the E2B filesystem streaming API so large outputs (CHGCAR,
+        vasprun.xml, PNG) are not truncated by command-output limits. The
+        destination leaf is opened with ``O_NOFOLLOW`` so a swapped symlink
+        cannot redirect the write, and a failed transfer never leaves a
+        half-written file for callers to consume.
+        """
+        dest_path = Path(os.fspath(destination))
+        if not dest_path.is_absolute():
+            raise ValueError("E2B download destination must be an absolute path")
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        sandbox = self._connect(sandbox_id)
+        stream = sandbox.files.read(source, format="stream", user=user)
+        fd = None
+        file_handle = None
+        try:
+            fd = os.open(
+                str(dest_path),
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+            )
+            file_handle = os.fdopen(fd, "wb")
+            fd = None  # the file object now owns the descriptor
+            for chunk in stream:
+                file_handle.write(chunk)
+            file_handle.flush()
+        except BaseException:
+            if file_handle is not None:
+                try:
+                    file_handle.close()
+                except OSError:
+                    pass
+                file_handle = None
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                fd = None
+            # Never leave a truncated/corrupt output on disk.
+            try:
+                dest_path.unlink()
+            except OSError:
+                pass
+            raise
+        finally:
+            if file_handle is not None:
+                try:
+                    file_handle.close()
+                except OSError:
+                    pass
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            close = getattr(stream, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+        return dest_path
 
     def pause(self, sandbox_id: str) -> None:
         self._connect(sandbox_id).pause()

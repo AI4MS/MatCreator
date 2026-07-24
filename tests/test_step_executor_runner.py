@@ -26,6 +26,7 @@ def test_step_executor_registers_tracked_e2b_tools() -> None:
         "get_e2b_job_status",
         "run_e2b_command",
         "upload_e2b_input",
+        "download_e2b_output",
         "pause_e2b_sandbox",
         "terminate_e2b_sandbox",
     } <= tool_names

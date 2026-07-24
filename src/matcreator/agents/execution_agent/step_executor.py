@@ -19,6 +19,7 @@ from ...tools.remoteagent_tool import load_remote_a2a_agents
 from ...tools.util_tools import show_artifact, show_plot, show_structure
 from ...tools.workspace_tools import get_user_skills_root, run_bash, run_python
 from .e2b_tools import (
+    download_e2b_output,
     get_e2b_job_status,
     pause_e2b_sandbox,
     run_e2b_command,
@@ -257,6 +258,7 @@ def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
             FunctionTool(get_e2b_job_status),
             FunctionTool(run_e2b_command),
             FunctionTool(upload_e2b_input),
+            FunctionTool(download_e2b_output),
             FunctionTool(pause_e2b_sandbox),
             FunctionTool(terminate_e2b_sandbox),
             ALL_SKILLS_TOOLSET,
