@@ -97,7 +97,7 @@ from matcreator.constants import GRAPH_AGENT_MODEL, KNOW_DO_GRAPH_DB  # noqa: E4
 from matcreator.control_plane.remote_job_monitor import RemoteJobMonitor  # noqa: E402
 from matcreator.control_plane.remote_job_service import RemoteJobService  # noqa: E402
 from matcreator.control_plane.remote_jobs import RemoteJobStore  # noqa: E402
-from matcreator.control_plane.benchmark_client import BenchmarkApiError, BenchmarkClient  # noqa: E402
+from matcreator.control_plane.benchmark_client import BenchmarkApiError, BenchmarkClient, sanitize_bank_id  # noqa: E402
 from matcreator.control_plane.evaluation_manager import EvaluationManager  # noqa: E402
 from matcreator.control_plane.evaluation_runtime import RuntimeOutcome, RuntimeSpec  # noqa: E402
 from matcreator.control_plane.evaluation_service import EvaluationService  # noqa: E402
@@ -105,11 +105,16 @@ from matcreator.control_plane.evaluations import EvaluationStore  # noqa: E402
 from matcreator.control_plane.runs import ManagedRun, ManagedRunRegistry  # noqa: E402
 from matcreator.control_plane.worker_supervisor import WorkerSupervisor  # noqa: E402
 from matcreator.control_plane.session_question_generator import (  # noqa: E402
-    BuiltinLlmQuestionGeneratorPlugin,
     CallableSessionQuestionGenerator,
     DEFAULT_TEMPLATE_ID,
+    NoQuestionExtracted,
+    QuestionGenerationDiagnosticError,
     QuestionTemplateStore,
+    SessionQuestionGeneratorPlugin,
     StagedSessionQuestionService,
+    build_session_question_generator,
+    has_session_question_generator,
+    list_session_question_generators,
 )
 from matcreator.knowledge.query import _get_kg  # noqa: E402
 from matcreator.knowledge.review import run_review_pipeline  # noqa: E402
@@ -155,6 +160,7 @@ class EvaluationQuestionDraftRefineBody(BaseModel):
 
 class EvaluationQuestionGenerateBody(BaseModel):
     template_id: str = ""
+    generator_id: str = ""
 
 
 class EvaluationQuestionTemplateBody(BaseModel):
@@ -365,12 +371,25 @@ def _benchmark_client() -> BenchmarkClient:
 _benchmark_token_registration_lock = asyncio.Lock()
 
 
+def _benchmark_config_for_owner(owner_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    config = _load_config_for_user(owner_id)
+    user_benchmark = config.get("benchmark") or {}
+    if not isinstance(user_benchmark, dict):
+        user_benchmark = {}
+    default_benchmark = load_config().get("benchmark") or {}
+    if not isinstance(default_benchmark, dict):
+        default_benchmark = {}
+    resolved = {**default_benchmark, **user_benchmark}
+    user_server_url = str(user_benchmark.get("server_url") or "").strip()
+    default_server_url = str(default_benchmark.get("server_url") or "").strip()
+    if user_server_url and user_server_url != default_server_url and not user_benchmark.get("token"):
+        resolved.pop("token", None)
+    return config, resolved
+
+
 async def _benchmark_client_for_owner(owner_id: str = "") -> BenchmarkClient:
     """Resolve a benchmark client, registering a development token when needed."""
-    config = _load_config_for_user(owner_id)
-    benchmark_config = config.get("benchmark") or {}
-    if not isinstance(benchmark_config, dict):
-        benchmark_config = {}
+    config, benchmark_config = _benchmark_config_for_owner(owner_id)
     server_url = (
         os.environ.get("MAT_BENCH_SERVER_URL", "").strip()
         or str(benchmark_config.get("server_url") or "").strip()
@@ -388,10 +407,7 @@ async def _benchmark_client_for_owner(owner_id: str = "") -> BenchmarkClient:
         return BenchmarkClient(server_url, token)
     async with _benchmark_token_registration_lock:
         # Another first-use request may have persisted the token while this request waited.
-        config = _load_config_for_user(owner_id)
-        benchmark_config = config.get("benchmark") or {}
-        if not isinstance(benchmark_config, dict):
-            benchmark_config = {}
+        config, benchmark_config = _benchmark_config_for_owner(owner_id)
         token = (
             os.environ.get("MAT_BENCH_TOKEN", "").strip()
             or str(benchmark_config.get("token") or "").strip()
@@ -690,6 +706,7 @@ def _worker_env_vars() -> dict[str, str]:
         "BOHRIUM_USERNAME", "BOHRIUM_PASSWORD", "BOHRIUM_ACCESS_KEY", "BOHRIUM_API_URL", "BOHRIUM_PROJECT_ID",
         "BOHRIUM_VASP_IMAGE", "BOHRIUM_VASP_MACHINE",
         "BOHRIUM_DEEPMD_IMAGE", "BOHRIUM_DEEPMD_MACHINE", "DEEPMD_MODEL_PATH",
+        "MAT_BENCH_SERVER_URL",
         "KDG_EMBED_MODEL", "HF_HUB_OFFLINE", "MATCREATOR_MODULE_SKILLS_ROOT",
     ]
     env_vars = {k: v for k in keys if (v := _runtime_env_value(k))}
@@ -861,6 +878,7 @@ def _load_skill_graph_payload(*, limit: int = 400) -> dict:
                     "skill_path": skill_path,
                     "source": source.name if source else None,
                     "editable": bool(source and source.editable),
+                    "graph_editable": _editable_skill_graph_entry(entry),
                     "managed": bool(source and source.managed),
                     "trusted": bool(source and source.trusted),
                     "is_custom": bool(source and source.name in {"custom", "workspace"}),
@@ -2893,21 +2911,24 @@ def _session_question_template(owner_id: str, template_id: str = "") -> tuple[Pa
     return path, metadata
 
 
-def _session_question_generator(owner_id: str = "") -> BuiltinLlmQuestionGeneratorPlugin:
+def _session_question_generator(
+    owner_id: str = "", generator_id: str = ""
+) -> SessionQuestionGeneratorPlugin:
     configured = _session_question_config(owner_id)
-    plugin_name = str(configured.get("plugin") or "builtin_llm")
-    if plugin_name != "builtin_llm":
-        raise HTTPException(status_code=422, detail=f"Unknown session question generator plugin: {plugin_name}")
+    selected_generator_id = generator_id.strip() or str(configured.get("plugin") or "builtin_llm")
+    config = _load_config_for_user(owner_id) if _MATCREATOR_MODE == "server" else load_config()
     try:
-        return BuiltinLlmQuestionGeneratorPlugin.from_config(load_config())
+        return build_session_question_generator(selected_generator_id, config)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-def _session_question_generator_for_owner(owner_id: str) -> BuiltinLlmQuestionGeneratorPlugin:
+def _session_question_generator_for_owner(
+    owner_id: str, generator_id: str = ""
+) -> SessionQuestionGeneratorPlugin:
     if _MATCREATOR_MODE == "server":
-        return _session_question_generator(owner_id)
-    return _session_question_generator()
+        return _session_question_generator(owner_id, generator_id) if generator_id else _session_question_generator(owner_id)
+    return _session_question_generator(generator_id=generator_id) if generator_id else _session_question_generator()
 
 
 @app.get("/api/execution-graph/{session_id}")
@@ -2965,7 +2986,7 @@ async def generate_evaluation_question_draft(
         template_path, template_metadata = _session_question_template(owner_id, body.template_id)
         service = StagedSessionQuestionService(
             _session_question_staging_root(owner_id),
-            _session_question_generator_for_owner(owner_id),
+            _session_question_generator_for_owner(owner_id, body.generator_id),
             template_path=template_path,
             template_metadata=template_metadata,
             legacy_roots=[_legacy_session_question_staging_root(owner_id)],
@@ -2980,6 +3001,34 @@ async def generate_evaluation_question_draft(
             time.monotonic() - started_at,
         )
         raise
+    except NoQuestionExtracted as exc:
+        logger.info(
+            "Session question generation found no grounded task: session_id=%s owner_id=%s duration_seconds=%.2f",
+            session_id,
+            owner_id,
+            time.monotonic() - started_at,
+        )
+        return JSONResponse(
+            {
+                "status": "no_qa_extracted",
+                "session_id": session_id,
+                "generator_id": body.generator_id or None,
+                "reason": exc.reason,
+            }
+        )
+    except QuestionGenerationDiagnosticError as exc:
+        logger.warning(
+            "Session question generation rejected: session_id=%s owner_id=%s generator=%s stage=%s duration_seconds=%.2f",
+            session_id,
+            owner_id,
+            exc.diagnostics.get("generator", "unknown"),
+            exc.diagnostics.get("stage", "unknown"),
+            time.monotonic() - started_at,
+        )
+        raise HTTPException(
+            status_code=422,
+            detail={"message": f"Could not generate benchmark question draft: {exc}", "diagnostics": exc.diagnostics},
+        ) from exc
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         logger.warning(
             "Session question generation rejected: session_id=%s owner_id=%s error_type=%s duration_seconds=%.2f",
@@ -3007,6 +3056,20 @@ async def generate_evaluation_question_draft(
         time.monotonic() - started_at,
     )
     return JSONResponse(draft.as_dict(), status_code=201)
+
+
+@app.get("/api/session-question-generators")
+async def list_session_question_generator_options(
+    user_id: str = Query(default="", description="Current user ID; scopes the configured default in server mode."),
+) -> JSONResponse:
+    configured = _session_question_config(user_id)
+    selected_generator_id = str(configured.get("plugin") or "builtin_llm")
+    return JSONResponse(
+        {
+            "generators": list_session_question_generators(),
+            "selected_generator_id": selected_generator_id,
+        }
+    )
 
 
 def _staged_question_service(owner_id: str) -> StagedSessionQuestionService:
@@ -3047,6 +3110,27 @@ async def update_evaluation_question_draft(
     return JSONResponse(draft.as_dict())
 
 
+@app.post("/api/evaluation-question-drafts/{draft_id}/data-files")
+async def upload_evaluation_question_draft_data_file(
+    draft_id: str,
+    path: str = Form(...),
+    file: UploadFile = File(...),
+    user_id: str = Query(...),
+) -> JSONResponse:
+    try:
+        content = await file.read()
+        draft = _staged_question_service(user_id).stage_data_file(draft_id, path, content)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not stage question data file: {exc}") from exc
+    finally:
+        await file.close()
+    return JSONResponse(draft.as_dict())
+
+
 @app.post("/api/evaluation-question-drafts/{draft_id}/approve")
 async def approve_evaluation_question_draft(draft_id: str, user_id: str = Query(...)) -> JSONResponse:
     try:
@@ -3066,15 +3150,18 @@ async def refine_evaluation_question_draft(
 ) -> JSONResponse:
     try:
         stored_template_id = str(body.template_id or "").strip()
+        existing = _staged_question_service(user_id).get(draft_id)
+        metadata_path = existing.staging_path / "generation.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         if not stored_template_id:
-            existing = _staged_question_service(user_id).get(draft_id)
-            metadata_path = existing.staging_path / "generation.json"
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             stored_template_id = str((metadata.get("template") or {}).get("template_id") or "")
         template_path, template_metadata = _session_question_template(user_id, stored_template_id)
+        stored_generator_id = str((metadata.get("generator_plugin") or "").strip())
         service = StagedSessionQuestionService(
             _session_question_staging_root(user_id),
-            _session_question_generator_for_owner(user_id),
+            _session_question_generator_for_owner(
+                user_id, stored_generator_id if has_session_question_generator(stored_generator_id) else ""
+            ),
             template_path=template_path,
             template_metadata=template_metadata,
             legacy_roots=[_legacy_session_question_staging_root(user_id)],
@@ -3159,6 +3246,45 @@ async def export_evaluation_question_draft(draft_id: str, user_id: str = Query(.
         raise HTTPException(status_code=500, detail=f"Could not export benchmark question: {exc}") from exc
     return JSONResponse(draft.as_dict())
 
+
+def _custom_bank_id_for_owner(owner_id: str) -> str:
+    if not owner_id:
+        raise HTTPException(status_code=422, detail="A session owner is required to use a custom benchmark bank")
+    return sanitize_bank_id(owner_id)
+
+
+@app.get("/api/evaluation-benchmark-bank")
+async def get_evaluation_benchmark_bank(user_id: str = Query(...)) -> JSONResponse:
+    bank_id = _custom_bank_id_for_owner(user_id)
+    try:
+        client = await _benchmark_client_for_owner(user_id)
+        banks = await client.list_banks()
+    except BenchmarkApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    existing = next((bank for bank in banks if bank.get("bank_id") == bank_id), None)
+    return JSONResponse({"bank_id": bank_id, "exists": existing is not None, "bank": existing})
+
+
+@app.post("/api/evaluation-question-drafts/{draft_id}/publish")
+async def publish_evaluation_question_draft(draft_id: str, user_id: str = Query(...)) -> JSONResponse:
+    bank_id = _custom_bank_id_for_owner(user_id)
+    try:
+        client = await _benchmark_client_for_owner(user_id)
+        draft = await _staged_question_service(user_id).publish(
+            draft_id,
+            client,
+            bank_id,
+            display_name=f"{user_id}'s questions",
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not publish benchmark question: {exc}") from exc
+    except BenchmarkApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return JSONResponse(draft.as_dict())
 
 
 @app.get("/api/agent-graph/{session_id}")
@@ -3788,8 +3914,10 @@ def _sanitize_attachment_category(category: str) -> str:
 
 
 def _delete_skill_graph_entries(skill_name: str) -> int:
+    from know_do_graph import EntryType
+
     graph = _get_kg()
-    entry_ids = []
+    entries = []
     offset = 0
     page_size = 200
     while True:
@@ -3798,15 +3926,98 @@ def _delete_skill_graph_entries(skill_name: str) -> int:
             break
         for entry in page:
             if entry.title == skill_name and "matcreator-skill" in entry.tags:
-                entry_ids.append(entry.id)
+                entries.append(entry)
         if len(page) < page_size:
             break
         offset += len(page)
-    deleted = sum(int(bool(graph.delete(entry_id))) for entry_id in entry_ids)
+    deleted = 0
+    for entry in entries:
+        # A removed SKILL.md should not take agent-created links down with it.
+        # Its own declared dependency edges are no longer meaningful, but any
+        # other incident edge keeps a stripped virtual placeholder alive.
+        has_connections = False
+        try:
+            with sqlite3.connect(graph.path) as conn:
+                has_connections = bool(conn.execute(
+                    """
+                    SELECT 1 FROM edges
+                    WHERE (source_id = ? OR target_id = ?)
+                      AND NOT (
+                        source_id = ?
+                        AND relation IN ('dependency', 'heuristic_for', 'constraint_on')
+                      )
+                    LIMIT 1
+                    """,
+                    (entry.id, entry.id, entry.id),
+                ).fetchone())
+                conn.execute(
+                    """
+                    DELETE FROM edges
+                    WHERE source_id = ?
+                      AND relation IN ('dependency', 'heuristic_for', 'constraint_on')
+                    """,
+                    (entry.id,),
+                )
+                conn.commit()
+        except sqlite3.Error:
+            # If edge inspection is unavailable, do not risk cascading a
+            # potentially agent-created link.
+            has_connections = True
+        if not has_connections:
+            deleted += int(bool(graph.delete(entry.id)))
+            continue
+        metadata = entry.metadata.model_copy(deep=True)
+        metadata.source_provenance = "missing skill backing"
+        metadata.custom = {
+            **metadata.custom,
+            "managed_by": "matcreator",
+            "kind": "virtual_dependency",
+            "virtual": True,
+            "virtual_reason": "backing skill was removed",
+        }
+        graph.update(
+            entry.id,
+            content="",
+            entry_type=EntryType.capability,
+            tags=["matcreator-skill", "virtual"],
+            aliases=[],
+            internal_refs=[],
+            scripts=[],
+            assets=[],
+            metadata=metadata,
+        )
     try:
         graph.refresh()
     except Exception:
         pass
+    return deleted
+
+
+def _remove_orphaned_virtual_skill_nodes(graph: Any) -> int:
+    """Delete virtual placeholders once nothing in the graph references them."""
+
+    virtual_entries = [
+        entry
+        for entry in graph.list(limit=1200)
+        if "matcreator-skill" in entry.tags and entry.metadata.custom.get("virtual")
+    ]
+    if not virtual_entries:
+        return 0
+    orphan_ids: list[str] = []
+    try:
+        with sqlite3.connect(graph.path) as conn:
+            for entry in virtual_entries:
+                connected = conn.execute(
+                    "SELECT 1 FROM edges WHERE source_id = ? OR target_id = ? LIMIT 1",
+                    (entry.id, entry.id),
+                ).fetchone()
+                if not connected:
+                    orphan_ids.append(entry.id)
+    except sqlite3.Error:
+        return 0
+    deleted = sum(int(bool(graph.delete(entry_id))) for entry_id in orphan_ids)
+    if deleted:
+        graph.refresh()
     return deleted
 
 
@@ -3818,6 +4029,17 @@ class SkillGraphEditBody(BaseModel):
     tags: list[str] = []
     dependent_skills: list[str] = []
     metadata: dict | None = None
+
+
+class SkillGraphNodeEditBody(BaseModel):
+    """Editable fields for a durable, non-SKILL.md graph node."""
+
+    title: str
+    content: str = ""
+    entry_type: str = "generic"
+    skill_level: str | None = None
+    tags: list[str] = []
+    dependent_node_ids: list[str] = []
 
 
 class SkillGraphCreateBody(BaseModel):
@@ -3938,6 +4160,159 @@ async def get_skill_graph_skill_edit(skill_name: str) -> JSONResponse:
         ],
         "skill_levels": ["L1", "L2", "L3", "L4"],
     })
+
+
+def _editable_skill_graph_entry(entry: Any) -> bool:
+    """Whether an entry is a durable graph node, rather than a seeded skill."""
+
+    return (
+        _entry_value(entry.entry_type) != "memory"
+        and "matcreator-skill" not in entry.tags
+        and not bool(entry.metadata.custom.get("virtual"))
+    )
+
+
+def _skill_graph_node_dependencies(entry_id: str) -> list[str]:
+    """Return editable outgoing relation targets for one graph entry."""
+
+    if not KNOW_DO_GRAPH_DB.exists():
+        return []
+    try:
+        with sqlite3.connect(KNOW_DO_GRAPH_DB) as conn:
+            rows = conn.execute(
+                """
+                SELECT target_id
+                FROM edges
+                WHERE source_id = ?
+                  AND relation IN ('dependency', 'heuristic_for', 'constraint_on')
+                ORDER BY target_id
+                """,
+                (entry_id,),
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+    return [str(row[0]) for row in rows]
+
+
+@app.get("/api/skill-graph/nodes/{node_id}/edit")
+async def get_skill_graph_node_edit(node_id: str) -> JSONResponse:
+    graph = _get_kg()
+    entry = graph.get(node_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Graph node '{node_id}' not found.")
+    if not _editable_skill_graph_entry(entry):
+        raise HTTPException(status_code=403, detail="This managed graph node is not editable here.")
+
+    dependent_node_ids = _skill_graph_node_dependencies(entry.id)
+    available_nodes = []
+    for candidate in graph.list(limit=1200):
+        if candidate.id == entry.id or _entry_value(candidate.entry_type) == "memory":
+            continue
+        # Keep an already-selected virtual target visible so it can be
+        # reviewed or deselected, while avoiding virtual placeholders in the
+        # default list of nodes to attach.
+        if candidate.metadata.custom.get("virtual") and candidate.id not in dependent_node_ids:
+            continue
+        available_nodes.append({
+            "id": candidate.id,
+            "title": candidate.title,
+            "entry_type": _entry_value(candidate.entry_type),
+            "skill_level": _entry_value(candidate.metadata.skill_level),
+        })
+    available_nodes.sort(key=lambda candidate: (candidate["title"].lower(), candidate["id"]))
+
+    return JSONResponse({
+        "status": "ok",
+        "id": entry.id,
+        "title": entry.title,
+        "content": entry.content,
+        "entry_type": _entry_value(entry.entry_type),
+        "skill_level": _entry_value(entry.metadata.skill_level),
+        "tags": entry.tags,
+        "metadata": _json_ready(entry.metadata),
+        "dependent_node_ids": dependent_node_ids,
+        "available_nodes": available_nodes,
+    })
+
+
+@app.delete("/api/skill-graph/nodes/{node_id}")
+async def delete_skill_graph_node(node_id: str) -> JSONResponse:
+    graph = _get_kg()
+    entry = graph.get(node_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Graph node '{node_id}' not found.")
+    if not _editable_skill_graph_entry(entry):
+        raise HTTPException(status_code=403, detail="This managed graph node is not removable here.")
+    if not graph.delete(entry.id):
+        raise HTTPException(status_code=404, detail=f"Graph node '{node_id}' no longer exists.")
+    graph.refresh()
+    return JSONResponse({
+        "status": "ok",
+        "deleted": entry.id,
+        "orphaned_virtual_nodes_removed": _remove_orphaned_virtual_skill_nodes(graph),
+    })
+
+
+@app.put("/api/skill-graph/nodes/{node_id}/edit")
+async def update_skill_graph_node_edit(node_id: str, body: SkillGraphNodeEditBody) -> JSONResponse:
+    from know_do_graph import EntryType, SkillLevel
+
+    graph = _get_kg()
+    entry = graph.get(node_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Graph node '{node_id}' not found.")
+    if not _editable_skill_graph_entry(entry):
+        raise HTTPException(status_code=403, detail="This managed graph node is not editable here.")
+
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="Node title is required.")
+    try:
+        entry_type = EntryType(body.entry_type)
+        skill_level = SkillLevel(body.skill_level) if body.skill_level else None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid node type or level: {exc}") from exc
+
+    target_ids = list(dict.fromkeys(str(target).strip() for target in body.dependent_node_ids if str(target).strip()))
+    if node_id in target_ids:
+        raise HTTPException(status_code=422, detail="A node cannot depend on itself.")
+    targets = [graph.get(target_id) for target_id in target_ids]
+    if any(target is None for target in targets):
+        raise HTTPException(status_code=422, detail="One or more connected nodes no longer exist.")
+
+    metadata = entry.metadata.model_copy(deep=True)
+    metadata.skill_level = skill_level
+    graph.update(
+        entry.id,
+        title=title,
+        content=body.content,
+        entry_type=entry_type,
+        tags=list(dict.fromkeys(str(tag).strip() for tag in body.tags if str(tag).strip())),
+        metadata=metadata,
+    )
+
+    relation = {
+        "heuristic": "heuristic_for",
+        "constraint": "constraint_on",
+    }.get(entry_type.value, "dependency")
+    try:
+        with sqlite3.connect(KNOW_DO_GRAPH_DB) as conn:
+            conn.execute(
+                """
+                DELETE FROM edges
+                WHERE source_id = ?
+                  AND relation IN ('dependency', 'heuristic_for', 'constraint_on')
+                """,
+                (entry.id,),
+            )
+            conn.commit()
+    except sqlite3.Error as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to update graph connections: {exc}") from exc
+
+    for target in targets:
+        graph.connect(entry.id, target.id, relation=relation)
+    graph.refresh()
+    return JSONResponse({"status": "ok", "id": entry.id})
 
 
 @app.put("/api/skill-graph/skills/{skill_name}/edit")

@@ -2,6 +2,54 @@
 
 <!-- version list -->
 
+## v2.15.0 (2026-07-24)
+
+### Bug Fixes
+
+- Issues with question validation
+  ([`326e58e`](https://github.com/AI4MS/MatCreator/commit/326e58e304bfc1c26b002172dd623b7ef705f99b))
+
+- Update default template
+  ([`a5df316`](https://github.com/AI4MS/MatCreator/commit/a5df3168937ec28c8b8c5c073c8848cfbfa11fc7))
+
+### Features
+
+- Implementing mkb
+  ([`3de6c35`](https://github.com/AI4MS/MatCreator/commit/3de6c35ea536f6d6300d5a9ab357623e27a6a1cb))
+
+
+## v2.14.0 (2026-07-24)
+
+### Bug Fixes
+
+- Update builtin question generator
+  ([`d1d0adb`](https://github.com/AI4MS/MatCreator/commit/d1d0adb8deedc6f716d414f500d8d0faeaa7b771))
+
+### Features
+
+- Editable agent-generated nodes
+  ([`6ed1006`](https://github.com/AI4MS/MatCreator/commit/6ed1006fc3892bd8ac87d9a084ba92648e33a465))
+
+
+## v2.13.1 (2026-07-21)
+
+### Bug Fixes
+
+- Chat scroll position and IEM confirm
+  ([`5fca1d6`](https://github.com/AI4MS/MatCreator/commit/5fca1d6d68e3d51f45f317088faf8834ac77ea8e))
+
+- Enhance the integration with mat_agent_bench
+  ([`231c808`](https://github.com/AI4MS/MatCreator/commit/231c8084db75137ba7fa95f4e513af3cd782737d))
+
+- Issues with eval in server mode
+  ([`4e44a3c`](https://github.com/AI4MS/MatCreator/commit/4e44a3c19ee055f5cc1eca284cbaa30ff7b28d5a))
+
+### Chores
+
+- Update docs
+  ([`2691737`](https://github.com/AI4MS/MatCreator/commit/2691737e1cb742faeafb864fbf0ffff7d19098f2))
+
+
 ## v2.13.0 (2026-07-21)
 
 ### Bug Fixes

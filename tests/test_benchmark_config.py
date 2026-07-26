@@ -92,6 +92,27 @@ def test_benchmark_client_does_not_register_when_environment_token_exists(monkey
     assert client.token == "environment-token"
 
 
+def test_owner_benchmark_client_falls_back_to_control_plane_config(monkeypatch) -> None:
+    monkeypatch.delenv("MAT_BENCH_SERVER_URL", raising=False)
+    monkeypatch.delenv("MAT_BENCH_TOKEN", raising=False)
+    monkeypatch.setattr(main, "_load_config_for_user", lambda _owner: {})
+    monkeypatch.setattr(
+        main,
+        "load_config",
+        lambda: {
+            "benchmark": {
+                "server_url": "https://control-plane.example/bench",
+                "token": "control-plane-token",
+            }
+        },
+    )
+
+    client = asyncio.run(main._benchmark_client_for_owner("alice"))
+
+    assert client.base_url == "https://control-plane.example/bench"
+    assert client.token == "control-plane-token"
+
+
 def test_benchmark_client_registers_one_token_for_concurrent_first_use(monkeypatch) -> None:
     monkeypatch.delenv("MAT_BENCH_SERVER_URL", raising=False)
     monkeypatch.delenv("MAT_BENCH_TOKEN", raising=False)

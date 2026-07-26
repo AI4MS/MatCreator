@@ -295,6 +295,48 @@ export function createSkillGraphController({
       hint: "A multi-step procedure or task flow.",
     },
     {
+      value: "tool",
+      label: "Tool",
+      entry_type: "tool",
+      skill_level: "L1",
+      hint: "A reusable tool, command, or external capability.",
+    },
+    {
+      value: "repository",
+      label: "Repository",
+      entry_type: "repository",
+      skill_level: "L1",
+      hint: "A codebase or other source repository.",
+    },
+    {
+      value: "environment",
+      label: "Environment",
+      entry_type: "environment",
+      skill_level: "L1",
+      hint: "A runtime, platform, or execution environment.",
+    },
+    {
+      value: "dependency",
+      label: "Dependency",
+      entry_type: "dependency",
+      skill_level: "L1",
+      hint: "A required package, service, or prerequisite resource.",
+    },
+    {
+      value: "data",
+      label: "Data",
+      entry_type: "data",
+      skill_level: "L1",
+      hint: "A dataset, data source, or data-handling capability.",
+    },
+    {
+      value: "analytical",
+      label: "Analytical",
+      entry_type: "analytical",
+      skill_level: "L1",
+      hint: "An analysis method, model, or interpretation capability.",
+    },
+    {
       value: "heuristic",
       label: "Heuristic",
       entry_type: "heuristic",
@@ -307,6 +349,13 @@ export function createSkillGraphController({
       entry_type: "constraint",
       skill_level: "L4",
       hint: "A constraint, caveat, warning, or known failure mode.",
+    },
+    {
+      value: "generic",
+      label: "Generic",
+      entry_type: "generic",
+      skill_level: "L1",
+      hint: "An uncategorized durable graph entry.",
     },
   ];
 
@@ -360,20 +409,21 @@ export function createSkillGraphController({
   }
 
   function createSkillGraphEditToggle(node) {
-    if (!node.skill_name) return null;
+    if (!node.skill_name && !node.graph_editable) return null;
     const host = document.createElement("section");
     host.className = "skill-graph-edit-toggle skill-graph-detail-section";
     const button = document.createElement("button");
     button.type = "button";
     button.className = "ghost mini-btn";
-    button.textContent = "Edit";
+    button.textContent = node.skill_name ? "Edit" : "Edit node";
     button.addEventListener("click", () => {
       skillGraphTab.detail.innerHTML = "";
       const editorHost = document.createElement("section");
       editorHost.className = "skill-graph-editor";
-      editorHost.innerHTML = "<h4>Edit Skill</h4><div class=\"skill-graph-editor-status\">Loading editor...</div>";
+      editorHost.innerHTML = `<h4>${node.skill_name ? "Edit Skill" : "Edit Node"}</h4><div class="skill-graph-editor-status">Loading editor...</div>`;
       skillGraphTab.detail.appendChild(editorHost);
-      loadSkillGraphEditor(node, editorHost);
+      if (node.skill_name) loadSkillGraphEditor(node, editorHost);
+      else loadSkillGraphNodeEditor(node, editorHost);
     });
     host.appendChild(button);
     if (node.skill_name) {
@@ -383,8 +433,23 @@ export function createSkillGraphController({
       remove.textContent = "Remove";
       remove.addEventListener("click", () => removeSkillGraphNode(node));
       host.appendChild(remove);
+    } else if (node.graph_editable) {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "ghost mini-btn danger";
+      remove.textContent = "Remove";
+      remove.addEventListener("click", () => removeSkillGraphNode(node));
+      host.appendChild(remove);
     }
     return host;
+  }
+
+  function skillGraphConnectedSkillNames(node) {
+    const editableRelations = new Set(["dependency", "heuristic_for", "constraint_on"]);
+    return (skillGraphTab?.edges || [])
+      .filter((edge) => edge.from === node.id && editableRelations.has(edge.relation))
+      .map((edge) => skillGraphTab?.nodeData?.get(edge.to)?.skill_name)
+      .filter(Boolean);
   }
 
   function skillGraphEditorSnapshot(host) {
@@ -665,7 +730,28 @@ export function createSkillGraphController({
   }
 
   async function removeSkillGraphNode(node) {
-    if (!node?.skill_name) return;
+    if (!node) return;
+    if (!node.skill_name) {
+      if (!node.graph_editable) return;
+      if (!window.confirm(`Remove graph node '${node.title || node.label}'? This also removes its connections.`)) return;
+      const previousStatus = skillGraphTab.status.textContent;
+      skillGraphTab.status.textContent = "removing";
+      skillGraphTab.status.className = "graph-status status-polling";
+      try {
+        const resp = await fetch(`/api/skill-graph/nodes/${encodeURIComponent(node.id)}`, { method: "DELETE" });
+        if (!resp.ok) throw new Error(await resp.text());
+        await refreshSkillGraphData();
+        renderSkillGraphDetail(null);
+      } catch (err) {
+        skillGraphTab.status.className = "graph-status status-idle";
+        skillGraphTab.status.textContent = previousStatus || "idle";
+        const error = document.createElement("div");
+        error.className = "skill-graph-editor-status error";
+        error.textContent = `Remove failed: ${String(err.message || err)}`;
+        skillGraphTab.detail.prepend(error);
+      }
+      return;
+    }
     if (!node.is_custom) {
       window.alert(`Managed skill '${node.skill_name}' cannot be removed here.`);
       return;
@@ -762,7 +848,18 @@ export function createSkillGraphController({
     host.querySelector("[data-edit-field='description']").value = data.description || "";
     host.querySelector("[data-edit-field='tags']").value = listToCsv(data.tags || metadata.tags);
     host.querySelector("[data-edit-field='content']").value = data.content || "";
-    renderSkillGraphDependencyPicker(host, data.available_skills || [], data.dependent_skills || metadata.dependent_skills || []);
+    // Frontmatter is the source of truth for persisted skill dependencies,
+    // while the graph may already contain seeded connections from an earlier
+    // refresh.  Include both so the picker faithfully reflects the graph.
+    const dependentSkills = Array.from(new Set([
+      ...(data.dependent_skills || metadata.dependent_skills || []),
+      ...skillGraphConnectedSkillNames(node),
+    ]));
+    renderSkillGraphDependencyPicker(
+      host,
+      Array.from(new Set([...(data.available_skills || []), ...dependentSkills])),
+      dependentSkills,
+    );
 
     const initialFolders = [];
     attachments.forEach((category) => {
@@ -823,6 +920,137 @@ export function createSkillGraphController({
         moveSkillGraphEditorHistory(host, 1);
       }
     });
+  }
+
+  function renderSkillGraphNodePicker(host, nodes, selected) {
+    const list = host.querySelector(".skill-graph-dependency-list");
+    const filter = host.querySelector("[data-dependency-filter]");
+    const selectedSet = selected instanceof Set ? selected : new Set(selected || []);
+    host._skillGraphNodeDependencies = selectedSet;
+    const render = () => {
+      const query = (filter.value || "").trim().toLowerCase();
+      list.innerHTML = "";
+      nodes
+        .filter((candidate) => (
+          !query
+          || candidate.title.toLowerCase().includes(query)
+          || selectedSet.has(candidate.id)
+        ))
+        .forEach((candidate) => {
+          const label = document.createElement("label");
+          label.className = "skill-graph-dependency-row";
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.value = candidate.id;
+          checkbox.checked = selectedSet.has(candidate.id);
+          checkbox.addEventListener("change", () => {
+            if (checkbox.checked) selectedSet.add(candidate.id);
+            else selectedSet.delete(candidate.id);
+            host._skillGraphNodeDependencies = selectedSet;
+            render();
+          });
+          const span = document.createElement("span");
+          const kind = skillGraphDisplayNodeType(candidate.entry_type, candidate.skill_level);
+          span.textContent = `${candidate.title} (${kind})`;
+          label.append(checkbox, span);
+          list.appendChild(label);
+        });
+      if (!list.children.length) {
+        const empty = document.createElement("div");
+        empty.className = "skill-graph-editor-empty";
+        empty.textContent = "No matching nodes.";
+        list.appendChild(empty);
+      }
+    };
+    filter.addEventListener("input", render);
+    render();
+  }
+
+  function renderSkillGraphNodeEditor(host, node, data) {
+    host.innerHTML = `
+      <h4>Edit Node</h4>
+      <div class="skill-graph-editor-actions">
+        <button type="button" class="ghost mini-btn" data-node-edit-action="cancel">Cancel</button>
+        <button type="button" class="primary mini-btn" data-node-edit-action="save">Save</button>
+      </div>
+      <label class="skill-graph-editor-field">Title
+        <input data-node-edit-field="title" type="text" />
+      </label>
+      <label class="skill-graph-editor-field">Node type
+        <select data-node-edit-field="node_kind"></select>
+        <span class="skill-graph-field-hint" data-node-kind-hint></span>
+      </label>
+      <label class="skill-graph-editor-field">Tags
+        <input data-node-edit-field="tags" type="text" placeholder="comma separated" />
+      </label>
+      <div class="skill-graph-editor-field"><span data-relation-label>Dependencies</span>
+        <input data-dependency-filter type="text" placeholder="filter nodes" />
+        <span class="skill-graph-field-hint" data-relation-hint></span>
+        <div class="skill-graph-dependency-list"></div>
+      </div>
+      <label class="skill-graph-editor-field">Content
+        <textarea data-node-edit-field="content" spellcheck="false"></textarea>
+      </label>
+      <div class="skill-graph-editor-status"></div>
+    `;
+    const nodeKindSelect = host.querySelector("[data-node-edit-field='node_kind']");
+    const currentKind = skillGraphNodeKindFor(data.entry_type, data.skill_level);
+    populateSkillGraphNodeKindSelect(nodeKindSelect, currentKind.value);
+    updateSkillGraphNodeKindHint(host, currentKind.value);
+    nodeKindSelect.addEventListener("change", () => updateSkillGraphNodeKindHint(host, nodeKindSelect.value));
+    host.querySelector("[data-node-edit-field='title']").value = data.title || "";
+    host.querySelector("[data-node-edit-field='tags']").value = listToCsv(data.tags || []);
+    host.querySelector("[data-node-edit-field='content']").value = data.content || "";
+    renderSkillGraphNodePicker(host, data.available_nodes || [], data.dependent_node_ids || []);
+    host._skillGraphNodeEdit = { nodeId: node.id };
+    host.querySelector("[data-node-edit-action='cancel']").addEventListener("click", () => {
+      renderSkillGraphDetail(skillGraphTab?.nodeData.get(node.id) || node);
+    });
+    host.querySelector("[data-node-edit-action='save']").addEventListener("click", () => saveSkillGraphNodeEditor(host));
+  }
+
+  async function loadSkillGraphNodeEditor(node, host) {
+    try {
+      const resp = await fetch(`/api/skill-graph/nodes/${encodeURIComponent(node.id)}/edit`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      renderSkillGraphNodeEditor(host, node, await resp.json());
+    } catch (err) {
+      host.innerHTML = `<h4>Edit Node</h4><div class="skill-graph-editor-status error">Editor unavailable: ${String(err.message || err)}</div>`;
+    }
+  }
+
+  async function saveSkillGraphNodeEditor(host) {
+    const edit = host._skillGraphNodeEdit;
+    if (!edit) return;
+    const status = host.querySelector(".skill-graph-editor-status");
+    const saveButton = host.querySelector("[data-node-edit-action='save']");
+    const kind = selectedSkillGraphNodeKind(host, "data-node-edit-field");
+    const payload = {
+      title: host.querySelector("[data-node-edit-field='title']")?.value || "",
+      content: host.querySelector("[data-node-edit-field='content']")?.value || "",
+      entry_type: kind.entry_type,
+      skill_level: kind.skill_level,
+      tags: csvToList(host.querySelector("[data-node-edit-field='tags']")?.value),
+      dependent_node_ids: Array.from(host._skillGraphNodeDependencies || []),
+    };
+    status.textContent = "Saving...";
+    status.classList.remove("error");
+    saveButton.disabled = true;
+    try {
+      const resp = await fetch(`/api/skill-graph/nodes/${encodeURIComponent(edit.nodeId)}/edit`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      status.textContent = "Saved.";
+      await refreshSkillGraphData({ selectedNodeId: edit.nodeId });
+    } catch (err) {
+      status.classList.add("error");
+      status.textContent = `Save failed: ${String(err.message || err)}`;
+    } finally {
+      saveButton.disabled = false;
+    }
   }
 
   async function loadSkillGraphEditor(node, host) {

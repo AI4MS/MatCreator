@@ -7,7 +7,7 @@ lammps_tools.py — Generate LAMMPS input files for DeepMD/DPA MD simulations an
 *** NEVER suggest classical potentials as alternatives. ***
 
 By default the pretrained DPA3 model (from DEEPMD_MODEL_PATH) is frozen with the
-Omat24 head (dp --pt freeze --head Omat24), same convention as ase-deepmd.
+Omat24 head (dp --pt freeze --head Omat24), same convention as ase.
 
 Commands
 --------
@@ -257,7 +257,7 @@ def cmd_generate_input(args) -> dict:
     else:
         frame_iter = [(args.frame, read(str(args.structures), index=args.frame))]
 
-    # ── Resolve head (same convention as ase-deepmd) ───────────────────────
+    # ── Resolve head (same convention as ase) ───────────────────────
     head = args.head
     if head and head.lower() == "none":
         head = None

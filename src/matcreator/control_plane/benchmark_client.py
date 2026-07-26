@@ -2,10 +2,20 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+
+_BANK_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def sanitize_bank_id(value: str, *, prefix: str = "user-") -> str:
+    """Derive a safe, stable custom-bank identifier for one MatCreator owner."""
+    cleaned = _BANK_ID_RE.sub("-", value.strip()).strip("-.")[:64]
+    return f"{prefix}{cleaned}" if cleaned else f"{prefix}unknown"
 
 
 class BenchmarkApiError(RuntimeError):
@@ -153,6 +163,66 @@ class BenchmarkClient:
             f"/submit/{question_id}",
             params={"run_id": run_id},
             headers=self._headers({"Idempotency-Key": idempotency_key}),
+            files=files,
+        )
+        return response.json()
+
+    async def list_banks(self) -> list[dict[str, Any]]:
+        """List the custom question banks owned by this client's token."""
+        response = await self._request("GET", "/banks", headers=self._headers())
+        data = response.json()
+        banks = data.get("banks", data) if isinstance(data, dict) else data
+        if not isinstance(banks, list):
+            raise BenchmarkApiError("GET", "/banks", 502, "Benchmark bank listing response is invalid")
+        return banks
+
+    async def create_bank(self, bank_id: str, *, display_name: str | None = None) -> dict[str, Any]:
+        """Create a new token-owned custom question bank."""
+        payload: dict[str, Any] = {"bank_id": bank_id}
+        if display_name:
+            payload["display_name"] = display_name
+        response = await self._request(
+            "POST",
+            "/banks",
+            headers=self._headers({"Content-Type": "application/json"}),
+            json=payload,
+        )
+        return response.json()
+
+    async def ensure_bank(self, bank_id: str, *, display_name: str | None = None) -> dict[str, Any]:
+        """Create the bank if needed, or return the caller's existing bank record."""
+        try:
+            return await self.create_bank(bank_id, display_name=display_name)
+        except BenchmarkApiError as exc:
+            if exc.status_code != 409:
+                raise
+            for bank in await self.list_banks():
+                if bank.get("bank_id") == bank_id:
+                    return bank
+            raise
+
+    async def publish_question(
+        self,
+        bank_id: str,
+        *,
+        question: dict[str, Any],
+        data_files: list[tuple[str, Path]] | None = None,
+    ) -> dict[str, Any]:
+        """Add one question, with its declared data files, to a custom question bank."""
+        files: list[tuple[str, tuple[str, bytes, str]]] = [
+            ("question", (None, json.dumps(question), "application/json"))
+        ]
+        for declared_path, source in data_files or []:
+            files.append(
+                (
+                    "data_files",
+                    (declared_path, source.read_bytes(), "application/octet-stream"),
+                )
+            )
+        response = await self._request(
+            "POST",
+            f"/banks/{bank_id}/questions",
+            headers=self._headers(),
             files=files,
         )
         return response.json()
