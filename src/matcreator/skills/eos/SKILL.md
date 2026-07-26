@@ -10,7 +10,7 @@ metadata:
     - vasp-pymatgen
     - abacus
     - atomic-structure
-    - ase-deepmd
+    - ase
     - plot
   tags:
     - eos
