@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v2.16.0 (2026-07-26)
+
+### Chores
+
+- Update docs for evaluation
+  ([`cabd88c`](https://github.com/AI4MS/MatCreator/commit/cabd88cf0ec691418c52476e90bc99113936928a))
+
+
 ## v2.15.0 (2026-07-24)
 
 ### Bug Fixes
