@@ -12,57 +12,18 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, get_args
 
+from mat_bench.schemas import QuestionItem, VerifyLiteral
 import yaml
 
 
-SUPPORTED_VERIFY_TYPES = frozenset(
-    {
-        "artifact_exists",
-        "text_file_contains_all",
-        "text_file_regex",
-        "text_file_numeric_range",
-        "text_file_kpt_path",
-        "struct_file_atom_count",
-        "struct_file_formula",
-        "struct_file_bond_count",
-        "struct_file_bond_length",
-        "struct_file_bond_angle",
-        "struct_file_cell_param",
-        "struct_file_stoichiometry_ratio",
-        "struct_file_coordination",
-        "struct_file_layer_count",
-        "struct_file_count",
-        "struct_file_surface_termination",
-        "checkcif_no_a_alerts",
-    }
-)
-
-_TASK_TYPES = frozenset(
-    {
-        "search_and_interpretation",
-        "simulation",
-        "materials_design_and_discovery",
-        "material_characterization",
-        "synthesis_and_experiment_design",
-        "end_to_end_research",
-    }
-)
-_CAPABILITIES = frozenset(
-    {
-        "scientific_reasoning",
-        "tool_utilization",
-        "workflow_orchestration",
-        "data_handling",
-        "structure_manipulation",
-        "scientific_grounding",
-    }
-)
-_DOMAINS = frozenset({"battery", "catalysis", "polymer", "alloy", "semiconductor", "agnostic"})
-_DIFFICULTIES = frozenset({"easy", "medium", "hard"})
 _TEMPLATE_ID_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,79}")
 DEFAULT_TEMPLATE_ID = "default"
+
+# A draft is read-only once it has left MatCreator's review workspace, either by
+# filesystem export to the shared bank root or by publishing to a custom bank.
+LOCKED_DRAFT_STATUSES = frozenset({"exported", "published"})
 
 
 class SessionQuestionGeneratorPlugin(Protocol):
@@ -73,6 +34,36 @@ class SessionQuestionGeneratorPlugin(Protocol):
     async def generate(
         self, *, template_path: Path, session_path: Path, output_path: Path
     ) -> None: ...
+
+
+class BenchmarkBankClient(Protocol):
+    """Boundary for publishing an approved question to a token-owned custom bank."""
+
+    async def ensure_bank(self, bank_id: str, *, display_name: str | None = None) -> dict[str, Any]: ...
+
+    async def publish_question(
+        self,
+        bank_id: str,
+        *,
+        question: dict[str, Any],
+        data_files: list[tuple[str, Path]] | None = None,
+    ) -> dict[str, Any]: ...
+
+
+class QuestionGenerationDiagnosticError(ValueError):
+    """A user-safe generation failure with structured UI diagnostics."""
+
+    def __init__(self, message: str, *, diagnostics: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics
+
+
+class NoQuestionExtracted(ValueError):
+    """The selected session does not support one grounded benchmark question."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason.strip() or "No grounded benchmark question could be extracted."
+        super().__init__(self.reason)
 
 
 class BuiltinLlmQuestionGeneratorPlugin:
@@ -164,6 +155,297 @@ class BuiltinLlmQuestionGeneratorPlugin:
         temporary.replace(output_path)
 
 
+class MkbProjectionQuestionGeneratorPlugin:
+    """Generate one draft through MKB's template-driven projection agent stack.
+
+    MKB's stock projection runner owns an MKB knowledge-frame database. Session
+    evidence deliberately remains in MatCreator instead, so this adapter reuses
+    MKB's public projection prompt and runner without pretending a session is an
+    MKB frame or creating a second persistence system. By default it uses the
+    same model and credentials as MatCreator's configured agent.
+    """
+
+    name = "mkb_projection"
+
+    def __init__(
+        self, *, model: str, api_key: str | None = None, base_url: str | None = None
+    ) -> None:
+        if not model:
+            raise ValueError("The mkb_projection question generator requires an LLM model")
+        self.model = model
+        self.api_key = api_key
+        self.base_url = base_url
+
+    @classmethod
+    def from_config(
+        cls, config: dict[str, Any], generator_config: dict[str, Any] | None = None
+    ) -> MkbProjectionQuestionGeneratorPlugin:
+        """Use MKB-specific values only as explicit overrides of MatCreator LLM settings."""
+        if generator_config is None:
+            candidate = config.get("session_question_generator")
+            generator_config = candidate if isinstance(candidate, dict) else config
+        llm = config.get("llm") if isinstance(config.get("llm"), dict) else {}
+        return cls(
+            model=(
+                os.environ.get("MKB_EXTRACTION_MODEL")
+                or str(generator_config.get("model") or "")
+                or os.environ.get("LLM_MODEL")
+                or str(llm.get("model") or "")
+            ),
+            api_key=(
+                os.environ.get("MKB_LLM_API_KEY")
+                or str(generator_config.get("api_key") or "")
+                or os.environ.get("LLM_API_KEY")
+                or str(llm.get("api_key") or "")
+                or None
+            ),
+            base_url=(
+                os.environ.get("MKB_LLM_API_BASE")
+                or str(generator_config.get("base_url") or "")
+                or os.environ.get("LLM_BASE_URL")
+                or str(llm.get("base_url") or "")
+                or None
+            ),
+        )
+
+    @staticmethod
+    def _load_mkb_components() -> tuple[Any, Any, Any, Any]:
+        """Import optional MKB components only when this plugin is selected."""
+        try:
+            prompt_builder = import_module("mkb.agents.prompts.projection").build_projection_prompt
+            agent_runner = import_module("mkb.agents.runner").AgentRunner
+            agent = import_module("google.adk.agents").Agent
+            lite_llm = import_module("google.adk.models.lite_llm").LiteLlm
+        except (ImportError, AttributeError) as exc:
+            raise RuntimeError(
+                "The mkb_projection question generator requires mat-know-base with its "
+                "materials extra. Reinstall MatCreator's dependencies."
+            ) from exc
+        return prompt_builder, agent_runner, agent, lite_llm
+
+    @staticmethod
+    def _question_from_response(content: str) -> dict[str, Any]:
+        """Decode a single question from an LLM response without trusting prose.
+
+        MKB's standard projection prompt describes a ``questions`` JSON
+        document, while this session adapter asks for its one item directly.
+        Providers commonly add a Markdown fence or a one-line introduction
+        despite the latter instruction. Accept those harmless wrappers, plus
+        YAML (the target authoring format), but still require a mapping below.
+        """
+        text = (content or "").strip()
+        candidates = [text]
+        candidates.extend(
+            match.strip()
+            for match in re.findall(r"```(?:json|ya?ml)?\s*\n?(.*?)```", text, flags=re.IGNORECASE | re.DOTALL)
+            if match.strip()
+        )
+
+        question: Any = None
+        for candidate in candidates:
+            try:
+                question = json.loads(candidate)
+                break
+            except json.JSONDecodeError:
+                pass
+
+        if question is None:
+            decoder = json.JSONDecoder()
+            for match in re.finditer(r"[\[{]", text):
+                try:
+                    value, _end = decoder.raw_decode(text[match.start() :])
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, dict):
+                    question = value
+                    break
+
+        if question is None:
+            for candidate in candidates:
+                try:
+                    value = yaml.safe_load(candidate)
+                except yaml.YAMLError:
+                    continue
+                if isinstance(value, dict):
+                    question = value
+                    break
+
+        if question is None:
+            preview_limit = 4_000
+            preview = text[:preview_limit]
+            if len(text) > preview_limit:
+                preview += "\n… response truncated for display"
+            raise QuestionGenerationDiagnosticError(
+                "MKB projection agent did not return a JSON or YAML question object",
+                diagnostics={
+                    "generator": "mkb_projection",
+                    "stage": "parse_response",
+                    "response_length": len(text),
+                    "response_preview": preview or "(The model returned no text.)",
+                    "expected_format": "One JSON or YAML question object (or a questions list with exactly one item).",
+                },
+            )
+        if isinstance(question, dict):
+            if question.get("no_qa_extracted") is True:
+                raise NoQuestionExtracted(str(question.get("reason") or ""))
+            if isinstance(question.get("questions"), list):
+                questions = question["questions"]
+                if not questions:
+                    raise NoQuestionExtracted(
+                        str(question.get("reason") or "The session did not contain a grounded benchmark task.")
+                    )
+                if len(questions) != 1:
+                    raise ValueError("MKB projection agent must produce exactly one question")
+                question = questions[0]
+        if not isinstance(question, dict):
+            raise ValueError("MKB projection agent did not return an object")
+        return question
+
+    async def generate(
+        self, *, template_path: Path, session_path: Path, output_path: Path
+    ) -> None:
+        template = json.loads(template_path.read_text(encoding="utf-8"))
+        if not isinstance(template, dict):
+            raise ValueError("Question authoring template must contain an object")
+        invocation = json.loads(session_path.read_text(encoding="utf-8"))
+        if not isinstance(invocation, dict):
+            raise ValueError("Session question invocation must contain an object")
+
+        prompt_builder, agent_runner_class, agent_class, lite_llm_class = self._load_mkb_components()
+        extraction_schema = template.get("extraction_schema")
+        if not isinstance(extraction_schema, dict):
+            extraction_schema = {}
+        allowed_verify_types = template.get("executable_verify_types")
+        if not isinstance(allowed_verify_types, list):
+            allowed_verify_types = []
+        instruction = prompt_builder(
+            domain=str(template.get("domain") or "computational materials science"),
+            system_prompt=str(template.get("system_prompt") or ""),
+            extraction_schema=extraction_schema,
+            purpose=str(template.get("purpose") or "qa_benchmark"),
+            source_type="session",
+        )
+        instruction += (
+            "\n\n---\n\n# MatCreator session adapter\n"
+            "You are receiving bounded MatCreator session evidence directly in the user message, "
+            "not an MKB knowledge frame. Do not call or expect MKB tools, database records, "
+            "or source identifiers. Derive exactly one self-contained benchmark question from "
+            "the observed evidence. If no grounded question can be extracted, return only "
+            "{\"no_qa_extracted\": true, \"reason\": \"brief explanation\"}; never invent "
+            "unobserved inputs, artifacts, or reference values. Otherwise return only one bare "
+            "JSON question object; never a `questions` wrapper or Markdown.\n\n"
+            "MatCreator's executable verifier allowlist is authoritative and overrides any "
+            "conflicting MKB/template prose. Use only: "
+            + json.dumps(allowed_verify_types)
+            + ".\n"
+        )
+        if invocation.get("operation") == "refine":
+            instruction += (
+                "For a refinement, return a complete replacement of current_question. Preserve "
+                "grounded valid content, correct validation_errors, and follow user_instruction.\n"
+            )
+
+        agent = agent_class(
+            name="matcreator_session_question_projection",
+            model=lite_llm_class(
+                model=self.model,
+                api_key=self.api_key,
+                base_url=self.base_url,
+            ),
+            instruction=instruction,
+            tools=[],
+        )
+        runner = agent_runner_class(
+            agent=agent,
+            app_name="matcreator_session_question_generator",
+            max_llm_calls=1,
+        )
+        session_id = f"session-question-{uuid.uuid4().hex}"
+        await runner.create_session(session_id=session_id, user_id="matcreator")
+        result = await runner.run(
+            session_id=session_id,
+            user_id="matcreator",
+            message=json.dumps(invocation, ensure_ascii=False, sort_keys=True),
+        )
+        if not result.success:
+            raise RuntimeError(f"MKB projection agent failed: {result.error or 'unknown error'}")
+        question = self._question_from_response(result.final_text)
+        temporary = output_path.with_suffix(".tmp")
+        temporary.write_text(
+            yaml.safe_dump(question, allow_unicode=False, sort_keys=False), encoding="utf-8"
+        )
+        temporary.replace(output_path)
+
+
+@dataclass(frozen=True)
+class SessionQuestionGeneratorDefinition:
+    """Declarative registration for a selectable question-extraction agent."""
+
+    generator_id: str
+    label: str
+    description: str
+    factory: Callable[[dict[str, Any], dict[str, Any]], SessionQuestionGeneratorPlugin]
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "generator_id": self.generator_id,
+            "label": self.label,
+            "description": self.description,
+        }
+
+
+def _build_builtin_llm_generator(
+    config: dict[str, Any], _generator_config: dict[str, Any]
+) -> SessionQuestionGeneratorPlugin:
+    return BuiltinLlmQuestionGeneratorPlugin.from_config(config)
+
+
+def _build_mkb_projection_generator(
+    config: dict[str, Any], generator_config: dict[str, Any]
+) -> SessionQuestionGeneratorPlugin:
+    return MkbProjectionQuestionGeneratorPlugin.from_config(config, generator_config)
+
+
+# Register a new extraction agent here. The web UI discovers this registry via
+# the control-plane API; no frontend switch statement is required.
+SESSION_QUESTION_GENERATORS: dict[str, SessionQuestionGeneratorDefinition] = {
+    "builtin_llm": SessionQuestionGeneratorDefinition(
+        generator_id="builtin_llm",
+        label="MatCreator LLM",
+        description="Generate a question directly with MatCreator's configured LLM.",
+        factory=_build_builtin_llm_generator,
+    ),
+    "mkb_projection": SessionQuestionGeneratorDefinition(
+        generator_id="mkb_projection",
+        label="MKB projection agent",
+        description="Use MKB's template-driven QA benchmark projection agent.",
+        factory=_build_mkb_projection_generator,
+    ),
+}
+
+
+def list_session_question_generators() -> list[dict[str, str]]:
+    """Return UI-safe metadata for every registered extraction agent."""
+    return [definition.as_dict() for definition in SESSION_QUESTION_GENERATORS.values()]
+
+
+def has_session_question_generator(generator_id: str) -> bool:
+    return generator_id in SESSION_QUESTION_GENERATORS
+
+
+def build_session_question_generator(
+    generator_id: str, config: dict[str, Any]
+) -> SessionQuestionGeneratorPlugin:
+    """Instantiate a registered generator from application and plugin settings."""
+    definition = SESSION_QUESTION_GENERATORS.get(generator_id)
+    if definition is None:
+        raise ValueError(f"Unknown session question generator plugin: {generator_id}")
+    generator_config = config.get("session_question_generator")
+    if not isinstance(generator_config, dict):
+        generator_config = {}
+    return definition.factory(config, generator_config)
+
+
 class CallableSessionQuestionGenerator:
     """Adapt an async question callable to the file-oriented plugin contract."""
 
@@ -194,6 +476,8 @@ class GeneratedQuestionDraft:
     validation_errors: list[str]
     staging_path: Path
     refinement_count: int = 0
+    published_bank_id: str | None = None
+    published_question_id: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -205,6 +489,8 @@ class GeneratedQuestionDraft:
             "validation_errors": self.validation_errors,
             "staging_path": str(self.staging_path),
             "refinement_count": self.refinement_count,
+            "published_bank_id": self.published_bank_id,
+            "published_question_id": self.published_question_id,
         }
 
 
@@ -237,62 +523,25 @@ def build_session_question_evidence(session_log: dict[str, Any]) -> dict[str, An
     }
 
 
-def validate_question(
-    question: dict[str, Any], *, require_benchmark_schema: bool = False
-) -> list[str]:
-    """Validate the executable subset of the mat-agent-bench question contract."""
-    errors: list[str] = []
-    required = {
-        "id", "task_type", "capabilities", "domain", "difficulty", "intent",
-        "human_prompt_seed", "scoring_checklist",
-    }
-    missing = sorted(key for key in required if not question.get(key))
-    if missing:
-        errors.append(f"Missing required question fields: {', '.join(missing)}")
-    if question.get("task_type") not in _TASK_TYPES:
-        errors.append("task_type is not supported by mat-agent-bench")
-    if question.get("domain") not in _DOMAINS:
-        errors.append("domain is not supported by mat-agent-bench")
-    if question.get("difficulty", "medium") not in _DIFFICULTIES:
-        errors.append("difficulty must be easy, medium, or hard")
-    capabilities = question.get("capabilities")
-    if not isinstance(capabilities, list) or not capabilities:
-        errors.append("capabilities must be a non-empty list")
-    elif invalid := sorted(str(value) for value in capabilities if value not in _CAPABILITIES):
-        errors.append(f"Unsupported capabilities: {', '.join(invalid)}")
+def has_observable_session_question_evidence(evidence: dict[str, Any]) -> bool:
+    """Whether a session has material from which a grounded task can be authored."""
+    return any(
+        isinstance(evidence.get(key), list) and evidence[key]
+        for key in ("steps", "events", "artifacts")
+    )
 
-    references = question.get("reference_answers", [])
-    if not isinstance(references, list):
-        errors.append("reference_answers must be a list")
-        references = []
-    reference_keys = {item.get("key") for item in references if isinstance(item, dict)}
-    checks = question.get("scoring_checklist")
-    if not isinstance(checks, list) or not checks:
-        errors.append("scoring_checklist must be a non-empty list")
-        checks = []
-    for check in checks:
-        if not isinstance(check, dict):
-            errors.append("scoring_checklist entries must be objects")
-            continue
-        check_id = check.get("id")
-        verify = check.get("verify")
-        if not check_id or not check.get("criterion"):
-            errors.append("Every scoring checklist entry needs id and criterion")
-        if verify not in SUPPORTED_VERIFY_TYPES:
-            errors.append(f"Unsupported executable verifier: {verify}")
-        if check_id not in reference_keys:
-            errors.append(f"Checklist item '{check_id}' needs a matching reference answer")
-    if require_benchmark_schema:
-        try:
-            question_item = import_module("mat_bench.schemas").QuestionItem
-        except (ImportError, AttributeError):
-            errors.append("mat-agent-bench schema package is unavailable for export validation")
-        else:
-            try:
-                question_item.model_validate(question)
-            except ValueError as exc:
-                errors.append(f"mat-agent-bench schema validation failed: {exc}")
-    return errors
+
+def validate_question(question: dict[str, Any]) -> list[str]:
+    """Validate a generated question against the authoritative mat-bench schema."""
+    try:
+        QuestionItem.model_validate(question)
+    except ValueError as exc:
+        return [
+            f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+            + (f" (received {error['input']!r})" if "input" in error else "")
+            for error in exc.errors()
+        ]
+    return []
 
 
 def _safe_component(value: str) -> str:
@@ -309,7 +558,8 @@ def validate_question_template(template: dict[str, Any]) -> list[str]:
     if not isinstance(verify_types, list) or not verify_types:
         errors.append("Question authoring template needs executable_verify_types")
     else:
-        invalid = sorted({str(value) for value in verify_types if value not in SUPPORTED_VERIFY_TYPES})
+        supported_verify_types = frozenset(get_args(VerifyLiteral))
+        invalid = sorted({str(value) for value in verify_types if value not in supported_verify_types})
         if invalid:
             errors.append(f"Unsupported executable verifiers: {', '.join(invalid)}")
     if not isinstance(template.get("system_prompt"), str) or not template["system_prompt"].strip():
@@ -504,6 +754,40 @@ class StagedSessionQuestionService:
         return draft_path, question, metadata
 
     @staticmethod
+    def _data_file_path(root: Path, declared_path: str) -> Path:
+        if not isinstance(declared_path, str) or not declared_path:
+            raise ValueError("Question data-file path must be a non-empty string")
+        if "\\" in declared_path:
+            raise ValueError("Question data-file path must use forward slashes")
+        relative_path = Path(declared_path)
+        if (
+            declared_path == "."
+            or relative_path.is_absolute()
+            or any(part in {"", ".", ".."} for part in relative_path.parts)
+        ):
+            raise ValueError(f"Question data-file path '{declared_path}' is unsafe")
+        resolved = (root / relative_path).resolve()
+        if not resolved.is_relative_to(root):
+            raise ValueError(f"Question data-file path '{declared_path}' escapes the question directory")
+        return resolved
+
+    @classmethod
+    def _declared_data_file_paths(cls, question: dict[str, Any]) -> set[str]:
+        data_files = question.get("data_files") or []
+        if not isinstance(data_files, list):
+            raise ValueError("Question data_files must be a list")
+        declared_paths: set[str] = set()
+        for data_file in data_files:
+            if not isinstance(data_file, dict):
+                raise ValueError("Question data_files entries must be objects")
+            path = data_file.get("path")
+            cls._data_file_path(Path("/").resolve(), path)
+            if path in declared_paths:
+                raise ValueError(f"Question data-file path '{path}' is declared more than once")
+            declared_paths.add(path)
+        return declared_paths
+
+    @staticmethod
     def _draft_from_values(
         draft_path: Path, question: dict[str, Any], metadata: dict[str, Any]
     ) -> GeneratedQuestionDraft:
@@ -515,6 +799,8 @@ class StagedSessionQuestionService:
             validation_errors=list(metadata.get("validation_errors", [])),
             staging_path=draft_path,
             refinement_count=int(metadata.get("refinement_count", 0)),
+            published_bank_id=metadata.get("published_bank_id"),
+            published_question_id=metadata.get("published_question_id"),
         )
 
     @staticmethod
@@ -543,6 +829,7 @@ class StagedSessionQuestionService:
                     "refinement_count": int(metadata.get("refinement_count", 0)),
                     "updated_at": metadata.get("updated_at"),
                     "staging_path": str(draft_path),
+                    "published_bank_id": metadata.get("published_bank_id"),
                 }
         return sorted(drafts.values(), key=lambda item: str(item.get("updated_at") or ""), reverse=True)
 
@@ -559,6 +846,12 @@ class StagedSessionQuestionService:
         if not isinstance(template, dict):
             raise ValueError("Question authoring template must contain an object")
         evidence = build_session_question_evidence(session_log)
+        if not has_observable_session_question_evidence(evidence):
+            raise NoQuestionExtracted(
+                "The selected session has no observable execution steps, events, or artifacts. "
+                "Run work in that session or select a session with completed activity before "
+                "generating a benchmark question."
+            )
         draft_id = uuid.uuid4().hex
         invocation_path = (self.staging_root / f".{draft_id}.generating").resolve()
         if not invocation_path.is_relative_to(self.staging_root):
@@ -630,10 +923,34 @@ class StagedSessionQuestionService:
         draft_path, question, metadata = self._load(draft_id)
         return self._draft_from_values(draft_path, question, metadata)
 
+    def stage_data_file(
+        self, draft_id: str, declared_path: str, content: bytes
+    ) -> GeneratedQuestionDraft:
+        draft_path, question, metadata = self._load(draft_id, migrate=True)
+        if metadata.get("status") in LOCKED_DRAFT_STATUSES:
+            raise ValueError("An exported or published question draft cannot be changed")
+        if not isinstance(content, bytes):
+            raise ValueError("Question data-file upload must contain bytes")
+        declared_paths = self._declared_data_file_paths(question)
+        if declared_path not in declared_paths:
+            raise ValueError(f"Question data-file path '{declared_path}' is not declared in the draft")
+        destination = self._data_file_path(draft_path, declared_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(f".{destination.name}-{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_bytes(content)
+            temporary.replace(destination)
+        except OSError:
+            temporary.unlink(missing_ok=True)
+            raise
+        metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self._write_json(draft_path / "generation.json", metadata)
+        return self._draft_from_values(draft_path, question, metadata)
+
     def update(self, draft_id: str, question_yaml: str) -> GeneratedQuestionDraft:
         draft_path, _question, metadata = self._load(draft_id, migrate=True)
-        if metadata.get("status") == "exported":
-            raise ValueError("An exported question draft cannot be edited")
+        if metadata.get("status") in LOCKED_DRAFT_STATUSES:
+            raise ValueError("An exported or published question draft cannot be edited")
         try:
             question = yaml.safe_load(question_yaml)
         except yaml.YAMLError as exc:
@@ -654,8 +971,8 @@ class StagedSessionQuestionService:
         if self.generator is None or self.template_path is None:
             raise RuntimeError("Question generator is not configured")
         draft_path, question, metadata = self._load(draft_id, migrate=True)
-        if metadata.get("status") == "exported":
-            raise ValueError("An exported question draft cannot be refined")
+        if metadata.get("status") in LOCKED_DRAFT_STATUSES:
+            raise ValueError("An exported or published question draft cannot be refined")
         instruction = (user_instruction or "").strip()
         if len(instruction) > 2000:
             raise ValueError("Refinement instruction must be at most 2000 characters")
@@ -739,6 +1056,39 @@ class StagedSessionQuestionService:
         self._write_json(draft_path / "generation.json", metadata)
         return self._draft_from_values(draft_path, question, metadata)
 
+    async def publish(
+        self,
+        draft_id: str,
+        client: BenchmarkBankClient,
+        bank_id: str,
+        *,
+        display_name: str | None = None,
+    ) -> GeneratedQuestionDraft:
+        """Publish an approved draft to a token-owned custom question bank over HTTP."""
+        draft_path, question, metadata = self._load(draft_id, migrate=True)
+        if metadata.get("status") != "approved":
+            raise ValueError("Question draft must be approved before it can be published")
+        errors = validate_question(question)
+        if errors:
+            raise ValueError("Question draft has validation errors and cannot be published")
+        declared_paths = self._declared_data_file_paths(question)
+        data_files: list[tuple[str, Path]] = []
+        for declared_path in declared_paths:
+            source = self._data_file_path(draft_path, declared_path)
+            if source.is_symlink() or not source.is_file():
+                raise ValueError(
+                    f"Question data file '{declared_path}' is missing from the staged draft"
+                )
+            data_files.append((declared_path, source))
+        await client.ensure_bank(bank_id, display_name=display_name)
+        result = await client.publish_question(bank_id, question=question, data_files=data_files)
+        metadata["status"] = "published"
+        metadata["published_bank_id"] = bank_id
+        metadata["published_question_id"] = str(result.get("question_id") or question.get("id") or "")
+        metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self._write_json(draft_path / "generation.json", metadata)
+        return self._draft_from_values(draft_path, question, metadata)
+
     def export(self, draft_id: str, question_bank_root: str | Path) -> GeneratedQuestionDraft:
         draft_path, question, metadata = self._load(draft_id, migrate=True)
         if metadata.get("status") != "approved":
@@ -746,8 +1096,7 @@ class StagedSessionQuestionService:
         errors = validate_question(question)
         if errors:
             raise ValueError("Question draft has validation errors and cannot be exported")
-        if question.get("data_files"):
-            raise ValueError("Exporting generated question data files is not supported yet")
+        declared_paths = self._declared_data_file_paths(question)
         question_id = _safe_component(str(question.get("id") or ""))
         if question_id != question.get("id"):
             raise ValueError("Question id contains unsupported path characters")
@@ -762,8 +1111,17 @@ class StagedSessionQuestionService:
         try:
             temporary.mkdir()
             self._write_yaml(temporary / "question.yaml", question)
+            for declared_path in declared_paths:
+                source = self._data_file_path(draft_path, declared_path)
+                if source.is_symlink() or not source.is_file():
+                    raise ValueError(
+                        f"Question data file '{declared_path}' is missing from the staged draft"
+                    )
+                destination = self._data_file_path(temporary, declared_path)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
             temporary.replace(target)
-        except OSError:
+        except (OSError, ValueError):
             shutil.rmtree(temporary, ignore_errors=True)
             raise
         metadata["status"] = "exported"

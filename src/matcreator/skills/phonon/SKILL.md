@@ -5,7 +5,7 @@ metadata:
   tools:
     - run_skill_script
   dependent_skills:
-    - ase-deepmd
+    - ase
     - dpa4
   tags:
     - phonon
