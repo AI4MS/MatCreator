@@ -190,6 +190,24 @@ class RemoteJobService:
         )
         return {"source": str(source_path), "destination": destination}
 
+    def download_e2b_file(self, job_id: str, source: str, destination: str | Path) -> dict[str, Any]:
+        """Download one sandbox file to a local destination path.
+
+        Streams the file via the E2B filesystem API so large outputs (CHGCAR,
+        vasprun.xml, PNG) are not truncated by command-output limits.
+        """
+        job = self._get_e2b_job(job_id)
+        if job["status"] not in {"queued", "running", "resuming"}:
+            raise ValueError(f"E2B job '{job_id}' cannot serve files while {job['status']}")
+        dest_path = Path(destination).expanduser().resolve()
+        self.e2b_adapter.download_file(job["external_id"], source, dest_path)
+        self.store.merge_observation(
+            job_id,
+            snapshot={"provider_status": "reachable", "last_download": Path(source).name},
+            error=None,
+        )
+        return {"source": source, "destination": str(dest_path)}
+
     def _get_e2b_job(self, job_id: str) -> dict[str, Any]:
         job = self.store.get_job(job_id)
         if job is None:

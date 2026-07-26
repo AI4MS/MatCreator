@@ -29,6 +29,8 @@ def _node_id(tool_context: ToolContext) -> str:
 
 
 def _connection() -> E2BConnectionConfig:
+    # Bohrium E2B endpoint uses bare hex keys; disable SDK format validation
+    os.environ.setdefault("E2B_VALIDATE_API_KEY", "false")
     return E2BConnectionConfig(
         api_key=os.environ.get("E2B_API_KEY", ""),
         api_url=os.environ.get("E2B_API_URL", ""),
@@ -161,6 +163,27 @@ def run_e2b_command(
         return result
 
 
+def _resolve_workspace_child(
+    tool_context: ToolContext,
+    user_path: str,
+) -> tuple[Path | None, str | None]:
+    """Resolve ``user_path`` against the current workspace, confining it.
+
+    Returns ``(resolved_path, None)`` on success or ``(None, message)`` if the
+    workspace is unavailable or the path escapes it. Shared by upload (source)
+    and download (destination) so confinement logic cannot drift between them.
+    """
+    workspace_dir = tool_context.state.get("workspace_dir")
+    if not workspace_dir:
+        return None, "No workspace_dir is available for the current step."
+    workspace = Path(str(workspace_dir)).resolve()
+    candidate = Path(user_path).expanduser()
+    candidate = candidate.resolve() if candidate.is_absolute() else (workspace / candidate).resolve()
+    if not candidate.is_relative_to(workspace):
+        return None, "Path must resolve inside the current workspace."
+    return candidate, None
+
+
 def upload_e2b_input(
     job_id: str,
     source_path: str,
@@ -175,12 +198,35 @@ def upload_e2b_input(
     job = get_e2b_job_status(job_id, tool_context)
     if job.get("status") == "error":
         return job
-    workspace = Path(str(tool_context.state.get("workspace_dir") or "")).resolve()
-    source = Path(source_path).expanduser()
-    source = source.resolve() if source.is_absolute() else (workspace / source).resolve()
-    if not workspace or not source.is_relative_to(workspace):
-        return {"status": "error", "message": "E2B upload source must be inside the current workspace."}
+    source, error = _resolve_workspace_child(tool_context, source_path)
+    if error is not None:
+        return {"status": "error", "message": f"E2B upload failed: {error}"}
     try:
         return _service().upload_e2b_file(job_id, source, destination_path)
     except Exception as exc:
         return {"status": "error", "message": f"E2B upload failed: {exc}"}
+
+
+def download_e2b_output(
+    job_id: str,
+    source_path: str,
+    destination_path: str,
+    tool_context: ToolContext,
+) -> dict[str, Any]:
+    """Download a file from a tracked E2B sandbox into the local workspace.
+
+    ``source_path`` is an absolute path inside the sandbox (e.g.
+    ``/home/user/CHGCAR``). ``destination_path`` must resolve inside the
+    current workspace. Large binary outputs are streamed via the E2B
+    filesystem API, so they are not truncated by command-output limits.
+    """
+    job = get_e2b_job_status(job_id, tool_context)
+    if job.get("status") == "error":
+        return job
+    destination, error = _resolve_workspace_child(tool_context, destination_path)
+    if error is not None:
+        return {"status": "error", "message": f"E2B download failed: {error}"}
+    try:
+        return _service().download_e2b_file(job_id, source_path, destination)
+    except Exception as exc:
+        return {"status": "error", "message": f"E2B download failed: {exc}"}
