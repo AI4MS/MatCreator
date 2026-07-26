@@ -48,6 +48,9 @@ class _FakeService:
     def upload_e2b_file(self, job_id: str, source, destination: str):
         return {"source": str(source), "destination": destination}
 
+    def download_e2b_file(self, job_id: str, source: str, destination: str):
+        return {"source": source, "destination": str(destination)}
+
 
 def _context():
     return SimpleNamespace(
@@ -150,3 +153,32 @@ def test_e2b_command_and_workspace_upload_are_scoped_to_owned_job(tmp_path, monk
         "source": str(source), "destination": "/home/user/input.txt"
     }
     assert e2b_tools.upload_e2b_input("job-123", "/tmp/outside.txt", "/tmp/outside.txt", context)["status"] == "error"
+
+
+def test_download_e2b_output_is_scoped_to_workspace(tmp_path, monkeypatch) -> None:
+    service = _FakeService()
+    monkeypatch.setattr(e2b_tools, "_service", lambda: service)
+    context = _context()
+    context.state["workspace_dir"] = str(tmp_path)
+    destination = tmp_path / "outputs" / "CHGCAR"
+
+    result = e2b_tools.download_e2b_output(
+        "job-123", "/home/user/CHGCAR", str(destination), context
+    )
+    assert result == {"source": "/home/user/CHGCAR", "destination": str(destination.resolve())}
+
+    assert e2b_tools.download_e2b_output(
+        "job-123", "/home/user/CHGCAR", "/tmp/outside.txt", context
+    )["status"] == "error"
+
+
+def test_download_e2b_output_rejects_missing_workspace_dir(monkeypatch) -> None:
+    service = _FakeService()
+    monkeypatch.setattr(e2b_tools, "_service", lambda: service)
+    context = _context()  # no workspace_dir set
+
+    result = e2b_tools.download_e2b_output(
+        "job-123", "/home/user/CHGCAR", "outputs/CHGCAR", context
+    )
+    assert result["status"] == "error"
+    assert "workspace_dir" in result["message"]

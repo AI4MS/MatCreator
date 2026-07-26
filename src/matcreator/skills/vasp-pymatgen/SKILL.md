@@ -165,3 +165,10 @@ For the full submission template and environment variables for VASP job on bohri
 load_skill_resource(skill_name="vasp-pymatgen", path="references/bohr.md")
 ```
 
+### E2B sandbox execution
+
+Run VASP inside a Bohrium E2B cloud sandbox: environment setup (oneAPI), `mpirun`, completion verification, file I/O, streaming download of large outputs, and the API key format caveat.
+
+```
+load_skill_resource(skill_name="vasp-pymatgen", path="references/e2b-sandbox-execution.md")
+```

@@ -259,7 +259,8 @@ body[data-theme="light"] .custom-select-options li[aria-selected="true"] {
 .remote-job.status-running, .remote-job.status-reachable { border-left-color: var(--accent); }
 .remote-job.status-paused { border-left-color: #fbbf24; }
 .remote-job.status-succeeded, .remote-job.status-collected { border-left-color: #4ade80; }
-.remote-job.status-terminated, .remote-job.status-failed, .remote-job.status-lost { border-left-color: #f87171; }
+.remote-job.status-terminated { border-left-color: #4ade80; }
+.remote-job.status-failed, .remote-job.status-lost { border-left-color: #f87171; }
 .remote-job-header { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
 .remote-job-provider { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--accent); }
 .remote-job-status { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -26,6 +26,15 @@ class _FakeE2BAdapter:
             self.on_run()
         return {"stdout": "", "stderr": "", "exit_code": 0}
 
+    def upload_file(self, sandbox_id: str, source, destination: str) -> None:
+        self.uploads = getattr(self, "uploads", [])
+        self.uploads.append((sandbox_id, str(source), destination))
+
+    def download_file(self, sandbox_id: str, source: str, destination) -> str:
+        self.downloads = getattr(self, "downloads", [])
+        self.downloads.append((sandbox_id, source, str(destination)))
+        return str(destination)
+
 
 def _connection() -> E2BConnectionConfig:
     return E2BConnectionConfig(
@@ -103,5 +112,28 @@ def test_e2b_command_merges_telemetry_after_monitor_observation(tmp_path) -> Non
         "provider_status": "reachable",
         "monitor_probe": "fresh",
         "last_command_exit_code": 0,
+    }
+
+
+def test_download_e2b_file_merges_telemetry_and_returns_paths(tmp_path) -> None:
+    adapter = _FakeE2BAdapter()
+    store = RemoteJobStore(tmp_path / "remote-jobs.db")
+    service = RemoteJobService(store, e2b_adapter=adapter)
+    job = service.submit_e2b(
+        owner_id="alice",
+        session_id="session-1",
+        idempotency_key="session-1:node-1:1",
+        connection=_connection(),
+    )
+    dest = tmp_path / "CHGCAR"
+
+    result = service.download_e2b_file(job["job_id"], "/home/user/CHGCAR", dest)
+
+    assert result == {"source": "/home/user/CHGCAR", "destination": str(dest.resolve())}
+    assert adapter.downloads == [("sandbox-123", "/home/user/CHGCAR", str(dest.resolve()))]
+    assert store.get_job(job["job_id"])["snapshot"] == {
+        "provider_status": "reachable",
+        "sandbox_id": "sandbox-123",
+        "last_download": "CHGCAR",
     }
 
