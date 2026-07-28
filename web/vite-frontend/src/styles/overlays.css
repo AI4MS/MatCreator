@@ -936,6 +936,7 @@ body[data-theme="light"] .panel-resizer.resizing::before {
 
 .settings-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   padding: 10px 16px 0;
   border-bottom: 1px solid var(--border);

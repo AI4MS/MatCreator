@@ -11,6 +11,20 @@ class _FakeToolContext:
         self.state = {}
 
 
+def test_execution_timeout_uses_valid_user_setting(monkeypatch):
+    monkeypatch.delenv("MATCREATOR_EXEC_TIMEOUT_SECONDS", raising=False)
+    assert workspace_tools._execution_timeout_seconds() == 3600
+
+    monkeypatch.setenv("MATCREATOR_EXEC_TIMEOUT_SECONDS", "7200")
+    assert workspace_tools._execution_timeout_seconds() == 7200
+
+
+def test_execution_timeout_rejects_invalid_user_setting(monkeypatch):
+    for value in ("0", "-10", "not-a-number"):
+        monkeypatch.setenv("MATCREATOR_EXEC_TIMEOUT_SECONDS", value)
+        assert workspace_tools._execution_timeout_seconds() == 3600
+
+
 def test_set_session_output_dir_sets_output_state_under_workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("MATCLAW_WORKSPACE", str(tmp_path))
     tool_context = _FakeToolContext()

@@ -77,6 +77,8 @@ def test_server_mode_config_overrides_container_defaults(monkeypatch, tmp_path: 
     (matcreator_home / "config.yaml").write_text(
         "llm:\n"
         "  model: openai/user-model\n"
+        "runtime:\n"
+        "  execution_timeout_seconds: 7200\n"
         "env:\n"
         "  MP_API_KEY: user-mp-key\n",
         encoding="utf-8",
@@ -93,6 +95,7 @@ def test_server_mode_config_overrides_container_defaults(monkeypatch, tmp_path: 
 
     assert constants.LLM_MODEL == "openai/user-model"
     assert constants.os.environ["LLM_MODEL"] == "openai/user-model"
+    assert constants.os.environ["MATCREATOR_EXEC_TIMEOUT_SECONDS"] == "7200"
     assert constants.os.environ["MP_API_KEY"] == "user-mp-key"
 
 

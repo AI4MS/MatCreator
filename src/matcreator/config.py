@@ -81,6 +81,9 @@ YAML_TO_ENV: dict[str, str] = {
     "compute.deepmd_machine": "BOHRIUM_DEEPMD_MACHINE",
     "compute.deepmd_model_path": "DEEPMD_MODEL_PATH",
     "benchmark.server_url":   "MAT_BENCH_SERVER_URL",
+    "benchmark.token":        "MAT_BENCH_TOKEN",
+    "benchmark.question_bank_root": "MAT_BENCH_QUESTION_BANK_ROOT",
+    "runtime.execution_timeout_seconds": "MATCREATOR_EXEC_TIMEOUT_SECONDS",
     "skills.module_root":     "MATCREATOR_MODULE_SKILLS_ROOT",
     "knowledge.memorization_frequency": "MATCREATOR_MEMORIZATION_FREQUENCY",
     "knowledge.review_frequency": "MATCREATOR_REVIEW_FREQUENCY",
@@ -89,7 +92,12 @@ YAML_TO_ENV: dict[str, str] = {
 ENV_TO_YAML: dict[str, str] = {v: k for k, v in YAML_TO_ENV.items()}
 
 # Fields whose values should be masked when displayed.
-SENSITIVE_YAML_KEYS = frozenset({"llm.api_key", "bohrium.password", "bohrium.access_key"})
+SENSITIVE_YAML_KEYS = frozenset({
+    "llm.api_key",
+    "bohrium.password",
+    "bohrium.access_key",
+    "benchmark.token",
+})
 _USER_ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _PROTECTED_USER_ENV_KEYS = frozenset({
     "HOME",

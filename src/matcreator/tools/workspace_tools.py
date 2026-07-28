@@ -8,7 +8,7 @@ Security contract
 -----------------
 * ``write_workspace_file``  only writes inside the workspace root (path
   traversal is rejected).
-* ``run_python`` / ``run_bash`` execute in a subprocess with a 60-second
+* ``run_python`` / ``run_bash`` execute in a subprocess with a configurable
   timeout.  The agent must always present the code/command to the user and
   obtain explicit approval before calling these tools (enforced by the
   thinking_agent instruction).
@@ -274,14 +274,26 @@ def create_skill(
 # Script execution tools
 # ---------------------------------------------------------------------------
 
-_EXEC_TIMEOUT = 3600  # seconds
+_DEFAULT_EXEC_TIMEOUT_SECONDS = 3600
+
+
+def _execution_timeout_seconds() -> int:
+    """Return the user-configured subprocess timeout, falling back safely."""
+    raw_value = os.environ.get("MATCREATOR_EXEC_TIMEOUT_SECONDS", "").strip()
+    if not raw_value:
+        return _DEFAULT_EXEC_TIMEOUT_SECONDS
+    try:
+        timeout = int(raw_value)
+    except ValueError:
+        return _DEFAULT_EXEC_TIMEOUT_SECONDS
+    return timeout if timeout > 0 else _DEFAULT_EXEC_TIMEOUT_SECONDS
 
 
 async def run_python(code: str, tool_context: ToolContext) -> str:
     """Execute a Python code snippet and return its stdout/stderr.
 
     IMPORTANT: Only call this tool after the user has explicitly approved the
-    code to be run.  The code runs in a subprocess with a 60-second timeout.
+    code to be run. The timeout is configured in Settings (default: 3600s).
 
     Args:
         code: Python source code to execute.
@@ -301,11 +313,12 @@ async def run_python(code: str, tool_context: ToolContext) -> str:
         cwd=cwd,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_EXEC_TIMEOUT)
+        timeout = _execution_timeout_seconds()
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
         stdout, stderr = await proc.communicate()
-        output = f"[TimeoutExpired after {_EXEC_TIMEOUT}s]\n" + stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
+        output = f"[TimeoutExpired after {timeout}s]\n" + stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
     except asyncio.CancelledError:
         proc.kill()
         await proc.communicate()
@@ -321,7 +334,7 @@ async def run_bash(script: str, tool_context: ToolContext) -> str:
     """Execute a bash script snippet and return its stdout/stderr.
 
     IMPORTANT: Only call this tool after the user has explicitly approved the
-    script to be run.  The script runs in a subprocess with a 60-second timeout.
+    script to be run. The timeout is configured in Settings (default: 3600s).
 
     Args:
         script: Bash script content to execute.
@@ -341,11 +354,12 @@ async def run_bash(script: str, tool_context: ToolContext) -> str:
         cwd=cwd,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_EXEC_TIMEOUT)
+        timeout = _execution_timeout_seconds()
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
         stdout, stderr = await proc.communicate()
-        output = f"[TimeoutExpired after {_EXEC_TIMEOUT}s]\n" + stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
+        output = f"[TimeoutExpired after {timeout}s]\n" + stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
     except asyncio.CancelledError:
         proc.kill()
         await proc.communicate()
@@ -379,11 +393,12 @@ async def run_python_file(relative_path: str) -> str:
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_EXEC_TIMEOUT)
+        timeout = _execution_timeout_seconds()
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
         stdout, stderr = await proc.communicate()
-        output = f"[TimeoutExpired after {_EXEC_TIMEOUT}s]\n" + stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
+        output = f"[TimeoutExpired after {timeout}s]\n" + stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
     except asyncio.CancelledError:
         proc.kill()
         await proc.communicate()
@@ -471,11 +486,12 @@ async def run_skill_script(
         env=env,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_EXEC_TIMEOUT)
+        timeout = _execution_timeout_seconds()
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
         stdout, stderr = await proc.communicate()
-        output = f"[TimeoutExpired after {_EXEC_TIMEOUT}s]\n" + stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
+        output = f"[TimeoutExpired after {timeout}s]\n" + stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
     except asyncio.CancelledError:
         proc.kill()
         await proc.communicate()
