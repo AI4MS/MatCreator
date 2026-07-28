@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sqlite3
 from types import SimpleNamespace
+from unittest import mock
 
 from matcreator.agents.execution_agent.recovery import (
+    active_remote_job_for_attempt,
     finish_node_attempt,
     heartbeat_node_attempt,
     record_remote_job_reference,
@@ -15,10 +18,11 @@ from matcreator.agents.execution_agent.recovery import (
 )
 from matcreator.agents.execution_graph_state import get_execution_graph, set_execution_graph
 from matcreator.control_plane.remote_jobs import RemoteJobStore
-from matcreator.agents.thinking_agent.planning import validate_graph
+from matcreator.agents.thinking_agent.planning import get_ready_nodes, validate_graph
 from matcreator.agents.thinking_agent.agent import (
     confirm_plan_and_start_execution,
     resume_execution,
+    run_flash_step,
 )
 
 
@@ -446,3 +450,210 @@ def test_reconcile_waits_for_active_remote_job_instead_of_resubmitting(tmp_path,
         "external_id": "sandbox-123",
         "status": "running",
     }
+
+
+def _running_remote_job(store, *, session_id="session-1", node_id="node-a"):
+    job = store.create_job(
+        owner_id="alice",
+        session_id=session_id,
+        node_id=node_id,
+        provider="e2b",
+        idempotency_key=f"{session_id}:{node_id}:1",
+    )
+    submitting = store.transition_job(job["job_id"], "submitting")
+    return store.transition_job(
+        job["job_id"],
+        "running",
+        external_id="sandbox-123",
+        expected_revision=submitting["state_revision"],
+    )
+
+
+def _waiting_attempt(tmp_path, recovery_dir, job):
+    attempt = start_node_attempt(
+        workspace_dir=tmp_path,
+        session_id="session-1",
+        node_id="node-a",
+        step_id="execution_0__node_node-a",
+        step_number=1,
+        action="do remote work",
+        suggested_skills=["e2b"],
+        prior_context=None,
+        recovery_base_dir=recovery_dir,
+    )
+    record_remote_job_reference(
+        session_id="session-1",
+        node_id="node-a",
+        job_id=job["job_id"],
+        provider="e2b",
+        external_id="sandbox-123",
+        recovery_base_dir=recovery_dir,
+    )
+    heartbeat_node_attempt(attempt)
+    finish_node_attempt(
+        attempt,
+        status="waiting",
+        message="Executor released; remote job still running.",
+    )
+    return attempt
+
+
+def test_active_remote_job_is_visible_to_a_live_attempt(tmp_path, monkeypatch):
+    recovery_dir = tmp_path / "adk-recovery"
+    adk_dir = tmp_path / "adk"
+    monkeypatch.setattr("matcreator.agents.execution_agent.recovery.ADK_DIR", adk_dir)
+    store = RemoteJobStore(adk_dir / "remote-jobs.db")
+    job = _running_remote_job(store)
+    attempt = start_node_attempt(
+        workspace_dir=tmp_path,
+        session_id="session-1",
+        node_id="node-a",
+        step_id="execution_0__node_node-a",
+        step_number=1,
+        action="do remote work",
+        suggested_skills=["e2b"],
+        prior_context=None,
+        recovery_base_dir=recovery_dir,
+    )
+    record_remote_job_reference(
+        session_id="session-1",
+        node_id="node-a",
+        job_id=job["job_id"],
+        provider="e2b",
+        external_id="sandbox-123",
+        recovery_base_dir=recovery_dir,
+    )
+
+    # The in-memory attempt has not heartbeated since submission, so the lookup
+    # must reload the reference from the durable record.
+    assert "remote_job" not in attempt
+    active = active_remote_job_for_attempt(attempt)
+
+    assert active is not None
+    assert active["job_id"] == job["job_id"]
+
+
+def test_waiting_attempt_keeps_node_waiting_while_remote_job_is_active(tmp_path, monkeypatch):
+    recovery_dir = tmp_path / "adk-recovery"
+    adk_dir = tmp_path / "adk"
+    monkeypatch.setattr("matcreator.agents.execution_agent.recovery.ADK_DIR", adk_dir)
+    store = RemoteJobStore(adk_dir / "remote-jobs.db")
+    job = _running_remote_job(store)
+    _waiting_attempt(tmp_path, recovery_dir, job)
+    state = {
+        "session_id": "session-1",
+        "execution_graph": {"nodes": {"node-a": {"status": "running"}}, "edges": []},
+    }
+
+    recovered = reconcile_recovery_state(
+        state, tmp_path, stale_after_seconds=1, recovery_base_dir=recovery_dir
+    )
+
+    assert recovered == [{"node_id": "node-a", "action": "wait_for_remote_job", "status": "waiting"}]
+    node = get_execution_graph(state)["nodes"]["node-a"]
+    assert node["status"] == "waiting"
+    assert node["remote_job"]["job_id"] == job["job_id"]
+
+
+def test_waiting_node_becomes_pending_once_its_remote_job_settles(tmp_path, monkeypatch):
+    recovery_dir = tmp_path / "adk-recovery"
+    adk_dir = tmp_path / "adk"
+    monkeypatch.setattr("matcreator.agents.execution_agent.recovery.ADK_DIR", adk_dir)
+    store = RemoteJobStore(adk_dir / "remote-jobs.db")
+    job = _running_remote_job(store)
+    _waiting_attempt(tmp_path, recovery_dir, job)
+    store.transition_job(job["job_id"], "succeeded")
+    state = {
+        "session_id": "session-1",
+        "execution_graph": {"nodes": {"node-a": {"status": "waiting"}}, "edges": []},
+    }
+
+    recovered = reconcile_recovery_state(
+        state, tmp_path, stale_after_seconds=1, recovery_base_dir=recovery_dir
+    )
+
+    assert recovered == [
+        {"node_id": "node-a", "action": "resume_after_remote_job", "status": "pending"}
+    ]
+    assert get_execution_graph(state)["nodes"]["node-a"]["status"] == "pending"
+
+
+def test_reconcile_does_not_undo_a_planner_resume_of_a_waiting_node(tmp_path, monkeypatch):
+    recovery_dir = tmp_path / "adk-recovery"
+    adk_dir = tmp_path / "adk"
+    monkeypatch.setattr("matcreator.agents.execution_agent.recovery.ADK_DIR", adk_dir)
+    store = RemoteJobStore(adk_dir / "remote-jobs.db")
+    job = _running_remote_job(store)
+    _waiting_attempt(tmp_path, recovery_dir, job)
+    # The planner explicitly moved the waiting node back to pending so a fresh
+    # executor can re-attach and poll the still-running job.
+    state = {
+        "session_id": "session-1",
+        "execution_graph": {
+            "nodes": {
+                "node-a": {
+                    "status": "pending",
+                    "recovery": {"status": "waiting_remote"},
+                    "remote_job": {"job_id": job["job_id"]},
+                }
+            },
+            "edges": [],
+        },
+    }
+
+    recovered = reconcile_recovery_state(
+        state, tmp_path, stale_after_seconds=1, recovery_base_dir=recovery_dir
+    )
+
+    assert recovered == []
+    assert get_execution_graph(state)["nodes"]["node-a"]["status"] == "pending"
+
+
+def test_ready_nodes_carry_the_remote_job_a_resumed_node_must_re_attach_to():
+    tool_context = SimpleNamespace(state={})
+    set_execution_graph(tool_context.state, {
+        "nodes": {
+            "step_train": {
+                "status": "pending",
+                "label": "Train",
+                "action": "train the model",
+                "suggested_skills": [],
+                "remote_job": {
+                    "job_id": "job-1",
+                    "provider": "e2b",
+                    "external_id": "sandbox-123",
+                    "status": "running",
+                },
+            },
+            "step_wait": {"status": "waiting", "remote_job": {"job_id": "job-2"}},
+        },
+        "edges": [],
+    })
+
+    result = get_ready_nodes(tool_context)
+
+    assert result["count"] == 1
+    assert result["ready_nodes"][0]["remote_job"]["job_id"] == "job-1"
+    assert result["waiting_nodes"] == [
+        {"node_id": "step_wait", "remote_job": {"job_id": "job-2"}}
+    ]
+
+
+def test_flash_step_node_id_is_stable_across_retries_of_the_same_action():
+    captured: list[str] = []
+
+    async def fake_run_step_executor(**kwargs):
+        captured.append(kwargs["node_id"])
+        return {"status": "success"}
+
+    tool_context = SimpleNamespace(state={})
+    with mock.patch(
+        "matcreator.agents.execution_agent.step_executor_runner.run_step_executor",
+        fake_run_step_executor,
+    ):
+        asyncio.run(run_flash_step("submit the training job", [], tool_context))
+        asyncio.run(run_flash_step("submit the training job", [], tool_context))
+        asyncio.run(run_flash_step("a different action", [], tool_context))
+
+    assert captured[0] == captured[1]
+    assert captured[2] != captured[0]

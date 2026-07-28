@@ -326,14 +326,30 @@ def get_ready_nodes(tool_context: ToolContext) -> dict:
             nodes.get(pred, {}).get("status") == "success"
             for pred in predecessors.get(node_id, set())
         ):
-            ready.append({
+            ready_node = {
                 "node_id": node_id,
                 "label": node.get("label", node_id),
                 "action": node.get("action", ""),
                 "suggested_skills": node.get("suggested_skills", []),
-            })
+            }
+            # A node resumed from a remote-job handoff carries the job identity so
+            # its executor re-attaches instead of submitting a duplicate job.
+            if isinstance(node.get("remote_job"), dict):
+                ready_node["remote_job"] = node["remote_job"]
+            ready.append(ready_node)
 
-    return {"status": "ok", "ready_nodes": ready, "count": len(ready)}
+    waiting = [
+        {"node_id": node_id, "remote_job": node.get("remote_job")}
+        for node_id, node in nodes.items()
+        if node.get("status") == "waiting"
+    ]
+
+    return {
+        "status": "ok",
+        "ready_nodes": ready,
+        "count": len(ready),
+        "waiting_nodes": waiting,
+    }
 
 
 # ---------------------------------------------------------------------------

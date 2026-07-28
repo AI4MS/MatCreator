@@ -14,6 +14,23 @@ from ..execution_graph_state import get_execution_graph, set_execution_graph
 _RECOVERY_DIR = "recovery"
 _STALE_AFTER_SECONDS = int(os.environ.get("STEP_RECOVERY_STALE_AFTER", "60"))
 
+# A job in one of these states is still doing work on the provider, so no
+# executor can make progress on it yet.  ``succeeded``/``collecting`` are
+# deliberately excluded: those mean results are ready to be collected, which is
+# exactly the point at which a node should run again.
+_REMOTE_JOB_IN_PROGRESS_STATUSES = frozenset(
+    {
+        "created",
+        "submitting",
+        "queued",
+        "running",
+        "pause_requested",
+        "paused",
+        "resume_requested",
+        "resuming",
+    }
+)
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -245,7 +262,11 @@ def _refresh_remote_job_reference(attempt: dict[str, Any]) -> None:
         attempt["remote_job"] = persisted["remote_job"]
 
 
-def _active_remote_job(attempt: dict[str, Any]) -> dict[str, Any] | None:
+def _active_remote_job(
+    attempt: dict[str, Any],
+    *,
+    statuses: frozenset[str] = ACTIVE_REMOTE_JOB_STATUSES,
+) -> dict[str, Any] | None:
     reference = attempt.get("remote_job")
     if not isinstance(reference, dict) or not reference.get("job_id"):
         return None
@@ -257,7 +278,7 @@ def _active_remote_job(attempt: dict[str, Any]) -> dict[str, Any] | None:
         job
         and job.get("session_id") == attempt.get("session_id")
         and job.get("node_id") == attempt.get("node_id")
-        and job.get("status") in ACTIVE_REMOTE_JOB_STATUSES
+        and job.get("status") in statuses
     ):
         return job
     return None
@@ -369,7 +390,9 @@ def reconcile_recovery_state(
             and node_status in ("pending", "running", "waiting")
             and not resumed_by_planner
         ):
-            remote_job = _active_remote_job(attempt)
+            remote_job = _active_remote_job(
+                attempt, statuses=_REMOTE_JOB_IN_PROGRESS_STATUSES
+            )
             if remote_job is not None:
                 node["status"] = "waiting"
                 node["result"] = _attempt_summary(attempt)
@@ -382,7 +405,7 @@ def reconcile_recovery_state(
                 actions.append({"node_id": node_id, "action": "wait_for_remote_job", "status": "waiting"})
             else:
                 node["status"] = "pending"
-                node["result"] = "Remote job is no longer active; re-running node to collect its results."
+                node["result"] = "Remote job is no longer in progress; re-running node to collect its results."
                 node["recovery"] = {
                     "attempt": attempt.get("attempt"),
                     "status": "remote_job_settled",

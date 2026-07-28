@@ -101,6 +101,40 @@ to the agent even when a monitor probe updates the job while that command runs.
 Strict revision checks remain in place for lifecycle transitions and provider
 reconciliation, where accepting stale state would be unsafe.
 
+## Executor Timeout and Remote-Job Handoff
+
+A step executor is a bounded LLM session; a remote job is durable. The two have
+independent lifetimes, so a step executor is never kept alive merely to babysit
+a running job.
+
+When `SUB_STEP_TIMEOUT` (default 3600s) elapses, the runner checks the durable
+job store for a job still owned by that node:
+
+- **No active job** — the step times out as before and returns
+  `needs_replanning`.
+- **An active job** — the executor is granted a single bounded grace window
+  (`STEP_REMOTE_JOB_GRACE_TIMEOUT`, default 300s) to let a nearly finished step
+  complete. If it is still unfinished afterwards, the executor is released and
+  the step returns `waiting` rather than `needs_replanning`. This is a handoff,
+  not a failure: dependents are not blocked, and the job keeps running with no
+  executor attached.
+
+The runner writes `status: waiting` and the job identity onto the execution
+graph node itself, so the handoff does not depend on the orchestrator LLM
+calling `set_node_status`. `reconcile_recovery_state` then keeps the node
+`waiting` while the job is still in progress and moves it back to `pending`
+once the job settles, so a fresh executor can collect its results. The identical
+path also covers a crashed or restarted executor, so there is one recovery
+mechanism rather than two.
+
+Re-attachment is explicit rather than accidental. When a node that already owns
+a job runs again, the runner injects the job's identity into the executor's
+`prior_context` with instructions to call `get_e2b_job_status` and never call
+`submit_e2b_sandbox` for that step. In Flash mode, which has no execution graph,
+a step's node ID is derived from its label or a hash of its action, so a repeated
+step keeps the same submission idempotency key and re-attaches instead of
+creating a duplicate sandbox.
+
 ## Controls and Ownership
 
 The middleware exposes owner-scoped controls:
