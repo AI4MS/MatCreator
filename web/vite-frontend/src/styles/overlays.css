@@ -386,6 +386,22 @@
   margin-top: 8px;
   display: block;
 }
+.timeline-image-loading,
+.timeline-image-error {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+.timeline-image-loading {
+  color: var(--muted);
+  background: rgba(148, 163, 184, 0.12);
+}
+.timeline-image-error {
+  color: var(--danger, #dc2626);
+  background: rgba(220, 38, 38, 0.1);
+  border: 1px solid rgba(220, 38, 38, 0.35);
+}
 .artifact-image-wrap {
   display: flex;
   flex-direction: column;

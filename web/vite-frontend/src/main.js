@@ -2548,6 +2548,39 @@ function createArtifactListItem(path) {
   return li;
 }
 
+function createImageLoadFallback(path) {
+  const fallback = document.createElement("div");
+  fallback.className = "timeline-image-error";
+  fallback.setAttribute("role", "alert");
+  fallback.textContent = `⚠ Image preview unavailable: ${path.split("/").pop()}`;
+  return fallback;
+}
+
+function createTimelineImage(path) {
+  const wrap = document.createElement("div");
+  wrap.className = "timeline-image-wrap";
+  const loading = document.createElement("div");
+  loading.className = "timeline-image-loading";
+  loading.textContent = `Loading image: ${path.split("/").pop()}`;
+  const img = document.createElement("img");
+  img.className = "timeline-image";
+  img.alt = path.split("/").pop();
+  img.hidden = true;
+  img.style.cursor = "zoom-in";
+  img.addEventListener("load", () => {
+    loading.remove();
+    img.hidden = false;
+  });
+  img.addEventListener("error", () => {
+    img.remove();
+    loading.replaceWith(createImageLoadFallback(path));
+  }, { once: true });
+  img.addEventListener("click", () => lightbox.open(img.src));
+  img.src = pathToApiUrl(path);
+  wrap.append(loading, img);
+  return wrap;
+}
+
 function isExecutorLauncherTool(name) {
   return ["run_flash_step", "run_node_executor", "run_sub_agent"].includes(name || "");
 }
@@ -2610,13 +2643,7 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
           continue;
         }
         visiblePlotPaths.add(plotPath);
-        const img = document.createElement("img");
-        img.src = pathToApiUrl(plotPath);
-        img.className = "timeline-image";
-        img.alt = plotPath.split("/").pop();
-        img.style.cursor = "zoom-in";
-        img.addEventListener("click", () => lightbox.open(img.src));
-        container.appendChild(img);
+        container.appendChild(createTimelineImage(plotPath));
       }
       getStructurePaths(item.response).forEach((path) => {
         container.appendChild(createStructureViewButton(path));
