@@ -24,6 +24,22 @@ export function createSettingsController({ state, applyLogin }) {
     EMBEDDING_MODEL:        () => document.getElementById("settings-llm-embed"),
     GRAPH_AGENT_MODEL:      () => document.getElementById("settings-llm-graph-model"),
     REVIEW_AGENT_MODEL:     () => document.getElementById("settings-llm-review-model"),
+    MATCREATOR_EXEC_TIMEOUT_SECONDS: () => document.getElementById("settings-execution-timeout"),
+    MATCREATOR_MEMORIZATION_FREQUENCY: () => document.getElementById("settings-memorization-frequency"),
+    MATCREATOR_REVIEW_FREQUENCY: () => document.getElementById("settings-review-frequency"),
+    MAT_BENCH_SERVER_URL:   () => document.getElementById("settings-benchmark-server-url"),
+    MAT_BENCH_TOKEN:        () => document.getElementById("settings-benchmark-token"),
+    MAT_BENCH_QUESTION_BANK_ROOT: () => document.getElementById("settings-benchmark-question-bank-root"),
+    BOHRIUM_USERNAME:       () => document.getElementById("settings-bohrium-username"),
+    BOHRIUM_PASSWORD:       () => document.getElementById("settings-bohrium-password"),
+    BOHRIUM_ACCESS_KEY:     () => document.getElementById("settings-bohrium-access-key"),
+    BOHRIUM_API_URL:        () => document.getElementById("settings-bohrium-api-url"),
+    BOHRIUM_PROJECT_ID:     () => document.getElementById("settings-bohrium-project-id"),
+    BOHRIUM_VASP_IMAGE:     () => document.getElementById("settings-bohrium-vasp-image"),
+    BOHRIUM_VASP_MACHINE:   () => document.getElementById("settings-bohrium-vasp-machine"),
+    BOHRIUM_DEEPMD_IMAGE:   () => document.getElementById("settings-bohrium-deepmd-image"),
+    BOHRIUM_DEEPMD_MACHINE: () => document.getElementById("settings-bohrium-deepmd-machine"),
+    DEEPMD_MODEL_PATH:      () => document.getElementById("settings-deepmd-model-path"),
   };
 
   function settingsQueryString() {
@@ -235,7 +251,7 @@ export function createSettingsController({ state, applyLogin }) {
   }
 
   function settingsTabRequiresBackendRestart(tabName) {
-    return ["llm", "env"].includes(tabName);
+    return ["llm", "runtime", "compute", "env"].includes(tabName);
   }
 
   function openSettingsModal() {
@@ -563,7 +579,9 @@ export function createSettingsController({ state, applyLogin }) {
 
     // Collect env config values (skip empty sensitive fields with "***")
     const envValues = {};
-    const sensitiveKeys = new Set(["LLM_API_KEY"]);
+    const sensitiveKeys = new Set([
+      "LLM_API_KEY", "MAT_BENCH_TOKEN", "BOHRIUM_PASSWORD", "BOHRIUM_ACCESS_KEY",
+    ]);
     for (const [key, getEl] of Object.entries(envInputs)) {
       const el = getEl();
       if (!el) continue;
