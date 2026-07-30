@@ -1,0 +1,63 @@
+{
+  "skill": "lbg-cli",
+  "lbg_version": "4.0.0b56",
+  "exported_at": "2026-07-14T09:37:05+00:00",
+  "files": {
+    "SKILL.md": {
+      "sha256": "a0eddf30eec766b0c1ae4bb712da841b81c7c29760aa55c7f9c6d61d130f5f8b",
+      "bytes": 6362
+    },
+    "references/images.md": {
+      "sha256": "7d3f28e7b32c69c156a10bd11e786129da5a069c63e1a95904db8ab76b651e7d",
+      "bytes": 6102
+    },
+    "references/platform-snapshot.md": {
+      "sha256": "9eaacb05b2ed186eb6e678c7a6dfdd8aa16af7c35b9fceb3071b44e800c5efe1",
+      "bytes": 2026
+    },
+    "references/sandbox/exec.md": {
+      "sha256": "6a93564e63464f3f457b21960cc99a6bea2846215262f5eca98fd80d8e0a63ea",
+      "bytes": 1238
+    },
+    "references/sandbox/execution-modes.md": {
+      "sha256": "71380e7876624a9d43de5775f5b116d0974fee3e94d2237748d7b578d8c04af1",
+      "bytes": 5109
+    },
+    "references/sandbox/files.md": {
+      "sha256": "563075c91e925c292a6f72099ad954d6c439971cab82db3b8a1845236453ad94",
+      "bytes": 4033
+    },
+    "references/sandbox/lifecycle.md": {
+      "sha256": "58085741e503cf458324b55fa0afe17f8d62b901100bf352f766a346542f7e96",
+      "bytes": 8595
+    },
+    "references/sandbox/network.md": {
+      "sha256": "7c154a6b0abe4d92ee21c727a505c41d8bf5e986ce472a68e648246ced6f2470",
+      "bytes": 5839
+    },
+    "references/sandbox/pitfalls.md": {
+      "sha256": "980057011253b92d3d544e5f645c68f1f7978a965ab4f2ea9747adc7796dfe7c",
+      "bytes": 5817
+    },
+    "references/sandbox/templates.md": {
+      "sha256": "2e0db69f38f7ac60217c1a3dc5f635fb6239b098a6080137586c6c43abe86780",
+      "bytes": 4578
+    },
+    "references/sandbox/terminal.md": {
+      "sha256": "1424d8bb5214df9203b9866bd70372abe64b9ef0f5dca33348d57215e3433307",
+      "bytes": 2550
+    },
+    "references/software-install/README.md": {
+      "sha256": "9315018fa885378fae5534fcb0a7673f2f71d4d84f1088bc96625e1026a6edc1",
+      "bytes": 1198
+    },
+    "references/software-install/mirrors.md": {
+      "sha256": "1df42369f82fb6ac69c2b459f364984969727c47f5ccb74a079c68c758ce9e17",
+      "bytes": 1615
+    },
+    "references/software-install/pre-installed.md": {
+      "sha256": "eda2fb31c40108dce8324f8fc38097234cbd4502e25aa21fdac10cbd12a3355e",
+      "bytes": 600
+    }
+  }
+}
