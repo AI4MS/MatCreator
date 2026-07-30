@@ -2,6 +2,17 @@
 
 <!-- version list -->
 
+## v2.17.0 (2026-07-30)
+
+### Features
+
+- Figures error
+  ([`9630b96`](https://github.com/AI4MS/MatCreator/commit/9630b96e39f0edf8bf981115dd27f7c6974fedc7))
+
+- Frontend settings for matcreator
+  ([`6ded001`](https://github.com/AI4MS/MatCreator/commit/6ded0015c3b0f83b4bb3981476a3b0607622bb96))
+
+
 ## v2.16.0 (2026-07-26)
 
 ### Chores
