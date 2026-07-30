@@ -14,6 +14,23 @@ from ..execution_graph_state import get_execution_graph, set_execution_graph
 _RECOVERY_DIR = "recovery"
 _STALE_AFTER_SECONDS = int(os.environ.get("STEP_RECOVERY_STALE_AFTER", "60"))
 
+# A job in one of these states is still doing work on the provider, so no
+# executor can make progress on it yet.  ``succeeded``/``collecting`` are
+# deliberately excluded: those mean results are ready to be collected, which is
+# exactly the point at which a node should run again.
+_REMOTE_JOB_IN_PROGRESS_STATUSES = frozenset(
+    {
+        "created",
+        "submitting",
+        "queued",
+        "running",
+        "pause_requested",
+        "paused",
+        "resume_requested",
+        "resuming",
+    }
+)
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -231,7 +248,25 @@ def _mark_attempt_stale(latest_path: Path, attempt: dict[str, Any]) -> None:
     _write_attempt(attempt)
 
 
-def _active_remote_job(attempt: dict[str, Any]) -> dict[str, Any] | None:
+def _refresh_remote_job_reference(attempt: dict[str, Any]) -> None:
+    """Reload the persisted remote-job identity into an in-memory attempt.
+
+    ``record_remote_job_reference`` writes through the durable record, so a live
+    attempt dict only learns about a submitted job on its next heartbeat.
+    """
+    latest_path = attempt.get("_latest_path")
+    if not latest_path:
+        return
+    persisted = _read_json(Path(latest_path))
+    if isinstance(persisted.get("remote_job"), dict):
+        attempt["remote_job"] = persisted["remote_job"]
+
+
+def _active_remote_job(
+    attempt: dict[str, Any],
+    *,
+    statuses: frozenset[str] = ACTIVE_REMOTE_JOB_STATUSES,
+) -> dict[str, Any] | None:
     reference = attempt.get("remote_job")
     if not isinstance(reference, dict) or not reference.get("job_id"):
         return None
@@ -243,10 +278,32 @@ def _active_remote_job(attempt: dict[str, Any]) -> dict[str, Any] | None:
         job
         and job.get("session_id") == attempt.get("session_id")
         and job.get("node_id") == attempt.get("node_id")
-        and job.get("status") in ACTIVE_REMOTE_JOB_STATUSES
+        and job.get("status") in statuses
     ):
         return job
     return None
+
+
+def remote_job_reference(job: dict[str, Any]) -> dict[str, Any]:
+    """Return the identity subset of a remote job stored on a graph node."""
+    return {
+        "job_id": job["job_id"],
+        "provider": job["provider"],
+        "external_id": job["external_id"],
+        "status": job["status"],
+    }
+
+
+def active_remote_job_for_attempt(attempt: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the still-active remote job owned by a live attempt, if any.
+
+    Used by the step executor when its wall-clock timeout fires: a timeout that
+    leaves a tracked remote job running is a handoff, not a failure.
+    """
+    if not attempt:
+        return None
+    _refresh_remote_job_reference(attempt)
+    return _active_remote_job(attempt)
 
 
 def reconcile_recovery_state(
@@ -299,12 +356,7 @@ def reconcile_recovery_state(
             if remote_job is not None:
                 node["status"] = "waiting"
                 node["result"] = "Recovered active remote job; waiting for provider completion."
-                node["remote_job"] = {
-                    "job_id": remote_job["job_id"],
-                    "provider": remote_job["provider"],
-                    "external_id": remote_job["external_id"],
-                    "status": remote_job["status"],
-                }
+                node["remote_job"] = remote_job_reference(remote_job)
                 node["recovery"] = {
                     "attempt": attempt.get("attempt"),
                     "status": "waiting_remote",
@@ -321,6 +373,45 @@ def reconcile_recovery_state(
                 "recovered_at": _now(),
             }
             actions.append({"node_id": node_id, "action": "reset_stale_running", "status": "pending"})
+            continue
+
+        # A step executor that timed out while its remote job was still running
+        # hands the node off as ``waiting`` rather than failing it.  Keep it
+        # waiting until the provider settles, then let the node run again so a
+        # fresh executor can re-attach and collect the results.  Skip nodes the
+        # planner has already resumed, otherwise the retry would be undone here.
+        resumed_by_planner = (
+            node_status == "pending"
+            and isinstance(node.get("recovery"), dict)
+            and node["recovery"].get("status") == "waiting_remote"
+        )
+        if (
+            attempt_status == "waiting"
+            and node_status in ("pending", "running", "waiting")
+            and not resumed_by_planner
+        ):
+            remote_job = _active_remote_job(
+                attempt, statuses=_REMOTE_JOB_IN_PROGRESS_STATUSES
+            )
+            if remote_job is not None:
+                node["status"] = "waiting"
+                node["result"] = _attempt_summary(attempt)
+                node["remote_job"] = remote_job_reference(remote_job)
+                node["recovery"] = {
+                    "attempt": attempt.get("attempt"),
+                    "status": "waiting_remote",
+                    "recovered_at": _now(),
+                }
+                actions.append({"node_id": node_id, "action": "wait_for_remote_job", "status": "waiting"})
+            else:
+                node["status"] = "pending"
+                node["result"] = "Remote job is no longer in progress; re-running node to collect its results."
+                node["recovery"] = {
+                    "attempt": attempt.get("attempt"),
+                    "status": "remote_job_settled",
+                    "recovered_at": _now(),
+                }
+                actions.append({"node_id": node_id, "action": "resume_after_remote_job", "status": "pending"})
             continue
 
         if node_status in ("pending", "running") and attempt_status in {

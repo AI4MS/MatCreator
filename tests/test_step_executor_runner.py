@@ -14,6 +14,8 @@ from matcreator.agents.execution_agent.step_executor_runner import (
     _schedule_step_runner_cleanup,
     _verify_step_result_artifacts,
 )
+from matcreator.agents.execution_agent import step_executor_runner
+from matcreator.agents.execution_graph_state import get_execution_graph, set_execution_graph
 from matcreator.agents.session_log import SESSION_ARTIFACTS_KEY
 
 
@@ -314,3 +316,129 @@ def test_step_executor_retries_only_malformed_streamed_tool_arguments():
     assert agent.retry_config is not None
     assert agent.retry_config.max_attempts == 2
     assert agent.retry_config.exceptions == ["JSONDecodeError"]
+
+
+# ---------------------------------------------------------------------------
+# Remote-job handoff on timeout
+# ---------------------------------------------------------------------------
+
+
+class _MutableState(dict):
+    """Minimal stand-in for ADK session state used by the graph state helpers."""
+
+
+class _FakeToolContext:
+    def __init__(self, state):
+        self.state = state
+
+
+def _run_await_step_completion(monkeypatch, *, remote_job, grace, hold=0.2):
+    monkeypatch.setattr(step_executor_runner, "_SUB_STEP_TIMEOUT", 0.01)
+    monkeypatch.setattr(step_executor_runner, "_REMOTE_JOB_GRACE_TIMEOUT", grace)
+    monkeypatch.setattr(
+        step_executor_runner,
+        "active_remote_job_for_attempt",
+        lambda attempt: remote_job,
+    )
+
+    async def exercise():
+        async def slow_task():
+            await asyncio.sleep(hold)
+            return ({}, [], [], {})
+
+        task = asyncio.create_task(slow_task())
+        try:
+            return await step_executor_runner._await_step_completion(
+                task, {}, step_number=1, session_id="session-1"
+            )
+        finally:
+            task.cancel()
+
+    return asyncio.run(exercise())
+
+
+def test_timeout_without_remote_job_is_a_plain_timeout(monkeypatch):
+    timed_out, remote_job = _run_await_step_completion(
+        monkeypatch, remote_job=None, grace=5
+    )
+
+    assert timed_out is True
+    assert remote_job is None
+
+
+def test_timeout_with_active_remote_job_reports_it_after_one_grace_window(monkeypatch):
+    job = {"job_id": "job-1", "provider": "e2b", "external_id": "sbx-1", "status": "running"}
+
+    timed_out, remote_job = _run_await_step_completion(
+        monkeypatch, remote_job=job, grace=0.01
+    )
+
+    assert timed_out is True
+    assert remote_job == job
+
+
+def test_grace_window_lets_a_nearly_finished_step_complete(monkeypatch):
+    job = {"job_id": "job-1", "provider": "e2b", "external_id": "sbx-1", "status": "running"}
+
+    timed_out, remote_job = _run_await_step_completion(
+        monkeypatch, remote_job=job, grace=5, hold=0.05
+    )
+
+    assert timed_out is False
+    assert remote_job is None
+
+
+def test_waiting_handoff_records_remote_job_on_the_graph_node():
+    state = _MutableState()
+    set_execution_graph(state, {"nodes": {"step_train": {"status": "running"}}, "edges": []})
+    tool_context = _FakeToolContext(state)
+    job = {"job_id": "job-1", "provider": "e2b", "external_id": "sbx-1", "status": "running"}
+
+    step_executor_runner._mark_node_waiting_on_remote_job(
+        tool_context,
+        node_id="step_train",
+        remote_job=job,
+        summary="Executor released; job still running.",
+    )
+
+    node = get_execution_graph(state)["nodes"]["step_train"]
+    assert node["status"] == "waiting"
+    assert node["remote_job"] == job
+    assert node["recovery"]["status"] == "waiting_remote"
+
+
+def test_resumed_node_receives_explicit_reattachment_instructions():
+    state = _MutableState()
+    set_execution_graph(state, {
+        "nodes": {
+            "step_train": {
+                "status": "pending",
+                "remote_job": {
+                    "job_id": "job-1",
+                    "provider": "e2b",
+                    "external_id": "sbx-1",
+                    "status": "running",
+                },
+            }
+        },
+        "edges": [],
+    })
+
+    context = step_executor_runner._remote_job_prior_context(
+        _FakeToolContext(state), "step_train"
+    )
+
+    assert context is not None
+    assert "job-1" in context
+    assert "sbx-1" in context
+    assert "get_e2b_job_status" in context
+    assert "Do NOT call submit_e2b_sandbox" in context
+
+
+def test_node_without_remote_job_gets_no_reattachment_instructions():
+    state = _MutableState()
+    set_execution_graph(state, {"nodes": {"step_train": {"status": "pending"}}, "edges": []})
+
+    assert step_executor_runner._remote_job_prior_context(
+        _FakeToolContext(state), "step_train"
+    ) is None

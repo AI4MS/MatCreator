@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import logging
 import threading
 from typing import Optional
@@ -214,13 +215,22 @@ async def run_flash_step(
     Args:
         action: What to do (same semantics as a DAG node action).
         suggested_skills: Skill names to preload in the executor.
-        label: Optional display name shown in the agent graph.
+        label: Optional display name shown in the agent graph. Reuse the SAME label
+            when re-running the same logical task so any remote job it submitted is
+            re-attached rather than duplicated.
     """
     from ..execution_agent.step_executor_runner import run_step_executor
 
     counter = tool_context.state.get("_flash_step_counter", 0) + 1
     tool_context.state["_flash_step_counter"] = counter
-    node_id = label.lower().replace(" ", "_")[:40] if label else f"flash_{counter}"
+    # The node ID is the identity a remote job is tracked under, so it must be
+    # stable across retries of the same logical task.  Deriving the fallback from
+    # the action (rather than an incrementing counter) means a repeated step
+    # re-attaches to its existing job instead of submitting a duplicate one.
+    if label:
+        node_id = label.lower().replace(" ", "_")[:40]
+    else:
+        node_id = f"flash_{hashlib.sha256(action.encode()).hexdigest()[:12]}"
 
     return await run_step_executor(
         step_number=counter,
@@ -259,6 +269,12 @@ You are MatCreator, an AI assistant for computational materials science.
 - Be concise and responsive.
 - Do NOT call `validate_graph` or `confirm_plan_and_start_execution`.
 - Quote exact error messages and propose concrete solutions when something fails.
+- A `run_flash_step` result with `status == "waiting"` is NOT a failure: the executor hit
+  its timeout while the step's `remote_job` is still running on the provider. Report the
+  job identity to the user and stop. Do NOT re-run the step to "restart" the job.
+  To check on it later, call `run_flash_step` again with the SAME `label` and an action
+  that says to call `get_e2b_job_status` with that job_id and collect results if finished —
+  never to submit a new sandbox.
 """
 
 _NORMAL_INSTRUCTION = """
@@ -336,6 +352,15 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
 ## Reviewing execution history
 - Use the current `execution_graph` state for normal replanning; avoid re-running
     nodes that already succeeded.
+- A node with status `waiting` is NOT a failure: its step executor was released at its
+    timeout while the node's `remote_job` is still running on the provider. The job is
+    durable and keeps running without any executor attached.
+    - Do NOT replan around it, do NOT add a replacement node, and do NOT plan a new job
+      submission for it — that would duplicate the running job.
+    - Tell the user the job is still running and report its `remote_job` identity.
+    - When the user asks to check on it or the job is expected to be done, call
+      `set_node_status(node_id="...", status="pending")` and hand control back so the
+      node runs again; its executor automatically re-attaches to the same job.
 - As a last-resort debug path, call `read_session_log(view="overview")` first to inspect
     the coarse executor graph. Only then call `read_session_log(view="detail", step_id="...")`
     or `node_id="..."` for one executor of interest; do not request bulk detail by default.
