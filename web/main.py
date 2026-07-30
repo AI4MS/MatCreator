@@ -191,9 +191,11 @@ _SENSITIVE_FIELDS = frozenset({"LLM_API_KEY", "BOHRIUM_PASSWORD", "BOHRIUM_ACCES
 _ENV_FIELDS = [
     "LLM_MODEL", "LLM_API_KEY", "LLM_BASE_URL", "EMBEDDING_MODEL",
     "GRAPH_AGENT_MODEL", "REVIEW_AGENT_MODEL",
-    "BOHRIUM_EMAIL", "BOHRIUM_PASSWORD", "BOHRIUM_ACCESS_KEY", "BOHRIUM_API_URL", "BOHRIUM_PROJECT_ID",
+    "BOHRIUM_USERNAME", "BOHRIUM_PASSWORD", "BOHRIUM_ACCESS_KEY", "BOHRIUM_API_URL", "BOHRIUM_PROJECT_ID",
     "BOHRIUM_VASP_IMAGE", "BOHRIUM_VASP_MACHINE",
     "BOHRIUM_DEEPMD_IMAGE", "BOHRIUM_DEEPMD_MACHINE", "DEEPMD_MODEL_PATH",
+    "MATCREATOR_EXEC_TIMEOUT_SECONDS", "MATCREATOR_MEMORIZATION_FREQUENCY", "MATCREATOR_REVIEW_FREQUENCY",
+    "MAT_BENCH_SERVER_URL", "MAT_BENCH_TOKEN", "MAT_BENCH_QUESTION_BANK_ROOT",
 ]
 _CUSTOM_ENV_CONFIG_KEY = "CUSTOM_ENV"
 _ENV_VALUE_MASK = "***"
@@ -544,6 +546,28 @@ def _validate_user_env_key(env_key: str) -> None:
 
 def _masked_env_value(env_key: str, value: str) -> str:
     return _ENV_VALUE_MASK if (_is_sensitive_env_key(env_key) and value) else value
+
+
+def _validate_user_setting_value(env_key: str, value: str) -> None:
+    """Validate user-controlled numeric runtime settings before persisting."""
+    if env_key == "MATCREATOR_EXEC_TIMEOUT_SECONDS" and value:
+        try:
+            if int(value) <= 0:
+                raise ValueError
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="MATCREATOR_EXEC_TIMEOUT_SECONDS must be a positive integer.",
+            ) from None
+    if env_key in {"MATCREATOR_MEMORIZATION_FREQUENCY", "MATCREATOR_REVIEW_FREQUENCY"} and value:
+        try:
+            if int(value) < 0:
+                raise ValueError
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{env_key} must be a non-negative integer.",
+            ) from None
 
 
 def _custom_env_from_config(config: dict[str, Any]) -> dict[str, str]:
@@ -4659,6 +4683,7 @@ async def update_env_config(body: EnvConfigBody, user_id: str = Query(default=""
         sensitive = yaml_key in SENSITIVE_YAML_KEYS or _is_sensitive_env_key(key)
         if sensitive and value == _ENV_VALUE_MASK:
             continue
+        _validate_user_setting_value(key, value)
         _set_nested_config_value(config, yaml_key, value)
 
     custom_env_raw = body.values.get(_CUSTOM_ENV_CONFIG_KEY)
@@ -4692,7 +4717,7 @@ async def update_env_config(body: EnvConfigBody, user_id: str = Query(default=""
             yaml_key = ENV_TO_YAML.get(key)
             if yaml_key is None:
                 continue
-            sensitive = yaml_key in SENSITIVE_YAML_KEYS
+            sensitive = yaml_key in SENSITIVE_YAML_KEYS or _is_sensitive_env_key(key)
             if sensitive and value == _ENV_VALUE_MASK:
                 continue
             if value:

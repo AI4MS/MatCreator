@@ -66,6 +66,18 @@ export MATCREATOR_MEMORIZATION_FREQUENCY=0
 export MATCREATOR_REVIEW_FREQUENCY=20
 ```
 
+The web **Settings → MatCreator** tab exposes these knowledge frequencies,
+benchmark settings, and the tool-execution timeout. Python, Bash, and skill
+scripts time out after 3600 seconds by default; set a positive value there or
+persist the equivalent configuration:
+
+```yaml
+runtime:
+  execution_timeout_seconds: 3600
+```
+
+`MATCREATOR_EXEC_TIMEOUT_SECONDS` is the corresponding environment override.
+
 Start an interactive session in the current project workspace:
 
 ```bash

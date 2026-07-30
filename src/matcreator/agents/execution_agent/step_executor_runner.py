@@ -258,13 +258,29 @@ def _split_verified_artifacts(
 def _verify_step_result_artifacts(
     result: StepExecutorResult,
     allowed_roots: Optional[list[Path]] = None,
+    additional_artifacts: Optional[list[str]] = None,
 ) -> tuple[StepExecutorResult, list[str]]:
-    """Prevent successful step results from claiming nonexistent artifacts."""
+    """Prevent successful steps from claiming nonexistent output artifacts.
+
+    ``additional_artifacts`` covers paths returned by tools during the step
+    (notably ``plot_path``).  Those paths are surfaced by the frontend too, so
+    they must be held to the same existence and containment checks as the
+    executor's final artifact list.
+    """
     existing_artifacts, missing_artifacts = _split_verified_artifacts(
         result.artifacts,
         allowed_roots=allowed_roots,
     )
     result.artifacts = existing_artifacts
+
+    if additional_artifacts:
+        _, additional_missing_artifacts = _split_verified_artifacts(
+            additional_artifacts,
+            allowed_roots=allowed_roots,
+        )
+        for artifact in additional_missing_artifacts:
+            if artifact not in missing_artifacts:
+                missing_artifacts.append(artifact)
 
     if result.status == "success" and missing_artifacts:
         missing_text = ", ".join(missing_artifacts)
@@ -776,9 +792,24 @@ async def run_step_executor(
     if step_result_data:
         tool_context.state["_step_result"] = None  # State has no pop(); reset instead
         result = StepExecutorResult.model_validate(step_result_data)
+        allowed_artifact_roots = _artifact_allowed_roots(
+            step_workspace, suggested_skills, output_dir,
+        )
         result, missing_artifacts = _verify_step_result_artifacts(
             result,
-            allowed_roots=_artifact_allowed_roots(step_workspace, suggested_skills, output_dir),
+            allowed_roots=allowed_artifact_roots,
+            additional_artifacts=[*artifact_paths, *plot_paths],
+        )
+        # Do not persist or return unverified tool outputs.  In particular,
+        # this prevents a stale plot_path from being rendered as a broken image
+        # while the step is being replanned.
+        artifact_paths, _ = _split_verified_artifacts(
+            artifact_paths,
+            allowed_roots=allowed_artifact_roots,
+        )
+        plot_paths, _ = _split_verified_artifacts(
+            plot_paths,
+            allowed_roots=allowed_artifact_roots,
         )
         await asyncio.to_thread(
             graph.log_node_complete,

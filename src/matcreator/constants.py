@@ -41,6 +41,7 @@ _llm_cfg = get_llm_config()
 _bohrium_cfg = get_bohrium_config()
 _compute_cfg = get_compute_config()
 _knowledge_cfg = load_config().get("knowledge", {})
+_runtime_cfg = load_config().get("runtime", {})
 
 _yaml_to_env: dict[str, str | None] = {
     "LLM_MODEL":            _llm_cfg.get("model"),
@@ -61,11 +62,12 @@ _yaml_to_env: dict[str, str | None] = {
     "DEEPMD_MODEL_PATH":    _compute_cfg.get("deepmd_model_path"),
     "MATCREATOR_MEMORIZATION_FREQUENCY": _knowledge_cfg.get("memorization_frequency"),
     "MATCREATOR_REVIEW_FREQUENCY": _knowledge_cfg.get("review_frequency"),
+    "MATCREATOR_EXEC_TIMEOUT_SECONDS": _runtime_cfg.get("execution_timeout_seconds"),
 }
 
 for _env_key, _yaml_val in _yaml_to_env.items():
     if _yaml_val and (_CONFIG_OVERRIDES_PRE_ENV or _env_key not in _pre_env):
-        os.environ[_env_key] = _yaml_val
+        os.environ[_env_key] = str(_yaml_val)
 
 for _env_key, _yaml_val in get_env_overrides().items():
     if not _USER_ENV_KEY_RE.fullmatch(_env_key) or _env_key in _PROTECTED_USER_ENV_KEYS:

@@ -8,6 +8,9 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
+
 
 class _FakeImage:
     def __init__(self, image_id: str):
@@ -285,6 +288,48 @@ def test_local_adk_restart_env_uses_frontend_config(monkeypatch, tmp_path):
     assert "executor_cards:" in config_text
     assert "model: openai/local-executor-model" in config_text
     assert "FRONTEND_SET_FLAG: visible-locally" in config_text
+
+
+def test_server_runtime_and_benchmark_settings_are_persisted(monkeypatch, tmp_path):
+    control_home = tmp_path / "control-plane" / ".matcreator"
+    control_home.mkdir(parents=True)
+    web_main = _load_web_main_server(monkeypatch, control_home, tmp_path / "server-data")
+
+    body = SimpleNamespace(values={
+        "MATCREATOR_EXEC_TIMEOUT_SECONDS": "7200",
+        "MATCREATOR_MEMORIZATION_FREQUENCY": "0",
+        "MATCREATOR_REVIEW_FREQUENCY": "25",
+        "MAT_BENCH_SERVER_URL": "http://127.0.0.1:8080/bench",
+        "MAT_BENCH_TOKEN": "benchmark-secret",
+        "MAT_BENCH_QUESTION_BANK_ROOT": "/tmp/question-bank",
+    })
+    asyncio.run(web_main.update_env_config(body, user_id="alice"))
+
+    config = web_main._load_config_for_user("alice")
+    assert config["runtime"]["execution_timeout_seconds"] == "7200"
+    assert config["knowledge"] == {
+        "memorization_frequency": "0",
+        "review_frequency": "25",
+    }
+    assert config["benchmark"] == {
+        "server_url": "http://127.0.0.1:8080/bench",
+        "token": "benchmark-secret",
+        "question_bank_root": "/tmp/question-bank",
+    }
+
+    response = asyncio.run(web_main.get_env_config(user_id="alice"))
+    values = json.loads(response.body)
+    assert values["MAT_BENCH_TOKEN"] == "***"
+
+
+def test_runtime_timeout_must_be_positive(monkeypatch, tmp_path):
+    control_home = tmp_path / "control-plane" / ".matcreator"
+    control_home.mkdir(parents=True)
+    web_main = _load_web_main_server(monkeypatch, control_home, tmp_path / "server-data")
+
+    body = SimpleNamespace(values={"MATCREATOR_EXEC_TIMEOUT_SECONDS": "0"})
+    with pytest.raises(HTTPException, match="positive integer"):
+        asyncio.run(web_main.update_env_config(body, user_id="alice"))
 
 
 def test_local_mode_lists_sessions_regardless_of_requested_user(monkeypatch, tmp_path):

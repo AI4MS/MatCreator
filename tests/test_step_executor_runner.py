@@ -98,6 +98,25 @@ def test_success_with_missing_artifact_requires_replanning(tmp_path, caplog):
     assert "claimed artifact path(s)" in caplog.text
 
 
+def test_success_with_missing_tool_plot_requires_replanning(tmp_path):
+    result = StepExecutorResult(
+        status="success",
+        key_results="Generated a plot.",
+        concise_summary="Generated a plot.",
+    )
+    missing_plot = tmp_path / "missing-plot.png"
+
+    verified, missing_artifacts = _verify_step_result_artifacts(
+        result,
+        allowed_roots=[tmp_path],
+        additional_artifacts=[str(missing_plot)],
+    )
+
+    assert verified.status == "needs_replanning"
+    assert missing_artifacts == [str(missing_plot)]
+    assert str(missing_plot) in (verified.replan_reason or "")
+
+
 def test_success_accepts_existing_file_and_directory_artifacts(tmp_path):
     file_artifact = tmp_path / "result.txt"
     file_artifact.write_text("ok", encoding="utf-8")
