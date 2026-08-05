@@ -25,7 +25,13 @@ from .step_executor import (
     StepExecutorResult,
     build_step_executor_agent,
 )
-from .recovery import finish_node_attempt, heartbeat_node_attempt, start_node_attempt
+from .recovery import (
+    active_remote_job_for_attempt,
+    finish_node_attempt,
+    heartbeat_node_attempt,
+    remote_job_reference as _remote_job_reference,
+    start_node_attempt,
+)
 from ..graph_logger import AgentGraphLogger
 from ..execution_graph_state import get_execution_graph, set_execution_graph
 from ..session_log import (
@@ -51,6 +57,11 @@ _CANCEL_POLL_INTERVAL = 0.5  # seconds
 # Wall-clock timeout for a single step or sub-step execution.
 # A sub-step that exceeds this returns needs_replanning instead of hanging.
 _SUB_STEP_TIMEOUT = int(os.environ.get("SUB_STEP_TIMEOUT", "3600"))  # seconds
+# One-time bounded extension granted when the step timeout fires while a tracked
+# remote job is still active.  This is deliberately modest: the durable job store
+# and the remote job monitor — not a long-lived LLM session — are what keep a
+# remote job alive, so the extension only avoids churn for jobs about to settle.
+_REMOTE_JOB_GRACE_TIMEOUT = int(os.environ.get("STEP_REMOTE_JOB_GRACE_TIMEOUT", "300"))  # seconds
 _RECOVERY_HEARTBEAT_INTERVAL = int(os.environ.get("STEP_RECOVERY_HEARTBEAT_INTERVAL", "10"))  # seconds
 _MAX_INPUT_IMAGE_ATTACHMENTS = int(os.environ.get("MATCREATOR_MAX_INPUT_IMAGE_ATTACHMENTS", "4"))
 _MAX_INPUT_IMAGE_BYTES = int(os.environ.get("MATCREATOR_MAX_INPUT_IMAGE_BYTES", str(5 * 1024 * 1024)))
@@ -334,6 +345,98 @@ async def _heartbeat_recovery_attempt(attempt: dict) -> None:
         pass
 
 
+def _mark_node_waiting_on_remote_job(
+    tool_context: ToolContext,
+    *,
+    node_id: Optional[str],
+    remote_job: dict,
+    summary: str,
+) -> None:
+    """Record the remote-job handoff directly on the execution graph node.
+
+    Writing the node state here — instead of relying on the orchestrator LLM to
+    call ``set_node_status`` — keeps the handoff deterministic, and preserves the
+    job identity the next executor needs in order to re-attach.
+    """
+    if not node_id:
+        return
+    graph_state = get_execution_graph(tool_context.state) or {}
+    graph_nodes = graph_state.get("nodes") or {}
+    if node_id not in graph_nodes:
+        return
+    graph_nodes[node_id]["status"] = "waiting"
+    graph_nodes[node_id]["result"] = summary
+    graph_nodes[node_id]["remote_job"] = remote_job
+    graph_nodes[node_id]["recovery"] = {
+        "status": "waiting_remote",
+        "recorded_at": _now(),
+    }
+    set_execution_graph(tool_context.state, graph_state)
+
+
+def _remote_job_prior_context(tool_context: ToolContext, node_id: Optional[str]) -> Optional[str]:
+    """Return re-attachment instructions when a node already owns a remote job.
+
+    Injected into the executor's ``prior_context`` so re-attachment does not
+    depend on the planner remembering the job, nor on the submission idempotency
+    key happening to match.
+    """
+    if not node_id:
+        return None
+    node = ((get_execution_graph(tool_context.state) or {}).get("nodes") or {}).get(node_id)
+    if not isinstance(node, dict):
+        return None
+    remote_job = node.get("remote_job")
+    if not isinstance(remote_job, dict) or not remote_job.get("job_id"):
+        return None
+    return (
+        "REMOTE JOB ALREADY SUBMITTED for this step: "
+        f"job_id={remote_job['job_id']} provider={remote_job.get('provider')} "
+        f"sandbox_id={remote_job.get('external_id')} last_known_status={remote_job.get('status')}. "
+        "Call get_e2b_job_status with this job_id to re-attach. Do NOT call submit_e2b_sandbox "
+        "again for this step — that job is still tracked and must not be duplicated. If it is "
+        "still running, report needs_replanning explaining that the job has not finished yet."
+    )
+
+
+async def _await_step_completion(
+    inner_task: asyncio.Task,
+    recovery_attempt: dict,
+    *,
+    step_number: int,
+    session_id: str,
+) -> tuple[bool, Optional[dict]]:
+    """Wait for the executor task, honouring one remote-job grace extension.
+
+    Returns ``(timed_out, active_remote_job)``.  ``active_remote_job`` is the
+    still-active tracked job that caused the final timeout, if any; the caller
+    treats that case as a handoff rather than a step failure.  Unlike
+    ``asyncio.wait_for`` this never cancels ``inner_task`` on timeout, so the
+    grace window can reuse the same in-flight executor.
+    """
+    timeout = float(_SUB_STEP_TIMEOUT)
+    grace_remaining = float(max(_REMOTE_JOB_GRACE_TIMEOUT, 0))
+    while True:
+        done, _ = await asyncio.wait({inner_task}, timeout=timeout)
+        if done:
+            return False, None
+
+        remote_job = await asyncio.to_thread(active_remote_job_for_attempt, recovery_attempt)
+        if remote_job is None:
+            inner_task.cancel()
+            return True, None
+        if grace_remaining <= 0:
+            inner_task.cancel()
+            return True, remote_job
+
+        logger.info(
+            "[TIMEOUT] Step %d reached its timeout with remote job %s still %s; "
+            "granting a single %ds grace window (session=%s)",
+            step_number, remote_job["job_id"], remote_job["status"], int(grace_remaining), session_id,
+        )
+        timeout, grace_remaining = grace_remaining, 0.0
+
+
 async def _cleanup_step_runner(
     runner: Runner,
     tasks: tuple[asyncio.Task, ...],
@@ -488,6 +591,12 @@ async def run_step_executor(
 
     # Use node_id for label when provided (DAG mode); fall back to step_number.
     effective_id = node_id if node_id else str(step_number)
+
+    # Deterministic re-attachment: a node that already owns a tracked remote job
+    # must poll it rather than submit a replacement sandbox.
+    reattach_context = _remote_job_prior_context(tool_context, node_id)
+    if reattach_context:
+        prior_context = f"{reattach_context}\n\n{prior_context}" if prior_context else reattach_context
 
     # All steps CWD directly to the workspace root/session workdir so they can read shared inputs.
     # If configured, generated artifacts are constrained separately by output_dir.
@@ -661,17 +770,21 @@ async def run_step_executor(
 
     cancelled = False
     timed_out = False
+    waiting_remote_job: Optional[dict] = None
     runner_error: Optional[Exception] = None
     step_state_delta: dict = {}
     plot_paths: list[str] = []
     artifact_paths: list[str] = []
     event_log: dict = {"conversation": [], "tool_calls": []}
     try:
-        step_state_delta, plot_paths, artifact_paths, event_log = await asyncio.wait_for(
-            inner_task, timeout=_SUB_STEP_TIMEOUT
+        timed_out, waiting_remote_job = await _await_step_completion(
+            inner_task,
+            recovery_attempt,
+            step_number=step_number,
+            session_id=session_id,
         )
-    except asyncio.TimeoutError:
-        timed_out = True
+        if not timed_out:
+            step_state_delta, plot_paths, artifact_paths, event_log = inner_task.result()
     except asyncio.CancelledError:
         cancelled = True
     except Exception as exc:
@@ -686,6 +799,46 @@ async def run_step_executor(
             _schedule_step_runner_cleanup(runner, cleanup_tasks)
         else:
             await _cleanup_step_runner(runner, cleanup_tasks)
+
+    if timed_out and waiting_remote_job is not None:
+        job_summary = (
+            f"Step {step_number} reached its {_SUB_STEP_TIMEOUT}s executor timeout while tracked "
+            f"{waiting_remote_job['provider']} job {waiting_remote_job['job_id']} is still "
+            f"{waiting_remote_job['status']}. The executor was released; the job keeps running."
+        )
+        logger.warning("[WAITING] %s (session=%s)", job_summary, session_id)
+        remote_job_reference = _remote_job_reference(waiting_remote_job)
+        _mark_node_waiting_on_remote_job(
+            tool_context,
+            node_id=node_id,
+            remote_job=remote_job_reference,
+            summary=job_summary,
+        )
+        await asyncio.to_thread(
+            graph.log_node_complete,
+            step_id, "waiting", summary=job_summary,
+        )
+        clear_step_cancellation(session_id, step_number)
+        append_session_log_entry(tool_context, {
+            "kind": "step_complete",
+            **step_input_log,
+            "status": "waiting",
+            "message": job_summary,
+            "remote_job": remote_job_reference,
+            "events": event_log,
+        }, artifacts=artifact_paths)
+        await asyncio.to_thread(
+            finish_node_attempt,
+            recovery_attempt,
+            status="waiting",
+            artifacts=artifact_paths,
+            message=job_summary,
+        )
+        return {
+            "status": "waiting",
+            "remote_job": remote_job_reference,
+            "message": job_summary,
+        }
 
     if timed_out:
         logger.warning(

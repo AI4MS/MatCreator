@@ -42,7 +42,7 @@ from ..workspace import ADK_DIR
 _session_locks: dict[str, threading.Lock] = {}
 _session_locks_mutex = threading.Lock()
 
-NodeStatus = Literal["idle", "running", "success", "failed", "cancelled", "needs_replanning"]
+NodeStatus = Literal["idle", "running", "waiting", "success", "failed", "cancelled", "needs_replanning"]
 NodeType = Literal["orchestrator", "planning", "execution", "tester", "step"]
 
 
