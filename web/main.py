@@ -70,6 +70,8 @@ if str(_WEB_DIR) not in sys.path:
 
 import users_db  # noqa: E402
 
+from structure_formats import is_vasp_structure_filename  # noqa: E402
+
 from matcreator.workspace import get_session_workdir, get_workspace_root, workspace_skills_dir  # noqa: E402
 from matcreator.agents.cancellation import (  # noqa: E402
     request_cancellation,
@@ -1623,8 +1625,7 @@ def _load_json_field(raw_value: str | None, fallback):
 def _ase_read_structure(path: Path):
     from ase.io import read as ase_read
 
-    name = path.name.lower()
-    if name in {"poscar", "contcar"} or path.suffix.lower() == ".vasp":
+    if is_vasp_structure_filename(path.name) or path.suffix.lower() == ".vasp":
         return ase_read(str(path), format="vasp")
     return ase_read(str(path))
 
@@ -3669,7 +3670,7 @@ async def list_modeling_structure_files(
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
-        if path.suffix.lower() not in structure_suffixes and path.name.lower() not in {"poscar", "contcar"}:
+        if path.suffix.lower() not in structure_suffixes and not is_vasp_structure_filename(path.name):
             continue
         files.append({
             "name": path.name,
