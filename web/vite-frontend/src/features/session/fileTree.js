@@ -1,12 +1,17 @@
 const STRUCTURE_EXTENSIONS = new Set([".cif", ".xyz", ".extxyz", ".vasp"]);
-const STRUCTURE_NAMES = new Set(["poscar", "contcar"]);
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".svg"]);
+
+function isVaspStructureFilename(name) {
+  // VASP workflows often generate variants such as POSCAR_water_layer2 or
+  // POSCAR-2_water6. These have no informative extension, but are still POSCARs.
+  return /^(?:poscar|contcar)(?:[_.-].*)?$/i.test(name);
+}
 
 export function classifyPath(path) {
   const name = path.split("/").pop();
   const dotIndex = name.lastIndexOf(".");
   const extension = dotIndex >= 0 ? name.slice(dotIndex).toLowerCase() : "";
-  if (STRUCTURE_EXTENSIONS.has(extension) || STRUCTURE_NAMES.has(name.toLowerCase())) return "structure";
+  if (STRUCTURE_EXTENSIONS.has(extension) || isVaspStructureFilename(name)) return "structure";
   if (IMAGE_EXTENSIONS.has(extension)) return "image";
   return "artifact";
 }
