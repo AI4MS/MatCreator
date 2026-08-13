@@ -137,6 +137,57 @@ dp show <model_file> descriptor
 ```
 
 ---
+
+# DPA-4c distillation (student model training)
+
+Distilling a student model from a fine-tuned DPA-4 teacher is the only scenario where
+training a model is advised (see the description of this skill). The student architecture
+for distillation is **DPA-4c** (`descriptor.type = "dpa4c"`), whose CLI usage differs
+from regular fine-tuning.
+
+> **Prerequisite gate — Phase A and Phase B must be completed first.**
+> Before using any command in this section, verify that:
+> 1. **Phase A (teacher NPT MD exploration)** has been completed — the teacher model
+>    was run as an NPT-ensemble MD calculator on the seed structure to generate a
+>    diverse set of candidate frames (~2000+ frames for simple systems, more for
+>    complex ones). The seed POSCAR/cif is **not** a training frame.
+> 2. **Phase B (teacher inference labeling)** has been completed — the MD-sampled
+>    frames were labeled by single-point teacher inference (energy, forces, virial).
+> 3. The resulting labeled dataset has a sufficient frame count and is sourced
+>    exclusively from the A→B pipeline.
+>
+> **Training directly on the seed structure (or any statically-built structures)
+> is forbidden** and will produce a student that reproduces the teacher on
+> MD-sampled frames but degrades by an order of magnitude on DFT-relaxed structures.
+> If Phase A/B have not been done, return to the `machine-learning-force-field` skill
+> and complete them before proceeding.
+
+> **For DPA-4c, ALWAYS use `--pt-expt` in the `dp` CLI. NEVER use `--finetune`:**
+> the bias-adjustment dense forward pass of `--finetune` runs out of memory (OOM)
+> for the DPA-4c selection `sel=[999999]`.
+
+Training command (run inside the workdir):
+
+```bash
+dp --pt-expt train input.json --init-model <pretrain.pt> --skip-neighbor-stat
+```
+
+- `<pretrain.pt>`: the DPA-4c pretrained checkpoint used to initialize the student
+  (historically `dpa4c_pretrain_rmse_epoch.pt`).
+- `--skip-neighbor-stat`: must be appended for DPA-4c.
+
+**Verified input template:** [references/dpa4c_distill_input.json](references/dpa4c_distill_input.json)
+is the input.json actually used in a historical, completed DPA-4c distillation run
+(1,000,000 steps, `Training finished`). This template is written **exclusively for
+DPA-4c — do NOT use it for any other architecture** (dpa2, dpa3, dpa4/SeZM, se_atten_v2, ...).
+
+**Bohrium submission (bohr skill):** the recommended image for DPA-4c distillation is
+`registry.dp.tech/dptech/dpa-calculator:dpa4-mlip-340e01f9` on a **5090** GPU machine.
+
+**Historical reference values** (SrO/TiO2 slab distillation, single 5090 GPU):
+~2400 training frames / ~600 test frames, `numb_steps = 1,000,000`, wall time ~3.4 h.
+
+---
 # DeePMD-kit python interface (ASE calculator)
 
 Deepmd-kit provides a Python interface, which can act as an ASE calculator, further enabling any calculation task

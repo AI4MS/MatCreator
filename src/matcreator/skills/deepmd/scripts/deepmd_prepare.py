@@ -801,10 +801,19 @@ def cmd_prepare_finetune(args) -> None:
         logger.info("Sub-seed %s=%d", seed_path, seed_value)
 
     # Set number of epochs. Supported since deepmd 3.2.0. Estimating number of steps no longer meaningful.
-    cfg["training"]["num_epoch"] = args.epochs
+    # NOTE: dargs alias conversion only converts the FIRST alias found, so the training
+    # dict must contain exactly one epoch key, otherwise the leftover alias trips the
+    # strict schema check in `dp train`.
+    if args.epochs is not None:
+        for _k in ("num_epochs", "numb_epoch", "numb_epochs", "num_epoch"):
+            cfg["training"].pop(_k, None)
+        cfg["training"]["numb_epoch"] = args.epochs
+    else:
+        # Keep the template default (e.g. num_epochs for DPA-4); just drop stray nulls.
+        cfg["training"].pop("num_epoch", None)
     logger.info(
-        "Epochs=%d, n_train=%d",
-        args.epochs,
+        "Epochs=%s, n_train=%d",
+        cfg["training"].get("numb_epoch", cfg["training"].get("num_epochs")),
         len(train_atoms),
     )
 
@@ -986,12 +995,6 @@ def _add_finetune_argparse(p: argparse.ArgumentParser) -> None:
         type=int,
         required=True,
         metavar="NUMTRAIN",
-    )
-    p.add_argument(
-        "--seed",
-        help="Random seed (default: None)",
-        type=int,
-        default=None
     )
     p.add_argument(
         "--model_type",

@@ -135,3 +135,29 @@ DPA-2 and DPA-3 models are supported but not strongly recommended in any scenari
 4.  Never use any non-nvidia GPUs for now as they are poorly supported by deepmd-kit.
 5.  Also, do not use nvidia GPUs older than V100 as they no longer support the triton AOT induction route of
     modern pytorch, which is compulsory for deepmd-kit>=3.2.0.
+
+## DPA-4c distillation student (dpa4c descriptor)
+
+DPA-4c is the student architecture for distillation from a fine-tuned DPA-4 teacher.
+Its CLI usage differs from the fine-tuning flow documented elsewhere in this skill:
+
+**CLI — always `--pt-expt`, never `--finetune`:**
+
+```bash
+dp --pt-expt train input.json --init-model <pretrain.pt> --skip-neighbor-stat
+```
+
+- `--finetune` is **prohibited** for DPA-4c: its bias-adjustment dense forward pass
+  runs out of memory (OOM) for the DPA-4c selection `sel=[999999]`.
+- `<pretrain.pt>` is the DPA-4c pretrained checkpoint (historically
+  `dpa4c_pretrain_rmse_epoch.pt`); `--skip-neighbor-stat` must be appended.
+
+**Verified input template:** [dpa4c_distill_input.json](dpa4c_distill_input.json) (in this
+`references/` directory) is the input.json actually used in a historical, completed
+DPA-4c distillation run. It is **exclusive to DPA-4c — do NOT use it for any other
+architecture** (dpa2, dpa3, dpa4/SeZM, se_atten_v2, ...).
+
+**[For bohrium submission] Image and machine:** recommended image
+`registry.dp.tech/dptech/dpa-calculator:dpa4-mlip-340e01f9` on a **5090** GPU machine.
+This image is specific to DPA-4c distillation; all other DPA models keep the images
+given in the previous section.
