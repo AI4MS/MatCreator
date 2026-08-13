@@ -9,6 +9,8 @@ Endpoints
 ---------
 GET /api/agent-graph/{session_id}
     Returns the JSON graph file for the session, or an empty graph if not found.
+GET /api/agent-graph/{session_id}/events
+    Streams graph snapshots whenever an agent node emits a new event.
 GET /api/workspace/files?path=<path>
     Serves any file from the workspace root (absolute or relative path).
     Returns 403 if the path escapes the workspace root.
@@ -3317,6 +3319,31 @@ async def get_agent_graph(session_id: str) -> JSONResponse:
     if not data:
         return JSONResponse({"session_id": session_id, "nodes": {}, "edges": [], "updated_at": None})
     return JSONResponse(data)
+
+
+@app.get("/api/agent-graph/{session_id}/events")
+async def stream_agent_graph(session_id: str, request: Request) -> StreamingResponse:
+    """Push graph updates so concurrent node output appears without polling."""
+    async def stream():
+        last_updated_at = object()
+        while not await request.is_disconnected():
+            data = _load_agent_graph_data(session_id)
+            if not data:
+                data = {"session_id": session_id, "nodes": {}, "edges": [], "updated_at": None}
+            updated_at = data.get("updated_at")
+            if updated_at != last_updated_at:
+                yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                last_updated_at = updated_at
+            # The logger writes synchronously for every model/tool event. A
+            # short server-side wait keeps the browser connection quiet while
+            # making independently running nodes feel genuinely concurrent.
+            await asyncio.sleep(0.2)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/api/workspace/cli")

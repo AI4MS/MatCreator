@@ -46,6 +46,7 @@ export class AgentGraphView {
     this._edges = new DataSet([]);
     this._network = null;
     this._pollInterval = null;
+    this._eventStream = null;
     this._didInitialFit = false;
     this._pendingFit = true;
     this._animationFrame = null;
@@ -651,10 +652,26 @@ export class AgentGraphView {
   startPolling(sessionId) {
     this._currentSessionId = sessionId;
     this._poll(sessionId);
-    this._pollInterval = setInterval(() => this._poll(sessionId), 2000);
+    this._eventStream?.close();
+    this._eventStream = new EventSource(`/api/agent-graph/${encodeURIComponent(sessionId)}/events`);
+    this._eventStream.onmessage = (event) => {
+      try {
+        if (sessionId !== this._currentSessionId) return;
+        this.update(JSON.parse(event.data));
+      } catch (_) {
+        // Ignore a malformed snapshot; EventSource will deliver the next one.
+      }
+    };
+    // Keep a low-frequency fallback for deployments running an older web
+    // backend that does not yet expose the graph event endpoint.
+    this._eventStream.onerror = () => {
+      if (!this._pollInterval) this._pollInterval = setInterval(() => this._poll(sessionId), 2000);
+    };
   }
 
   stopPolling() {
+    this._eventStream?.close();
+    this._eventStream = null;
     if (this._pollInterval) {
       clearInterval(this._pollInterval);
       this._pollInterval = null;
@@ -1252,6 +1269,18 @@ export class StepExecutionFeed {
       body.appendChild(p);
     }
 
+    const liveResponse = this._latestStreamedResponse(node);
+    if (node.status === "running" && liveResponse) {
+      const response = document.createElement("div");
+      response.className = "step-feed-live-response";
+      const label = document.createElement("span");
+      label.textContent = "Live response";
+      const content = document.createElement("span");
+      content.textContent = liveResponse;
+      response.append(label, content);
+      body.appendChild(response);
+    }
+
     if (node.input && Object.keys(node.input).length) {
       body.appendChild(this._wireNested(node.id, "input", this._renderStepInput(node.input)));
     }
@@ -1343,6 +1372,15 @@ export class StepExecutionFeed {
     }
 
     details.appendChild(body);
+  }
+
+  _latestStreamedResponse(node) {
+    const conversation = node.conversation || [];
+    for (let index = conversation.length - 1; index >= 0; index -= 1) {
+      const event = conversation[index];
+      if (["text", "thought"].includes(event.type) && event.content) return String(event.content);
+    }
+    return "";
   }
 }
 

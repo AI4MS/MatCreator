@@ -10,6 +10,7 @@ import { AgentGraphView, StepExecutionFeed } from "./features/graphs/AgentGraphV
 import { ExecutionPlanView } from "./features/graphs/ExecutionPlanView.js";
 import { createSkillGraphController } from "./features/skills/SkillGraphController.js";
 import { createSettingsController } from "./features/settings/SettingsController.js";
+import { mountOrbitalAgentIndicator } from "./components/mountOrbitalAgentIndicator.js";
 import "./styles/index.css";
 
 // ---------------------------------------------------------------------------
@@ -70,6 +71,7 @@ const textInput = document.getElementById("text-input");
 const inputArea = document.querySelector(".input-area");
 const inputContainer = document.querySelector(".input-container");
 const agentRunningIndicator = document.getElementById("agent-running-indicator");
+const agentRunningOrbital = document.getElementById("agent-running-orbital");
 const sendBtn = document.getElementById("send-btn");
 const fileUploadBtn = document.getElementById("file-upload-btn");
 const fileUploadInput = document.getElementById("file-upload-input");
@@ -1077,6 +1079,8 @@ function updateSendButtonState() {
   sendBtn.title = running ? "Stop" : "Send";
   sendBtn.classList.toggle("is-stopping", running);
 }
+
+mountOrbitalAgentIndicator(agentRunningOrbital);
 
 function storeSessionSelection(sessionId, owner) {
   localStorage.setItem(SESSION_ID_KEY, sessionId);

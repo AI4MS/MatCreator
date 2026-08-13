@@ -166,13 +166,31 @@ class AgentGraphLogger:
             self._write(graph)
 
     def log_conversation_event(self, node_id: str, entry: dict) -> None:
-        """Append one conversation turn to the node's conversation list."""
+        """Append one conversation turn, coalescing adjacent streamed text.
+
+        LLM providers may send either a token delta or the entire response so
+        far.  Keeping every chunk made the graph noisy and meant the frontend
+        could not present a single live response for a running node.
+        """
         with self._lock:
             graph = self._read()
             node = graph["nodes"].get(node_id)
             if node is None:
                 return
-            node.setdefault("conversation", []).append(entry)
+            conversation = node.setdefault("conversation", [])
+            previous = conversation[-1] if conversation else None
+            if (
+                previous
+                and entry.get("type") in {"text", "thought"}
+                and previous.get("type") == entry.get("type")
+                and previous.get("author") == entry.get("author")
+                and isinstance(previous.get("content"), str)
+                and isinstance(entry.get("content"), str)
+            ):
+                previous["content"] = _merge_streamed_text(previous["content"], entry["content"])
+                previous["timestamp"] = entry.get("timestamp", previous.get("timestamp"))
+            else:
+                conversation.append(entry)
             self._write(graph)
 
     def mark_running_nodes_cancelled(
@@ -256,3 +274,15 @@ class AgentGraphLogger:
     def _write(self, graph: dict) -> None:
         graph["updated_at"] = _now()
         self._path.write_text(json.dumps(graph, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _merge_streamed_text(current: str, incoming: str) -> str:
+    """Merge a streamed delta or cumulative snapshot without duplicated text."""
+    if not incoming or current.endswith(incoming):
+        return current
+    if incoming.startswith(current):
+        return incoming
+    for overlap in range(min(len(current), len(incoming)), 0, -1):
+        if current.endswith(incoming[:overlap]):
+            return current + incoming[overlap:]
+    return current + incoming
