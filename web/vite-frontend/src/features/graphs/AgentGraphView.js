@@ -24,7 +24,9 @@ const rgba = (rgb, alpha) => `rgba(${rgb}, ${alpha})`;
 // the same planning node as its real parent.
 const VINE_BATCH_GAP = 92;
 const VINE_BATCH_STAGGER = 54;
-const VINE_DESCENDANT_GAP = 62;
+// Keep task chains legible vertically while batches themselves still use the
+// tighter stagger below.
+const VINE_DESCENDANT_GAP = 70;
 const VINE_NODE_GAP = 64;
 const VINE_PLANNER_GAP = 460;
 const VINE_STEM_CLEARANCE = 42;
@@ -454,6 +456,88 @@ export class AgentGraphView {
     );
   }
 
+  _chronologicalTaskRows(nodeIds, nodeMap) {
+    const timed = nodeIds.map((id) => {
+      const node = nodeMap[id];
+      const startValue = node?.start_time ? new Date(node.start_time).getTime() : NaN;
+      const endValue = node?.end_time ? new Date(node.end_time).getTime() : NaN;
+      return {
+        id,
+        start: startValue,
+        hasStart: Number.isFinite(startValue),
+        // An unfinished task keeps its row open. That makes concurrently
+        // running work stay together instead of being rendered as a sequence.
+        end: Number.isFinite(endValue) ? endValue : Number.MAX_SAFE_INTEGER,
+      };
+    }).sort((a, b) => {
+      if (a.hasStart !== b.hasStart) return a.hasStart ? -1 : 1;
+      return a.start - b.start || a.id.localeCompare(b.id);
+    });
+
+    if (!timed.some((task) => task.hasStart)) return [nodeIds];
+
+    const rows = [];
+    let rowEnd = -Infinity;
+    timed.forEach((task) => {
+      // A snapshot without a start time has no reliable chronology. Keep it
+      // beside the current wave instead of inventing a sequential ordering.
+      if (!task.hasStart) {
+        rows[rows.length - 1].push(task.id);
+        return;
+      }
+      if (!rows.length || task.start >= rowEnd) {
+        rows.push([task.id]);
+        rowEnd = task.end;
+      } else {
+        rows[rows.length - 1].push(task.id);
+        rowEnd = Math.max(rowEnd, task.end);
+      }
+    });
+    return rows;
+  }
+
+  _sequenceTaskDisplayEdges(displayEdges, nodeMap) {
+    const directTaskEdges = new Map();
+    displayEdges.forEach((edge) => {
+      if (nodeMap[edge.from]?.type !== "execution" || nodeMap[edge.to]?.type !== "step") return;
+      if (!directTaskEdges.has(edge.from)) directTaskEdges.set(edge.from, []);
+      directTaskEdges.get(edge.from).push(edge);
+    });
+    if (!directTaskEdges.size) return displayEdges;
+
+    const replacedEdgeIds = new Set();
+    const sequenceEdges = [];
+    directTaskEdges.forEach((taskEdges, executionId) => {
+      const rows = this._chronologicalTaskRows(taskEdges.map((edge) => edge.to), nodeMap);
+      if (rows.length < 2) return;
+      taskEdges.forEach((edge) => replacedEdgeIds.add(edge.id));
+
+      // The first concurrent wave keeps E as its source. Later waves receive
+      // their visual connection from the preceding wave, yielding E -> 1 -> 2
+      // for a sequential pair while preserving same-row parallelism.
+      rows[0].forEach((to) => sequenceEdges.push({
+        id: `sequence__${executionId}__${to}`,
+        from: executionId,
+        to,
+      }));
+      for (let rowIndex = 1; rowIndex < rows.length; rowIndex++) {
+        const previous = rows[rowIndex - 1];
+        // A following wave begins only after the preceding parallel wave has
+        // completed. Draw every predecessor so a join such as 1 + 2 -> 3
+        // keeps both dependency lines rather than silently choosing task 1.
+        previous.forEach((from) => rows[rowIndex].forEach((to) => sequenceEdges.push({
+          id: `sequence__${executionId}__${from}__${to}`,
+          from,
+          to,
+        })));
+      }
+    });
+    return [
+      ...displayEdges.filter((edge) => !replacedEdgeIds.has(edge.id)),
+      ...sequenceEdges,
+    ];
+  }
+
   _computeVineLayout(rawNodes, edges) {
     const nodeMap = Object.fromEntries(rawNodes.map((node) => [node.id, node]));
     const children = Object.fromEntries(rawNodes.map((node) => [node.id, []]));
@@ -495,38 +579,37 @@ export class AgentGraphView {
       const sideClearY = new Map([[-1, VINE_BATCH_GAP], [1, VINE_BATCH_GAP]]);
       orderedBatches.forEach(([, executionIds], batchIndex) => {
         executionIds.sort((a, b) => this._timeKey(nodeMap[a]) - this._timeKey(nodeMap[b]) || a.localeCompare(b));
-        const batchWidth = (executionIds.length - 1) * VINE_NODE_GAP;
         const isLatestBatch = batchIndex === orderedBatches.length - 1;
-        const depthRows = [];
-        let maxDepth = 0;
-        const seen = new Set(executionIds);
-        let frontier = executionIds;
-
-        // Descendants are still normal graph children of execution nodes. They
-        // occupy rows below their own batch so they cannot be mistaken for a
-        // later planning round.
-        while (frontier.length) {
-          const next = [];
-          frontier.forEach((parentId) => children[parentId].forEach((childId) => {
-            if (!seen.has(childId) && nodeMap[childId]?.type !== "execution") {
-              seen.add(childId);
-              next.push(childId);
-            }
-          }));
-          if (!next.length) break;
-          maxDepth += 1;
-          depthRows.push(next);
-          frontier = next;
-        }
-
-        // Position a side batch only as far from the central stem as its
-        // widest descendant row requires. This prevents leaf nodes or their
-        // edges from crossing the main vine without wasting horizontal space.
-        const widestDescendantRow = Math.max(
-          batchWidth,
-          ...depthRows.map((ids) => (ids.length - 1) * VINE_NODE_GAP),
-        );
-        const subtreeHalfWidth = widestDescendantRow / 2 + this._nodeRadius({ type: "step" });
+        // Measure each E subtree independently. Pooling all sibling task
+        // nodes into global rows made their branches cross and obscured which
+        // execution owned each task.
+        const subtrees = executionIds.map((rootId) => {
+          const rows = [];
+          const seen = new Set([rootId]);
+          let frontier = [rootId];
+          while (frontier.length) {
+            const next = [];
+            frontier.forEach((parentId) => children[parentId].forEach((childId) => {
+              if (!seen.has(childId) && nodeMap[childId]?.type !== "execution") {
+                seen.add(childId);
+                next.push(childId);
+              }
+            }));
+            if (!next.length) break;
+            rows.push(next);
+            frontier = next;
+          }
+          const widestRow = Math.max(0, ...rows.map((ids) => (ids.length - 1) * VINE_NODE_GAP));
+          return {
+            rootId,
+            rows,
+            maxDepth: rows.length,
+            width: Math.max(VINE_NODE_GAP, widestRow + VINE_NODE_GAP),
+          };
+        });
+        const batchWidth = subtrees.reduce((total, subtree) => total + subtree.width, 0);
+        const maxDepth = Math.max(0, ...subtrees.map((subtree) => subtree.maxDepth));
+        const subtreeHalfWidth = batchWidth / 2 + this._nodeRadius({ type: "step" });
         const side = batchIndex % 2 === 0 ? 1 : -1;
         const nextStaggerY = previousBatchY + VINE_BATCH_STAGGER;
         const batchY = isLatestBatch
@@ -539,19 +622,22 @@ export class AgentGraphView {
           ? plannerX
           : plannerX + side * (subtreeHalfWidth + VINE_STEM_CLEARANCE);
 
-        executionIds.forEach((id, index) => {
-          positions[id] = { x: batchCenterX + index * VINE_NODE_GAP - batchWidth / 2, y: batchY };
-          placed.add(id);
-        });
-        depthRows.forEach((ids, depthIndex) => {
-          const rowWidth = (ids.length - 1) * VINE_NODE_GAP;
-          ids.forEach((id, index) => {
-            positions[id] = {
-              x: batchCenterX + index * VINE_NODE_GAP - rowWidth / 2,
-              y: batchY + (depthIndex + 1) * VINE_DESCENDANT_GAP,
-            };
-            placed.add(id);
+        let subtreeLeft = batchCenterX - batchWidth / 2;
+        subtrees.forEach((subtree) => {
+          const rootX = subtreeLeft + subtree.width / 2;
+          positions[subtree.rootId] = { x: rootX, y: batchY };
+          placed.add(subtree.rootId);
+          subtree.rows.forEach((ids, depthIndex) => {
+            const rowWidth = (ids.length - 1) * VINE_NODE_GAP;
+            ids.forEach((id, index) => {
+              positions[id] = {
+                x: rootX + index * VINE_NODE_GAP - rowWidth / 2,
+                y: batchY + (depthIndex + 1) * VINE_DESCENDANT_GAP,
+              };
+              placed.add(id);
+            });
           });
+          subtreeLeft += subtree.width;
         });
         previousBatchY = batchY;
         if (!isLatestBatch) {
@@ -701,7 +787,7 @@ export class AgentGraphView {
       });
     });
 
-    return displayEdges;
+    return this._sequenceTaskDisplayEdges(displayEdges, nodeMap);
   }
 
   _resizeSurface() {
