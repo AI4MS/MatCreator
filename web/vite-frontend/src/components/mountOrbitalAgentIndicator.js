@@ -7,11 +7,12 @@ import OrbitalAgentIndicator from "./OrbitalAgentIndicator.jsx";
 export function mountOrbitalAgentIndicator(target) {
   if (!target) return null;
   const root = createRoot(target);
-  root.render(React.createElement(OrbitalAgentIndicator, {
-    state: "computing",
+  const render = (state = "idle") => root.render(React.createElement(OrbitalAgentIndicator, {
+    state,
     size: 18,
     color: "var(--accent)",
-    title: "MatCreator is working",
+    title: `MatCreator is ${state}`,
   }));
-  return root;
+  render();
+  return { render, unmount: () => root.unmount() };
 }

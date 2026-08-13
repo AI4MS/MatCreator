@@ -72,6 +72,7 @@ const inputArea = document.querySelector(".input-area");
 const inputContainer = document.querySelector(".input-container");
 const agentRunningIndicator = document.getElementById("agent-running-indicator");
 const agentRunningOrbital = document.getElementById("agent-running-orbital");
+const agentRunningText = document.getElementById("agent-running-text");
 const sendBtn = document.getElementById("send-btn");
 const fileUploadBtn = document.getElementById("file-upload-btn");
 const fileUploadInput = document.getElementById("file-upload-input");
@@ -1070,17 +1071,32 @@ function releaseSessionRequest(request) {
   }
 }
 
+const orbitalIndicator = mountOrbitalAgentIndicator(agentRunningOrbital);
+
+function updateAgentRunningStatus(phase = "working") {
+  const phases = {
+    working: ["MatCreator is working. Please wait…", "thinking"],
+    thinking: ["MatCreator is thinking…", "thinking"],
+    planning: ["MatCreator is planning the workflow…", "thinking"],
+    searching: ["MatCreator is searching for information…", "searching"],
+    executing: ["MatCreator is executing the workflow…", "computing"],
+    computing: ["MatCreator is computing…", "computing"],
+  };
+  const [label, orbitalState] = phases[phase] || phases.working;
+  if (agentRunningText) agentRunningText.textContent = label;
+  orbitalIndicator?.render(orbitalState);
+}
+
 function updateSendButtonState() {
   const running = Boolean(activeSessionRequest());
   inputArea?.classList.toggle("is-agent-running", running);
   if (agentRunningIndicator) agentRunningIndicator.setAttribute("aria-hidden", String(!running));
+  if (!running) updateAgentRunningStatus();
   if (!sendBtn) return;
   sendBtn.textContent = running ? "■" : "➜";
   sendBtn.title = running ? "Stop" : "Send";
   sendBtn.classList.toggle("is-stopping", running);
 }
-
-mountOrbitalAgentIndicator(agentRunningOrbital);
 
 function storeSessionSelection(sessionId, owner) {
   localStorage.setItem(SESSION_ID_KEY, sessionId);
@@ -2900,6 +2916,7 @@ const messageStreamController = createMessageStreamController({
   agentGraph,
   planGraph,
   updateSendButtonState,
+  updateAgentRunningStatus,
   releaseSessionRequest,
   managedRunEventsUrl,
   shouldRefreshPlanGraphForTool,

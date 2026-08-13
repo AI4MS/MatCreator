@@ -12,7 +12,7 @@ export function createMessageStreamController(deps) {
     state, appName, chatArea, textInput, activeSessionRequest, sessionRequestKey, activeSessionBackendUserId,
     canWriteActiveSession, showLoginModal, createSession, addMessage, addAgentTimelineMessage,
     addPlanApprovalActions, renderTimeline, messageWithUploadNames, messageWithUploadContext, clearCurrentUploads,
-    autoResizeTextInput, stepExecutionFeed, agentGraph, planGraph, updateSendButtonState,
+    autoResizeTextInput, stepExecutionFeed, agentGraph, planGraph, updateSendButtonState, updateAgentRunningStatus,
     releaseSessionRequest, managedRunEventsUrl, shouldRefreshPlanGraphForTool,
     generateSessionSummary, refreshSessionFiles, sessionRuntime,
   } = deps;
@@ -43,6 +43,7 @@ export function createMessageStreamController(deps) {
     const query = new URLSearchParams({ user_id: request.owner || state.userId });
     fetch(`/api/sessions/${request.sessionId}/cancel?${query}`, { method: "POST" }).catch(() => {});
     request.controller.abort();
+    updateAgentRunningStatus("working");
     pollCancellationConfirmed(request.sessionId, request.owner);
   }
 
@@ -91,6 +92,7 @@ export function createMessageStreamController(deps) {
       backendUserId: activeSessionBackendUserId(), controller: new AbortController(), lastSequence: 0, runId: null,
     };
     state.activeRequests.set(request.key, request);
+    updateAgentRunningStatus("thinking");
     updateSendButtonState();
 
     let accumulatedText = "";
@@ -105,17 +107,25 @@ export function createMessageStreamController(deps) {
       if (data === "[DONE]") return;
       try {
         for (const part of JSON.parse(data)?.content?.parts || []) {
-          if (part.thought) upsertTimelineThought(timeline, part.text || "");
-          else if (part.functionCall) upsertTimelineEvent(timeline, { type: "function_call", id: part.functionCall.id, name: part.functionCall.name || "Unknown", args: part.functionCall.args || {} });
+          if (part.thought) {
+            updateAgentRunningStatus("thinking");
+            upsertTimelineThought(timeline, part.text || "");
+          } else if (part.functionCall) {
+            const name = part.functionCall.name || "Unknown";
+            updateAgentRunningStatus(phaseForTool(name));
+            upsertTimelineEvent(timeline, { type: "function_call", id: part.functionCall.id, name, args: part.functionCall.args || {} });
+          }
           else if (part.functionResponse) {
             const response = part.functionResponse;
             upsertTimelineEvent(timeline, { type: "function_response", id: response.id, name: response.name || "Unknown", response: response.response || {} });
+            updateAgentRunningStatus(phaseForTool(response.name));
             if (shouldRefreshPlanGraphForTool(response.name)) planGraph.refresh(request.sessionId);
             if ((response.name === "validate_graph" || response.name === "validate_plan")
               && response.response?.status === "ok") validatedPlanThisTurn = true;
             if ((response.name === "confirm_plan_and_start_execution" || response.name === "resume_execution")
               && response.response?.status === "ok") executionApprovedThisTurn = true;
           } else if (part.text) {
+            updateAgentRunningStatus("thinking");
             accumulatedText = mergeReplayedText(accumulatedText, part.text);
             upsertTimelineText(timeline, compactRepeatedPrefixSnapshots(accumulatedText));
             if (!summaryTriggered && !state.summaryGeneratedFor.has(request.sessionId) && !state.sessionSummaries[request.sessionId]) {
@@ -210,6 +220,15 @@ export function createMessageStreamController(deps) {
         if (latestTimeline) addPlanApprovalActions(latestTimeline);
       }
     }
+  }
+
+  function phaseForTool(name = "") {
+    const tool = String(name).toLowerCase();
+    if (tool.includes("search") || tool.includes("retrieve") || tool.includes("lookup")) return "searching";
+    if (tool.includes("plan") || tool.includes("graph") || tool.includes("decompos")) return "planning";
+    if (tool.includes("run_") || tool.includes("execute") || tool.includes("submit") || tool.includes("resume")) return "executing";
+    if (tool.includes("calc") || tool.includes("simulate") || tool.includes("compute")) return "computing";
+    return "working";
   }
 
   return { send, stop };
