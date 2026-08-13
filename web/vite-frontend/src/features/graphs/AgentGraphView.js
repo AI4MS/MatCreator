@@ -19,6 +19,15 @@ const STATUS_COLORS = {
 
 const rgba = (rgb, alpha) => `rgba(${rgb}, ${alpha})`;
 
+// These distances describe time, rather than graph depth.  In particular an
+// execution batch gets its own row even though every execution node still has
+// the same planning node as its real parent.
+const VINE_BATCH_GAP = 112;
+const VINE_DESCENDANT_GAP = 62;
+const VINE_NODE_GAP = 64;
+const VINE_PLANNER_GAP = 460;
+const VINE_STEM_CLEARANCE = 42;
+
 const STATUS_ALIASES = {
   completed: "success",
   succeeded: "success",
@@ -53,6 +62,7 @@ export class AgentGraphView {
     this._lastAnimationPaint = 0;
     this._motionTime = 0;
     this._activeEdges = [];
+    this._vineEdges = [];
     this._hasRunningNodes = false;
     this._reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
     this._detailEl = document.getElementById("graph-detail");
@@ -89,16 +99,10 @@ export class AgentGraphView {
   _init() {
     const edgeColors = this._edgeColors();
     const options = {
-      layout: {
-        hierarchical: {
-          direction: "UD",
-          sortMethod: "directed",
-          nodeSpacing: 76,
-          levelSeparation: 86,
-          blockShifting: true,
-          edgeMinimization: true,
-        },
-      },
+      // Agent activity uses a chronology-aware layout below.  A DAG layout
+      // would put every child of a planner at the same depth and erase the
+      // distinction between successive planning rounds.
+      layout: { hierarchical: false },
       physics: { enabled: false },
       edges: {
         arrows: { to: { enabled: true, scaleFactor: 0.72 } },
@@ -130,6 +134,7 @@ export class AgentGraphView {
       if (params.nodes.length) this._showDetail(params.nodes[0]);
     });
     this._network.on("deselectNode", () => this._hideDetail());
+    this._network.on("beforeDrawing", (ctx) => this._drawVines(ctx));
     this._network.on("afterDrawing", (ctx) => this._drawActiveFlow(ctx));
     window.addEventListener("matcreator-theme-change", () => this._applyTheme());
     this._detailClose?.addEventListener("click", () => {
@@ -429,41 +434,181 @@ export class AgentGraphView {
     this._animationFrame = requestAnimationFrame(animate);
   }
 
-  _computeLevels(rawNodes, edges) {
-    const nodeIds = rawNodes.map((node) => node.id);
-    const nodeIdSet = new Set(nodeIds);
-    const children = Object.fromEntries(nodeIds.map((id) => [id, []]));
-    const inDegree = Object.fromEntries(nodeIds.map((id) => [id, 0]));
+  _timeKey(node) {
+    const value = node?.start_time ? new Date(node.start_time).getTime() : NaN;
+    return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
+  }
 
-    // Levels describe hierarchy, not elapsed time. Tasks with the same parent
-    // therefore remain siblings on the same row even if they ran sequentially.
+  _executionBatchId(node, plannerId) {
+    // batch_id is optional for older graph snapshots. Untagged direct siblings
+    // belong to one legacy batch rather than being split into one layer per
+    // node: sequential dispatch is still work from the same planning round.
+    // New snapshots carry explicit IDs, so replanning rounds remain separate.
+    return String(
+      node.batch_id
+      ?? node.execution_batch_id
+      ?? node.input?.batch_id
+      ?? node.input?.execution_batch_id
+      ?? `legacy:${plannerId}`,
+    );
+  }
+
+  _computeVineLayout(rawNodes, edges) {
+    const nodeMap = Object.fromEntries(rawNodes.map((node) => [node.id, node]));
+    const children = Object.fromEntries(rawNodes.map((node) => [node.id, []]));
     (edges || []).forEach((edge) => {
-      if (!nodeIdSet.has(edge.from) || !nodeIdSet.has(edge.to)) return;
-      children[edge.from].push(edge.to);
-      inDegree[edge.to] += 1;
+      if (children[edge.from] && nodeMap[edge.to]) children[edge.from].push(edge.to);
     });
+    Object.values(children).forEach((ids) => ids.sort((a, b) =>
+      this._timeKey(nodeMap[a]) - this._timeKey(nodeMap[b]) || String(a).localeCompare(String(b))));
 
-    const levels = {};
-    const queue = nodeIds.filter((id) => inDegree[id] === 0);
-    queue.forEach((id) => { levels[id] = 0; });
+    const positions = {};
+    const placed = new Set();
+    const planners = rawNodes.filter((node) => node.type === "planning")
+      .sort((a, b) => this._timeKey(a) - this._timeKey(b) || a.id.localeCompare(b.id));
+    const plannerCount = planners.length;
 
-    while (queue.length) {
-      const parentId = queue.shift();
-      children[parentId].forEach((childId) => {
-        levels[childId] = Math.max(
-          levels[childId] ?? 0,
-          (levels[parentId] ?? 0) + 1,
-        );
-        inDegree[childId] -= 1;
-        if (inDegree[childId] === 0) queue.push(childId);
+    planners.forEach((planner, plannerIndex) => {
+      const plannerX = (plannerIndex - (plannerCount - 1) / 2) * VINE_PLANNER_GAP;
+      positions[planner.id] = { x: plannerX, y: 0 };
+      placed.add(planner.id);
+
+      const batches = new Map();
+      children[planner.id]
+        .filter((id) => nodeMap[id]?.type === "execution")
+        .forEach((id) => {
+          const batchId = this._executionBatchId(nodeMap[id], planner.id);
+          if (!batches.has(batchId)) batches.set(batchId, []);
+          batches.get(batchId).push(id);
+        });
+      const orderedBatches = [...batches.entries()].sort(([aId, a], [bId, b]) => {
+        const aTime = Math.min(...a.map((id) => this._timeKey(nodeMap[id])));
+        const bTime = Math.min(...b.map((id) => this._timeKey(nodeMap[id])));
+        return aTime - bTime || aId.localeCompare(bId);
       });
-    }
 
-    // Keep malformed/cyclic payloads visible rather than dropping their nodes.
-    nodeIds.forEach((id) => {
-      if (!(id in levels)) levels[id] = 0;
+      let batchY = VINE_BATCH_GAP;
+      orderedBatches.forEach(([, executionIds], batchIndex) => {
+        executionIds.sort((a, b) => this._timeKey(nodeMap[a]) - this._timeKey(nodeMap[b]) || a.localeCompare(b));
+        const batchWidth = (executionIds.length - 1) * VINE_NODE_GAP;
+        const isLatestBatch = batchIndex === orderedBatches.length - 1;
+        const depthRows = [];
+        let maxDepth = 0;
+        const seen = new Set(executionIds);
+        let frontier = executionIds;
+
+        // Descendants are still normal graph children of execution nodes. They
+        // occupy rows below their own batch so they cannot be mistaken for a
+        // later planning round.
+        while (frontier.length) {
+          const next = [];
+          frontier.forEach((parentId) => children[parentId].forEach((childId) => {
+            if (!seen.has(childId) && nodeMap[childId]?.type !== "execution") {
+              seen.add(childId);
+              next.push(childId);
+            }
+          }));
+          if (!next.length) break;
+          maxDepth += 1;
+          depthRows.push(next);
+          frontier = next;
+        }
+
+        // Position a side batch only as far from the central stem as its
+        // widest descendant row requires. This prevents leaf nodes or their
+        // edges from crossing the main vine without wasting horizontal space.
+        const widestDescendantRow = Math.max(
+          batchWidth,
+          ...depthRows.map((ids) => (ids.length - 1) * VINE_NODE_GAP),
+        );
+        const subtreeHalfWidth = widestDescendantRow / 2 + this._nodeRadius({ type: "step" });
+        const side = batchIndex % 2 === 0 ? 1 : -1;
+        const batchCenterX = isLatestBatch
+          ? plannerX
+          : plannerX + side * (subtreeHalfWidth + VINE_STEM_CLEARANCE);
+
+        executionIds.forEach((id, index) => {
+          positions[id] = { x: batchCenterX + index * VINE_NODE_GAP - batchWidth / 2, y: batchY };
+          placed.add(id);
+        });
+        depthRows.forEach((ids, depthIndex) => {
+          const rowWidth = (ids.length - 1) * VINE_NODE_GAP;
+          ids.forEach((id, index) => {
+            positions[id] = {
+              x: batchCenterX + index * VINE_NODE_GAP - rowWidth / 2,
+              y: batchY + (depthIndex + 1) * VINE_DESCENDANT_GAP,
+            };
+            placed.add(id);
+          });
+        });
+        batchY += VINE_BATCH_GAP + maxDepth * VINE_DESCENDANT_GAP;
+      });
     });
-    return levels;
+
+    // Keep the orchestrator immediately above its planners.  Any malformed or
+    // unrelated node remains visible in a small fallback strip instead of
+    // being silently omitted from the graph.
+    rawNodes.filter((node) => node.type === "orchestrator").forEach((node, index) => {
+      positions[node.id] = { x: index * VINE_PLANNER_GAP, y: -VINE_BATCH_GAP };
+      placed.add(node.id);
+    });
+    rawNodes.filter((node) => !placed.has(node.id)).forEach((node, index) => {
+      positions[node.id] = { x: index * VINE_NODE_GAP, y: VINE_BATCH_GAP };
+    });
+    return positions;
+  }
+
+  _drawVines(ctx) {
+    if (!this._network || !this._vineEdges.length) return;
+    const positions = this._network.getPositions();
+    const isLight = document.body.dataset.theme === "light";
+    const color = isLight ? "#8290a3" : "#64748b";
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 1.7;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    this._vineEdges.forEach(({ from, branches }) => {
+      const source = positions[from];
+      if (!source || !branches.length) return;
+      const sourceY = source.y + this._nodeRadius(this._nodeData[from]) + 1;
+      const stemEndY = Math.max(...branches.map(({ to }) => {
+        const target = positions[to];
+        return target ? target.y - this._nodeRadius(this._nodeData[to]) - 34 : sourceY;
+      }));
+
+      // The stem is drawn once, so later planning rounds visibly extend the
+      // same P connection rather than appearing as unrelated long edges.
+      ctx.beginPath();
+      ctx.moveTo(source.x, sourceY);
+      ctx.lineTo(source.x, stemEndY);
+      ctx.stroke();
+
+      branches.forEach(({ to }) => {
+        const target = positions[to];
+        if (!target) return;
+        const targetY = target.y - this._nodeRadius(this._nodeData[to]) - 1;
+        const branchY = targetY - 34;
+        ctx.beginPath();
+        ctx.moveTo(source.x, branchY);
+        ctx.bezierCurveTo(
+          source.x, branchY + 18,
+          target.x, branchY - 18,
+          target.x, targetY,
+        );
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(target.x, targetY);
+        ctx.lineTo(target.x - 4, targetY - 7);
+        ctx.lineTo(target.x + 4, targetY - 7);
+        ctx.closePath();
+        ctx.fill();
+      });
+    });
+    ctx.restore();
   }
 
   _buildDisplayEdges(rawNodes, edges) {
@@ -590,8 +735,24 @@ export class AgentGraphView {
         color: STATUS_COLORS.running,
         phase: (index * 0.173) % 1,
       }));
-    const levels = this._computeLevels(rawNodes, displayEdges);
-    this._resizeSurface(levels);
+    const positions = this._computeVineLayout(rawNodes, displayEdges);
+    const vineEdgeIds = new Set(displayEdges
+      .filter((edge) => rawNodeMap[edge.from]?.type === "planning" && rawNodeMap[edge.to]?.type === "execution")
+      .map((edge) => edge.id || `${edge.from}__${edge.to}`));
+    const vineTargetsByPlanner = new Map();
+    displayEdges.forEach((edge) => {
+      if (!vineEdgeIds.has(edge.id || `${edge.from}__${edge.to}`)) return;
+      if (!vineTargetsByPlanner.has(edge.from)) vineTargetsByPlanner.set(edge.from, []);
+      vineTargetsByPlanner.get(edge.from).push(edge.to);
+    });
+    this._vineEdges = [...vineTargetsByPlanner.entries()].map(([from, targetIds]) => ({
+      from,
+      // This one object produces one shared stem and a branch for every
+      // direct execution relation. It intentionally does not replace edges
+      // in graphData: every E still belongs directly to its planner.
+      branches: targetIds.map((to) => ({ to })),
+    }));
+    this._resizeSurface();
     const nextNodeIds = new Set(rawNodes.map((raw) => raw.id));
     const nextEdgeIds = new Set(displayEdges.map((e) => e.id || `${e.from}__${e.to}`));
     const topologyChanged =
@@ -606,7 +767,10 @@ export class AgentGraphView {
 
     rawNodes.forEach((raw) => {
       const vis = this._visNode(raw);
-      vis.level = levels[raw.id] ?? 0;
+      const position = positions[raw.id] || { x: 0, y: 0 };
+      vis.x = position.x;
+      vis.y = position.y;
+      vis.fixed = { x: true, y: true };
       if (this._nodes.get(raw.id)) {
         this._nodes.update(vis);
       } else {
@@ -618,21 +782,23 @@ export class AgentGraphView {
       if (!nextEdgeIds.has(edgeId)) this._edges.remove(edgeId);
     });
 
-    const existingEdgeIds = new Set(this._edges.getIds());
     displayEdges.forEach((e) => {
       const edgeId = e.id || `${e.from}__${e.to}`;
-      if (!existingEdgeIds.has(edgeId)) {
-        this._edges.add({
-          id: edgeId,
-          from: e.from,
-          to: e.to,
-          hidden: false,
-          physics: false,
-          width: 1.35,
-          color: this._edgeColors(),
-          smooth: { type: "cubicBezier", forceDirection: "vertical" },
-        });
-      }
+      const visEdge = {
+        id: edgeId,
+        from: e.from,
+        to: e.to,
+        // Planner -> execution links are painted as routed vines in
+        // beforeDrawing. The edge itself stays in the DataSet, preserving the
+        // real graph topology for interaction and future consumers.
+        hidden: vineEdgeIds.has(edgeId),
+        physics: false,
+        width: 1.35,
+        color: this._edgeColors(),
+        smooth: { type: "cubicBezier", forceDirection: "vertical" },
+      };
+      if (this._edges.get(edgeId)) this._edges.update(visEdge);
+      else this._edges.add(visEdge);
     });
 
     if (rawNodes.length > 0 && (topologyChanged || !this._didInitialFit || this._pendingFit)) {
@@ -699,6 +865,7 @@ export class AgentGraphView {
     this._pendingFit = true;
     this._hasRunningNodes = false;
     this._activeEdges = [];
+    this._vineEdges = [];
     if (this._animationFrame !== null) cancelAnimationFrame(this._animationFrame);
     this._animationFrame = null;
     this._lastAnimationPaint = 0;

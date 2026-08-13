@@ -14,6 +14,7 @@ Schema
       "label": "<str>",
       "status": "idle|running|success|failed|needs_replanning",
       "parent_id": "<str|null>",
+      "batch_id": "<str|null>",
       "start_time": "<ISO-8601|null>",
       "end_time": "<ISO-8601|null>",
       "summary": "<str|null>",
@@ -73,6 +74,7 @@ class AgentGraphLogger:
         node_type: NodeType,
         label: str,
         parent_id: Optional[str] = None,
+        batch_id: Optional[str] = None,
     ) -> None:
         """Create or overwrite a node with status=running."""
         with self._lock:
@@ -84,6 +86,10 @@ class AgentGraphLogger:
                 "label": label,
                 "status": "running",
                 "parent_id": parent_id,
+                # Execution producers may share this value for work launched
+                # by one planning round. It is presentation metadata only: the
+                # actual parent edge remains parent_id -> node_id.
+                "batch_id": batch_id if batch_id is not None else (existing or {}).get("batch_id"),
                 "start_time": existing["start_time"] if existing else _now(),
                 "end_time": None,
                 "summary": None,

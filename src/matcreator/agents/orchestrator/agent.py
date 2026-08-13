@@ -201,7 +201,16 @@ class PlanningExecutionOrchestrator(BaseAgent):
                 )
 
                 exec_id = f"execution_{loop_idx}"
-                graph.log_node_start(exec_id, "execution", f"Execution {loop_idx + 1}", planning_id)
+                graph.log_node_start(
+                    exec_id,
+                    "execution",
+                    f"Execution {loop_idx + 1}",
+                    planning_id,
+                    # This remains metadata: all execution nodes continue to
+                    # point directly at the original planner. The frontend
+                    # uses it to place one planning round on one vine layer.
+                    batch_id=f"{planning_id}:round:{loop_idx}",
+                )
                 state["_graph_exec_node_id"] = exec_id
 
                 async for event in self.execution_agent.run_async(ctx):
