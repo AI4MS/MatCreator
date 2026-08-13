@@ -99,6 +99,7 @@ from matcreator.constants import GRAPH_AGENT_MODEL, KNOW_DO_GRAPH_DB  # noqa: E4
 from matcreator.control_plane.remote_job_monitor import RemoteJobMonitor  # noqa: E402
 from matcreator.control_plane.remote_job_service import RemoteJobService  # noqa: E402
 from matcreator.control_plane.remote_jobs import RemoteJobStore  # noqa: E402
+from matcreator.control_plane.providers import CapabilityError  # noqa: E402
 from matcreator.control_plane.benchmark_client import BenchmarkApiError, BenchmarkClient, sanitize_bank_id  # noqa: E402
 from matcreator.control_plane.evaluation_manager import EvaluationManager  # noqa: E402
 from matcreator.control_plane.evaluation_runtime import RuntimeOutcome, RuntimeSpec  # noqa: E402
@@ -2669,11 +2670,13 @@ async def pause_session_remote_job(
     job_id: str,
     user_id: str = Query(..., description="Current signed-in user"),
 ) -> JSONResponse:
-    """Pause one E2B sandbox and notify its linked executor without stopping it."""
+    """Pause one remote job (if its provider supports pausing) and notify its linked executor without stopping it."""
     job = _get_owned_remote_job(session_id, job_id, user_id)
     try:
-        paused = await asyncio.to_thread(_remote_job_service_for_owner(user_id).pause_e2b, job_id)
+        paused = await asyncio.to_thread(_remote_job_service_for_owner(user_id).pause_job, job_id)
     except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except CapabilityError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     await asyncio.to_thread(
         _remote_job_store_for_owner(user_id).record_user_control,
@@ -2689,10 +2692,10 @@ async def terminate_session_remote_job(
     job_id: str,
     user_id: str = Query(..., description="Current signed-in user"),
 ) -> JSONResponse:
-    """Terminate one E2B sandbox and notify its linked executor without stopping it."""
+    """Terminate one remote job and notify its linked executor without stopping it."""
     job = _get_owned_remote_job(session_id, job_id, user_id)
     try:
-        terminated = await asyncio.to_thread(_remote_job_service_for_owner(user_id).terminate_e2b, job_id)
+        terminated = await asyncio.to_thread(_remote_job_service_for_owner(user_id).terminate_job, job_id)
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     await asyncio.to_thread(
@@ -2709,12 +2712,10 @@ async def refresh_session_remote_job(
     job_id: str,
     user_id: str = Query(..., description="Current signed-in user"),
 ) -> JSONResponse:
-    """Synchronize a caller-owned active E2B job with its sandbox."""
+    """Synchronize a caller-owned active remote job with its provider."""
     job = _get_owned_remote_job(session_id, job_id, user_id)
-    if job["provider"] != "e2b":
-        raise HTTPException(status_code=409, detail="Remote job is not managed by E2B")
     try:
-        refreshed = await asyncio.to_thread(_remote_job_service_for_owner(user_id).reconcile_e2b, job_id)
+        refreshed = await asyncio.to_thread(_remote_job_service_for_owner(user_id).reconcile_job, job_id)
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return JSONResponse(refreshed)
@@ -3770,7 +3771,7 @@ async def cancel_session_execution(
     paused_jobs = []
     if user_id:
         paused_jobs = await asyncio.to_thread(
-            _remote_job_service_for_owner(user_id).pause_active_session_e2b_jobs,
+            _remote_job_service_for_owner(user_id).pause_active_session_jobs,
             owner_id=user_id,
             session_id=session_id,
         )
