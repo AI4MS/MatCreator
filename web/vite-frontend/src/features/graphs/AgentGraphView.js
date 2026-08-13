@@ -22,7 +22,8 @@ const rgba = (rgb, alpha) => `rgba(${rgb}, ${alpha})`;
 // These distances describe time, rather than graph depth.  In particular an
 // execution batch gets its own row even though every execution node still has
 // the same planning node as its real parent.
-const VINE_BATCH_GAP = 112;
+const VINE_BATCH_GAP = 92;
+const VINE_BATCH_STAGGER = 54;
 const VINE_DESCENDANT_GAP = 62;
 const VINE_NODE_GAP = 64;
 const VINE_PLANNER_GAP = 460;
@@ -487,7 +488,11 @@ export class AgentGraphView {
         return aTime - bTime || aId.localeCompare(bId);
       });
 
-      let batchY = VINE_BATCH_GAP;
+      let previousBatchY = VINE_BATCH_GAP - VINE_BATCH_STAGGER;
+      // Alternating branches use independent vertical lanes. A new branch on
+      // the opposite side may tuck in after a small stagger; returning to a
+      // side waits until that side's existing leaf fan has cleared.
+      const sideClearY = new Map([[-1, VINE_BATCH_GAP], [1, VINE_BATCH_GAP]]);
       orderedBatches.forEach(([, executionIds], batchIndex) => {
         executionIds.sort((a, b) => this._timeKey(nodeMap[a]) - this._timeKey(nodeMap[b]) || a.localeCompare(b));
         const batchWidth = (executionIds.length - 1) * VINE_NODE_GAP;
@@ -523,6 +528,13 @@ export class AgentGraphView {
         );
         const subtreeHalfWidth = widestDescendantRow / 2 + this._nodeRadius({ type: "step" });
         const side = batchIndex % 2 === 0 ? 1 : -1;
+        const nextStaggerY = previousBatchY + VINE_BATCH_STAGGER;
+        const batchY = isLatestBatch
+          // The centered tip shares horizontal space with both historical
+          // sides. Place it below the deepest task generation from either
+          // side, not merely below the preceding execution node.
+          ? Math.max(nextStaggerY, ...sideClearY.values())
+          : Math.max(nextStaggerY, sideClearY.get(side));
         const batchCenterX = isLatestBatch
           ? plannerX
           : plannerX + side * (subtreeHalfWidth + VINE_STEM_CLEARANCE);
@@ -541,7 +553,13 @@ export class AgentGraphView {
             placed.add(id);
           });
         });
-        batchY += VINE_BATCH_GAP + maxDepth * VINE_DESCENDANT_GAP;
+        previousBatchY = batchY;
+        if (!isLatestBatch) {
+          sideClearY.set(
+            side,
+            batchY + maxDepth * VINE_DESCENDANT_GAP + VINE_BATCH_STAGGER,
+          );
+        }
       });
     });
 
