@@ -130,6 +130,11 @@ class AgentGraphLogger:
         graph = self._read()
         return sum(1 for n in graph["nodes"].values() if n["type"] == node_type)
 
+    def nodes_of_type(self, node_type: NodeType) -> list[dict]:
+        """Return graph nodes of a type for lifecycle-aware node reuse."""
+        graph = self._read()
+        return [node for node in graph["nodes"].values() if node.get("type") == node_type]
+
     def log_node_input(self, node_id: str, input_data: dict) -> None:
         """Store the structured input that was passed to the sub-agent."""
         with self._lock:

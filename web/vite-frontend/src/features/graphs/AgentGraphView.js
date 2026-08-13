@@ -488,10 +488,20 @@ export class AgentGraphView {
       });
     });
 
-    // Phase nodes are logged as orchestrator children because the orchestrator
-    // invokes them. For display, group each execution/testing phase beneath
-    // the planning invocation whose context produced it.
+    // Newer graph records persist the actual planning parent. Older sessions
+    // logged every phase under the orchestrator, so retain temporal grouping as
+    // a backwards-compatible fallback.
     childPhaseNodes.forEach((node) => {
+      const persistedParent = nodeMap[node.parent_id];
+      if (persistedParent?.type === "planning") {
+        displayEdges.push({
+          id: `phase__${persistedParent.id}__${node.id}`,
+          from: persistedParent.id,
+          to: node.id,
+        });
+        return;
+      }
+
       const nodeStart = node.start_time ? new Date(node.start_time).getTime() : Infinity;
       let parentPlanning = null;
       for (const planning of planningNodes) {

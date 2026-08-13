@@ -67,7 +67,9 @@ const state = {
 
 const chatArea = document.getElementById("chat-area");
 const textInput = document.getElementById("text-input");
+const inputArea = document.querySelector(".input-area");
 const inputContainer = document.querySelector(".input-container");
+const agentRunningIndicator = document.getElementById("agent-running-indicator");
 const sendBtn = document.getElementById("send-btn");
 const fileUploadBtn = document.getElementById("file-upload-btn");
 const fileUploadInput = document.getElementById("file-upload-input");
@@ -1068,6 +1070,8 @@ function releaseSessionRequest(request) {
 
 function updateSendButtonState() {
   const running = Boolean(activeSessionRequest());
+  inputArea?.classList.toggle("is-agent-running", running);
+  if (agentRunningIndicator) agentRunningIndicator.setAttribute("aria-hidden", String(!running));
   if (!sendBtn) return;
   sendBtn.textContent = running ? "■" : "➜";
   sendBtn.title = running ? "Stop" : "Send";
