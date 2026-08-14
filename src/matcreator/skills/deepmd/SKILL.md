@@ -137,6 +137,24 @@ dp show <model_file> descriptor
 ```
 
 ---
+
+# DPA-4c distillation (student model training)
+
+Distilling a student model from a fine-tuned DPA-4 teacher is the only scenario where
+training a model is advised (see the description of this skill). The student architecture
+for distillation is **DPA-4c** (`descriptor.type = "dpa4c"`), whose CLI usage differs
+from regular fine-tuning.
+
+> **Prerequisite gate:** distillation requires the concept-level Stage A (teacher NPT MD
+> exploration) and Stage B (teacher inference labeling) to be completed first — see the
+> `machine-learning-force-field` skill ([references/distillation.md](../concepts/machine-learning-force-field/references/distillation.md)).
+> Training directly on the seed/static structures is forbidden.
+
+The concrete DPA-4c training command, the verified input template, and the recommended
+Bohrium image/machine are documented in
+[references/supported_deepmd_models.md](references/supported_deepmd_models.md) ("DPA-4c" section).
+
+---
 # DeePMD-kit python interface (ASE calculator)
 
 Deepmd-kit provides a Python interface, which can act as an ASE calculator, further enabling any calculation task
