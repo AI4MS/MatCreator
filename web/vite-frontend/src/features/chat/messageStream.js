@@ -75,7 +75,7 @@ export function createMessageStreamController(deps) {
     renderStopStatus(request);
     request.controller.abort();
     updateAgentRunningStatus("working");
-    pollCancellationConfirmed(request.sessionId, request.owner);
+    void pollCancellationConfirmed(request);
   }
 
   async function send(message) {
