@@ -136,21 +136,22 @@ DPA-2 and DPA-3 models are supported but not strongly recommended in any scenari
 5.  Also, do not use nvidia GPUs older than V100 as they no longer support the triton AOT induction route of
     modern pytorch, which is compulsory for deepmd-kit>=3.2.0.
 
-## DPA-4c distillation student (dpa4c descriptor)
+## DPA-4c ("dpa4c" descriptor, only used as student models during distillation)
 
 DPA-4c is the student architecture for distillation from a fine-tuned DPA-4 teacher.
 Its CLI usage differs from the fine-tuning flow documented elsewhere in this skill:
 
-**CLI — always `--pt-expt`, never `--finetune`:**
+**`--finetune` is STRICTLY PROHIBITED for DPA-4c; always train from scratch with `--pt-expt`:**
 
 ```bash
 dp --pt-expt train input.json --init-model <pretrain.pt> --skip-neighbor-stat
 ```
 
-- `--finetune` is **prohibited** for DPA-4c: its bias-adjustment dense forward pass
-  runs out of memory (OOM) for the DPA-4c selection `sel=[999999]`.
-- `<pretrain.pt>` is the DPA-4c pretrained checkpoint (historically
-  `dpa4c_pretrain_rmse_epoch.pt`); `--skip-neighbor-stat` must be appended.
+- **NEVER use `--finetune` with DPA-4c.** Its bias-adjustment dense forward pass runs out
+  of memory (OOM) for the DPA-4c selection `sel=[999999]`; the job will crash. Always use
+  `--pt-expt ... --init-model ... --skip-neighbor-stat` to train from scratch instead.
+- `<pretrain.pt>` is the DPA-4c pretrained checkpoint used to initialize the student
+  (historically `dpa4c_pretrain_rmse_epoch.pt`); `--skip-neighbor-stat` must be appended.
 
 **Verified input template:** [dpa4c_distill_input.json](dpa4c_distill_input.json) (in this
 `references/` directory) is the input.json actually used in a historical, completed
