@@ -19,18 +19,23 @@ from matcreator.agents.execution_graph_state import get_execution_graph, set_exe
 from matcreator.agents.session_log import SESSION_ARTIFACTS_KEY
 
 
-def test_step_executor_registers_tracked_e2b_tools() -> None:
+def test_step_executor_registers_tracked_remote_job_tools() -> None:
     agent = build_step_executor_agent(LLMCard(name="test", model="test-model"))
     tool_names = {tool.name for tool in agent.tools if hasattr(tool, "name")}
 
     assert {
         "submit_e2b_sandbox",
-        "get_e2b_job_status",
-        "run_e2b_command",
-        "upload_e2b_input",
-        "download_e2b_output",
-        "pause_e2b_sandbox",
-        "terminate_e2b_sandbox",
+        "submit_bohr_sandbox",
+        "submit_bohr_job",
+        "get_remote_job_status",
+        "run_remote_job_command",
+        "start_remote_job_command",
+        "poll_remote_job_command",
+        "upload_remote_job_input",
+        "download_remote_job_output",
+        "collect_remote_job_outputs",
+        "pause_remote_job",
+        "terminate_remote_job",
     } <= tool_names
 
 
@@ -431,7 +436,7 @@ def test_resumed_node_receives_explicit_reattachment_instructions():
     assert context is not None
     assert "job-1" in context
     assert "sbx-1" in context
-    assert "get_e2b_job_status" in context
+    assert "get_remote_job_status" in context
     assert "Do NOT call submit_e2b_sandbox" in context
 
 

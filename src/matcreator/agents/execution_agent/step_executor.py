@@ -18,14 +18,19 @@ from ...knowledge.query import get_related_skills, search_skill_context, search_
 from ...tools.remoteagent_tool import load_remote_a2a_agents
 from ...tools.util_tools import show_artifact, show_plot, show_structure
 from ...tools.workspace_tools import get_user_skills_root, run_bash, run_python
-from .e2b_tools import (
-    download_e2b_output,
-    get_e2b_job_status,
-    pause_e2b_sandbox,
-    run_e2b_command,
+from .remote_job_tools import (
+    collect_remote_job_outputs,
+    download_remote_job_output,
+    get_remote_job_status,
+    pause_remote_job,
+    poll_remote_job_command,
+    run_remote_job_command,
+    start_remote_job_command,
+    submit_bohr_job,
+    submit_bohr_sandbox,
     submit_e2b_sandbox,
-    terminate_e2b_sandbox,
-    upload_e2b_input,
+    terminate_remote_job,
+    upload_remote_job_input,
 )
 
 logger = logging.getLogger(__name__)
@@ -135,20 +140,48 @@ When `prior_context` mentions a previously submitted remote job (e.g. Bohrium/Sl
 3. **If submission.json exists but outputs are missing**, reuse the same submission file (dpdispatcher is idempotent — it skips completed tasks). Do NOT regenerate submission.json.
 4. **Never resubmit a job that already completed** — this wastes GPU time and creates duplicate training runs.
 
-## Re-attaching to an existing E2B job (CRITICAL)
-If your `prior_context` contains "REMOTE JOB ALREADY SUBMITTED", a tracked sandbox job
-for this exact step is already running:
-1. Call `get_e2b_job_status` with the given `job_id` FIRST.
-2. NEVER call `submit_e2b_sandbox` for that step — it would duplicate a running job.
-3. If the job finished, collect its outputs with `download_e2b_output` and report success.
-4. If it is still running, call `submit_step_result(status="needs_replanning", ...)` stating
+## Re-attaching to an existing remote job (CRITICAL)
+If your `prior_context` contains "REMOTE JOB ALREADY SUBMITTED", a tracked remote job
+(sandbox or batch job) for this exact step is already running:
+1. Call `get_remote_job_status` with the given `job_id` FIRST.
+2. NEVER call `submit_e2b_sandbox`, `submit_bohr_sandbox`, or `submit_bohr_job` for that
+   step — it would duplicate a running job.
+3. If its `snapshot` contains `background_command`, a command is (or was) running in the
+   background — call `poll_remote_job_command` FIRST rather than issuing a new command. Never
+   call `start_remote_job_command`/`run_remote_job_command` again for the same computation
+   just because you lost track of it; re-running a non-idempotent command (e.g. a training
+   run) can corrupt output or double-charge compute.
+4. If the job finished (`status: succeeded`), collect its outputs — `download_remote_job_output`
+   for an interactive sandbox, or `collect_remote_job_outputs` for a batch job — and report success.
+5. If it is still running, call `submit_step_result(status="needs_replanning", ...)` stating
    that the job has not finished yet and quoting its job_id and status.
 
-## User controls for E2B sandboxes
-`get_e2b_job_status` may return `user_control` when the user paused or terminated
-the sandbox from the UI. This does not cancel your executor. Treat it as the
-user's explicit instruction: do not retry the interrupted sandbox command or
-submit a replacement sandbox. Report the pause or termination accurately with
+## Choosing a remote-job submit tool
+- `submit_e2b_sandbox`: interactive E2B sandbox (default choice when the E2B SDK/API key
+  is configured).
+- `submit_bohr_sandbox`: interactive sandbox via the `bohr` CLI — use only when the E2B
+  path is unavailable; both reach the same Bohrium sandbox platform.
+- `submit_bohr_job`: batch/HPC-style job via `bohr job submit`. There is no interactive
+  command execution for this provider — express the entire computation in `command`, then
+  poll `get_remote_job_status` until `succeeded` and call `collect_remote_job_outputs`.
+
+## Running commands inside a sandbox: blocking vs. background (CRITICAL)
+- `run_remote_job_command` BLOCKS until the command finishes, with no timeout. Only use it
+  for short commands expected to finish in well under a minute (`mkdir`, `grep`, checking a
+  file, listing a directory).
+- For any real computation (a training run, `vasp_std`/`mpirun`, anything that might run
+  longer than a minute), use `start_remote_job_command` instead — it launches the command in
+  the background and returns almost immediately — then call `poll_remote_job_command` to check
+  on it. Do useful work in between polls (e.g. `submit_step_result(status="needs_replanning", ...)`
+  reporting the job is still running, rather than looping tool calls back-to-back) so a single
+  step doesn't sit blocked. Re-attaching to the same `job_id` later always finds the same
+  tracked command via `poll_remote_job_command`, so it's always safe even after a step timeout.
+
+## User controls for remote jobs
+`get_remote_job_status` may return `user_control` when the user paused or terminated
+the job from the UI. This does not cancel your executor. Treat it as the
+user's explicit instruction: do not retry the interrupted command or
+submit a replacement job. Report the pause or termination accurately with
 `submit_step_result(status="needs_replanning", replan_reason=...)`.
 
 ## MANDATORY: Always call submit_step_result
@@ -264,12 +297,17 @@ def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
             FunctionTool(run_python),
             FunctionTool(run_bash),
             FunctionTool(submit_e2b_sandbox),
-            FunctionTool(get_e2b_job_status),
-            FunctionTool(run_e2b_command),
-            FunctionTool(upload_e2b_input),
-            FunctionTool(download_e2b_output),
-            FunctionTool(pause_e2b_sandbox),
-            FunctionTool(terminate_e2b_sandbox),
+            FunctionTool(submit_bohr_sandbox),
+            FunctionTool(submit_bohr_job),
+            FunctionTool(get_remote_job_status),
+            FunctionTool(run_remote_job_command),
+            FunctionTool(start_remote_job_command),
+            FunctionTool(poll_remote_job_command),
+            FunctionTool(upload_remote_job_input),
+            FunctionTool(download_remote_job_output),
+            FunctionTool(collect_remote_job_outputs),
+            FunctionTool(pause_remote_job),
+            FunctionTool(terminate_remote_job),
             ALL_SKILLS_TOOLSET,
             FunctionTool(show_plot),
             FunctionTool(show_structure),

@@ -449,6 +449,7 @@ def test_reconcile_waits_for_active_remote_job_instead_of_resubmitting(tmp_path,
         "provider": "e2b",
         "external_id": "sandbox-123",
         "status": "running",
+        "has_background_command": False,
     }
 
 

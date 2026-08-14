@@ -1,19 +1,32 @@
 # Remote Job Monitoring
 
-MatCreator manages E2B sandboxes as durable, session-scoped remote jobs. The
-remote-job control plane separates a sandbox's provider identity and liveness
-from the agent step that created it, so the FastAPI frontend can observe and
-control the sandbox after an agent, browser, or middleware request reconnects.
+MatCreator manages sandboxes and batch jobs as durable, session-scoped remote
+jobs. The remote-job control plane separates a job's provider identity and
+liveness from the agent step that created it, so the FastAPI frontend can
+observe and control it after an agent, browser, or middleware request
+reconnects.
+
+Every provider-specific operation goes through a small adapter protocol (see
+[Provider Plugin Architecture](#provider-plugin-architecture) below), so
+`RemoteJobService`, `RemoteJobMonitor`, and the web API never branch on a
+provider name. Built in providers today: `e2b` (interactive sandbox via the
+E2B SDK), `bohr_sandbox` (interactive sandbox via the `bohr` CLI), and
+`bohr_job` (batch/HPC-style job via `bohr job submit`).
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    Agent[Step executor] --> Tools[E2B tools]
+    Agent[Step executor] --> Tools[remote_job_tools]
     Tools --> Service[RemoteJobService]
     Service --> Store[(remote-jobs.db)]
-    Service --> Adapter[E2BSandboxAdapter]
-    Adapter --> Sandbox[E2B/Bohrium sandbox]
+    Service --> Registry[providers registry]
+    Registry --> E2B[E2BSandboxAdapter]
+    Registry --> BohrSbx[BohrSandboxAdapter]
+    Registry --> BohrJob[BohrJobAdapter]
+    E2B --> Sandbox[E2B/Bohrium sandbox]
+    BohrSbx --> Sandbox
+    BohrJob --> Batch[Bohrium batch job]
 
     Monitor[RemoteJobMonitor] --> Service
     Monitor --> Store
@@ -23,7 +36,7 @@ flowchart LR
 ```
 
 The SQLite record is the source of truth for MatCreator's normalized job
-lifecycle. The provider sandbox remains the source of truth for provider
+lifecycle. The provider job/sandbox remains the source of truth for provider
 liveness. This distinction lets the UI report both a meaningful lifecycle state
 and the latest connectivity observation without conflating them.
 
@@ -32,28 +45,38 @@ and the latest connectivity observation without conflating them.
 | Component | Location | Responsibility |
 | --- | --- | --- |
 | `RemoteJobStore` | `src/matcreator/control_plane/remote_jobs.py` | Persists jobs, lifecycle transitions, provider snapshots, and user-control events in SQLite. |
-| `RemoteJobService` | `src/matcreator/control_plane/remote_job_service.py` | Coordinates E2B operations with durable records and enforces valid lifecycle operations. |
-| `E2BSandboxAdapter` | `src/matcreator/control_plane/e2b.py` | Small lazy-import boundary around the E2B SDK for sandbox creation, commands, files, pause, kill, and probing. |
-| `RemoteJobMonitor` | `src/matcreator/control_plane/remote_job_monitor.py` | Periodically reconciles active E2B records and applies bounded backoff after failed probes. |
-| Agent tools | `src/matcreator/agents/execution_agent/e2b_tools.py` | Submit and operate on jobs owned by the current session. |
-| Middleware APIs | `web/main.py` | List jobs/events and offer session-owner pause, terminate, and refresh endpoints. |
+| `RemoteJobService` | `src/matcreator/control_plane/remote_job_service.py` | Coordinates provider operations with durable records and enforces valid lifecycle operations, dispatching to the adapter registered for each job's `provider`. |
+| `RemoteJobAdapter` protocol | `src/matcreator/control_plane/providers/base.py` | The boundary every provider implements: `create`/`status`/`cancel` are mandatory; `pause`/`resume`/`run_command`/`upload_file`/`download_file`/`collect_outputs` are gated by declared `RemoteJobCapability` flags. |
+| Provider registry | `src/matcreator/control_plane/providers/registry.py` | Maps a provider name to a lazily constructed adapter instance. |
+| `E2BSandboxAdapter` | `src/matcreator/control_plane/providers/e2b.py` | Interactive sandbox via the E2B SDK: create, commands, files, pause, kill, probe. |
+| `BohrSandboxAdapter` | `src/matcreator/control_plane/providers/bohr_sandbox.py` | Interactive sandbox via the `bohr` CLI (`bohr sandbox create/exec/files/describe/delete`). No pause/resume — the CLI has no such subcommand. |
+| `BohrJobAdapter` | `src/matcreator/control_plane/providers/bohr_job.py` | Batch/HPC-style job via the `bohr` CLI (`bohr job submit/describe/download/terminate`). Submit-time inputs only; no interactive exec. |
+| `RemoteJobMonitor` | `src/matcreator/control_plane/remote_job_monitor.py` | Periodically reconciles active jobs of every registered provider, using each adapter's own `poll_interval_seconds` for backoff scheduling. |
+| Agent tools | `src/matcreator/agents/execution_agent/remote_job_tools.py` | Provider-specific submit tools (`submit_e2b_sandbox`, `submit_bohr_sandbox`, `submit_bohr_job`) plus provider-generic post-submission tools that dispatch on `job_id` alone. |
+| Middleware APIs | `web/main.py` | List jobs/events and offer session-owner pause, terminate, and refresh endpoints, generic across providers. |
 
 ## Submission and Persistence
 
-`submit_e2b_sandbox` requires an explicit template. It creates a deterministic
-idempotency key from the session, execution node, and template, then delegates
-to `RemoteJobService.submit_e2b`.
+Submission is provider-specific — an interactive sandbox needs a template
+while a batch job needs a machine type and image — so there is one submit
+tool per provider: `submit_e2b_sandbox`, `submit_bohr_sandbox`,
+`submit_bohr_job`. Each builds a deterministic idempotency key from the
+session, execution node, and a provider-specific discriminator, then
+delegates to `RemoteJobService.submit_job(provider=..., spec=...)`.
 
 The service creates the SQLite job record before making the provider request.
-The persisted specification contains the template, endpoint, project ID,
-timeout, lifecycle policy, and metadata, but never the API key. Repeated calls
-with the same idempotency key return the existing job instead of creating a
-second sandbox.
+`persisted_specification` — everything in `spec` except secrets like an API
+key — is what actually gets stored; `spec` itself (which may contain
+secrets) is passed to the adapter's `create` but never persisted. Repeated
+calls with the same idempotency key return the existing job instead of
+creating a second sandbox or job.
 
-Once sandbox creation succeeds, the service stores the provider sandbox ID in
-`external_id` and transitions the job to `running`. Agent recovery records the
-job reference against the execution graph so an interrupted execution can wait
-for or accurately report an existing sandbox rather than resubmitting it.
+Once creation succeeds, the service stores the provider-side ID in
+`external_id`, probes the adapter once for an initial status (letting a batch
+provider start in `queued` instead of always assuming `running`), and
+transitions the job accordingly. Agent recovery records the job reference
+against the execution graph so an interrupted execution can wait for or
+accurately report an existing job rather than resubmitting it.
 
 ## Lifecycle and Observations
 
@@ -62,7 +85,8 @@ Important normalized states include:
 
 - `created`, `submitting`, `queued`, `running`, `paused`, and `resuming` for
   active work.
-- `succeeded` and `collecting` while a job's results are being handled.
+- `succeeded` and `collecting` while a batch job's results are being pulled
+  via `collect_remote_job_outputs`.
 - `collected`, `failed`, `cancelled`, `terminated`, and `lost` as terminal
   outcomes.
 
@@ -71,16 +95,27 @@ transitions use optimistic concurrency checks, so stale pause, terminate, or
 provider updates cannot silently overwrite newer state.
 
 Provider probe data is stored in `snapshot`; examples include
-`provider_status`, `sandbox_id`, `last_command_exit_code`, and `last_upload`.
-An observation does not itself alter the normalized lifecycle state.
+`provider_status`, `sandbox_id`, `phase` (for a batch job), `last_command_exit_code`,
+and `last_upload`. An observation does not itself alter the normalized
+lifecycle state unless the adapter reports a `normalized_status` that differs
+from the current one — see [Provider Plugin Architecture](#provider-plugin-architecture).
 
 ## Monitoring and Refresh
 
-`RemoteJobMonitor` considers active E2B jobs and probes jobs in `queued`,
-`running`, `submitting`, or `resuming` states. A successful probe records a
-reachable provider snapshot. A failed probe records `provider_status` as
-`unreachable` and increases the next probe delay exponentially, bounded by the
-configured maximum backoff.
+`RemoteJobMonitor` considers active jobs of every registered provider and
+probes jobs in `queued`, `running`, `submitting`, or `resuming` states, using
+each job's own adapter to decide how — and how often — to probe. A batch
+provider like `bohr_job` declares a much longer `poll_interval_seconds` (60s)
+than an interactive sandbox (15s), so it is polled far less often without any
+special-casing in the monitor itself.
+
+For an interactive adapter (`e2b`, `bohr_sandbox`) a successful probe records
+a reachable provider snapshot; a failed probe records `provider_status` as
+`unreachable` and increases the next probe delay exponentially, bounded by
+the configured maximum backoff. For a batch adapter (`bohr_job`) the same
+probe can report a `normalized_status` change (e.g. `queued` -> `running` ->
+`succeeded`/`failed`/`cancelled`), which the service turns into an actual
+lifecycle transition instead of just an observation.
 
 Monitor schedules are intentionally in memory. The job records themselves are
 durable, so a restarted monitor begins by reconciling active jobs from SQLite.
@@ -129,11 +164,11 @@ mechanism rather than two.
 
 Re-attachment is explicit rather than accidental. When a node that already owns
 a job runs again, the runner injects the job's identity into the executor's
-`prior_context` with instructions to call `get_e2b_job_status` and never call
-`submit_e2b_sandbox` for that step. In Flash mode, which has no execution graph,
-a step's node ID is derived from its label or a hash of its action, so a repeated
-step keeps the same submission idempotency key and re-attaches instead of
-creating a duplicate sandbox.
+`prior_context` with instructions to call `get_remote_job_status` and never
+call any of the `submit_*` tools for that step. In Flash mode, which has no
+execution graph, a step's node ID is derived from its label or a hash of its
+action, so a repeated step keeps the same submission idempotency key and
+re-attaches instead of creating a duplicate job.
 
 ## Controls and Ownership
 
@@ -147,11 +182,13 @@ POST /api/sessions/{session_id}/remote-jobs/{job_id}/terminate
 Both invoke the provider operation through `RemoteJobService`, update the
 durable job lifecycle, and append a `user_control` event. They do not cancel
 the step-executor process. The executor sees this event through
-`get_e2b_job_status` and must report `needs_replanning` rather than retrying an
-interrupted command or submitting a replacement sandbox.
+`get_remote_job_status` and must report `needs_replanning` rather than
+retrying an interrupted command or submitting a replacement job. `pause`
+returns a 409 (via `CapabilityError`) for a provider that does not support
+pausing, such as `bohr_job`.
 
-`terminate_e2b_sandbox` irreversibly releases a sandbox. Agents should collect
-or record required output before calling it.
+`terminate_remote_job` irreversibly releases a job or sandbox. Agents should
+collect or record required output before calling it.
 
 ## Storage Scope
 
@@ -160,12 +197,72 @@ the middleware routes each owner to a per-user `.adk/remote-jobs.db` under the
 user's mounted MatCreator home. This keeps job records, controls, and monitoring
 isolated by owner and session.
 
+## Provider Plugin Architecture
+
+Adding a new remote-job provider (a different HPC scheduler, another
+sandbox platform, ...) means implementing `RemoteJobAdapter` and registering
+it — nothing else in the control plane changes.
+
+1. **Implement the adapter** (`src/matcreator/control_plane/providers/<name>.py`):
+   subclass `RemoteJobAdapter` from `providers/base.py` and implement the
+   three mandatory methods (`create`, `status`, `cancel`). Declare
+   `provider`, `capabilities` (a `frozenset[RemoteJobCapability]`), and
+   `poll_interval_seconds` as class attributes. Implement only the optional
+   methods your capabilities declare:
+
+   | Capability | Optional method(s) | Example provider |
+   | --- | --- | --- |
+   | `PAUSE` / `RESUME` | `pause` / `resume` | `e2b` (pause only) |
+   | `INTERACTIVE_EXEC` | `run_command` | `e2b`, `bohr_sandbox` |
+   | `FILE_TRANSFER` | `upload_file` / `download_file` | `e2b`, `bohr_sandbox` |
+   | `BATCH_COLLECT` | `collect_outputs` | `bohr_job` |
+
+   `status` returns a `RemoteJobStatus(normalized_status, snapshot, error)`.
+   Use `normalized_status=None` when the provider can only confirm liveness
+   (an interactive sandbox that stays "running" until explicitly stopped);
+   return one of the canonical statuses from `remote_jobs.py` (e.g.
+   `"succeeded"`, `"failed"`, `"cancelled"`) when the provider can report an
+   actual lifecycle observation (a batch job that finishes on its own).
+
+2. **Register it** in `src/matcreator/control_plane/providers/__init__.py`
+   with a lazy factory:
+   ```python
+   register_adapter("my_provider", lambda: MyProviderAdapter())
+   ```
+   The factory is not called until the first `get_adapter("my_provider")`, so
+   registering a provider never forces an optional SDK/CLI import at process
+   startup.
+
+3. **(Optional) add a submit tool** in
+   `src/matcreator/agents/execution_agent/remote_job_tools.py` if the agent
+   should be able to submit this provider's jobs — submission parameters are
+   inherently provider-specific (a template vs. a machine type + image), so
+   this is the one place a new provider needs new code beyond the adapter
+   itself. Every operation *after* submission
+   (`get_remote_job_status`/`pause_remote_job`/`terminate_remote_job`/
+   `run_remote_job_command`/`upload_remote_job_input`/
+   `download_remote_job_output`/`collect_remote_job_outputs`) already works
+   for any provider without changes, dispatching on the stored `job_id` alone.
+
+`RemoteJobService` and `RemoteJobMonitor` never import a specific adapter or
+branch on a provider name — they resolve the adapter for a job through the
+registry (`RemoteJobService.adapter_for`) and check `adapter.capabilities`
+before calling an optional method, raising `CapabilityError` with a clear,
+provider-attributed message if unsupported (e.g. pausing a `bohr_job`).
+
 ## Operational Notes
 
-- The control plane currently supports E2B sandboxes, although the persistent
-  store is provider-neutral by design.
+- Built-in providers: `e2b` (interactive, via the E2B SDK), `bohr_sandbox`
+  (interactive, via the `bohr` CLI), and `bohr_job` (batch/HPC-style, via the
+  `bohr` CLI). The persistent store and service are provider-neutral by
+  design; see [Provider Plugin Architecture](#provider-plugin-architecture)
+  to add another.
 - Commands do not persist command text or output in the remote-job database;
   only limited operational telemetry is recorded.
 - A sandbox's configured creation timeout is distinct from the monitoring
-  interval. The adapter currently passes `timeout=0` to E2B command execution,
-  leaving command duration unrestricted by this control plane.
+  interval. The E2B adapter currently passes `timeout=0` to command
+  execution, leaving command duration unrestricted by this control plane.
+- `bohr_job` only supports single-job submission (`bohr job submit`); `bohr
+  job_group` fan-out (many jobs sharing one group) is a possible future
+  adapter, not implemented here.
+

@@ -389,13 +389,20 @@ def _remote_job_prior_context(tool_context: ToolContext, node_id: Optional[str])
     remote_job = node.get("remote_job")
     if not isinstance(remote_job, dict) or not remote_job.get("job_id"):
         return None
+    background_note = (
+        " A background command may still be in flight — call poll_remote_job_command "
+        "before starting a new one."
+        if remote_job.get("has_background_command")
+        else ""
+    )
     return (
         "REMOTE JOB ALREADY SUBMITTED for this step: "
         f"job_id={remote_job['job_id']} provider={remote_job.get('provider')} "
-        f"sandbox_id={remote_job.get('external_id')} last_known_status={remote_job.get('status')}. "
-        "Call get_e2b_job_status with this job_id to re-attach. Do NOT call submit_e2b_sandbox "
-        "again for this step — that job is still tracked and must not be duplicated. If it is "
-        "still running, report needs_replanning explaining that the job has not finished yet."
+        f"external_id={remote_job.get('external_id')} last_known_status={remote_job.get('status')}. "
+        "Call get_remote_job_status with this job_id to re-attach. Do NOT call submit_e2b_sandbox, "
+        "submit_bohr_sandbox, or submit_bohr_job again for this step — that job is still tracked "
+        "and must not be duplicated. If it is still running, report needs_replanning explaining "
+        f"that the job has not finished yet.{background_note}"
     )
 
 
