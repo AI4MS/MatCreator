@@ -10,6 +10,7 @@ import { AgentGraphView, StepExecutionFeed } from "./features/graphs/AgentGraphV
 import { ExecutionPlanView } from "./features/graphs/ExecutionPlanView.js";
 import { createSkillGraphController } from "./features/skills/SkillGraphController.js";
 import { createSettingsController } from "./features/settings/SettingsController.js";
+import { mountOrbitalAgentIndicator } from "./components/mountOrbitalAgentIndicator.js";
 import { createDisclosureController } from "./features/ui/disclosureState.js";
 import "./styles/index.css";
 
@@ -70,6 +71,9 @@ const chatArea = document.getElementById("chat-area");
 const textInput = document.getElementById("text-input");
 const inputArea = document.querySelector(".input-area");
 const inputContainer = document.querySelector(".input-container");
+const agentRunningIndicator = document.getElementById("agent-running-indicator");
+const agentRunningOrbital = document.getElementById("agent-running-orbital");
+const agentRunningText = document.getElementById("agent-running-text");
 const sendBtn = document.getElementById("send-btn");
 const fileUploadBtn = document.getElementById("file-upload-btn");
 const fileUploadInput = document.getElementById("file-upload-input");
@@ -1076,8 +1080,27 @@ function releaseSessionRequest(request) {
   }
 }
 
+const orbitalIndicator = mountOrbitalAgentIndicator(agentRunningOrbital);
+
+function updateAgentRunningStatus(phase = "working") {
+  const phases = {
+    working: ["MatCreator is working. Please wait…", "thinking"],
+    thinking: ["MatCreator is thinking…", "thinking"],
+    planning: ["MatCreator is planning the workflow…", "thinking"],
+    searching: ["MatCreator is searching for information…", "searching"],
+    executing: ["MatCreator is executing the workflow…", "computing"],
+    computing: ["MatCreator is computing…", "computing"],
+  };
+  const [label, orbitalState] = phases[phase] || phases.working;
+  if (agentRunningText) agentRunningText.textContent = label;
+  orbitalIndicator?.render(orbitalState);
+}
+
 function updateSendButtonState() {
   const running = Boolean(activeSessionRequest());
+  inputArea?.classList.toggle("is-agent-running", running);
+  if (agentRunningIndicator) agentRunningIndicator.setAttribute("aria-hidden", String(!running));
+  if (!running) updateAgentRunningStatus();
   if (!sendBtn) return;
   sendBtn.textContent = running ? "■" : "➜";
   sendBtn.title = running ? "Stop" : "Send";
@@ -2940,6 +2963,7 @@ const messageStreamController = createMessageStreamController({
   agentGraph,
   planGraph,
   updateSendButtonState,
+  updateAgentRunningStatus,
   releaseSessionRequest,
   managedRunEventsUrl,
   shouldRefreshPlanGraphForTool,

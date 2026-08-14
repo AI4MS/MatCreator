@@ -14,6 +14,7 @@ Schema
       "label": "<str>",
       "status": "idle|running|success|failed|needs_replanning",
       "parent_id": "<str|null>",
+      "batch_id": "<str|null>",
       "start_time": "<ISO-8601|null>",
       "end_time": "<ISO-8601|null>",
       "summary": "<str|null>",
@@ -73,6 +74,7 @@ class AgentGraphLogger:
         node_type: NodeType,
         label: str,
         parent_id: Optional[str] = None,
+        batch_id: Optional[str] = None,
     ) -> None:
         """Create or overwrite a node with status=running."""
         with self._lock:
@@ -84,6 +86,10 @@ class AgentGraphLogger:
                 "label": label,
                 "status": "running",
                 "parent_id": parent_id,
+                # Execution producers may share this value for work launched
+                # by one planning round. It is presentation metadata only: the
+                # actual parent edge remains parent_id -> node_id.
+                "batch_id": batch_id if batch_id is not None else (existing or {}).get("batch_id"),
                 "start_time": existing["start_time"] if existing else _now(),
                 "end_time": None,
                 "summary": None,
@@ -130,6 +136,11 @@ class AgentGraphLogger:
         graph = self._read()
         return sum(1 for n in graph["nodes"].values() if n["type"] == node_type)
 
+    def nodes_of_type(self, node_type: NodeType) -> list[dict]:
+        """Return graph nodes of a type for lifecycle-aware node reuse."""
+        graph = self._read()
+        return [node for node in graph["nodes"].values() if node.get("type") == node_type]
+
     def log_node_input(self, node_id: str, input_data: dict) -> None:
         """Store the structured input that was passed to the sub-agent."""
         with self._lock:
@@ -161,13 +172,31 @@ class AgentGraphLogger:
             self._write(graph)
 
     def log_conversation_event(self, node_id: str, entry: dict) -> None:
-        """Append one conversation turn to the node's conversation list."""
+        """Append one conversation turn, coalescing adjacent streamed text.
+
+        LLM providers may send either a token delta or the entire response so
+        far.  Keeping every chunk made the graph noisy and meant the frontend
+        could not present a single live response for a running node.
+        """
         with self._lock:
             graph = self._read()
             node = graph["nodes"].get(node_id)
             if node is None:
                 return
-            node.setdefault("conversation", []).append(entry)
+            conversation = node.setdefault("conversation", [])
+            previous = conversation[-1] if conversation else None
+            if (
+                previous
+                and entry.get("type") in {"text", "thought"}
+                and previous.get("type") == entry.get("type")
+                and previous.get("author") == entry.get("author")
+                and isinstance(previous.get("content"), str)
+                and isinstance(entry.get("content"), str)
+            ):
+                previous["content"] = _merge_streamed_text(previous["content"], entry["content"])
+                previous["timestamp"] = entry.get("timestamp", previous.get("timestamp"))
+            else:
+                conversation.append(entry)
             self._write(graph)
 
     def mark_running_nodes_cancelled(
@@ -251,3 +280,15 @@ class AgentGraphLogger:
     def _write(self, graph: dict) -> None:
         graph["updated_at"] = _now()
         self._path.write_text(json.dumps(graph, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _merge_streamed_text(current: str, incoming: str) -> str:
+    """Merge a streamed delta or cumulative snapshot without duplicated text."""
+    if not incoming or current.endswith(incoming):
+        return current
+    if incoming.startswith(current):
+        return incoming
+    for overlap in range(min(len(current), len(incoming)), 0, -1):
+        if current.endswith(incoming[:overlap]):
+            return current + incoming[overlap:]
+    return current + incoming

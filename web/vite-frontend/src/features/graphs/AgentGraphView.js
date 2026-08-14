@@ -20,6 +20,18 @@ const STATUS_COLORS = {
 
 const rgba = (rgb, alpha) => `rgba(${rgb}, ${alpha})`;
 
+// These distances describe time, rather than graph depth.  In particular an
+// execution batch gets its own row even though every execution node still has
+// the same planning node as its real parent.
+const VINE_BATCH_GAP = 92;
+const VINE_BATCH_STAGGER = 54;
+// Keep task chains legible vertically while batches themselves still use the
+// tighter stagger below.
+const VINE_DESCENDANT_GAP = 70;
+const VINE_NODE_GAP = 64;
+const VINE_PLANNER_GAP = 460;
+const VINE_STEM_CLEARANCE = 42;
+
 const STATUS_ALIASES = {
   completed: "success",
   succeeded: "success",
@@ -47,12 +59,14 @@ export class AgentGraphView {
     this._edges = new DataSet([]);
     this._network = null;
     this._pollInterval = null;
+    this._eventStream = null;
     this._didInitialFit = false;
     this._pendingFit = true;
     this._animationFrame = null;
     this._lastAnimationPaint = 0;
     this._motionTime = 0;
     this._activeEdges = [];
+    this._vineEdges = [];
     this._hasRunningNodes = false;
     this._reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
     this._detailEl = document.getElementById("graph-detail");
@@ -82,16 +96,10 @@ export class AgentGraphView {
   _init() {
     const edgeColors = this._edgeColors();
     const options = {
-      layout: {
-        hierarchical: {
-          direction: "UD",
-          sortMethod: "directed",
-          nodeSpacing: 76,
-          levelSeparation: 86,
-          blockShifting: true,
-          edgeMinimization: true,
-        },
-      },
+      // Agent activity uses a chronology-aware layout below.  A DAG layout
+      // would put every child of a planner at the same depth and erase the
+      // distinction between successive planning rounds.
+      layout: { hierarchical: false },
       physics: { enabled: false },
       edges: {
         arrows: { to: { enabled: true, scaleFactor: 0.72 } },
@@ -123,6 +131,7 @@ export class AgentGraphView {
       if (params.nodes.length) this._showDetail(params.nodes[0]);
     });
     this._network.on("deselectNode", () => this._hideDetail());
+    this._network.on("beforeDrawing", (ctx) => this._drawVines(ctx));
     this._network.on("afterDrawing", (ctx) => this._drawActiveFlow(ctx));
     window.addEventListener("matcreator-theme-change", () => this._applyTheme());
     this._detailClose?.addEventListener("click", () => {
@@ -422,41 +431,282 @@ export class AgentGraphView {
     this._animationFrame = requestAnimationFrame(animate);
   }
 
-  _computeLevels(rawNodes, edges) {
-    const nodeIds = rawNodes.map((node) => node.id);
-    const nodeIdSet = new Set(nodeIds);
-    const children = Object.fromEntries(nodeIds.map((id) => [id, []]));
-    const inDegree = Object.fromEntries(nodeIds.map((id) => [id, 0]));
+  _timeKey(node) {
+    const value = node?.start_time ? new Date(node.start_time).getTime() : NaN;
+    return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
+  }
 
-    // Levels describe hierarchy, not elapsed time. Tasks with the same parent
-    // therefore remain siblings on the same row even if they ran sequentially.
+  _executionBatchId(node, plannerId) {
+    // batch_id is optional for older graph snapshots. Untagged direct siblings
+    // belong to one legacy batch rather than being split into one layer per
+    // node: sequential dispatch is still work from the same planning round.
+    // New snapshots carry explicit IDs, so replanning rounds remain separate.
+    return String(
+      node.batch_id
+      ?? node.execution_batch_id
+      ?? node.input?.batch_id
+      ?? node.input?.execution_batch_id
+      ?? `legacy:${plannerId}`,
+    );
+  }
+
+  _chronologicalTaskRows(nodeIds, nodeMap) {
+    const timed = nodeIds.map((id) => {
+      const node = nodeMap[id];
+      const startValue = node?.start_time ? new Date(node.start_time).getTime() : NaN;
+      const endValue = node?.end_time ? new Date(node.end_time).getTime() : NaN;
+      return {
+        id,
+        start: startValue,
+        hasStart: Number.isFinite(startValue),
+        // An unfinished task keeps its row open. That makes concurrently
+        // running work stay together instead of being rendered as a sequence.
+        end: Number.isFinite(endValue) ? endValue : Number.MAX_SAFE_INTEGER,
+      };
+    }).sort((a, b) => {
+      if (a.hasStart !== b.hasStart) return a.hasStart ? -1 : 1;
+      return a.start - b.start || a.id.localeCompare(b.id);
+    });
+
+    if (!timed.some((task) => task.hasStart)) return [nodeIds];
+
+    const rows = [];
+    let rowEnd = -Infinity;
+    timed.forEach((task) => {
+      // A snapshot without a start time has no reliable chronology. Keep it
+      // beside the current wave instead of inventing a sequential ordering.
+      if (!task.hasStart) {
+        rows[rows.length - 1].push(task.id);
+        return;
+      }
+      if (!rows.length || task.start >= rowEnd) {
+        rows.push([task.id]);
+        rowEnd = task.end;
+      } else {
+        rows[rows.length - 1].push(task.id);
+        rowEnd = Math.max(rowEnd, task.end);
+      }
+    });
+    return rows;
+  }
+
+  _sequenceTaskDisplayEdges(displayEdges, nodeMap) {
+    const directTaskEdges = new Map();
+    displayEdges.forEach((edge) => {
+      if (nodeMap[edge.from]?.type !== "execution" || nodeMap[edge.to]?.type !== "step") return;
+      if (!directTaskEdges.has(edge.from)) directTaskEdges.set(edge.from, []);
+      directTaskEdges.get(edge.from).push(edge);
+    });
+    if (!directTaskEdges.size) return displayEdges;
+
+    const replacedEdgeIds = new Set();
+    const sequenceEdges = [];
+    directTaskEdges.forEach((taskEdges, executionId) => {
+      const rows = this._chronologicalTaskRows(taskEdges.map((edge) => edge.to), nodeMap);
+      if (rows.length < 2) return;
+      taskEdges.forEach((edge) => replacedEdgeIds.add(edge.id));
+
+      // The first concurrent wave keeps E as its source. Later waves receive
+      // their visual connection from the preceding wave, yielding E -> 1 -> 2
+      // for a sequential pair while preserving same-row parallelism.
+      rows[0].forEach((to) => sequenceEdges.push({
+        id: `sequence__${executionId}__${to}`,
+        from: executionId,
+        to,
+      }));
+      for (let rowIndex = 1; rowIndex < rows.length; rowIndex++) {
+        const previous = rows[rowIndex - 1];
+        // A following wave begins only after the preceding parallel wave has
+        // completed. Draw every predecessor so a join such as 1 + 2 -> 3
+        // keeps both dependency lines rather than silently choosing task 1.
+        previous.forEach((from) => rows[rowIndex].forEach((to) => sequenceEdges.push({
+          id: `sequence__${executionId}__${from}__${to}`,
+          from,
+          to,
+        })));
+      }
+    });
+    return [
+      ...displayEdges.filter((edge) => !replacedEdgeIds.has(edge.id)),
+      ...sequenceEdges,
+    ];
+  }
+
+  _computeVineLayout(rawNodes, edges) {
+    const nodeMap = Object.fromEntries(rawNodes.map((node) => [node.id, node]));
+    const children = Object.fromEntries(rawNodes.map((node) => [node.id, []]));
     (edges || []).forEach((edge) => {
-      if (!nodeIdSet.has(edge.from) || !nodeIdSet.has(edge.to)) return;
-      children[edge.from].push(edge.to);
-      inDegree[edge.to] += 1;
+      if (children[edge.from] && nodeMap[edge.to]) children[edge.from].push(edge.to);
     });
+    Object.values(children).forEach((ids) => ids.sort((a, b) =>
+      this._timeKey(nodeMap[a]) - this._timeKey(nodeMap[b]) || String(a).localeCompare(String(b))));
 
-    const levels = {};
-    const queue = nodeIds.filter((id) => inDegree[id] === 0);
-    queue.forEach((id) => { levels[id] = 0; });
+    const positions = {};
+    const placed = new Set();
+    const planners = rawNodes.filter((node) => node.type === "planning")
+      .sort((a, b) => this._timeKey(a) - this._timeKey(b) || a.id.localeCompare(b.id));
+    const plannerCount = planners.length;
 
-    while (queue.length) {
-      const parentId = queue.shift();
-      children[parentId].forEach((childId) => {
-        levels[childId] = Math.max(
-          levels[childId] ?? 0,
-          (levels[parentId] ?? 0) + 1,
-        );
-        inDegree[childId] -= 1;
-        if (inDegree[childId] === 0) queue.push(childId);
+    planners.forEach((planner, plannerIndex) => {
+      const plannerX = (plannerIndex - (plannerCount - 1) / 2) * VINE_PLANNER_GAP;
+      positions[planner.id] = { x: plannerX, y: 0 };
+      placed.add(planner.id);
+
+      const batches = new Map();
+      children[planner.id]
+        .filter((id) => nodeMap[id]?.type === "execution")
+        .forEach((id) => {
+          const batchId = this._executionBatchId(nodeMap[id], planner.id);
+          if (!batches.has(batchId)) batches.set(batchId, []);
+          batches.get(batchId).push(id);
+        });
+      const orderedBatches = [...batches.entries()].sort(([aId, a], [bId, b]) => {
+        const aTime = Math.min(...a.map((id) => this._timeKey(nodeMap[id])));
+        const bTime = Math.min(...b.map((id) => this._timeKey(nodeMap[id])));
+        return aTime - bTime || aId.localeCompare(bId);
       });
-    }
 
-    // Keep malformed/cyclic payloads visible rather than dropping their nodes.
-    nodeIds.forEach((id) => {
-      if (!(id in levels)) levels[id] = 0;
+      let previousBatchY = VINE_BATCH_GAP - VINE_BATCH_STAGGER;
+      // Alternating branches use independent vertical lanes. A new branch on
+      // the opposite side may tuck in after a small stagger; returning to a
+      // side waits until that side's existing leaf fan has cleared.
+      const sideClearY = new Map([[-1, VINE_BATCH_GAP], [1, VINE_BATCH_GAP]]);
+      orderedBatches.forEach(([, executionIds], batchIndex) => {
+        executionIds.sort((a, b) => this._timeKey(nodeMap[a]) - this._timeKey(nodeMap[b]) || a.localeCompare(b));
+        const isLatestBatch = batchIndex === orderedBatches.length - 1;
+        // Measure each E subtree independently. Pooling all sibling task
+        // nodes into global rows made their branches cross and obscured which
+        // execution owned each task.
+        const subtrees = executionIds.map((rootId) => {
+          const rows = [];
+          const seen = new Set([rootId]);
+          let frontier = [rootId];
+          while (frontier.length) {
+            const next = [];
+            frontier.forEach((parentId) => children[parentId].forEach((childId) => {
+              if (!seen.has(childId) && nodeMap[childId]?.type !== "execution") {
+                seen.add(childId);
+                next.push(childId);
+              }
+            }));
+            if (!next.length) break;
+            rows.push(next);
+            frontier = next;
+          }
+          const widestRow = Math.max(0, ...rows.map((ids) => (ids.length - 1) * VINE_NODE_GAP));
+          return {
+            rootId,
+            rows,
+            maxDepth: rows.length,
+            width: Math.max(VINE_NODE_GAP, widestRow + VINE_NODE_GAP),
+          };
+        });
+        const batchWidth = subtrees.reduce((total, subtree) => total + subtree.width, 0);
+        const maxDepth = Math.max(0, ...subtrees.map((subtree) => subtree.maxDepth));
+        const subtreeHalfWidth = batchWidth / 2 + this._nodeRadius({ type: "step" });
+        const side = batchIndex % 2 === 0 ? 1 : -1;
+        const nextStaggerY = previousBatchY + VINE_BATCH_STAGGER;
+        const batchY = isLatestBatch
+          // The centered tip shares horizontal space with both historical
+          // sides. Place it below the deepest task generation from either
+          // side, not merely below the preceding execution node.
+          ? Math.max(nextStaggerY, ...sideClearY.values())
+          : Math.max(nextStaggerY, sideClearY.get(side));
+        const batchCenterX = isLatestBatch
+          ? plannerX
+          : plannerX + side * (subtreeHalfWidth + VINE_STEM_CLEARANCE);
+
+        let subtreeLeft = batchCenterX - batchWidth / 2;
+        subtrees.forEach((subtree) => {
+          const rootX = subtreeLeft + subtree.width / 2;
+          positions[subtree.rootId] = { x: rootX, y: batchY };
+          placed.add(subtree.rootId);
+          subtree.rows.forEach((ids, depthIndex) => {
+            const rowWidth = (ids.length - 1) * VINE_NODE_GAP;
+            ids.forEach((id, index) => {
+              positions[id] = {
+                x: rootX + index * VINE_NODE_GAP - rowWidth / 2,
+                y: batchY + (depthIndex + 1) * VINE_DESCENDANT_GAP,
+              };
+              placed.add(id);
+            });
+          });
+          subtreeLeft += subtree.width;
+        });
+        previousBatchY = batchY;
+        if (!isLatestBatch) {
+          sideClearY.set(
+            side,
+            batchY + maxDepth * VINE_DESCENDANT_GAP + VINE_BATCH_STAGGER,
+          );
+        }
+      });
     });
-    return levels;
+
+    // Keep the orchestrator immediately above its planners.  Any malformed or
+    // unrelated node remains visible in a small fallback strip instead of
+    // being silently omitted from the graph.
+    rawNodes.filter((node) => node.type === "orchestrator").forEach((node, index) => {
+      positions[node.id] = { x: index * VINE_PLANNER_GAP, y: -VINE_BATCH_GAP };
+      placed.add(node.id);
+    });
+    rawNodes.filter((node) => !placed.has(node.id)).forEach((node, index) => {
+      positions[node.id] = { x: index * VINE_NODE_GAP, y: VINE_BATCH_GAP };
+    });
+    return positions;
+  }
+
+  _drawVines(ctx) {
+    if (!this._network || !this._vineEdges.length) return;
+    const positions = this._network.getPositions();
+    const isLight = document.body.dataset.theme === "light";
+    const color = isLight ? "#8290a3" : "#64748b";
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 1.7;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    this._vineEdges.forEach(({ from, branches }) => {
+      const source = positions[from];
+      if (!source || !branches.length) return;
+      const sourceY = source.y + this._nodeRadius(this._nodeData[from]) + 1;
+      const stemEndY = Math.max(...branches.map(({ to }) => {
+        const target = positions[to];
+        return target ? target.y - this._nodeRadius(this._nodeData[to]) - 34 : sourceY;
+      }));
+
+      // The stem is drawn once, so later planning rounds visibly extend the
+      // same P connection rather than appearing as unrelated long edges.
+      ctx.beginPath();
+      ctx.moveTo(source.x, sourceY);
+      ctx.lineTo(source.x, stemEndY);
+      ctx.stroke();
+
+      branches.forEach(({ to }) => {
+        const target = positions[to];
+        if (!target) return;
+        const targetY = target.y - this._nodeRadius(this._nodeData[to]) - 1;
+        const branchY = targetY - 34;
+        ctx.beginPath();
+        ctx.moveTo(source.x, branchY);
+        ctx.bezierCurveTo(
+          source.x, branchY + 18,
+          target.x, branchY - 18,
+          target.x, targetY,
+        );
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(target.x, targetY);
+        ctx.lineTo(target.x - 4, targetY - 7);
+        ctx.lineTo(target.x + 4, targetY - 7);
+        ctx.closePath();
+        ctx.fill();
+      });
+    });
+    ctx.restore();
   }
 
   _buildDisplayEdges(rawNodes, edges) {
@@ -482,10 +732,20 @@ export class AgentGraphView {
       });
     });
 
-    // Phase nodes are logged as orchestrator children because the orchestrator
-    // invokes them. For display, group each execution/testing phase beneath
-    // the planning invocation whose context produced it.
+    // Newer graph records persist the actual planning parent. Older sessions
+    // logged every phase under the orchestrator, so retain temporal grouping as
+    // a backwards-compatible fallback.
     childPhaseNodes.forEach((node) => {
+      const persistedParent = nodeMap[node.parent_id];
+      if (persistedParent?.type === "planning") {
+        displayEdges.push({
+          id: `phase__${persistedParent.id}__${node.id}`,
+          from: persistedParent.id,
+          to: node.id,
+        });
+        return;
+      }
+
       const nodeStart = node.start_time ? new Date(node.start_time).getTime() : Infinity;
       let parentPlanning = null;
       for (const planning of planningNodes) {
@@ -521,7 +781,7 @@ export class AgentGraphView {
       });
     });
 
-    return displayEdges;
+    return this._sequenceTaskDisplayEdges(displayEdges, nodeMap);
   }
 
   _resizeSurface() {
@@ -573,8 +833,24 @@ export class AgentGraphView {
         color: STATUS_COLORS.running,
         phase: (index * 0.173) % 1,
       }));
-    const levels = this._computeLevels(rawNodes, displayEdges);
-    this._resizeSurface(levels);
+    const positions = this._computeVineLayout(rawNodes, displayEdges);
+    const vineEdgeIds = new Set(displayEdges
+      .filter((edge) => rawNodeMap[edge.from]?.type === "planning" && rawNodeMap[edge.to]?.type === "execution")
+      .map((edge) => edge.id || `${edge.from}__${edge.to}`));
+    const vineTargetsByPlanner = new Map();
+    displayEdges.forEach((edge) => {
+      if (!vineEdgeIds.has(edge.id || `${edge.from}__${edge.to}`)) return;
+      if (!vineTargetsByPlanner.has(edge.from)) vineTargetsByPlanner.set(edge.from, []);
+      vineTargetsByPlanner.get(edge.from).push(edge.to);
+    });
+    this._vineEdges = [...vineTargetsByPlanner.entries()].map(([from, targetIds]) => ({
+      from,
+      // This one object produces one shared stem and a branch for every
+      // direct execution relation. It intentionally does not replace edges
+      // in graphData: every E still belongs directly to its planner.
+      branches: targetIds.map((to) => ({ to })),
+    }));
+    this._resizeSurface();
     const nextNodeIds = new Set(rawNodes.map((raw) => raw.id));
     const nextEdgeIds = new Set(displayEdges.map((e) => e.id || `${e.from}__${e.to}`));
     const topologyChanged =
@@ -589,7 +865,10 @@ export class AgentGraphView {
 
     rawNodes.forEach((raw) => {
       const vis = this._visNode(raw);
-      vis.level = levels[raw.id] ?? 0;
+      const position = positions[raw.id] || { x: 0, y: 0 };
+      vis.x = position.x;
+      vis.y = position.y;
+      vis.fixed = { x: true, y: true };
       if (this._nodes.get(raw.id)) {
         this._nodes.update(vis);
       } else {
@@ -601,21 +880,23 @@ export class AgentGraphView {
       if (!nextEdgeIds.has(edgeId)) this._edges.remove(edgeId);
     });
 
-    const existingEdgeIds = new Set(this._edges.getIds());
     displayEdges.forEach((e) => {
       const edgeId = e.id || `${e.from}__${e.to}`;
-      if (!existingEdgeIds.has(edgeId)) {
-        this._edges.add({
-          id: edgeId,
-          from: e.from,
-          to: e.to,
-          hidden: false,
-          physics: false,
-          width: 1.35,
-          color: this._edgeColors(),
-          smooth: { type: "cubicBezier", forceDirection: "vertical" },
-        });
-      }
+      const visEdge = {
+        id: edgeId,
+        from: e.from,
+        to: e.to,
+        // Planner -> execution links are painted as routed vines in
+        // beforeDrawing. The edge itself stays in the DataSet, preserving the
+        // real graph topology for interaction and future consumers.
+        hidden: vineEdgeIds.has(edgeId),
+        physics: false,
+        width: 1.35,
+        color: this._edgeColors(),
+        smooth: { type: "cubicBezier", forceDirection: "vertical" },
+      };
+      if (this._edges.get(edgeId)) this._edges.update(visEdge);
+      else this._edges.add(visEdge);
     });
 
     if (rawNodes.length > 0 && (topologyChanged || !this._didInitialFit || this._pendingFit)) {
@@ -635,10 +916,26 @@ export class AgentGraphView {
   startPolling(sessionId) {
     this._currentSessionId = sessionId;
     this._poll(sessionId);
-    this._pollInterval = setInterval(() => this._poll(sessionId), 2000);
+    this._eventStream?.close();
+    this._eventStream = new EventSource(`/api/agent-graph/${encodeURIComponent(sessionId)}/events`);
+    this._eventStream.onmessage = (event) => {
+      try {
+        if (sessionId !== this._currentSessionId) return;
+        this.update(JSON.parse(event.data));
+      } catch (_) {
+        // Ignore a malformed snapshot; EventSource will deliver the next one.
+      }
+    };
+    // Keep a low-frequency fallback for deployments running an older web
+    // backend that does not yet expose the graph event endpoint.
+    this._eventStream.onerror = () => {
+      if (!this._pollInterval) this._pollInterval = setInterval(() => this._poll(sessionId), 2000);
+    };
   }
 
   stopPolling() {
+    this._eventStream?.close();
+    this._eventStream = null;
     if (this._pollInterval) {
       clearInterval(this._pollInterval);
       this._pollInterval = null;
@@ -1229,6 +1526,18 @@ export class StepExecutionFeed {
       body.appendChild(p);
     }
 
+    const liveResponse = this._latestStreamedResponse(node);
+    if (node.status === "running" && liveResponse) {
+      const response = document.createElement("div");
+      response.className = "step-feed-live-response";
+      const label = document.createElement("span");
+      label.textContent = "Live response";
+      const content = document.createElement("span");
+      content.textContent = liveResponse;
+      response.append(label, content);
+      body.appendChild(response);
+    }
+
     if (node.input && Object.keys(node.input).length) {
       body.appendChild(this._wireNested(node.id, "input", this._renderStepInput(node.input)));
     }
@@ -1318,6 +1627,15 @@ export class StepExecutionFeed {
     }
 
     details.appendChild(body);
+  }
+
+  _latestStreamedResponse(node) {
+    const conversation = node.conversation || [];
+    for (let index = conversation.length - 1; index >= 0; index -= 1) {
+      const event = conversation[index];
+      if (["text", "thought"].includes(event.type) && event.content) return String(event.content);
+    }
+    return "";
   }
 }
 

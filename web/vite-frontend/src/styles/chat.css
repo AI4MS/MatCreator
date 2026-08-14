@@ -905,6 +905,29 @@
   background: rgba(255, 255, 255, 0.03);
 }
 
+.step-feed-live-response {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 10px;
+  border-left: 2px solid #fbbf24;
+  border-radius: 0 8px 8px 0;
+  background: rgba(251, 191, 36, 0.08);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.step-feed-live-response > span:first-child {
+  color: #fbbf24;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .step-feed-section {
   display: flex;
   flex-direction: column;
@@ -1348,6 +1371,28 @@ body[data-theme="dark"] .input-container[data-agent-mode="bench"] {
 .composer-toolbar {
   min-height: 30px;
   transform: translateY(2px);
+}
+
+.agent-running-indicator {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  margin: 0 4px 6px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.input-area.is-agent-running .agent-running-indicator {
+  display: flex;
+}
+
+.agent-running-orbital {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
 }
 
 .plan-approval-actions {

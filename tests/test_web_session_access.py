@@ -358,3 +358,26 @@ def test_local_mode_reads_session_detail_regardless_of_requested_user(monkeypatc
     assert payload["userId"] == "legacy-display-name"
     assert payload["state"] == {"answer": 42}
     assert payload["events"] == [{"event": "persisted"}]
+
+
+def test_execution_graph_endpoint_reads_atomic_graph_snapshot(monkeypatch, tmp_path):
+    web_main = _load_web_main(monkeypatch)
+    db_path = tmp_path / "session.db"
+    _create_session_db(db_path, web_main.APP_NAME)
+    graph = {
+        "graph_id": "plan-2",
+        "nodes": {"step-1": {"label": "Prepare structure", "status": "pending"}},
+        "edges": [],
+    }
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE sessions SET state = ? WHERE app_name = ? AND id = ?",
+            (json.dumps({"execution_graph": [graph]}), web_main.APP_NAME, "session-1"),
+        )
+        conn.commit()
+    monkeypatch.setattr(web_main, "SESSION_DB_PATH", db_path)
+    monkeypatch.setattr(web_main, "_MATCREATOR_MODE", "local")
+
+    response = asyncio.run(web_main.get_execution_graph("session-1"))
+
+    assert json.loads(response.body) == graph
