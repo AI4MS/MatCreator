@@ -1,3 +1,9 @@
+import {
+  upsertTimelineEvent,
+  upsertTimelineText,
+  upsertTimelineThought,
+} from "../chat/timeline.js";
+
 /** Owns restoring a persisted session and reconnecting to an active managed run. */
 export function createSessionRuntime({
   state,
@@ -14,12 +20,15 @@ export function createSessionRuntime({
   addMessage,
   addAgentTimelineMessage,
   addPlanApprovalActions,
+  beginScrollTransaction,
+  endScrollTransaction,
   renderSessionBanner,
   renderSessionFilesTree,
   refreshSessionFiles,
   generateSessionSummary,
   workdirDisplay,
 }) {
+  let renderedSessionKey = null;
   // Plan approval is UI-derived from persisted events. A cancelled turn can
   // still contain a successful validation event, so remember that its prompt
   // was dismissed until the user deliberately starts another turn.
@@ -69,31 +78,24 @@ export function createSessionRuntime({
     return responses;
   }
 
-  function eventToTimelineParts(event, responsesById, pairedResponseIds = new Set()) {
-    const timeline = [];
-    let accumulatedText = "";
+  function eventToTimelineParts(event, responsesById, pairedResponseIds = new Set(), timeline = []) {
     for (const part of event.content?.parts || []) {
       if (part.thought) {
-        timeline.push({ type: "thought", text: part.text || "" });
+        upsertTimelineThought(timeline, part.text || "");
       } else if (part.functionCall || part.function_call) {
         const call = part.functionCall || part.function_call;
         const matchedResponse = responsesById[call.id];
-        timeline.push({ type: "function_call", id: call.id, name: call.name || "Unknown", args: call.args || {} });
+        upsertTimelineEvent(timeline, { type: "function_call", id: call.id, name: call.name || "Unknown", args: call.args || {} });
         if (matchedResponse) {
           if (matchedResponse.id) pairedResponseIds.add(matchedResponse.id);
-          timeline.push({ type: "function_response", id: matchedResponse.id, name: matchedResponse.name || "Unknown", response: matchedResponse.response || {} });
+          upsertTimelineEvent(timeline, { type: "function_response", id: matchedResponse.id, name: matchedResponse.name || "Unknown", response: matchedResponse.response || {} });
         }
       } else if (getFunctionResponse(part)) {
         const response = getFunctionResponse(part);
         if (response.id && pairedResponseIds.has(response.id)) continue;
-        if (!timeline.some((item) => item.type === "function_response" && item.id === response.id)) {
-          timeline.push({ type: "function_response", id: response.id, name: response.name || "Unknown", response: response.response || {} });
-        }
+        upsertTimelineEvent(timeline, { type: "function_response", id: response.id, name: response.name || "Unknown", response: response.response || {} });
       } else if (part.text) {
-        accumulatedText += part.text;
-        const previous = timeline.at(-1);
-        if (previous?.type === "text") previous.text = accumulatedText;
-        else timeline.push({ type: "text", text: accumulatedText });
+        upsertTimelineText(timeline, part.text);
       }
     }
     return timeline;
@@ -174,10 +176,21 @@ export function createSessionRuntime({
     if (sessionId) suppressedPlanApprovalTurns.delete(sessionId);
   }
 
-  function renderSessionTimeline(events, stepNodes, awaitingPlanApproval = false) {
-    chatArea.innerHTML = "";
-    stepExecutionFeed.reset();
-    stepExecutionFeed.setHierarchy(stepNodes || []);
+  function markSessionRendered(sessionId, owner = state.activeSessionUserId || state.userId) {
+    renderedSessionKey = sessionRequestKey(sessionId, owner);
+  }
+
+  function renderSessionTimeline(events, stepNodes, awaitingPlanApproval = false, preserveDisclosures = false) {
+    beginScrollTransaction();
+    try {
+      // Running cards are initially open by default, so their state is not in
+      // the user-choice map yet. Snapshot the actual DOM before an in-place
+      // refresh changes running nodes to completed/cancelled and changes that
+      // default to closed.
+      if (preserveDisclosures) stepExecutionFeed.captureDisclosureState();
+      chatArea.innerHTML = "";
+      stepExecutionFeed.reset({ preserveDisclosures });
+      stepExecutionFeed.setHierarchy(stepNodes || []);
     const sortedEvents = (events || []).map((event, index) => ({ event, timestamp: eventTimestamp(event, index), index }))
       .sort((left, right) => left.timestamp - right.timestamp || left.index - right.index).map(({ event }) => event);
     const pendingStepNodes = (stepNodes || []).filter((node) => stepExecutionFeed.isRootStep(node)).slice()
@@ -187,17 +200,29 @@ export function createSessionRuntime({
     let shownPlotPaths = new Set();
     let messageIndex = 0;
     let lastAgentTimeline = null;
+    let pendingAgentTimeline = [];
+    const flushAgentTimeline = () => {
+      if (!pendingAgentTimeline.length) return;
+      const timeline = attachStepNodes(pendingAgentTimeline, pendingStepNodes);
+      lastAgentTimeline = addAgentTimelineMessage(timeline, shownPlotPaths, messageIndex++);
+      pendingAgentTimeline = [];
+    };
 
     for (const event of sortedEvents) {
       if (event.author === "user") {
+        flushAgentTimeline();
         const text = displayMessageFromStoredUserText((event.content?.parts || []).map((part) => part.text || "").join(""));
         if (text) addMessage("user", text, messageIndex++);
         shownPlotPaths = new Set();
         continue;
       }
-      const timeline = attachStepNodes(eventToTimelineParts(event, responsesById, pairedResponseIds), pendingStepNodes);
-      if (timeline.length) lastAgentTimeline = addAgentTimelineMessage(timeline, shownPlotPaths, messageIndex++);
+      // Persisted ADK events are often split into separate records while the
+      // managed SSE stream delivers them as one assistant turn. Accumulating
+      // adjacent non-user events gives history and live output identical
+      // Thinking / IN / OUT grouping, including the same upsert semantics.
+      eventToTimelineParts(event, responsesById, pairedResponseIds, pendingAgentTimeline);
     }
+    flushAgentTimeline();
     // Preserve the assistant-message containment even if an older/incomplete
     // persisted event stream cannot be matched to a specific executor call.
     // This is particularly important while reconnecting after a session
@@ -215,7 +240,13 @@ export function createSessionRuntime({
       lastAgentTimeline.appendChild(fallbackHost);
       pendingStepNodes.forEach((node) => stepExecutionFeed.appendStatic(node, fallbackHost));
     }
-    if (awaitingPlanApproval && lastAgentTimeline) addPlanApprovalActions(lastAgentTimeline);
+      if (awaitingPlanApproval && lastAgentTimeline) addPlanApprovalActions(lastAgentTimeline);
+    } finally {
+      // Loading/polling a persisted snapshot is passive. The approval card is
+      // visible immediately only for an already attached viewport; a reader
+      // elsewhere keeps the same anchor and can reach it deliberately.
+      endScrollTransaction();
+    }
   }
 
   function updateSessionWorkdirDisplay(sessionData) {
@@ -244,12 +275,19 @@ export function createSessionRuntime({
         state.summaryGeneratedFor.add(sessionId);
       }
       const summary = sessionData.summary || state.sessionSummaries[sessionId] || "";
+      const preserveDisclosures = renderedSessionKey === viewKey;
+      // Snapshot probing (`render: false`) is the first half of the managed
+      // stream reload. Remember its view so the following rendered snapshot
+      // is treated as an in-place refresh, including the refresh immediately
+      // before the Approve plan prompt appears.
+      renderedSessionKey = viewKey;
       if (render) {
         renderSessionBanner(summary);
         renderSessionTimeline(
           events,
           graphNodes,
           shouldShowPlanApprovalActions(sessionId, sessionData, events),
+          preserveDisclosures,
         );
       }
       state.sessionViewCache.set(viewKey, { sessionData, events, graphNodes, files: [], summary });
@@ -412,6 +450,7 @@ export function createSessionRuntime({
   return {
     discoverManagedRun,
     loadSession,
+    markSessionRendered,
     renderSessionTimeline,
     restorePlanApproval,
     startManagedRunReconnect,
