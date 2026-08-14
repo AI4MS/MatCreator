@@ -2,6 +2,60 @@
 
 <!-- version list -->
 
+## v2.18.0 (2026-08-14)
+
+### Bug Fixes
+
+- Harden subprocess cleanup to avoid masking CancelledError
+  ([`bf04a22`](https://github.com/AI4MS/MatCreator/commit/bf04a224177994b57c3e038241208746f63d1261))
+
+- Not rendering poscar
+  ([`f003080`](https://github.com/AI4MS/MatCreator/commit/f003080e2dc002215d59a464846fa3fac10be81f))
+
+- Roadmap disappearing bug
+  ([`b22eb3b`](https://github.com/AI4MS/MatCreator/commit/b22eb3b15f4cc6c8833b41d3e2527c7ea091f71f))
+
+- Sequential tasks rendering in agent graphs
+  ([`dc5d125`](https://github.com/AI4MS/MatCreator/commit/dc5d125a0fadabfb27a41be8cdf505d30a0d2fde))
+
+- **web**: Chat scroll and stop status handling
+  ([`e9a6dd3`](https://github.com/AI4MS/MatCreator/commit/e9a6dd33ff5dd3c3a477bf323238e5470fd99e08))
+
+### Chores
+
+- **skills**: Unify distillation training length to 50 epochs (num_epochs)
+  ([`73a1900`](https://github.com/AI4MS/MatCreator/commit/73a19002007cbf988fa1f9d66092f5f61b504143))
+
+### Features
+
+- Add plugin for bohr cli job
+  ([`4c164cb`](https://github.com/AI4MS/MatCreator/commit/4c164cba232509de3790df1fa1ce5001674f1d02))
+
+- Agent graph tighten
+  ([`c95b534`](https://github.com/AI4MS/MatCreator/commit/c95b5347370d6b4857ad140cfd5c631590526f76))
+
+- Detailed waiting info
+  ([`3752dd0`](https://github.com/AI4MS/MatCreator/commit/3752dd0bfb69107b53e8005f090997c55d0d88c2))
+
+- Graph tree re-design
+  ([`0cc0c84`](https://github.com/AI4MS/MatCreator/commit/0cc0c84ae35f75de061a8554f3afa075316f02ef))
+
+- One agent, one node
+  ([`9daa0ca`](https://github.com/AI4MS/MatCreator/commit/9daa0ca6e988a44173d94e629b36ad7131c9f296))
+
+- Waiting info
+  ([`61c4c90`](https://github.com/AI4MS/MatCreator/commit/61c4c90f992039ab301ad3f79e3977064186c588))
+
+- **skills**: Add DPA-4c distillation workflow
+  ([`37eb078`](https://github.com/AI4MS/MatCreator/commit/37eb07846e1f573732321bef6448db55dc286cfe))
+
+### Refactoring
+
+- **skills**: Split MLFF concept + address review feedback
+  ([#227](https://github.com/AI4MS/MatCreator/pull/227),
+  [`d0595b0`](https://github.com/AI4MS/MatCreator/commit/d0595b0b422f60559a417fd5317e4107f1f2703a))
+
+
 ## v2.17.0 (2026-07-30)
 
 ### Features
