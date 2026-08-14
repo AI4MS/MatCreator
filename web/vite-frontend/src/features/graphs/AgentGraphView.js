@@ -1,4 +1,5 @@
 import { Network, DataSet } from "vis-network/standalone";
+import { createDisclosureController } from "../ui/disclosureState.js";
 
 const NODE_COLORS = {
   orchestrator: { core: "124, 58, 237", edge: "196, 181, 253", font: "#f5f3ff" },
@@ -67,22 +68,15 @@ export class AgentGraphView {
     this._detailConversation = document.getElementById("detail-conversation");
     this._nodeData = {};
     this._activeDetailNodeId = null;
+    this._detailDisclosures = createDisclosureController({
+      captureScrollPosition: () => ({ scrollTop: this._detailEl.scrollTop }),
+      restoreScrollPosition: (position) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (position) this._detailEl.scrollTop = position.scrollTop;
+        }));
+      },
+    });
     this._init();
-  }
-
-  _captureOpenToolCallKeys() {
-    const openKeys = new Set();
-    this._detailToolcalls?.querySelectorAll("details[data-toolcall-key][open]")?.forEach((el) => {
-      openKeys.add(el.getAttribute("data-toolcall-key"));
-    });
-    return openKeys;
-  }
-
-  _restoreOpenToolCallKeys(openKeys) {
-    if (!openKeys?.size) return;
-    this._detailToolcalls?.querySelectorAll("details[data-toolcall-key]")?.forEach((el) => {
-      el.open = openKeys.has(el.getAttribute("data-toolcall-key"));
-    });
   }
 
   _init() {
@@ -672,6 +666,7 @@ export class AgentGraphView {
     this._pendingFit = true;
     this._hasRunningNodes = false;
     this._activeEdges = [];
+    this._detailDisclosures.clear();
     if (this._animationFrame !== null) cancelAnimationFrame(this._animationFrame);
     this._animationFrame = null;
     this._lastAnimationPaint = 0;
@@ -686,7 +681,6 @@ export class AgentGraphView {
     this._activeDetailNodeId = nodeId;
     const preserveScroll = Boolean(options.preserveScroll);
     const prevScrollTop = preserveScroll ? this._detailEl.scrollTop : 0;
-    const prevOpenToolCallKeys = preserveScroll ? this._captureOpenToolCallKeys() : new Set();
     this._detailLabel.textContent = raw.label;
     this._detailStatus.textContent = raw.status;
     this._detailStatus.className = `badge badge-${raw.status}`;
@@ -747,10 +741,10 @@ export class AgentGraphView {
     this._detailToolcallsCount.textContent = toolCalls.length;
     this._detailToolcalls.innerHTML = "";
     if (toolCalls.length) {
-      toolCalls.forEach((tc) => {
+      toolCalls.forEach((tc, index) => {
         const d = document.createElement("details");
         d.className = "timeline-function-call";
-        d.setAttribute("data-toolcall-key", tc.id || `${tc.name}:${tc.start_time || ""}`);
+        const disclosureKey = `detail:${nodeId}:tool:${tc.id || `${index}:${tc.name}:${tc.start_time || ""}`}`;
         const dur = tc.start_time && tc.end_time
           ? ` (${((new Date(tc.end_time) - new Date(tc.start_time)) / 1000).toFixed(1)}s)`
           : "";
@@ -768,6 +762,7 @@ export class AgentGraphView {
         this._getStructurePaths(tc).forEach((path) => {
           d.appendChild(this._createStructureViewButton(path));
         });
+        this._detailDisclosures.wire(d, disclosureKey);
         this._detailToolcalls.appendChild(d);
       });
       document.getElementById("detail-toolcalls-row").style.display = "";
@@ -779,7 +774,7 @@ export class AgentGraphView {
     const conversation = raw.type === "step" ? [] : (raw.conversation || []);
     this._detailConversation.innerHTML = "";
     if (conversation.length) {
-      conversation.forEach((evt) => {
+      conversation.forEach((evt, index) => {
         const d = document.createElement("details");
         d.className = `timeline-${evt.type}`;
         const s = document.createElement("summary");
@@ -787,6 +782,7 @@ export class AgentGraphView {
         s.textContent = `${icon} [${evt.author}] ${evt.type}`;
         d.appendChild(s);
         d.appendChild(this._createJsonBlock(evt.content));
+        this._detailDisclosures.wire(d, `detail:${nodeId}:conversation:${index}:${evt.timestamp || ""}:${evt.type || ""}`);
         this._detailConversation.appendChild(d);
       });
       document.getElementById("detail-conversation-row").style.display = "";
@@ -798,7 +794,6 @@ export class AgentGraphView {
     if (raw.type === "step" && options.scrollToStep !== false) this._stepExecutionFeed.highlight(raw.id);
     this._syncPanelResizerVisibility();
     if (preserveScroll) {
-      this._restoreOpenToolCallKeys(prevOpenToolCallKeys);
       this._detailEl.scrollTop = prevScrollTop;
     }
   }
@@ -831,10 +826,7 @@ export class StepExecutionFeed {
   constructor(dependencies) {
     this._chatArea = dependencies.chatArea;
     this._isSending = dependencies.isSending;
-    this._isChatNearBottom = dependencies.isChatNearBottom;
-    this._captureScrollPosition = dependencies.captureScrollPosition;
-    this._restoreScrollPosition = dependencies.restoreScrollPosition;
-    this._scrollToBottom = dependencies.scrollToBottom;
+    this._updatePreservingReadingPosition = dependencies.updatePreservingReadingPosition;
     this._createAgentAvatarEl = dependencies.createAgentAvatarEl;
     this._stepFeedTitle = dependencies.stepFeedTitle;
     this._formatStepDuration = dependencies.formatStepDuration;
@@ -844,8 +836,7 @@ export class StepExecutionFeed {
     this._requestStepCancellation = dependencies.requestStepCancellation;
     this._createArtifactListItem = dependencies.createArtifactListItem;
     this._cards = new Map();
-    this._userOpen = new Map();
-    this._nestedOpen = new Map();
+    this._disclosures = dependencies.disclosureController;
     this._highlightedId = null;
     this._liveAnchorEl = null;
     this._liveContainerEl = null;
@@ -855,10 +846,9 @@ export class StepExecutionFeed {
     this._childNodes = new Map();
   }
 
-  reset() {
+  reset({ preserveDisclosures = false } = {}) {
     this._cards.clear();
-    this._userOpen.clear();
-    this._nestedOpen.clear();
+    if (!preserveDisclosures) this._disclosures.clear();
     this._highlightedId = null;
     this._liveAnchorEl = null;
     this._liveContainerEl = null;
@@ -866,6 +856,10 @@ export class StepExecutionFeed {
     this._liveToolHostEl = null;
     this._stepById = new Map();
     this._childNodes = new Map();
+  }
+
+  captureDisclosureState() {
+    this._disclosures.capture(this._chatArea);
   }
 
   startLiveTurn(anchorEl, startedAt = Date.now(), hostEl = null) {
@@ -928,15 +922,13 @@ export class StepExecutionFeed {
     for (const nodeId of this._cards.keys()) {
       if (!seen.has(nodeId)) {
         this._cards.delete(nodeId);
-        this._nestedOpen.delete(nodeId);
+        this._disclosures.deletePrefix(`step:${nodeId}:`);
       }
     }
 
-    const shouldStick = this._isChatNearBottom();
-    const scrollPosition = shouldStick ? null : this._captureScrollPosition();
-    rootSteps.forEach((node) => this._upsert(node));
-    if (shouldStick) this._scrollToBottom({ preserveUserPosition: true });
-    else this._restoreScrollPosition(scrollPosition);
+    this._updatePreservingReadingPosition(() => {
+      rootSteps.forEach((node) => this._upsert(node));
+    });
   }
 
   setHierarchy(stepNodes) {
@@ -1163,8 +1155,8 @@ export class StepExecutionFeed {
     bubble.className = "message-bubble step-feed-bubble";
     const details = document.createElement("details");
     details.className = "step-feed-details";
-    details.addEventListener("toggle", () => {
-      this._userOpen.set(node.id, details.open);
+    this._disclosures.wire(details, `step:${node.id}:card`, {
+      defaultOpen: node.status === "running",
     });
     bubble.appendChild(details);
     outer.appendChild(bubble);
@@ -1172,19 +1164,8 @@ export class StepExecutionFeed {
   }
 
   _wireNested(nodeId, key, details) {
-    let nodeState = this._nestedOpen.get(nodeId);
-    if (!nodeState) {
-      nodeState = new Map();
-      this._nestedOpen.set(nodeId, nodeState);
-    }
-    if (nodeState.has(key)) {
-      details.open = nodeState.get(key);
-    }
     details.dataset.stepNestedKey = key;
-    details.addEventListener("toggle", (event) => {
-      if (event.target !== details) return;
-      nodeState.set(key, details.open);
-    });
+    this._disclosures.wire(details, `step:${nodeId}:nested:${key}`);
     return details;
   }
 
@@ -1197,8 +1178,14 @@ export class StepExecutionFeed {
     bubble?.querySelector(":scope > .step-feed-child-section")?.remove();
 
     const details = outer.querySelector(".step-feed-details");
-    const userChoice = this._userOpen.get(node.id);
-    details.open = userChoice === undefined ? node.status === "running" : userChoice;
+    const cardKey = `step:${node.id}:card`;
+    const userChoice = this._disclosures.state.get(cardKey);
+    // Preserve an already-open running card when polling changes its status
+    // to completed/cancelled. Otherwise that status transition collapses the
+    // Node before the following session snapshot can preserve its UI state.
+    details.open = userChoice === undefined
+      ? details.open || node.status === "running"
+      : userChoice;
     details.innerHTML = "";
 
     const summary = document.createElement("summary");
@@ -1281,10 +1268,9 @@ export class StepExecutionFeed {
         const key = `conversation:${idx}:${evt.timestamp || ""}:${evt.type || ""}:${evt.author || ""}`;
         sectionDetails.appendChild(this._wireNested(node.id, key, this._renderStepConversationEvent(evt)));
       });
-      sectionDetails.addEventListener("toggle", () => {
-        sectionSummary.classList.toggle("open", sectionDetails.open);
-      });
       section.appendChild(this._wireNested(node.id, "section:conversation", sectionDetails));
+      sectionSummary.classList.toggle("open", sectionDetails.open);
+      sectionDetails.addEventListener("toggle", () => sectionSummary.classList.toggle("open", sectionDetails.open));
       body.appendChild(section);
     }
 
@@ -1302,10 +1288,9 @@ export class StepExecutionFeed {
         const key = `tool:${idx}:${tc.name || ""}:${tc.start_time || ""}`;
         sectionDetails.appendChild(this._wireNested(node.id, key, this._renderStepToolCall(tc)));
       });
-      sectionDetails.addEventListener("toggle", () => {
-        sectionSummary.classList.toggle("open", sectionDetails.open);
-      });
       section.appendChild(this._wireNested(node.id, "section:toolcalls", sectionDetails));
+      sectionSummary.classList.toggle("open", sectionDetails.open);
+      sectionDetails.addEventListener("toggle", () => sectionSummary.classList.toggle("open", sectionDetails.open));
       body.appendChild(section);
     }
 

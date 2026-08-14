@@ -32,6 +32,12 @@ export function compactRepeatedPrefixSnapshots(text) {
   return compacted;
 }
 
+function nextTimelineItemId(timeline, prefix) {
+  const nextId = timeline._nextItemId || 0;
+  timeline._nextItemId = nextId + 1;
+  return `${prefix}:${nextId}`;
+}
+
 export function upsertTimelineThought(timeline, text) {
   if (!text) return;
   const compacted = compactRepeatedPrefixSnapshots(text);
@@ -40,14 +46,21 @@ export function upsertTimelineThought(timeline, text) {
     last.text = compactRepeatedPrefixSnapshots(mergeReplayedText(last.text || "", compacted));
     return;
   }
-  timeline.push({ type: "thought", text: compacted });
+  timeline.push({ type: "thought", timelineId: nextTimelineItemId(timeline, "thought"), text: compacted });
 }
 
 export function upsertTimelineText(timeline, text) {
-  for (let index = timeline.length - 1; index >= 0; index--) {
-    if (timeline[index].type === "text") timeline.splice(index, 1);
+  if (!text) return;
+  const compacted = compactRepeatedPrefixSnapshots(text);
+  const last = timeline[timeline.length - 1];
+  if (last?.type === "text") {
+    // Only the currently streaming, contiguous text block is mutable. Text
+    // before a Thinking/IN/OUT item is historical content and must retain its
+    // position and DOM identity when a later text block arrives.
+    last.text = compactRepeatedPrefixSnapshots(mergeReplayedText(last.text || "", compacted));
+    return;
   }
-  if (text) timeline.push({ type: "text", text });
+  timeline.push({ type: "text", timelineId: nextTimelineItemId(timeline, "text"), text: compacted });
 }
 
 function timelineEventKey(event) {
@@ -64,11 +77,15 @@ export function upsertTimelineEvent(timeline, event) {
       (item.type === "function_call" || item.type === "function_response") &&
       timelineEventKey(item) === eventKey
     ) {
+      // Keep the UI identity when an incoming event refreshes an existing
+      // call/response. Its expanded state must survive the refresh.
+      event.timelineId = item.timelineId;
       timeline[index] = event;
       return;
     }
   }
   const last = timeline[timeline.length - 1];
   if (last && JSON.stringify(last) === JSON.stringify(event)) return;
+  event.timelineId ||= nextTimelineItemId(timeline, event.type);
   timeline.push(event);
 }
