@@ -175,7 +175,7 @@
             "batch_size": 1,
             "numb_batch": 1
         },
-        "numb_steps": 1000000,
+        "num_epochs": 50,
         "enable_compile": true,
         "gradient_max_norm": 5,
         "save_freq": 2000,

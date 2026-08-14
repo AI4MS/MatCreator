@@ -119,7 +119,7 @@ entropy-selected structures, instead of running DFT single-point calculations:
    all teacher-labeled frames.
 
 2. Train the DPA-4c student model **from scratch** (no pretrained initialization). Because the student
-   starts from scratch, training is much longer than fine-tuning: use about **1000 epochs** (set via
+   starts from scratch, training is much longer than fine-tuning: use about **50 epochs** (set via
    the `num_epochs` keyword — do NOT instruct training in steps). For the concrete DPA-4c training
    commands and environment, load and follow the `deepmd` skill.
 
