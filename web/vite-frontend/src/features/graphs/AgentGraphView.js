@@ -914,11 +914,12 @@ export class AgentGraphView {
   }
 
   startPolling(sessionId) {
+    this.stopPolling();
     this._currentSessionId = sessionId;
-    this._poll(sessionId);
-    this._eventStream?.close();
-    this._eventStream = new EventSource(`/api/agent-graph/${encodeURIComponent(sessionId)}/events`);
-    this._eventStream.onmessage = (event) => {
+    void this._poll(sessionId);
+    const eventStream = new EventSource(`/api/agent-graph/${encodeURIComponent(sessionId)}/events`);
+    this._eventStream = eventStream;
+    eventStream.onmessage = (event) => {
       try {
         if (sessionId !== this._currentSessionId) return;
         this.update(JSON.parse(event.data));
@@ -927,8 +928,13 @@ export class AgentGraphView {
       }
     };
     // Keep a low-frequency fallback for deployments running an older web
-    // backend that does not yet expose the graph event endpoint.
-    this._eventStream.onerror = () => {
+    // backend that does not yet expose the graph event endpoint. Close the
+    // EventSource before starting it so browser reconnects cannot deliver the
+    // same snapshots alongside the fallback poller.
+    eventStream.onerror = () => {
+      if (this._eventStream !== eventStream) return;
+      eventStream.close();
+      this._eventStream = null;
       if (!this._pollInterval) this._pollInterval = setInterval(() => this._poll(sessionId), 2000);
     };
   }
@@ -940,6 +946,14 @@ export class AgentGraphView {
       clearInterval(this._pollInterval);
       this._pollInterval = null;
     }
+    // Polling owns the running-node animation lifecycle. A cancellation can
+    // stop updates while the last received snapshot still says "running";
+    // without clearing that stale flag the canvas redraw loop never ends.
+    this._hasRunningNodes = false;
+    this._activeEdges = [];
+    if (this._animationFrame !== null) cancelAnimationFrame(this._animationFrame);
+    this._animationFrame = null;
+    this._network?.redraw();
   }
 
   async _poll(sessionId) {
