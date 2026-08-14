@@ -5,7 +5,7 @@ import types
 
 import pytest
 
-from matcreator.control_plane.e2b import E2BConfigurationError, E2BSandboxAdapter, E2BSandboxSpec
+from matcreator.control_plane.providers.e2b import E2BConfigurationError, E2BSandboxAdapter, E2BSandboxSpec
 
 
 class _FakeResult:
@@ -52,6 +52,7 @@ class _FakeSandbox:
     sandbox_id = "sandbox-123"
     created_with: dict = {}
     connected_to: list[str] = []
+    connect_opts: list[dict] = []
     paused = False
     killed = False
     files = _FakeFiles()
@@ -62,14 +63,17 @@ class _FakeSandbox:
         return cls()
 
     @classmethod
-    def connect(cls, sandbox_id):
+    def connect(cls, sandbox_id, **opts):
         cls.connected_to.append(sandbox_id)
+        cls.connect_opts.append(opts)
         return cls()
 
     class commands:
+        last_command: str | None = None
+
         @staticmethod
         def run(command, user, **kwargs):
-            assert command == "echo hello"
+            _FakeSandbox.commands.last_command = command
             assert user == "root"
             return _FakeResult()
 
@@ -84,22 +88,27 @@ class _FakeSandbox:
 def fake_e2b_module(monkeypatch):
     _FakeSandbox.created_with = {}
     _FakeSandbox.connected_to = []
+    _FakeSandbox.connect_opts = []
     _FakeSandbox.paused = False
     _FakeSandbox.killed = False
     _FakeSandbox.files = _FakeFiles()
     monkeypatch.setitem(sys.modules, "e2b_code_interpreter", types.SimpleNamespace(Sandbox=_FakeSandbox))
+    # Reconnects require the endpoint configuration in the environment.
+    monkeypatch.setenv("E2B_API_KEY", "secret")
+    monkeypatch.setenv("E2B_API_URL", "https://e2b.example")
+    monkeypatch.setenv("BOHRIUM_PROJECT_ID", "project-42")
 
 
 def test_adapter_creates_sandbox_with_project_header() -> None:
     adapter = E2BSandboxAdapter()
     sandbox_id = adapter.create(
-        E2BSandboxSpec(
-            template="doc-compiler",
-            api_key="secret",
-            api_url="https://e2b.example",
-            project_id="project-42",
-            lifecycle={"on_timeout": "pause"},
-        )
+        {
+            "template": "doc-compiler",
+            "api_key": "secret",
+            "api_url": "https://e2b.example",
+            "project_id": "project-42",
+            "lifecycle": {"on_timeout": "pause"},
+        }
     )
 
     assert sandbox_id == "sandbox-123"
@@ -115,12 +124,70 @@ def test_adapter_connects_for_command_and_controls() -> None:
         "stderr": "",
         "exit_code": 0,
     }
+    assert _FakeSandbox.commands.last_command == "echo hello"
     adapter.pause("sandbox-123")
     adapter.terminate("sandbox-123")
 
     assert _FakeSandbox.connected_to == ["sandbox-123", "sandbox-123", "sandbox-123"]
     assert _FakeSandbox.paused is True
     assert _FakeSandbox.killed is True
+    # Reconnects must carry the configured endpoint, never the SDK default.
+    assert _FakeSandbox.connect_opts[0] == {
+        "api_key": "secret",
+        "api_url": "https://e2b.example",
+        "headers": {"X-Project-Id": "project-42"},
+    }
+
+
+def test_adapter_connect_fails_loudly_without_endpoint_configuration(monkeypatch) -> None:
+    adapter = E2BSandboxAdapter()
+    monkeypatch.delenv("E2B_API_KEY", raising=False)
+
+    with pytest.raises(E2BConfigurationError, match="E2B_API_KEY and E2B_API_URL"):
+        adapter.run_command("sandbox-123", "echo hello")
+    assert _FakeSandbox.connected_to == []
+
+
+def test_adapter_cancel_aliases_terminate() -> None:
+    adapter = E2BSandboxAdapter()
+
+    adapter.cancel("sandbox-123")
+
+    assert _FakeSandbox.killed is True
+
+
+def test_adapter_create_error_includes_request_context(monkeypatch) -> None:
+    def _boom(**kwargs):
+        raise RuntimeError("404: Resource not found")
+
+    monkeypatch.setattr(_FakeSandbox, "create", _boom)
+    adapter = E2BSandboxAdapter()
+
+    with pytest.raises(RuntimeError) as excinfo:
+        adapter.create(
+            {
+                "template": "doc-compiler",
+                "api_key": "secret",
+                "api_url": "https://open.bohrium.com/wrong/path",
+                "project_id": "project-42",
+            }
+        )
+
+    message = str(excinfo.value)
+    assert "404: Resource not found" in message
+    assert "https://open.bohrium.com/wrong/path" in message
+    assert "doc-compiler" in message
+    assert "project-42" in message
+    assert "secret" not in message
+
+
+def test_adapter_status_reports_liveness_without_a_normalized_status() -> None:
+    adapter = E2BSandboxAdapter()
+
+    status = adapter.status("sandbox-123")
+
+    assert status.normalized_status is None
+    assert status.snapshot["provider_status"] == "reachable"
 
 
 def test_adapter_download_file_streams_to_local_destination(tmp_path) -> None:

@@ -9,6 +9,8 @@ Endpoints
 ---------
 GET /api/agent-graph/{session_id}
     Returns the JSON graph file for the session, or an empty graph if not found.
+GET /api/agent-graph/{session_id}/events
+    Streams graph snapshots whenever an agent node emits a new event.
 GET /api/workspace/files?path=<path>
     Serves any file from the workspace root (absolute or relative path).
     Returns 403 if the path escapes the workspace root.
@@ -70,6 +72,8 @@ if str(_WEB_DIR) not in sys.path:
 
 import users_db  # noqa: E402
 
+from structure_formats import is_vasp_structure_filename  # noqa: E402
+
 from matcreator.workspace import get_session_workdir, get_workspace_root, workspace_skills_dir  # noqa: E402
 from matcreator.agents.cancellation import (  # noqa: E402
     request_cancellation,
@@ -79,6 +83,7 @@ from matcreator.agents.cancellation import (  # noqa: E402
     request_step_cancellation,
 )
 from matcreator.agents.graph_logger import AgentGraphLogger  # noqa: E402
+from matcreator.agents.execution_graph_state import decode_execution_graph  # noqa: E402
 from matcreator.agents.session_log import build_session_log_export  # noqa: E402
 from matcreator.skill import (  # noqa: E402
     ALL_SKILLS,
@@ -97,6 +102,7 @@ from matcreator.constants import GRAPH_AGENT_MODEL, KNOW_DO_GRAPH_DB  # noqa: E4
 from matcreator.control_plane.remote_job_monitor import RemoteJobMonitor  # noqa: E402
 from matcreator.control_plane.remote_job_service import RemoteJobService  # noqa: E402
 from matcreator.control_plane.remote_jobs import RemoteJobStore  # noqa: E402
+from matcreator.control_plane.providers import CapabilityError  # noqa: E402
 from matcreator.control_plane.benchmark_client import BenchmarkApiError, BenchmarkClient, sanitize_bank_id  # noqa: E402
 from matcreator.control_plane.evaluation_manager import EvaluationManager  # noqa: E402
 from matcreator.control_plane.evaluation_runtime import RuntimeOutcome, RuntimeSpec  # noqa: E402
@@ -1623,8 +1629,7 @@ def _load_json_field(raw_value: str | None, fallback):
 def _ase_read_structure(path: Path):
     from ase.io import read as ase_read
 
-    name = path.name.lower()
-    if name in {"poscar", "contcar"} or path.suffix.lower() == ".vasp":
+    if is_vasp_structure_filename(path.name) or path.suffix.lower() == ".vasp":
         return ase_read(str(path), format="vasp")
     return ase_read(str(path))
 
@@ -2668,11 +2673,13 @@ async def pause_session_remote_job(
     job_id: str,
     user_id: str = Query(..., description="Current signed-in user"),
 ) -> JSONResponse:
-    """Pause one E2B sandbox and notify its linked executor without stopping it."""
+    """Pause one remote job (if its provider supports pausing) and notify its linked executor without stopping it."""
     job = _get_owned_remote_job(session_id, job_id, user_id)
     try:
-        paused = await asyncio.to_thread(_remote_job_service_for_owner(user_id).pause_e2b, job_id)
+        paused = await asyncio.to_thread(_remote_job_service_for_owner(user_id).pause_job, job_id)
     except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except CapabilityError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     await asyncio.to_thread(
         _remote_job_store_for_owner(user_id).record_user_control,
@@ -2688,10 +2695,10 @@ async def terminate_session_remote_job(
     job_id: str,
     user_id: str = Query(..., description="Current signed-in user"),
 ) -> JSONResponse:
-    """Terminate one E2B sandbox and notify its linked executor without stopping it."""
+    """Terminate one remote job and notify its linked executor without stopping it."""
     job = _get_owned_remote_job(session_id, job_id, user_id)
     try:
-        terminated = await asyncio.to_thread(_remote_job_service_for_owner(user_id).terminate_e2b, job_id)
+        terminated = await asyncio.to_thread(_remote_job_service_for_owner(user_id).terminate_job, job_id)
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     await asyncio.to_thread(
@@ -2708,12 +2715,10 @@ async def refresh_session_remote_job(
     job_id: str,
     user_id: str = Query(..., description="Current signed-in user"),
 ) -> JSONResponse:
-    """Synchronize a caller-owned active E2B job with its sandbox."""
+    """Synchronize a caller-owned active remote job with its provider."""
     job = _get_owned_remote_job(session_id, job_id, user_id)
-    if job["provider"] != "e2b":
-        raise HTTPException(status_code=409, detail="Remote job is not managed by E2B")
     try:
-        refreshed = await asyncio.to_thread(_remote_job_service_for_owner(user_id).reconcile_e2b, job_id)
+        refreshed = await asyncio.to_thread(_remote_job_service_for_owner(user_id).reconcile_job, job_id)
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return JSONResponse(refreshed)
@@ -2796,10 +2801,8 @@ def _load_execution_graph(session_id: str) -> dict:
                 if row is None:
                     continue
                 state = _load_json_field(row["state"], {})
-                raw = state.get("execution_graph")
-                if isinstance(raw, str):
-                    raw = _load_json_field(raw, None)
-                if not isinstance(raw, dict):
+                raw = decode_execution_graph(state.get("execution_graph"))
+                if raw is None:
                     return {"nodes": {}, "edges": []}
                 return raw
         except sqlite3.Error:
@@ -3319,6 +3322,31 @@ async def get_agent_graph(session_id: str) -> JSONResponse:
     return JSONResponse(data)
 
 
+@app.get("/api/agent-graph/{session_id}/events")
+async def stream_agent_graph(session_id: str, request: Request) -> StreamingResponse:
+    """Push graph updates so concurrent node output appears without polling."""
+    async def stream():
+        last_updated_at = object()
+        while not await request.is_disconnected():
+            data = _load_agent_graph_data(session_id)
+            if not data:
+                data = {"session_id": session_id, "nodes": {}, "edges": [], "updated_at": None}
+            updated_at = data.get("updated_at")
+            if updated_at != last_updated_at:
+                yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                last_updated_at = updated_at
+            # The logger writes synchronously for every model/tool event. A
+            # short server-side wait keeps the browser connection quiet while
+            # making independently running nodes feel genuinely concurrent.
+            await asyncio.sleep(0.2)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.post("/api/workspace/cli")
 async def run_workspace_cli(body: WorkspaceCliBody) -> JSONResponse:
     command = body.command.strip()
@@ -3669,7 +3697,7 @@ async def list_modeling_structure_files(
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
-        if path.suffix.lower() not in structure_suffixes and path.name.lower() not in {"poscar", "contcar"}:
+        if path.suffix.lower() not in structure_suffixes and not is_vasp_structure_filename(path.name):
             continue
         files.append({
             "name": path.name,
@@ -3769,7 +3797,7 @@ async def cancel_session_execution(
     paused_jobs = []
     if user_id:
         paused_jobs = await asyncio.to_thread(
-            _remote_job_service_for_owner(user_id).pause_active_session_e2b_jobs,
+            _remote_job_service_for_owner(user_id).pause_active_session_jobs,
             owner_id=user_id,
             session_id=session_id,
         )

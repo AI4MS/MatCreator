@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MEMORIZATION_FREQUENCY = 1
 _DEFAULT_REVIEW_FREQUENCY = 10
+_PLANNING_NODE_STATE_KEY = "_graph_planning_node_id"
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +77,36 @@ def _is_graph_complete(state: dict) -> bool:
     """Return True when every node in the graph reached 'success'."""
     nodes = (get_execution_graph(state) or {}).get("nodes") or {}
     return bool(nodes) and all(n.get("status") == "success" for n in nodes.values())
+
+
+def _get_planning_node_id(state: dict, graph: AgentGraphLogger) -> str:
+    """Return the graph node representing the session's current planner.
+
+    The orchestrator keeps one planning-agent instance for the session.  A
+    planning invocation is therefore activity on that agent, not evidence that
+    a new agent was created.  Persisting its graph id in session state keeps
+    execution/replanning loops attached to one node.  A future code path that
+    deliberately replaces the planning agent can clear this state key before
+    creating its replacement node.
+    """
+    node_id = state.get(_PLANNING_NODE_STATE_KEY)
+    if isinstance(node_id, str) and node_id:
+        return node_id
+
+    # Preserve the original planner node when resuming a graph written before
+    # this state key existed, rather than adding another planning node.
+    existing_planners = [
+        node for node in graph.nodes_of_type("planning")
+        if isinstance(node.get("id"), str)
+    ]
+    if existing_planners:
+        existing_planners.sort(key=lambda node: (node.get("start_time") or "", node["id"]))
+        node_id = existing_planners[0]["id"]
+    else:
+        node_id = "planning_0"
+
+    state[_PLANNING_NODE_STATE_KEY] = node_id
+    return node_id
 
 
 # ---------------------------------------------------------------------------
@@ -125,14 +156,13 @@ class PlanningExecutionOrchestrator(BaseAgent):
             logger.warning("[orchestrator] recovered execution state: %s", recovered)
 
         loop_idx = graph.count_nodes_of_type("execution")
+        planning_id = _get_planning_node_id(state, graph)
 
         while True:
             # ── Planning phase (always runs first) ───────────────────────────
             state["execution_approved"] = False
-            has_execution = loop_idx > 0
-            planning_id = f"planning_{loop_idx}" if has_execution else "planning_0"
             logger.info("[orchestrator] entering planning phase")
-            graph.log_node_start(planning_id, "planning", f"Planning {loop_idx + 1}", "orchestrator")
+            graph.log_node_start(planning_id, "planning", "Planning", "orchestrator")
             # Approval is a hard handoff boundary. Yield the successful tool
             # response first so clients can persist/render it, then close the
             # planner stream before it can start another model/tool round.
@@ -171,7 +201,16 @@ class PlanningExecutionOrchestrator(BaseAgent):
                 )
 
                 exec_id = f"execution_{loop_idx}"
-                graph.log_node_start(exec_id, "execution", f"Execution {loop_idx + 1}", "orchestrator")
+                graph.log_node_start(
+                    exec_id,
+                    "execution",
+                    f"Execution {loop_idx + 1}",
+                    planning_id,
+                    # This remains metadata: all execution nodes continue to
+                    # point directly at the original planner. The frontend
+                    # uses it to place one planning round on one vine layer.
+                    batch_id=f"{planning_id}:round:{loop_idx}",
+                )
                 state["_graph_exec_node_id"] = exec_id
 
                 async for event in self.execution_agent.run_async(ctx):

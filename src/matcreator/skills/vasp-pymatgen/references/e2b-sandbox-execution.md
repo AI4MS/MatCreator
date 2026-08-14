@@ -100,7 +100,7 @@ export E2B_VALIDATE_API_KEY=false
 ```
 
 The adapter already sets `E2B_VALIDATE_API_KEY=false` by default at import
-time (`matcreator/control_plane/e2b.py`), so this is handled for Bohrium
+time (`matcreator/control_plane/providers/e2b.py`), so this is handled for Bohrium
 deployments out of the box. An explicit value in the environment takes
 precedence — set `E2B_VALIDATE_API_KEY=true` only if you are talking to
 the public e2b.dev API with a standard `e2b_`-prefixed key.

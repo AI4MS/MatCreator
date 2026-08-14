@@ -289,6 +289,29 @@ def _execution_timeout_seconds() -> int:
     return timeout if timeout > 0 else _DEFAULT_EXEC_TIMEOUT_SECONDS
 
 
+async def _terminate_subprocess(proc: asyncio.subprocess.Process) -> tuple[bytes, bytes]:
+    """Best-effort kill + pipe drain for use in exception/cleanup paths.
+
+    Never raises: tolerates the process having already exited (uvloop raises
+    ``ProcessLookupError`` on a redundant ``kill()``) and tolerates drain
+    failures, so it never masks the original exception (TimeoutError /
+    CancelledError) raised by the caller.
+
+    Returns whatever ``(stdout, stderr)`` could be drained; values may be
+    ``b""`` when the drain did not complete.
+    """
+    if proc.returncode is None:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            # Process exited between the returncode check and kill()
+            pass
+    try:
+        return await proc.communicate()
+    except (Exception, asyncio.CancelledError):
+        return b"", b""
+
+
 async def run_python(code: str, tool_context: ToolContext) -> str:
     """Execute a Python code snippet and return its stdout/stderr.
 
@@ -316,12 +339,10 @@ async def run_python(code: str, tool_context: ToolContext) -> str:
         timeout = _execution_timeout_seconds()
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        proc.kill()
-        stdout, stderr = await proc.communicate()
+        stdout, stderr = await _terminate_subprocess(proc)
         output = f"[TimeoutExpired after {timeout}s]\n" + stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
     except asyncio.CancelledError:
-        proc.kill()
-        await proc.communicate()
+        await _terminate_subprocess(proc)
         raise
     else:
         output = stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
@@ -357,12 +378,10 @@ async def run_bash(script: str, tool_context: ToolContext) -> str:
         timeout = _execution_timeout_seconds()
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        proc.kill()
-        stdout, stderr = await proc.communicate()
+        stdout, stderr = await _terminate_subprocess(proc)
         output = f"[TimeoutExpired after {timeout}s]\n" + stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
     except asyncio.CancelledError:
-        proc.kill()
-        await proc.communicate()
+        await _terminate_subprocess(proc)
         raise
     else:
         output = stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
@@ -396,12 +415,10 @@ async def run_python_file(relative_path: str) -> str:
         timeout = _execution_timeout_seconds()
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        proc.kill()
-        stdout, stderr = await proc.communicate()
+        stdout, stderr = await _terminate_subprocess(proc)
         output = f"[TimeoutExpired after {timeout}s]\n" + stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
     except asyncio.CancelledError:
-        proc.kill()
-        await proc.communicate()
+        await _terminate_subprocess(proc)
         raise
     else:
         output = stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
@@ -489,12 +506,10 @@ async def run_skill_script(
         timeout = _execution_timeout_seconds()
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        proc.kill()
-        stdout, stderr = await proc.communicate()
+        stdout, stderr = await _terminate_subprocess(proc)
         output = f"[TimeoutExpired after {timeout}s]\n" + stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
     except asyncio.CancelledError:
-        proc.kill()
-        await proc.communicate()
+        await _terminate_subprocess(proc)
         raise
     else:
         output = stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")

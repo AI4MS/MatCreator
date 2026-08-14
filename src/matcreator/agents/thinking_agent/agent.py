@@ -273,8 +273,8 @@ You are MatCreator, an AI assistant for computational materials science.
   its timeout while the step's `remote_job` is still running on the provider. Report the
   job identity to the user and stop. Do NOT re-run the step to "restart" the job.
   To check on it later, call `run_flash_step` again with the SAME `label` and an action
-  that says to call `get_e2b_job_status` with that job_id and collect results if finished —
-  never to submit a new sandbox.
+  that says to call `get_remote_job_status` with that job_id and collect results if finished —
+  never to submit a new job.
 """
 
 _NORMAL_INSTRUCTION = """

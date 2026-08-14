@@ -10,6 +10,8 @@ import { AgentGraphView, StepExecutionFeed } from "./features/graphs/AgentGraphV
 import { ExecutionPlanView } from "./features/graphs/ExecutionPlanView.js";
 import { createSkillGraphController } from "./features/skills/SkillGraphController.js";
 import { createSettingsController } from "./features/settings/SettingsController.js";
+import { mountOrbitalAgentIndicator } from "./components/mountOrbitalAgentIndicator.js";
+import { createDisclosureController } from "./features/ui/disclosureState.js";
 import "./styles/index.css";
 
 // ---------------------------------------------------------------------------
@@ -67,7 +69,11 @@ const state = {
 
 const chatArea = document.getElementById("chat-area");
 const textInput = document.getElementById("text-input");
+const inputArea = document.querySelector(".input-area");
 const inputContainer = document.querySelector(".input-container");
+const agentRunningIndicator = document.getElementById("agent-running-indicator");
+const agentRunningOrbital = document.getElementById("agent-running-orbital");
+const agentRunningText = document.getElementById("agent-running-text");
 const sendBtn = document.getElementById("send-btn");
 const fileUploadBtn = document.getElementById("file-upload-btn");
 const fileUploadInput = document.getElementById("file-upload-input");
@@ -162,15 +168,25 @@ const {
   addMessage,
   appendLiveTurnChild,
   applyUserAvatarToEl,
+  beginScrollTransaction,
   captureScrollPosition,
   createAgentAvatarEl,
   createJsonBlock,
-  isChatNearBottom,
+  endScrollTransaction,
+  markReadingAnchors,
+  protectAsyncContentLayout,
   renderMarkdown,
   restoreScrollPosition,
   scrollToBottom,
   setUserAvatar,
-} = createChatRenderer({ chatArea });
+  updatePreservingReadingPosition,
+} = createChatRenderer({ chatArea, bottomOverlay: inputArea });
+
+const createChatDisclosureController = () => createDisclosureController({
+  captureScrollPosition,
+  restoreScrollPosition,
+});
+const chatDisclosureController = createChatDisclosureController();
 
 const settingsController = createSettingsController({ state, applyLogin });
 
@@ -980,10 +996,7 @@ document.getElementById("evaluation-template-delete")?.addEventListener("click",
 const stepExecutionFeed = new StepExecutionFeed({
   chatArea,
   isSending: () => Boolean(activeSessionRequest()),
-  isChatNearBottom,
-  captureScrollPosition,
-  restoreScrollPosition,
-  scrollToBottom,
+  updatePreservingReadingPosition,
   createAgentAvatarEl,
   stepFeedTitle,
   formatStepDuration,
@@ -992,6 +1005,7 @@ const stepExecutionFeed = new StepExecutionFeed({
   renderStepToolCall,
   requestStepCancellation,
   createArtifactListItem,
+  disclosureController: chatDisclosureController,
 });
 const agentGraph = new AgentGraphView("agent-graph", {
   stepExecutionFeed,
@@ -1066,8 +1080,27 @@ function releaseSessionRequest(request) {
   }
 }
 
+const orbitalIndicator = mountOrbitalAgentIndicator(agentRunningOrbital);
+
+function updateAgentRunningStatus(phase = "working") {
+  const phases = {
+    working: ["MatCreator is working. Please wait…", "thinking"],
+    thinking: ["MatCreator is thinking…", "thinking"],
+    planning: ["MatCreator is planning the workflow…", "thinking"],
+    searching: ["MatCreator is searching for information…", "searching"],
+    executing: ["MatCreator is executing the workflow…", "computing"],
+    computing: ["MatCreator is computing…", "computing"],
+  };
+  const [label, orbitalState] = phases[phase] || phases.working;
+  if (agentRunningText) agentRunningText.textContent = label;
+  orbitalIndicator?.render(orbitalState);
+}
+
 function updateSendButtonState() {
   const running = Boolean(activeSessionRequest());
+  inputArea?.classList.toggle("is-agent-running", running);
+  if (agentRunningIndicator) agentRunningIndicator.setAttribute("aria-hidden", String(!running));
+  if (!running) updateAgentRunningStatus();
   if (!sendBtn) return;
   sendBtn.textContent = running ? "■" : "➜";
   sendBtn.title = running ? "Stop" : "Send";
@@ -2568,12 +2601,19 @@ function createTimelineImage(path) {
   img.hidden = true;
   img.style.cursor = "zoom-in";
   img.addEventListener("load", () => {
-    loading.remove();
-    img.hidden = false;
+    // Image decode changes layout asynchronously, outside the synchronous
+    // timeline update. Capture immediately before the DOM height changes so
+    // the anchor cannot be stale if other streamed events arrived meanwhile.
+    updatePreservingReadingPosition(() => {
+      loading.remove();
+      img.hidden = false;
+    });
   });
   img.addEventListener("error", () => {
-    img.remove();
-    loading.replaceWith(createImageLoadFallback(path));
+    updatePreservingReadingPosition(() => {
+      img.remove();
+      loading.replaceWith(createImageLoadFallback(path));
+    });
   }, { once: true });
   img.addEventListener("click", () => lightbox.open(img.src));
   img.src = pathToApiUrl(path);
@@ -2590,12 +2630,34 @@ function isExecutorLauncherTool(name) {
 // collapsible <details> blocks; text parts render as markdown;
 // plot_path responses render as inline images.
 function renderTimeline(container, timeline, shownPlotPaths = null) {
-  const shouldStick = isChatNearBottom();
-  const scrollPosition = shouldStick ? null : captureScrollPosition();
-  container.innerHTML = "";
-  const containerPlotPaths = container._plotPaths || new Set();
-  const visiblePlotPaths = new Set();
-  for (const item of timeline) {
+  const disclosures = chatDisclosureController;
+  const agentMessage = container.closest(".agent-message:not(.step-feed-message)");
+  const agentMessages = [...chatArea.children]
+    .filter((element) => element.matches?.(".agent-message:not(.step-feed-message)"));
+  const agentIndex = agentMessages.indexOf(agentMessage);
+  // The live message has no persisted msgIndex yet. Its assistant-message
+  // ordinal remains stable when the Approve plan prompt causes a snapshot
+  // rebuild, so use that as the cross-render scope.
+  const messageKey = agentIndex >= 0
+    ? `agent:${agentIndex}`
+    : `message:${agentMessage?.dataset.msgIndex || "live"}`;
+  const disclosurePrefix = `timeline:${messageKey}:`;
+  const liveKeys = new Set();
+  const wireTimelineDetails = (details, key, defaultOpen = false) => {
+    const scopedKey = `${disclosurePrefix}${key}`;
+    liveKeys.add(scopedKey);
+    disclosures.wire(details, scopedKey, { defaultOpen });
+    return scopedKey;
+  };
+  updatePreservingReadingPosition(() => {
+    // Timeline updates rebuild Thinking/IN/OUT and any inline Node cards.
+    // Persist their actual DOM state first; defaults alone are insufficient
+    // once a running Node has become completed but remains visibly open.
+    disclosures.capture(chatArea);
+    container.innerHTML = "";
+    const containerPlotPaths = container._plotPaths || new Set();
+    const visiblePlotPaths = new Set();
+    for (const item of timeline) {
     if (item.type === "thought") {
       const details = document.createElement("details");
       details.className = "timeline-thought";
@@ -2605,16 +2667,20 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
       const body = document.createElement("div");
       body.className = "markdown-content";
       body.innerHTML = renderMarkdown(item.text || "");
+      const thoughtKey = item.timelineId || `thought:${item.text || ""}`;
+      markReadingAnchors(body, `${disclosurePrefix}${thoughtKey}:content`);
+      protectAsyncContentLayout(body);
       details.appendChild(body);
+      wireTimelineDetails(details, thoughtKey);
       container.appendChild(details);
     } else if (item.type === "function_call") {
       const details = document.createElement("details");
       details.className = "timeline-function-call";
-      if (isExecutorLauncherTool(item.name)) details.open = true;
       const summary = document.createElement("summary");
       summary.innerHTML = `<span class="timeline-badge badge-in">IN</span> ${item.name}`;
       details.appendChild(summary);
       details.appendChild(createJsonBlock(JSON.stringify(item.args, null, 2)));
+      wireTimelineDetails(details, item.timelineId || `function-call:${item.id || item.name || "Unknown"}`, isExecutorLauncherTool(item.name));
       container.appendChild(details);
       if (isExecutorLauncherTool(item.name)) {
         const inlineHost = document.createElement("div");
@@ -2634,6 +2700,7 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
       summary.innerHTML = `<span class="timeline-badge badge-out">OUT</span> ${item.name}`;
       details.appendChild(summary);
       details.appendChild(createJsonBlock(JSON.stringify(item.response, null, 2)));
+      wireTimelineDetails(details, item.timelineId || `function-response:${item.id || item.name || "Unknown"}`);
       container.appendChild(details);
       for (const plotPath of getPlotPaths(item.response)) {
         if (
@@ -2652,13 +2719,15 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
       const div = document.createElement("div");
       div.className = "markdown-content";
       div.innerHTML = renderMarkdown(item.text || "");
+      markReadingAnchors(div, `${disclosurePrefix}${item.timelineId || "text:legacy"}:content`);
+      protectAsyncContentLayout(div);
       container.appendChild(div);
     }
-  }
-  container._plotPaths = visiblePlotPaths;
-  visiblePlotPaths.forEach((path) => shownPlotPaths?.add(path));
-  if (shouldStick) scrollToBottom({ preserveUserPosition: true });
-  else restoreScrollPosition(scrollPosition);
+    }
+    disclosures.prunePrefix(disclosurePrefix, liveKeys);
+    container._plotPaths = visiblePlotPaths;
+    visiblePlotPaths.forEach((path) => shownPlotPaths?.add(path));
+  });
 }
 
 // Create an agent message div with an inner timeline container, append to
@@ -2757,10 +2826,10 @@ function addPlanApprovalActions(timelineContainer) {
   bubble.append(prompt, actions, feedback);
   responseMessage.appendChild(bubble);
   agentMessage.after(responseMessage);
-  // A plan approval is an explicit request for input, so always reveal it.
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => responseMessage.scrollIntoView({ block: "center" }));
-  });
+  // Approval prompts follow the same bottom placement as every other newly
+  // appended dialog. The shared reserve keeps the full prompt above the
+  // floating composer, regardless of composer/upload height.
+  scrollToBottom({ preserveUserPosition: true });
 }
 
 function formatStepDuration(node) {
@@ -2862,6 +2931,8 @@ const sessionRuntime = createSessionRuntime({
   addMessage,
   addAgentTimelineMessage,
   addPlanApprovalActions,
+  beginScrollTransaction,
+  endScrollTransaction,
   renderSessionBanner,
   renderSessionFilesTree,
   refreshSessionFiles,
@@ -2892,6 +2963,7 @@ const messageStreamController = createMessageStreamController({
   agentGraph,
   planGraph,
   updateSendButtonState,
+  updateAgentRunningStatus,
   releaseSessionRequest,
   managedRunEventsUrl,
   shouldRefreshPlanGraphForTool,
@@ -3357,6 +3429,7 @@ function renderSessionSnapshot(snapshot) {
   if (!snapshot) return;
   renderSessionBanner(snapshot.summary || "");
   sessionRuntime.renderSessionTimeline(snapshot.events || [], snapshot.graphNodes || []);
+  sessionRuntime.markSessionRendered(state.sessionId, state.activeSessionUserId || state.userId);
   renderSessionFilesTree(snapshot.files || []);
   sessionRuntime.updateSessionWorkdirDisplay(snapshot.sessionData || {});
 }

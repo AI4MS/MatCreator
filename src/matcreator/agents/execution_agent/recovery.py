@@ -286,11 +286,16 @@ def _active_remote_job(
 
 def remote_job_reference(job: dict[str, Any]) -> dict[str, Any]:
     """Return the identity subset of a remote job stored on a graph node."""
+    snapshot = job.get("snapshot") if isinstance(job.get("snapshot"), dict) else {}
     return {
         "job_id": job["job_id"],
         "provider": job["provider"],
         "external_id": job["external_id"],
         "status": job["status"],
+        # Surfaced so re-attach instructions can tell a fresh executor to poll
+        # an in-flight background command instead of guessing whether one is
+        # running or safely re-issuing it (see start_job_command/poll_job_command).
+        "has_background_command": bool(snapshot.get("background_command")),
     }
 
 

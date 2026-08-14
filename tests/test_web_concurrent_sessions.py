@@ -134,7 +134,129 @@ def test_stop_request_identifies_the_active_session_owner() -> None:
 
     assert "new URLSearchParams({ user_id: request.owner || state.userId })" in stop_message
     assert "cancel?${query}" in stop_message
-    assert "pollCancellationConfirmed(request.sessionId, request.owner)" in stop_message
+    assert "pollCancellationConfirmed(request)" in stop_message
+
+
+def test_stop_feedback_uses_managed_run_status_and_survives_session_refresh() -> None:
+    content = _message_stream_js()
+
+    assert 'content = request.stopStatus === "stopped" ? "✓ Execution stopped." : "Still executing…"' in content
+    assert 'fetch(`/api/runs/${encodeURIComponent(request.runId)}`)' in content
+    assert '["completed", "failed", "cancelled"].includes(run.status)' in content
+    assert "request.stopStatus = \"stopped\";\n        releaseSessionRequest(request);" in content
+    assert "await reloadSessionSnapshot();\n      // A session snapshot replaces the chat DOM." in content
+    assert "renderStopStatus(request);" in content
+    assert "cancellation_requested" not in content
+
+    finally_block = content[content.index("} finally {"):]
+    assert 'if (request.stopStatus !== "waiting") releaseSessionRequest(request);' in finally_block
+
+
+def test_stop_and_plan_refreshes_preserve_open_node_dialogs() -> None:
+    streams = _message_stream_js()
+    runtime = _runtime_js()
+    disclosures = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "ui" / "disclosureState.js").read_text(encoding="utf-8")
+    graph = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "graphs" / "AgentGraphView.js").read_text(encoding="utf-8")
+
+    assert "sessionRuntime.markSessionRendered(state.sessionId, owner);" in streams
+    assert "if (preserveDisclosures) stepExecutionFeed.captureDisclosureState();" in runtime
+    assert "openState.set(details.dataset.disclosureKey, details.open);" in disclosures
+    assert "captureDisclosureState()" in graph
+    assert '? details.open || node.status === "running"' in graph
+
+
+def test_bottom_attachment_and_node_toggle_use_one_scroll_policy() -> None:
+    rendering = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "chat" / "rendering.js").read_text(encoding="utf-8")
+    disclosures = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "ui" / "disclosureState.js").read_text(encoding="utf-8")
+    main = _main_js()
+    graph = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "graphs" / "AgentGraphView.js").read_text(encoding="utf-8")
+
+    assert "const BOTTOM_ATTACH_THRESHOLD = 80;" in rendering
+    assert "currentScrollTop < lastScrollTop - 0.5" in rendering
+    assert "if (preserveUserPosition && userDetached) return;" in rendering
+    assert "if (event.deltaY < 0) detachBottomFollow();" in rendering
+    assert "else if (event.deltaY > 0 && isChatNearBottom()) enterBottomFollow();" in rendering
+    assert "viewportModeVersion !== transaction.viewportModeVersion" in rendering
+    assert "position.viewportModeVersion !== viewportModeVersion" in rendering
+    assert "|| !userDetached) return;" in rendering
+    assert "if (!userScrollActive && isChatNearBottom()) bottomPinned = true;" not in rendering
+    assert "if (detachBottom && !followBottom) detachBottomFollow();" in rendering
+    assert "if (followBottom) return { followBottom: true, userScrollIntent, viewportModeVersion };" in rendering
+    assert "if (snapshot.followBottom)" in rendering
+    assert "captureScrollPosition?.(details," in disclosures
+    assert 'block.dataset.readingAnchor = `${key}:block:${index}`;' in disclosures
+    assert "absolute: true" not in disclosures
+    assert "const readingPosition = wasBottomPinned ? null : captureScrollPosition();" in rendering
+    assert "restoreScrollPosition(transaction.readingPosition);" in rendering
+    assert "absolute = false" not in rendering
+    assert "function updatePreservingReadingPosition(update)" in rendering
+    assert "updatePreservingReadingPosition(() => {" in main
+    assert "this._updatePreservingReadingPosition(() => {" in graph
+    assert "const shouldStick = isChatBottomPinned();" not in main
+    assert "const shouldStick = this._isChatBottomPinned();" not in graph
+
+
+def test_all_chat_disclosures_share_the_reading_position_controller() -> None:
+    main = _main_js()
+    graph = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "graphs" / "AgentGraphView.js").read_text(encoding="utf-8")
+    runtime = _runtime_js()
+
+    render_timeline = main[main.index("function renderTimeline("):main.index("function addAgentTimelineMessage(")]
+    assert 'details.className = "timeline-thought";' in render_timeline
+    assert 'details.className = "timeline-function-call";' in render_timeline
+    assert 'details.className = "timeline-function-response";' in render_timeline
+    assert render_timeline.count("wireTimelineDetails(details,") == 3
+    assert "updatePreservingReadingPosition(() => {" in render_timeline
+
+    render_card = graph[graph.index("_createCard(node)"):graph.index("// ---------------------------------------------------------------------------\n// Execution Plan Graph")]
+    assert 'this._disclosures.wire(details, `step:${node.id}:card`' in render_card
+    assert 'this._wireNested(node.id, "input"' in render_card
+    assert 'this._wireNested(node.id, "section:conversation"' in render_card
+    assert 'this._wireNested(node.id, "section:toolcalls"' in render_card
+    assert "this._wireNested(node.id, key, this._renderStepConversationEvent(evt))" in render_card
+    assert "this._wireNested(node.id, key, this._renderStepToolCall(tc))" in render_card
+
+    assert "beginScrollTransaction();" in runtime
+    assert "endScrollTransaction();" in runtime
+    assert "endScrollTransaction({ revealBottom: awaitingPlanApproval });" not in runtime
+
+
+def test_image_and_all_timeline_updates_preserve_node_disclosures() -> None:
+    main = _main_js()
+    rendering = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "chat" / "rendering.js").read_text(encoding="utf-8")
+    render_timeline = main[main.index("function renderTimeline("):main.index("function addAgentTimelineMessage(")]
+    create_image = main[main.index("function createTimelineImage("):main.index("function isExecutorLauncherTool(")]
+
+    assert "disclosures.capture(chatArea);" in render_timeline
+    assert "container.innerHTML = \"\";" in render_timeline
+    assert render_timeline.index("disclosures.capture(chatArea);") < render_timeline.index('container.innerHTML = "";')
+    assert "pendingRestoreSnapshot.userScrollIntent !== snapshot.userScrollIntent" in rendering
+    assert "[data-reading-anchor]" in rendering
+    assert 'anchorKeyType: anchorEl?.dataset.readingAnchor ? "reading"' in rendering
+    assert "function protectAsyncContentLayout(root)" in rendering
+    assert 'img:not([data-layout-protected])' in rendering
+    assert "protectAsyncContentLayout(body);" in render_timeline
+    assert "protectAsyncContentLayout(div);" in render_timeline
+    assert create_image.count("updatePreservingReadingPosition(() => {") == 2
+    assert "prepareAsyncReadingPositionUpdate" not in create_image
+
+
+def test_plain_text_blocks_keep_history_order_and_stable_identity() -> None:
+    timeline = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "chat" / "timeline.js").read_text(encoding="utf-8")
+    streams = _message_stream_js()
+    runtime = _runtime_js()
+    main = _main_js()
+
+    text_upsert = timeline[timeline.index("export function upsertTimelineText"):timeline.index("function timelineEventKey")]
+    assert 'const last = timeline[timeline.length - 1];' in text_upsert
+    assert 'if (last?.type === "text")' in text_upsert
+    assert 'timelineId: nextTimelineItemId(timeline, "text")' in text_upsert
+    assert "timeline.splice" not in text_upsert
+    assert 'upsertTimelineText(timeline, part.text);' in streams
+    assert 'upsertTimelineText(timeline, part.text);' in runtime
+    assert 'let accumulatedText = "";' not in streams
+    assert 'let accumulatedText = "";' not in runtime
+    assert '${item.timelineId || "text:legacy"}:content' in main
 
 
 def test_step_cancellation_identifies_the_active_session_owner() -> None:

@@ -700,8 +700,10 @@
 .chat-area {
   flex: 1;
   min-height: 0;
-  padding: 16px 20px 130px;
+  padding: 16px 20px var(--chat-bottom-reserve, 130px);
+  scroll-padding-bottom: var(--chat-bottom-reserve, 130px);
   overflow-y: auto;
+  overflow-anchor: none;
   display: flex;
   flex-direction: column;
   position: relative;
@@ -903,6 +905,29 @@
   background: rgba(255, 255, 255, 0.03);
 }
 
+.step-feed-live-response {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 10px;
+  border-left: 2px solid #fbbf24;
+  border-radius: 0 8px 8px 0;
+  background: rgba(251, 191, 36, 0.08);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.step-feed-live-response > span:first-child {
+  color: #fbbf24;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .step-feed-section {
   display: flex;
   flex-direction: column;
@@ -991,16 +1016,34 @@ details.step-feed-nested {
   display: flex; align-items: center; justify-content: center;
 }
 
-.markdown-content { padding: 12px 14px; border-radius: 12px; line-height: 1.6; font-size: 14px; }
+.markdown-content {
+  min-width: 0;
+  max-width: 100%;
+  padding: 12px 14px;
+  border-radius: 12px;
+  line-height: 1.6;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
 .markdown-content a { color: var(--accent); text-decoration: none; font-weight: 600; }
-.markdown-content table {
-  width: 100%;
-  border-collapse: collapse;
+.markdown-content .markdown-table-scroll {
+  max-width: 100%;
   margin: 8px 0;
-  font-size: 13px;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
   border: 1px solid var(--border);
   border-radius: 8px;
-  overflow: hidden;
+}
+.markdown-content .markdown-table-scroll:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.markdown-content table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  margin: 0;
+  font-size: 13px;
 }
 .markdown-content thead {
   background: rgba(125, 211, 252, 0.08);
@@ -1328,6 +1371,28 @@ body[data-theme="dark"] .input-container[data-agent-mode="bench"] {
 .composer-toolbar {
   min-height: 30px;
   transform: translateY(2px);
+}
+
+.agent-running-indicator {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  margin: 0 4px 6px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.input-area.is-agent-running .agent-running-indicator {
+  display: flex;
+}
+
+.agent-running-orbital {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
 }
 
 .plan-approval-actions {

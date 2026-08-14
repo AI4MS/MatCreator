@@ -1,0 +1,62 @@
+.orbital-agent-indicator {
+  display: block;
+  overflow: visible;
+}
+
+.orbital-agent-indicator__motion {
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+  animation: orbital-breathe 5.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+.orbital-agent-indicator__glow {
+  animation: orbital-glow 3.8s ease-in-out infinite;
+}
+
+.orbital-agent-indicator--searching .orbital-agent-indicator__motion {
+  animation: orbital-search 3.8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+.orbital-agent-indicator--computing .orbital-agent-indicator__motion {
+  animation-duration: 2.8s;
+}
+
+.orbital-agent-indicator--done .orbital-agent-indicator__motion {
+  animation: orbital-done 1.4s cubic-bezier(0.22, 1, 0.36, 1) 1 both;
+}
+
+.orbital-agent-indicator--done .orbital-agent-indicator__glow {
+  animation: orbital-done-glow 1.4s ease-out 1 both;
+}
+
+@keyframes orbital-breathe {
+  0%, 100% { opacity: 0.78; transform: scale(0.94); }
+  50% { opacity: 1; transform: scale(1.04); }
+}
+
+@keyframes orbital-glow {
+  0%, 100% { opacity: 0.38; }
+  50% { opacity: 0.9; }
+}
+
+@keyframes orbital-search {
+  0%, 100% { opacity: 0.8; transform: rotate(-5deg) scale(0.95); }
+  50% { opacity: 1; transform: rotate(5deg) scale(1.05); }
+}
+
+@keyframes orbital-done {
+  0%, 100% { opacity: 0.82; transform: scale(1); }
+  35% { opacity: 1; transform: scale(1.14); }
+}
+
+@keyframes orbital-done-glow {
+  0%, 100% { opacity: 0.38; }
+  35% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orbital-agent-indicator__motion,
+  .orbital-agent-indicator__glow {
+    animation: none;
+  }
+}

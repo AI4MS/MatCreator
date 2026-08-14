@@ -265,6 +265,47 @@ class RemoteJobStore:
             )
         return self.get_job(job_id) or {}
 
+    def reset_failed_job_for_retry(self, job_id: str) -> dict[str, Any]:
+        """Return a failed job that never acquired an external ID to ``created``.
+
+        ``failed`` is terminal for the normal transition machinery, but a job
+        that failed before the provider handed back an external ID has no
+        provider-side effect to duplicate, so re-running its submission is
+        safe. This is the one sanctioned exception, recorded as its own
+        ``retry`` event. Raises ``ValueError`` for any other job state.
+        """
+        now = time.time()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT * FROM remote_jobs WHERE job_id = ?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"Remote job '{job_id}' was not found")
+            current = self._decode(row) or {}
+            if current["status"] != "failed" or current["external_id"]:
+                raise ValueError(
+                    f"Remote job '{job_id}' cannot be reset for retry "
+                    f"(status={current['status']!r}, external_id={current['external_id']!r})"
+                )
+            updated = connection.execute(
+                """
+                UPDATE remote_jobs
+                SET status = 'created', error = NULL,
+                    state_revision = state_revision + 1, updated_at = ?
+                WHERE job_id = ? AND state_revision = ?
+                """,
+                (now, job_id, current["state_revision"]),
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError("Remote job revision changed")
+            self._append_event(
+                connection,
+                job_id,
+                "retry",
+                {"from": "failed", "to": "created", "previous_error": current["error"]},
+                now,
+            )
+        return self.get_job(job_id) or {}
+
     def record_observation(
         self,
         job_id: str,

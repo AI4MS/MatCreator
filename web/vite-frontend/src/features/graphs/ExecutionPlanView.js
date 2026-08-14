@@ -21,6 +21,10 @@ const PLAN_GRAPH_DEFAULT_LAYOUT = {
   edgeMinimization: true,
 };
 
+const PLAN_GRAPH_MIN_SCALE = 0.15;
+const PLAN_GRAPH_MAX_SCALE = 4;
+const PLAN_GRAPH_WHEEL_ZOOM_FACTOR = 0.001;
+
 export class ExecutionPlanView {
   constructor(containerId, options = {}) {
     this._container = document.getElementById(containerId);
@@ -69,7 +73,9 @@ export class ExecutionPlanView {
         tooltipDelay: 200,
         dragNodes: true,
         dragView: true,
-        zoomView: true,
+        // Wheel zoom is handled below so high-resolution wheel events scale
+        // proportionally instead of becoming fixed, repeated zoom steps.
+        zoomView: false,
       },
     };
     this._network = new Network(
@@ -78,6 +84,41 @@ export class ExecutionPlanView {
       options
     );
     this._network.on("beforeDrawing", (ctx) => this._drawCanvasGrid(ctx));
+    this._container.addEventListener("wheel", (event) => this._handleWheelZoom(event), { passive: false });
+  }
+
+  _handleWheelZoom(event) {
+    if (!this._network || event.deltaY === 0) return;
+
+    // vis-network applies a fixed zoom step to every wheel event. High-
+    // resolution mice and touchpads can emit dozens of tiny events for a
+    // single scroll, causing runaway zoom. Scale by the actual wheel distance
+    // instead, and cap a malformed event to one normal wheel notch.
+    event.preventDefault();
+    const delta = clamp(event.deltaY, -100, 100);
+    const oldScale = this._network.getScale();
+    const newScale = clamp(
+      oldScale * Math.exp(-delta * PLAN_GRAPH_WHEEL_ZOOM_FACTOR),
+      PLAN_GRAPH_MIN_SCALE,
+      PLAN_GRAPH_MAX_SCALE,
+    );
+    if (newScale === oldScale) return;
+
+    const bounds = this._container.getBoundingClientRect();
+    const pointer = this._network.DOMtoCanvas({
+      x: event.clientX - bounds.left,
+      y: event.clientY - bounds.top,
+    });
+    const position = this._network.getViewPosition();
+    const scaleRatio = oldScale / newScale;
+    this._network.moveTo({
+      position: {
+        x: pointer.x - (pointer.x - position.x) * scaleRatio,
+        y: pointer.y - (pointer.y - position.y) * scaleRatio,
+      },
+      scale: newScale,
+      animation: false,
+    });
   }
 
   _computeLevels(nodeIds, rawEdges) {
@@ -665,13 +706,13 @@ export class ExecutionPlanView {
 
   zoomIn() {
     if (!this._network) return;
-    const scale = this._network.getScale() * 1.3;
+    const scale = clamp(this._network.getScale() * 1.3, PLAN_GRAPH_MIN_SCALE, PLAN_GRAPH_MAX_SCALE);
     this._network.moveTo({ scale, animation: { duration: 200, easingFunction: "easeInOutQuad" } });
   }
 
   zoomOut() {
     if (!this._network) return;
-    const scale = this._network.getScale() / 1.3;
+    const scale = clamp(this._network.getScale() / 1.3, PLAN_GRAPH_MIN_SCALE, PLAN_GRAPH_MAX_SCALE);
     this._network.moveTo({ scale, animation: { duration: 200, easingFunction: "easeInOutQuad" } });
   }
 

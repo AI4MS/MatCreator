@@ -1,6 +1,4 @@
 import {
-  compactRepeatedPrefixSnapshots,
-  mergeReplayedText,
   upsertTimelineEvent,
   upsertTimelineText,
   upsertTimelineThought,
@@ -12,28 +10,59 @@ export function createMessageStreamController(deps) {
     state, appName, chatArea, textInput, activeSessionRequest, sessionRequestKey, activeSessionBackendUserId,
     canWriteActiveSession, showLoginModal, createSession, addMessage, addAgentTimelineMessage,
     addPlanApprovalActions, renderTimeline, messageWithUploadNames, messageWithUploadContext, clearCurrentUploads,
-    autoResizeTextInput, stepExecutionFeed, agentGraph, planGraph, updateSendButtonState,
+    autoResizeTextInput, stepExecutionFeed, agentGraph, planGraph, updateSendButtonState, updateAgentRunningStatus,
     releaseSessionRequest, managedRunEventsUrl, shouldRefreshPlanGraphForTool,
     generateSessionSummary, refreshSessionFiles, sessionRuntime,
   } = deps;
 
-  function pollCancellationConfirmed(sessionId, owner, attempts = 0) {
-    if (attempts >= 20) {
-      addMessage("agent", "⚠️ Stop requested but execution may still be running in the background.");
+  function renderStopStatus(request) {
+    if (!request.stopStatus || sessionRequestKey(request.sessionId, request.owner) !== sessionRequestKey()) return;
+    const content = request.stopStatus === "stopped" ? "✓ Execution stopped." : "Still executing…";
+    if (!request.stopStatusMessage?.isConnected) {
+      request.stopStatusMessage = addMessage("agent", content);
       return;
     }
-    setTimeout(async () => {
-      try {
-        const query = new URLSearchParams({ user_id: owner || state.userId });
-        const response = await fetch(`/api/sessions/${sessionId}/cancel?${query}`);
-        const result = await response.json();
-        if (!result.cancellation_requested) {
-          addMessage("agent", "✓ Execution stopped.");
-          return;
+    const inner = request.stopStatusMessage.querySelector(".markdown-content");
+    if (inner) inner.textContent = content;
+  }
+
+  async function pollCancellationConfirmed(request, attempts = 0) {
+    await new Promise((resolve) => setTimeout(resolve, attempts ? Math.min(1000 + attempts * 100, 3000) : 0));
+    try {
+      let run = null;
+      if (request.runId) {
+        const response = await fetch(`/api/runs/${encodeURIComponent(request.runId)}`);
+        if (response.ok) run = await response.json();
+      } else {
+        const query = new URLSearchParams({ user_id: request.owner || state.userId, session_id: request.sessionId });
+        const response = await fetch(`/api/runs/active?${query}`);
+        if (response.ok) run = (await response.json()).run;
+      }
+      // A stop can be clicked while POST /api/runs is still returning. Give
+      // active-run discovery a short grace period before treating "not found"
+      // as terminal, so a just-created run cannot slip past the stop lock.
+      if (!run && !request.runId && attempts < 3) {
+        request.stopStatus = "waiting";
+        renderStopStatus(request);
+        void pollCancellationConfirmed(request, attempts + 1);
+        return;
+      }
+      if (!run || ["completed", "failed", "cancelled"].includes(run.status)) {
+        request.stopStatus = "stopped";
+        releaseSessionRequest(request);
+        if (sessionRequestKey(request.sessionId, request.owner) === sessionRequestKey()) {
+          await sessionRuntime.loadSession(request.sessionId, request.owner);
         }
-      } catch (_) { /* Ignore transient network errors. */ }
-      pollCancellationConfirmed(sessionId, owner, attempts + 1);
-    }, 2000);
+        renderStopStatus(request);
+        return;
+      }
+      request.stopStatus = "waiting";
+      renderStopStatus(request);
+    } catch (_) {
+      request.stopStatus = "waiting";
+      renderStopStatus(request);
+    }
+    void pollCancellationConfirmed(request, attempts + 1);
   }
 
   function stop() {
@@ -42,7 +71,10 @@ export function createMessageStreamController(deps) {
     sessionRuntime.suppressPlanApproval(request.sessionId);
     const query = new URLSearchParams({ user_id: request.owner || state.userId });
     fetch(`/api/sessions/${request.sessionId}/cancel?${query}`, { method: "POST" }).catch(() => {});
+    request.stopStatus = "waiting";
+    renderStopStatus(request);
     request.controller.abort();
+    updateAgentRunningStatus("working");
     pollCancellationConfirmed(request.sessionId, request.owner);
   }
 
@@ -86,14 +118,18 @@ export function createMessageStreamController(deps) {
     agentGraph.startPolling(state.sessionId);
     planGraph.startPolling(state.sessionId, { autoOpenOnNewGraph: true, autoOpenBaselineKey: previousPlanGraphKey });
     const owner = state.activeSessionUserId || state.userId;
+    // The optimistic user message and live assistant shell already represent
+    // this session. Mark it before the first persisted snapshot arrives so
+    // stop/plan-completion refreshes preserve the visible disclosure state.
+    sessionRuntime.markSessionRendered(state.sessionId, owner);
     const request = {
       key: sessionRequestKey(state.sessionId, owner), sessionId: state.sessionId, owner,
       backendUserId: activeSessionBackendUserId(), controller: new AbortController(), lastSequence: 0, runId: null,
     };
     state.activeRequests.set(request.key, request);
+    updateAgentRunningStatus("thinking");
     updateSendButtonState();
 
-    let accumulatedText = "";
     let lineBuffer = "";
     let summaryTriggered = false;
     let validatedPlanThisTurn = false;
@@ -105,17 +141,25 @@ export function createMessageStreamController(deps) {
       if (data === "[DONE]") return;
       try {
         for (const part of JSON.parse(data)?.content?.parts || []) {
-          if (part.thought) upsertTimelineThought(timeline, part.text || "");
-          else if (part.functionCall) upsertTimelineEvent(timeline, { type: "function_call", id: part.functionCall.id, name: part.functionCall.name || "Unknown", args: part.functionCall.args || {} });
+          if (part.thought) {
+            updateAgentRunningStatus("thinking");
+            upsertTimelineThought(timeline, part.text || "");
+          } else if (part.functionCall) {
+            const name = part.functionCall.name || "Unknown";
+            updateAgentRunningStatus(phaseForTool(name));
+            upsertTimelineEvent(timeline, { type: "function_call", id: part.functionCall.id, name, args: part.functionCall.args || {} });
+          }
           else if (part.functionResponse) {
             const response = part.functionResponse;
             upsertTimelineEvent(timeline, { type: "function_response", id: response.id, name: response.name || "Unknown", response: response.response || {} });
+            updateAgentRunningStatus(phaseForTool(response.name));
             if (shouldRefreshPlanGraphForTool(response.name)) planGraph.refresh(request.sessionId);
             if ((response.name === "validate_graph" || response.name === "validate_plan")
               && response.response?.status === "ok") validatedPlanThisTurn = true;
             if ((response.name === "confirm_plan_and_start_execution" || response.name === "resume_execution")
               && response.response?.status === "ok") executionApprovedThisTurn = true;
           } else if (part.text) {
+            updateAgentRunningStatus("thinking");
             accumulatedText = mergeReplayedText(accumulatedText, part.text);
             upsertTimelineText(timeline, compactRepeatedPrefixSnapshots(accumulatedText));
             if (!summaryTriggered && !state.summaryGeneratedFor.has(request.sessionId) && !state.sessionSummaries[request.sessionId]) {
@@ -188,9 +232,12 @@ export function createMessageStreamController(deps) {
       }
       if (lineBuffer.trim().startsWith("data: ")) handleAdkData(lineBuffer.trim().slice(6));
     } catch (error) {
-      addMessage("agent", error?.name === "AbortError" ? "Stopping execution…" : `Backend error: ${error}`, undefined, liveTurn);
+      if (error?.name !== "AbortError") addMessage("agent", `Backend error: ${error}`, undefined, liveTurn);
     } finally {
-      releaseSessionRequest(request);
+      // A cancelled browser subscription can finish before the managed run
+      // does. Keep the composer locked until cancellation polling observes a
+      // terminal run, otherwise a new send would clear the cancellation flag.
+      if (request.stopStatus !== "waiting") releaseSessionRequest(request);
       await agentGraph._poll(request.sessionId);
       agentGraph.stopPolling();
       await planGraph._poll(request.sessionId);
@@ -198,6 +245,10 @@ export function createMessageStreamController(deps) {
       await refreshSessionFiles(request.sessionId, request.owner);
       stepExecutionFeed.finishLiveTurn();
       await reloadSessionSnapshot();
+      // A session snapshot replaces the chat DOM. Restore the stop indicator
+      // from the request state so cancellation feedback is never lost during
+      // the final refresh.
+      renderStopStatus(request);
       // Do not depend on session DB timing for the prompt.  The live ADK
       // response is authoritative; the persisted snapshot remains a fallback
       // for page refreshes and reconnects.
@@ -210,6 +261,15 @@ export function createMessageStreamController(deps) {
         if (latestTimeline) addPlanApprovalActions(latestTimeline);
       }
     }
+  }
+
+  function phaseForTool(name = "") {
+    const tool = String(name).toLowerCase();
+    if (tool.includes("search") || tool.includes("retrieve") || tool.includes("lookup")) return "searching";
+    if (tool.includes("plan") || tool.includes("graph") || tool.includes("decompos")) return "planning";
+    if (tool.includes("run_") || tool.includes("execute") || tool.includes("submit") || tool.includes("resume")) return "executing";
+    if (tool.includes("calc") || tool.includes("simulate") || tool.includes("compute")) return "computing";
+    return "working";
   }
 
   return { send, stop };

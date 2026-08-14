@@ -18,9 +18,7 @@ control the sandbox even after the agent or browser reconnects.
 
 ## Submission
 
-1. Choose `template` explicitly for every `submit_e2b_sandbox` call. When the
-   template name is unknown, run `lbg sdbx template ls -q` to list available
-   templates. Install the command with `pip install -U --pre lbg` when needed.
+1. Choose `template` explicitly for every `submit_e2b_sandbox` call. Ask for the `template` explicitly if unknown. 
 2. Call `submit_e2b_sandbox` once for the current step. It is idempotent for
    the current session, node, and template.
 3. Use `upload_e2b_input` for workspace files, then use `run_e2b_command` for

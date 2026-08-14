@@ -10,10 +10,14 @@ from .remote_jobs import RemoteJobStore
 
 
 class RemoteJobMonitor:
-    """Probe active E2B sandboxes with bounded retry backoff.
+    """Probe active remote jobs of any registered provider with bounded retry backoff.
 
     Job records are durable; this monitor's due times are intentionally process
-    local. On a restart its empty schedule reconciles every active sandbox once.
+    local. On a restart its empty schedule reconciles every active job once.
+    Each provider adapter declares its own ``poll_interval_seconds`` (see
+    ``providers/base.py``), so a batch/HPC-style provider can poll far less
+    often than an interactive sandbox with no change needed here — adding a
+    provider is a pure plugin.
     """
 
     def __init__(
@@ -45,26 +49,42 @@ class RemoteJobMonitor:
     def stop(self) -> None:
         self._stop.set()
 
+    def _base_interval(self, provider: str) -> float:
+        """Return the owning adapter's preferred poll cadence for one job.
+
+        Resolved through ``self.service.adapter_for`` so this honors the same
+        adapter overrides (e.g. in tests) as every other service operation,
+        instead of querying the global registry directly. Falls back to this
+        monitor's own tick interval if the provider is unregistered (e.g. a
+        record left over from a removed plugin), so a missing adapter never
+        breaks reconciliation of other jobs.
+        """
+        try:
+            return self.service.adapter_for(provider).poll_interval_seconds
+        except KeyError:
+            return self.interval_seconds
+
     async def reconcile_once(self) -> list[dict[str, Any]]:
         now = time.monotonic()
         updates: list[dict[str, Any]] = []
         active_ids: set[str] = set()
-        for job in self.store.list_active_jobs(provider="e2b"):
+        for job in self.store.list_active_jobs():
             job_id = job["job_id"]
             active_ids.add(job_id)
             if job["status"] not in {"queued", "running", "submitting", "resuming"}:
                 continue
             if now < self._next_due.get(job_id, 0):
                 continue
-            updated = await asyncio.to_thread(self.service.reconcile_e2b, job_id)
+            base_interval = self._base_interval(job["provider"])
+            updated = await asyncio.to_thread(self.service.reconcile_job, job_id)
             updates.append(updated)
             if updated["snapshot"].get("provider_status") == "unreachable":
                 failures = self._failures.get(job_id, 0) + 1
                 self._failures[job_id] = failures
-                delay = min(self.interval_seconds * (2 ** (failures - 1)), self.max_backoff_seconds)
+                delay = min(base_interval * (2 ** (failures - 1)), self.max_backoff_seconds)
             else:
                 self._failures.pop(job_id, None)
-                delay = self.interval_seconds
+                delay = base_interval
             self._next_due[job_id] = time.monotonic() + delay
 
         stale_ids = set(self._next_due) - active_ids
