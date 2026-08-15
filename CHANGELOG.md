@@ -2,6 +2,17 @@
 
 <!-- version list -->
 
+## v2.18.1 (2026-08-15)
+
+### Bug Fixes
+
+- **web**: Pass request object to pollCancellationConfirmed in stop()
+  ([`8889601`](https://github.com/AI4MS/MatCreator/commit/888960124308842bdf78ff4367fc17a39d1a4a9b))
+
+- **web**: Preserve chat behavior and stop graph work
+  ([`e55ac7d`](https://github.com/AI4MS/MatCreator/commit/e55ac7dd1f9ef14c0bc525eca7ebeb6f7f39909f))
+
+
 ## v2.18.0 (2026-08-14)
 
 ### Bug Fixes
