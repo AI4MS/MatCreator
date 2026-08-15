@@ -259,6 +259,26 @@ def test_plain_text_blocks_keep_history_order_and_stable_identity() -> None:
     assert '${item.timelineId || "text:legacy"}:content' in main
 
 
+def test_agent_graph_stops_animation_and_uses_one_update_transport() -> None:
+    graph = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "graphs" / "AgentGraphView.js").read_text(encoding="utf-8")
+    start_polling = graph[graph.index("  startPolling(sessionId)"):graph.index("  async _poll(sessionId)")]
+
+    assert "this.stopPolling();" in start_polling
+    assert "if (this._eventStream !== eventStream) return;" in start_polling
+    assert "eventStream.close();" in start_polling
+    assert start_polling.index("eventStream.close();") < start_polling.index("setInterval(")
+    assert "this._hasRunningNodes = false;" in start_polling
+    assert "cancelAnimationFrame(this._animationFrame);" in start_polling
+
+
+def test_orbital_indicator_skips_duplicate_state_renders() -> None:
+    indicator = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "components" / "mountOrbitalAgentIndicator.js").read_text(encoding="utf-8")
+
+    assert "let renderedState = null;" in indicator
+    assert "if (state === renderedState) return;" in indicator
+    assert "renderedState = state;" in indicator
+
+
 def test_step_cancellation_identifies_the_active_session_owner() -> None:
     content = _main_js()
     request_step_cancellation = content[

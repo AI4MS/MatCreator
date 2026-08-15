@@ -75,7 +75,7 @@ export function createMessageStreamController(deps) {
     renderStopStatus(request);
     request.controller.abort();
     updateAgentRunningStatus("working");
-    pollCancellationConfirmed(request.sessionId, request.owner);
+    void pollCancellationConfirmed(request);
   }
 
   async function send(message) {
@@ -160,8 +160,7 @@ export function createMessageStreamController(deps) {
               && response.response?.status === "ok") executionApprovedThisTurn = true;
           } else if (part.text) {
             updateAgentRunningStatus("thinking");
-            accumulatedText = mergeReplayedText(accumulatedText, part.text);
-            upsertTimelineText(timeline, compactRepeatedPrefixSnapshots(accumulatedText));
+            upsertTimelineText(timeline, part.text);
             if (!summaryTriggered && !state.summaryGeneratedFor.has(request.sessionId) && !state.sessionSummaries[request.sessionId]) {
               summaryTriggered = true;
               generateSessionSummary(request.sessionId, request.owner);
