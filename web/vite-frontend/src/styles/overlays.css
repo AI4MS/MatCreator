@@ -143,7 +143,7 @@
   background: rgba(255,255,255,0.025);
   cursor: pointer;
   font-size: 12px;
-  font-family: monospace;
+  font-family: var(--mono);
   color: var(--muted);
   line-height: 1.3;
   transition: background 0.15s, border-color 0.15s, color 0.15s;
@@ -514,7 +514,7 @@ details[open] > .tree-dir-summary::before { transform: rotate(90deg); }
 /* ── JSON blocks in timeline ─────────────────────────────── */
 .json-block {
   font-size: 14px;
-  font-family: 'Courier New', 'Consolas', monospace;
+  font-family: var(--mono);
   background: var(--terminal-bg);
   border: 1px solid var(--terminal-border);
   border-radius: 6px;

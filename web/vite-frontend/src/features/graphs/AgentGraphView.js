@@ -1,5 +1,6 @@
 import { Network, DataSet } from "vis-network/standalone";
 import { createDisclosureController } from "../ui/disclosureState.js";
+import { installNetworkWheelZoom } from "./networkWheelZoom.js";
 
 const NODE_COLORS = {
   orchestrator: { core: "124, 58, 237", edge: "196, 181, 253", font: "#f5f3ff" },
@@ -117,7 +118,9 @@ export class AgentGraphView {
         tooltipDelay: 200,
         dragNodes: true,
         dragView: true,
-        zoomView: true,
+        // vis-network zooms a fixed amount for each event, which is unstable
+        // for high-resolution wheels and touchpads.
+        zoomView: false,
       },
     };
 
@@ -126,6 +129,7 @@ export class AgentGraphView {
       { nodes: this._nodes, edges: this._edges },
       options
     );
+    installNetworkWheelZoom(this._container, this._network);
 
     this._network.on("selectNode", (params) => {
       if (params.nodes.length) this._showDetail(params.nodes[0]);

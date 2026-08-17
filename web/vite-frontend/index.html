@@ -426,7 +426,7 @@
             </div>
             <div class="file-explorer-body">
               <div id="session-workdir-display"
-                   style="font-size:0.72rem;color:var(--muted);font-family:monospace;
+                   style="font-size:0.72rem;color:var(--muted);font-family:var(--mono);
                           word-break:break-all;padding:0 4px 6px;display:none"></div>
               <ul class="artifact-list" id="session-files-tree">
                 <li class="empty">No files yet</li>
@@ -448,7 +448,7 @@
           <input id="login-input" class="text-input" placeholder="Username" style="width:100%;box-sizing:border-box" autocomplete="username" />
           <input id="login-password" type="password" class="text-input" placeholder="Password" style="width:100%;box-sizing:border-box;margin-top:8px" autocomplete="current-password" />
           <p id="login-error" style="color:#f87171;font-size:0.8rem;margin:4px 0 0;min-height:1.2em"></p>
-          <p id="login-uuid-display" style="color:var(--muted);font-size:0.75rem;font-family:monospace;margin:2px 0 0;min-height:1.1em;word-break:break-all"></p>
+          <p id="login-uuid-display" style="color:var(--muted);font-size:0.75rem;font-family:var(--mono);margin:2px 0 0;min-height:1.1em;word-break:break-all"></p>
           <button id="login-submit" class="send-btn" style="width:100%;justify-content:center;margin-top:4px">Sign in →</button>
           <p style="text-align:center;margin:10px 0 0;font-size:0.8rem;color:var(--muted)">
             No account? <button id="switch-to-register" class="ghost" style="padding:0;font-size:0.8rem;color:var(--accent)">Register</button>
@@ -489,7 +489,7 @@
             <label class="settings-label">Username</label>
             <input id="settings-username" class="text-input" placeholder="your username" style="width:100%;box-sizing:border-box" />
             <label class="settings-label" style="margin-top:12px">User ID (UUID)</label>
-            <input id="settings-uuid" class="text-input" readonly style="width:100%;box-sizing:border-box;font-family:monospace;font-size:0.8rem;opacity:0.7;cursor:text" />
+            <input id="settings-uuid" class="text-input" readonly style="width:100%;box-sizing:border-box;font-family:var(--mono);font-size:0.8rem;opacity:0.7;cursor:text" />
             <div style="margin-top:20px;border-top:1px solid #ffffff18;padding-top:16px">
               <label class="settings-label">Change Password</label>
               <input type="password" id="settings-current-password" class="text-input" aria-label="Current password" placeholder="Current password (leave blank if none)" style="width:100%;box-sizing:border-box;margin-top:6px" />
@@ -505,7 +505,7 @@
               <div style="display:flex;gap:6px;align-items:center">
                 <input id="settings-default-workdir" class="text-input"
                        placeholder="(leave empty for workspace default)"
-                       style="flex:1;font-family:monospace;font-size:0.85rem" />
+                       style="flex:1;font-family:var(--mono);font-size:0.85rem" />
                 <button id="settings-workdir-reset" class="ghost" style="white-space:nowrap;padding:6px 10px;font-size:0.8rem" title="Reset to workspace default">Reset</button>
               </div>
             </div>
@@ -604,7 +604,7 @@
         <div class="settings-header">
           <div>
             <div class="eyebrow">File Viewer</div>
-            <div id="fv-filename" style="font-size:0.85rem;font-family:monospace;color:var(--text);word-break:break-all"></div>
+            <div id="fv-filename" style="font-size:0.85rem;font-family:var(--mono);color:var(--text);word-break:break-all"></div>
           </div>
           <button class="ghost" id="fv-close" style="padding:4px 10px;font-size:13px">✕</button>
         </div>

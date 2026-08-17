@@ -831,7 +831,7 @@
     overflow: hidden;
   }
   .structure-renderer-host { position: absolute; inset: 0; min-height: 0; overflow: hidden; }
-  .structure-interaction-hint { position: absolute; z-index: 840; left: 50%; bottom: 12px; transform: translateX(-50%); width: max-content; max-width: calc(100% - 140px); padding: 5px 8px; border: 1px solid color-mix(in srgb, var(--border) 80%, transparent); border-radius: 7px; color: var(--muted); background: rgba(var(--panel-rgb), .72); font: 11px/1.3 'Manrope', system-ui, sans-serif; white-space: nowrap; pointer-events: none; }
+  .structure-interaction-hint { position: absolute; z-index: 840; left: 50%; bottom: 12px; transform: translateX(-50%); width: max-content; max-width: calc(100% - 140px); padding: 5px 8px; border: 1px solid color-mix(in srgb, var(--border) 80%, transparent); border-radius: 7px; color: var(--muted); background: rgba(var(--panel-rgb), .72); font: 11px/1.3 var(--font-sans); white-space: nowrap; pointer-events: none; }
 
   .structure-viewer-embed :global(button) {
     color: inherit;
@@ -895,12 +895,12 @@
     background: rgba(var(--panel-rgb), 0.97);
     box-shadow: var(--popup-shadow);
     backdrop-filter: blur(16px);
-    font: 12px/1.4 'Manrope', system-ui, -apple-system, sans-serif;
+    font: 12px/1.4 var(--font-sans);
   }
   .model-workbench.interface-workbench { width: min(560px, calc(100% - 20px)); }
   .model-workbench header { display: flex; justify-content: space-between; align-items: center; margin: -2px 0 11px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
   .model-workbench header strong { font-size: 13px; color: var(--text); }
-  .atom-inspector { position: absolute; z-index: 900; top: 58px; right: 10px; width: min(280px, calc(100% - 20px)); box-sizing: border-box; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); background: rgba(var(--panel-rgb), 0.97); box-shadow: var(--popup-shadow); backdrop-filter: blur(16px); font: 12px/1.4 'Manrope', system-ui, -apple-system, sans-serif; }
+  .atom-inspector { position: absolute; z-index: 900; top: 58px; right: 10px; width: min(280px, calc(100% - 20px)); box-sizing: border-box; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); background: rgba(var(--panel-rgb), 0.97); box-shadow: var(--popup-shadow); backdrop-filter: blur(16px); font: 12px/1.4 var(--font-sans); }
   .atom-inspector header { display: flex; justify-content: space-between; align-items: flex-start; margin: -2px 0 10px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
   .atom-inspector header strong { display: block; font-size: 13px; }
   .atom-inspector header span { color: var(--muted); font-size: 11px; }
@@ -960,10 +960,10 @@
   .interface-candidates button:hover, .interface-candidates button.selected { border-color: var(--accent) !important; color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
   .sketcher-overlay { position: absolute; z-index: 100000004; inset: 0; display: grid; place-items: center; padding: 14px; background: var(--modal-overlay); }
   .sketcher-dialog { position: relative; display: flex; flex-direction: column; width: min(1000px, 100%); height: min(700px, 100%); overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); box-shadow: var(--popup-shadow); }
-  .sketcher-dialog > header { display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; border-bottom: 1px solid var(--border); color: var(--text); font: 13px/1.4 'Manrope', system-ui, sans-serif; }
+  .sketcher-dialog > header { display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; border-bottom: 1px solid var(--border); color: var(--text); font: 13px/1.4 var(--font-sans); }
   .sketcher-host { flex: 1; min-height: 0; background: white; }
   .sketcher-host :global(> div) { width: 100%; height: 100%; }
-  .sketcher-loading { position: absolute; inset: 46px 0 48px; display: grid; place-items: center; color: var(--muted); background: var(--panel); font: 12px 'Manrope', system-ui, sans-serif; }
+  .sketcher-loading { position: absolute; inset: 46px 0 48px; display: grid; place-items: center; color: var(--muted); background: var(--panel); font: 12px var(--font-sans); }
   .sketcher-dialog > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); }
   .sketcher-dialog > footer button { width: auto; min-width: 110px; margin: 0; }
   @media (max-width: 620px) {

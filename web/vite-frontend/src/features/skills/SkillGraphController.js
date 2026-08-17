@@ -1,4 +1,5 @@
 import { Network, DataSet } from "vis-network/standalone";
+import { installNetworkWheelZoom } from "../graphs/networkWheelZoom.js";
 
 export function createSkillGraphController({
   state,
@@ -1273,6 +1274,7 @@ export function createSkillGraphController({
       canvas,
       detail,
       network: null,
+      removeWheelZoom: null,
       nodesDataSet: null,
       edgesDataSet: null,
       nodeData: new Map(),
@@ -1371,6 +1373,8 @@ export function createSkillGraphController({
     tab.status.textContent = "loading";
     tab.status.className = "graph-status status-polling";
     tab.loaded = false;
+    tab.removeWheelZoom?.();
+    tab.removeWheelZoom = null;
     tab.network?.destroy();
     tab.network = null;
     tab.nodesDataSet = null;
@@ -1399,10 +1403,17 @@ export function createSkillGraphController({
           stabilization: { iterations: 160 },
           barnesHut: { gravitationalConstant: -5600, springLength: 120, springConstant: 0.045 },
         },
-        interaction: { hover: true, tooltipDelay: 180, navigationButtons: false, keyboard: false },
+        interaction: {
+          hover: true,
+          tooltipDelay: 180,
+          navigationButtons: false,
+          keyboard: false,
+          zoomView: false,
+        },
         nodes: { borderWidth: 2 },
         edges: { width: 1.6 },
       });
+      tab.removeWheelZoom = installNetworkWheelZoom(tab.canvas, tab.network);
       tab.network.on("selectNode", (params) => {
         renderSkillGraphDetail(tab.nodeData.get(params.nodes[0]));
       });
@@ -1436,6 +1447,7 @@ export function createSkillGraphController({
 
   function close(tabId) {
     if (tabId !== "skill-graph" || !skillGraphTab) return false;
+    skillGraphTab.removeWheelZoom?.();
     skillGraphTab.network?.destroy();
     skillGraphTab.button.remove();
     skillGraphTab.panel.remove();
