@@ -817,7 +817,7 @@
 .step-feed-summary {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   min-width: 0;
   padding: var(--msg-padding);
   background: var(--step-feed-header-bg);
@@ -855,6 +855,18 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.step-feed-status {
+  width: 12px;
+  flex: 0 0 12px;
+  color: var(--muted);
+  font-weight: 800;
+  text-align: center;
+}
+.step-feed-status-running { color: #d6a95b; }
+.step-feed-status-failed,
+.step-feed-status-cancelled,
+.step-feed-status-blocked { color: #e47b7d; }
 
 .step-feed-meta {
   color: var(--muted);
@@ -899,10 +911,10 @@
   color: var(--text);
   font-size: 13px;
   line-height: 1.5;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.03);
+  padding: 0 0 0 18px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .step-feed-live-response {

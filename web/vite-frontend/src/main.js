@@ -2625,10 +2625,189 @@ function isExecutorLauncherTool(name) {
   return ["run_flash_step", "run_node_executor", "run_sub_agent"].includes(name || "");
 }
 
-// Render a typed timeline array into a container element, mirroring
-// Streamlit's render_stream_timeline: thoughts and tool calls go into
-// collapsible <details> blocks; text parts render as markdown;
-// plot_path responses render as inline images.
+function formatToolDuration(toolCall) {
+  const duration = toolCall.durationMs ?? (toolCall.startedAt ? Date.now() - toolCall.startedAt : null);
+  if (!Number.isFinite(duration)) return toolCall.status === "running" ? "running…" : "";
+  return duration < 1000 ? `${Math.round(duration)} ms` : `${(duration / 1000).toFixed(1)}s`;
+}
+
+function toolStatusIcon(toolCall) {
+  if (toolCall.status === "failed") return "!";
+  return toolCall.status === "running" ? "◌" : "✓";
+}
+
+function createToolCallRawView(toolCall) {
+  const body = document.createElement("div");
+  body.className = "tool-call-raw";
+  const addPayload = (label, payload, empty = "Not available") => {
+    const section = document.createElement("section");
+    const heading = document.createElement("div");
+    heading.className = "tool-call-raw-label";
+    heading.textContent = label;
+    section.appendChild(heading);
+    section.appendChild(createJsonBlock(payload === null || payload === undefined
+      ? empty
+      : JSON.stringify(payload, null, 2)));
+    body.appendChild(section);
+  };
+  if (toolCall.error) addPayload("Error", toolCall.error);
+  addPayload("Input", toolCall.input, "No input payload");
+  addPayload("Output", toolCall.output, "Awaiting output");
+  return body;
+}
+
+function createActionRawView(action) {
+  const body = document.createElement("div");
+  body.className = "activity-action-raw";
+  action.toolCalls.forEach((call) => {
+    const section = document.createElement("section");
+    if (action.toolCalls.length > 1) {
+      const heading = document.createElement("div");
+      heading.className = "tool-call-raw-label";
+      heading.textContent = call.name;
+      section.appendChild(heading);
+    }
+    section.appendChild(createToolCallRawView(call));
+    body.appendChild(section);
+  });
+  return body;
+}
+
+function createActionReasoning(action) {
+  if (!action.reasoning?.length) return null;
+  const text = action.reasoning.map((entry) => entry.text || "").filter(Boolean).join("\n\n");
+  if (!text) return null;
+  const section = document.createElement("section");
+  section.className = "activity-action-section activity-action-reasoning";
+  const heading = document.createElement("div");
+  heading.className = "activity-action-label";
+  heading.textContent = "Reasoning";
+  const preview = document.createElement("div");
+  preview.className = "activity-action-content";
+  const previewLimit = 360;
+  if (text.length <= previewLimit) {
+    preview.innerHTML = renderMarkdown(text);
+    section.append(heading, preview);
+    return section;
+  }
+  preview.textContent = `${text.slice(0, previewLimit).trimEnd()}…`;
+  const more = document.createElement("details");
+  more.className = "activity-action-long-content";
+  const moreSummary = document.createElement("summary");
+  moreSummary.textContent = "Show more";
+  const full = document.createElement("div");
+  full.className = "markdown-content";
+  full.innerHTML = renderMarkdown(text);
+  more.append(moreSummary, full);
+  section.append(heading, preview, more);
+  return section;
+}
+
+function createActivityAction(action, wireTimelineDetails) {
+  const details = document.createElement("details");
+  details.className = `agent-activity-action is-${action.status}`;
+  const summary = document.createElement("summary");
+  const icon = document.createElement("span");
+  icon.className = "agent-activity-status";
+  icon.textContent = toolStatusIcon(action);
+  const text = document.createElement("span");
+  text.className = "activity-action-heading";
+  const title = document.createElement("span");
+  title.className = "activity-action-title";
+  title.textContent = action.title;
+  text.appendChild(title);
+  const duration = document.createElement("span");
+  duration.className = "agent-activity-duration";
+  duration.textContent = formatToolDuration(action);
+  summary.append(icon, text, duration);
+  details.appendChild(summary);
+
+  const body = document.createElement("div");
+  body.className = "activity-action-body";
+  if (action.summary) {
+    const semantic = document.createElement("div");
+    semantic.className = "activity-action-summary";
+    semantic.textContent = action.summary;
+    body.appendChild(semantic);
+  }
+  const reasoning = createActionReasoning(action);
+  if (reasoning) body.appendChild(reasoning);
+
+  const execution = document.createElement("details");
+  execution.className = "activity-action-execution";
+  const executionLabel = document.createElement("summary");
+  executionLabel.textContent = "Execution";
+  execution.appendChild(executionLabel);
+  const executionBody = document.createElement("div");
+  executionBody.className = "activity-action-execution-body";
+  action.toolCalls.forEach((call) => {
+    const row = document.createElement("div");
+    row.className = `activity-action-tool is-${call.status}`;
+    row.innerHTML = `<span class="tool-call-status">${toolStatusIcon(call)}</span><span class="tool-call-name">${call.name}</span><span class="tool-call-duration">${formatToolDuration(call)}</span>`;
+    const result = document.createElement("div");
+    result.className = "activity-action-tool-result";
+    result.textContent = call.semanticSummary;
+    executionBody.append(row, result);
+    if (isExecutorLauncherTool(call.name)) {
+      const inlineHost = document.createElement("div");
+      inlineHost.className = "step-feed-inline-region";
+      inlineHost.dataset.stepInlineHost = call.name;
+      executionBody.appendChild(inlineHost);
+      if (Array.isArray(call.stepNodes) && call.stepNodes.length) {
+        call.stepNodes.forEach((node) => stepExecutionFeed.appendStatic(node, inlineHost));
+      } else if (activeSessionRequest() && !stepExecutionFeed.attachLiveToolHost(inlineHost)) {
+        inlineHost.remove();
+      }
+    }
+  });
+  executionBody.appendChild(createActionRawView(action));
+  execution.appendChild(executionBody);
+  body.appendChild(execution);
+  details.appendChild(body);
+  wireTimelineDetails(details, `${action.timelineId}:action`);
+  wireTimelineDetails(execution, `${action.timelineId}:execution`);
+  return details;
+}
+
+function createAgentActivity(items, wireTimelineDetails, options) {
+  const actions = items.filter((item) => item.type === "activity_action");
+  const pendingReasoning = items.filter((item) => item.type === "reasoning");
+  const activity = document.createElement("details");
+  activity.className = "agent-activity";
+  const summary = document.createElement("summary");
+  const title = document.createElement("span");
+  title.className = "agent-activity-title";
+  title.textContent = "Agent activity";
+  const meta = document.createElement("span");
+  meta.className = "agent-activity-meta";
+  const totalDuration = actions.reduce((total, action) => total + (action.durationMs || 0), 0);
+  const countLabel = actions.length ? `${actions.length} action${actions.length === 1 ? "" : "s"}` : "";
+  const durationLabel = totalDuration
+    ? formatToolDuration({ durationMs: totalDuration })
+    : actions.some((action) => action.status === "running") ? "running…" : "";
+  meta.textContent = [countLabel, durationLabel].filter(Boolean).join(" · ");
+  summary.append(title, meta);
+  activity.appendChild(summary);
+
+  const body = document.createElement("div");
+  body.className = "agent-activity-body";
+  const actionList = document.createElement("div");
+  actionList.className = "agent-activity-action-list";
+  actions.forEach((action) => actionList.appendChild(createActivityAction(action, wireTimelineDetails)));
+  if (!actions.length && pendingReasoning.length) {
+    const thinking = document.createElement("div");
+    thinking.className = "agent-activity-thinking";
+    thinking.textContent = "◌ Planning next step…";
+    actionList.appendChild(thinking);
+  }
+  body.appendChild(actionList);
+  activity.appendChild(body);
+  wireTimelineDetails(activity, `${options.activityKey}:container`, true);
+  return activity;
+}
+
+// Render the presentation-model timeline. Protocol IN/OUT events have already
+// been paired into ToolCall objects by features/chat/timeline.js.
 function renderTimeline(container, timeline, shownPlotPaths = null) {
   const disclosures = chatDisclosureController;
   const agentMessage = container.closest(".agent-message:not(.step-feed-message)");
@@ -2650,59 +2829,24 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
     return scopedKey;
   };
   updatePreservingReadingPosition(() => {
-    // Timeline updates rebuild Thinking/IN/OUT and any inline Node cards.
+    // Timeline updates rebuild a compact activity block and any inline Node cards.
     // Persist their actual DOM state first; defaults alone are insufficient
     // once a running Node has become completed but remains visibly open.
     disclosures.capture(chatArea);
     container.innerHTML = "";
     const containerPlotPaths = container._plotPaths || new Set();
     const visiblePlotPaths = new Set();
-    for (const item of timeline) {
-    if (item.type === "thought") {
-      const details = document.createElement("details");
-      details.className = "timeline-thought";
-      const summary = document.createElement("summary");
-      summary.textContent = "🤔 Thinking...";
-      details.appendChild(summary);
-      const body = document.createElement("div");
-      body.className = "markdown-content";
-      body.innerHTML = renderMarkdown(item.text || "");
-      const thoughtKey = item.timelineId || `thought:${item.text || ""}`;
-      markReadingAnchors(body, `${disclosurePrefix}${thoughtKey}:content`);
-      protectAsyncContentLayout(body);
-      details.appendChild(body);
-      wireTimelineDetails(details, thoughtKey);
-      container.appendChild(details);
-    } else if (item.type === "function_call") {
-      const details = document.createElement("details");
-      details.className = "timeline-function-call";
-      const summary = document.createElement("summary");
-      summary.innerHTML = `<span class="timeline-badge badge-in">IN</span> ${item.name}`;
-      details.appendChild(summary);
-      details.appendChild(createJsonBlock(JSON.stringify(item.args, null, 2)));
-      wireTimelineDetails(details, item.timelineId || `function-call:${item.id || item.name || "Unknown"}`, isExecutorLauncherTool(item.name));
-      container.appendChild(details);
-      if (isExecutorLauncherTool(item.name)) {
-        const inlineHost = document.createElement("div");
-        inlineHost.className = "step-feed-inline-region";
-        inlineHost.dataset.stepInlineHost = item.name;
-        container.appendChild(inlineHost);
-        if (Array.isArray(item.stepNodes) && item.stepNodes.length) {
-          item.stepNodes.forEach((node) => stepExecutionFeed.appendStatic(node, inlineHost));
-        } else if (activeSessionRequest()) {
-          if (!stepExecutionFeed.attachLiveToolHost(inlineHost)) inlineHost.remove();
-        }
-      }
-    } else if (item.type === "function_response") {
-      const details = document.createElement("details");
-      details.className = "timeline-function-response";
-      const summary = document.createElement("summary");
-      summary.innerHTML = `<span class="timeline-badge badge-out">OUT</span> ${item.name}`;
-      details.appendChild(summary);
-      details.appendChild(createJsonBlock(JSON.stringify(item.response, null, 2)));
-      wireTimelineDetails(details, item.timelineId || `function-response:${item.id || item.name || "Unknown"}`);
-      container.appendChild(details);
-      for (const plotPath of getPlotPaths(item.response)) {
+    let activityItems = [];
+    let activityCount = 0;
+    const flushActivity = () => {
+      if (!activityItems.length) return;
+      const activityKey = `activity:${activityItems[0].timelineId || activityCount}`;
+      container.appendChild(createAgentActivity(activityItems, wireTimelineDetails, { activityKey }));
+      const calls = activityItems
+        .filter((item) => item.type === "activity_action")
+        .flatMap((action) => action.toolCalls || []);
+      for (const call of calls) {
+        for (const plotPath of getPlotPaths(call.output)) {
         if (
           visiblePlotPaths.has(plotPath) ||
           (shownPlotPaths && shownPlotPaths.has(plotPath) && !containerPlotPaths.has(plotPath))
@@ -2712,18 +2856,27 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
         visiblePlotPaths.add(plotPath);
         container.appendChild(createTimelineImage(plotPath));
       }
-      getStructurePaths(item.response).forEach((path) => {
+        getStructurePaths(call.output).forEach((path) => {
         container.appendChild(createStructureViewButton(path));
       });
-    } else if (item.type === "text") {
+      }
+      activityItems = [];
+      activityCount += 1;
+    };
+    for (const item of timeline) {
+      if (item.type === "activity_action" || item.type === "reasoning") {
+        activityItems.push(item);
+      } else if (item.type === "text") {
+        flushActivity();
       const div = document.createElement("div");
       div.className = "markdown-content";
       div.innerHTML = renderMarkdown(item.text || "");
       markReadingAnchors(div, `${disclosurePrefix}${item.timelineId || "text:legacy"}:content`);
       protectAsyncContentLayout(div);
       container.appendChild(div);
+      }
     }
-    }
+    flushActivity();
     disclosures.prunePrefix(disclosurePrefix, liveKeys);
     container._plotPaths = visiblePlotPaths;
     visiblePlotPaths.forEach((path) => shownPlotPaths?.add(path));
@@ -2841,9 +2994,9 @@ function formatStepDuration(node) {
 
 function stepFeedTitle(node) {
   const input = node.input || {};
-  const label = node.label || input.node_id || node.id;
-  const action = input.action ? ` — ${input.action}` : "";
-  return `${label}${action}`;
+  // The durable node identifier is the scan-friendly title. The often long
+  // instruction/action remains available in the expanded task details.
+  return input.node_id || input.step_id || node.id || node.label;
 }
 
 function renderStepInput(input) {

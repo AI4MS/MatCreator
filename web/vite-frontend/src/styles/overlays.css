@@ -533,7 +533,8 @@ details[open] > .tree-dir-summary::before { transform: rotate(90deg); }
 }
 details.timeline-thought,
 details.timeline-function-call,
-details.timeline-function-response {
+details.timeline-function-response,
+details.timeline-tool-call {
   margin: 4px 0;
   border-radius: 8px;
   padding: 4px 8px;
@@ -570,6 +571,109 @@ details summary:hover { color: var(--text); }
   color: var(--timeline-badge-out-text);
   border: 0;
 }
+
+/* Agent execution uses one quiet container. Details and raw protocol payloads
+   are deliberately nested so successful tool traffic does not read as chat. */
+details.agent-activity {
+  margin: 6px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+.agent-activity > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  list-style: none;
+}
+.agent-activity > summary::-webkit-details-marker,
+.agent-activity-action > summary::-webkit-details-marker,
+.activity-action-execution > summary::-webkit-details-marker { display: none; }
+.agent-activity > summary::before,
+.agent-activity-action > summary::before,
+.activity-action-execution > summary::before {
+  content: "▸";
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+.agent-activity[open] > summary::before,
+.agent-activity-action[open] > summary::before,
+.activity-action-execution[open] > summary::before { transform: rotate(90deg); }
+.agent-activity-title { color: var(--text); font-size: 12px; font-weight: 650; }
+.agent-activity-meta { margin-left: auto; color: var(--muted); font-size: 11px; }
+.agent-activity-body { padding: 0 10px 9px 25px; }
+.agent-activity-action-list { display: flex; flex-direction: column; }
+details.agent-activity-action {
+  margin: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+}
+details.agent-activity-action:hover,
+details.agent-activity-action[open] { background: rgba(255, 255, 255, 0.04); }
+.agent-activity-action > summary {
+  display: grid;
+  /* The disclosure chevron is a real ::before grid item. Reserve a column
+     for it so the status mark and title never drift into later columns. */
+  grid-template-columns: 10px 14px minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+  padding: 5px 6px;
+  font-size: 12px;
+  list-style: none;
+}
+.agent-activity-status { font-weight: 700; text-align: center; }
+.agent-activity-action.is-failed .agent-activity-status { color: var(--danger, #ef7676); }
+.activity-action-heading { min-width: 0; display: flex; align-items: baseline; gap: 5px; overflow: hidden; }
+.activity-action-title { color: var(--text); }
+.agent-activity-duration { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11px; }
+.activity-action-body { padding: 2px 8px 9px 26px; display: flex; flex-direction: column; gap: 9px; }
+.activity-action-summary { color: var(--text); font-size: 12px; line-height: 1.45; }
+.activity-action-section { display: flex; flex-direction: column; gap: 3px; }
+.activity-action-label, .tool-call-raw-label { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+.activity-action-content { color: var(--muted); font-size: 12px; line-height: 1.45; }
+.activity-action-content > :first-child { margin-top: 0; }
+.activity-action-content > :last-child { margin-bottom: 0; }
+details.activity-action-long-content { margin-top: 1px; }
+.activity-action-long-content > summary { padding: 1px 0; font-size: 11px; }
+.activity-action-tool {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+  padding: 3px 0 0;
+}
+.activity-action-tool-result { color: var(--muted); font-size: 11px; padding-left: 20px; }
+.activity-action-tool.is-failed .tool-call-status { color: var(--danger, #ef7676); }
+.activity-action-execution { margin-top: 1px; }
+.activity-action-execution > summary { padding: 3px 0; font-size: 11px; }
+.activity-action-execution-body { padding: 3px 0 0; display: flex; flex-direction: column; gap: 3px; }
+.activity-action-raw { padding: 5px 0 0; display: flex; flex-direction: column; gap: 8px; }
+.activity-action-raw > section > .tool-call-raw { padding-left: 0; }
+.agent-activity-thinking { color: var(--muted); font-size: 12px; padding: 4px 0; }
+details.timeline-tool-call {
+  margin: 1px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+}
+details.timeline-tool-call:hover,
+details.timeline-tool-call[open] { background: rgba(255, 255, 255, 0.045); }
+.timeline-tool-call > summary {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+  padding: 5px 6px;
+}
+.tool-call-status { font-weight: 700; text-align: center; }
+.timeline-tool-call.is-failed .tool-call-status { color: var(--danger, #ef7676); }
+.tool-call-name { color: var(--text); font-family: var(--mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-call-duration { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.tool-call-raw { padding: 2px 8px 9px 26px; display: flex; flex-direction: column; gap: 7px; }
+.tool-call-raw-summary { color: var(--text); font-size: 12px; margin-top: 2px; }
 
 /* ── Agent Mode Selector ─────────────────────────────────── */
 .mode-selector {

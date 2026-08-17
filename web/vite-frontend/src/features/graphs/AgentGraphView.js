@@ -1508,13 +1508,14 @@ export class StepExecutionFeed {
     const title = document.createElement("span");
     title.className = "step-feed-title";
     title.textContent = this._stepFeedTitle(node);
-    const badge = document.createElement("span");
-    badge.className = `badge badge-${node.status || "idle"}`;
-    badge.textContent = node.status || "idle";
+    const status = document.createElement("span");
+    status.className = `step-feed-status step-feed-status-${node.status || "idle"}`;
+    status.textContent = ["failed", "cancelled", "blocked"].includes(node.status) ? "!" : node.status === "running" ? "◌" : "✓";
+    status.title = node.status || "idle";
     const meta = document.createElement("span");
     meta.className = "step-feed-meta";
     meta.textContent = this._formatStepDuration(node);
-    summary.append(title, badge, meta);
+    summary.append(status, title, meta);
 
     const stepNumber = node.input && node.input.step_number;
     if (node.status === "running" && stepNumber !== undefined && stepNumber !== null) {
