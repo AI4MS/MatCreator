@@ -11,6 +11,7 @@ export function createMessageStreamController(deps) {
     canWriteActiveSession, showLoginModal, createSession, addMessage, addAgentTimelineMessage,
     addPlanApprovalActions, renderTimeline, messageWithUploadNames, messageWithUploadContext, clearCurrentUploads,
     autoResizeTextInput, stepExecutionFeed, agentGraph, planGraph, updateSendButtonState, updateAgentRunningStatus,
+    attachAgentRunningIndicator,
     releaseSessionRequest, managedRunEventsUrl, shouldRefreshPlanGraphForTool,
     generateSessionSummary, refreshSessionFiles, sessionRuntime,
   } = deps;
@@ -110,6 +111,10 @@ export function createMessageStreamController(deps) {
     const timeline = [];
     const shownPlotPaths = new Set();
     const timelineContainer = addAgentTimelineMessage(timeline, shownPlotPaths);
+    // The agent shell is visible immediately while the first SSE event is
+    // pending, so the user sees progress in the conversational flow rather
+    // than an isolated indicator above the composer.
+    attachAgentRunningIndicator(timelineContainer);
 
     const previousPlanGraphKey = planGraph.currentGraphKey();
     agentGraph.reset();

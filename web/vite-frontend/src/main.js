@@ -1082,6 +1082,22 @@ function releaseSessionRequest(request) {
 
 const orbitalIndicator = mountOrbitalAgentIndicator(agentRunningOrbital);
 
+function attachAgentRunningIndicator(timelineContainer) {
+  const message = timelineContainer?.closest(".agent-message:not(.step-feed-message)");
+  if (!message || !agentRunningIndicator) return;
+  message.appendChild(agentRunningIndicator);
+  // Before the first streamed item, make the agent's avatar and status row
+  // visible without rendering an empty message bubble.
+  if (!timelineContainer.childElementCount) message.classList.add("is-waiting");
+  message.classList.remove("is-pending");
+}
+
+function ensureAgentRunningIndicatorAttached() {
+  if (!agentRunningIndicator || agentRunningIndicator.isConnected) return;
+  const message = [...chatArea.querySelectorAll(".agent-message:not(.step-feed-message)")].at(-1);
+  if (message) message.appendChild(agentRunningIndicator);
+}
+
 function updateAgentRunningStatus(phase = "working") {
   const phases = {
     working: ["MatCreator is working. Please wait…", "thinking"],
@@ -1098,7 +1114,7 @@ function updateAgentRunningStatus(phase = "working") {
 
 function updateSendButtonState() {
   const running = Boolean(activeSessionRequest());
-  inputArea?.classList.toggle("is-agent-running", running);
+  if (running) ensureAgentRunningIndicatorAttached();
   if (agentRunningIndicator) agentRunningIndicator.setAttribute("aria-hidden", String(!running));
   if (!running) updateAgentRunningStatus();
   if (!sendBtn) return;
@@ -2846,7 +2862,7 @@ function createAgentActivity(items, wireTimelineDetails, options) {
     .filter((action) => action.toolCalls.length);
   const hasReasoning = items.some((item) => item.type === "reasoning");
   if (!actions.length && !hasReasoning) return null;
-  const completed = actions.length > 0 && !activeSessionRequest()
+  const completed = !activeSessionRequest()
     && actions.every((action) => action.status !== "running");
   const activity = document.createElement("details");
   activity.className = "agent-activity";
@@ -2887,7 +2903,11 @@ function createAgentActivity(items, wireTimelineDetails, options) {
   });
   body.appendChild(actionList);
   activity.appendChild(body);
-  wireTimelineDetails(activity, `${options.activityKey}:container`, true);
+  wireTimelineDetails(activity, `${options.activityKey}:container`, !completed);
+  // `capture()` persists the currently open DOM state across streamed
+  // redraws. A finished turn is deliberately compact instead: the reader can
+  // still reopen its Activity, but it no longer occupies the conversation.
+  if (completed) activity.open = false;
   return activity;
 }
 
@@ -3001,7 +3021,7 @@ function addAgentTimelineMessage(timeline, shownPlotPaths = null, msgIndex, cont
   const revealWhenPopulated = () => {
     const liveRegion = outer.querySelector(".step-feed-live-region");
     if (!inner.childElementCount && !liveRegion?.childElementCount) return;
-    outer.classList.remove("is-pending");
+    outer.classList.remove("is-pending", "is-waiting");
     observer.disconnect();
   };
   const observer = new MutationObserver(revealWhenPopulated);
@@ -3221,6 +3241,7 @@ const messageStreamController = createMessageStreamController({
   planGraph,
   updateSendButtonState,
   updateAgentRunningStatus,
+  attachAgentRunningIndicator,
   releaseSessionRequest,
   managedRunEventsUrl,
   shouldRefreshPlanGraphForTool,

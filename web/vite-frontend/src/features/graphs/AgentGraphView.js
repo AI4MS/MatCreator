@@ -1504,13 +1504,12 @@ export class StepExecutionFeed {
 
     const details = outer.querySelector(".step-feed-details");
     const cardKey = `step:${node.id}:card`;
+    const isRunning = node.status === "running";
+    if (!isRunning) this._disclosures.state.delete(cardKey);
     const userChoice = this._disclosures.state.get(cardKey);
-    // Preserve an already-open running card when polling changes its status
-    // to completed/cancelled. Otherwise that status transition collapses the
-    // Node before the following session snapshot can preserve its UI state.
-    details.open = userChoice === undefined
-      ? details.open || node.status === "running"
-      : userChoice;
+    // A card stays open while work is live, then automatically compacts at
+    // completion. A reader can still opt out of the live default explicitly.
+    details.open = isRunning && (userChoice === undefined ? true : userChoice);
     details.innerHTML = "";
 
     const summary = document.createElement("summary");
