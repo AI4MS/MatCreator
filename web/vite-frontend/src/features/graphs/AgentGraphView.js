@@ -1208,7 +1208,6 @@ export class StepExecutionFeed {
     const node = [...this._stepById.values()].find((item) => this._nodeExecutionKey(item) === key);
     const card = node && this._cards.get(node.id);
     if (node && card) {
-      hostEl.querySelector?.(".delegation-task-pending")?.remove();
       this._insertIntoLiveContainer(hostEl, card, node);
     }
     return true;
@@ -1324,7 +1323,6 @@ export class StepExecutionFeed {
       this._cards.set(node.id, outer);
     }
     outer.dataset.stepStartTime = String(this._stepSortTime(node));
-    container.querySelector?.(".delegation-task-pending")?.remove();
     container.appendChild(outer);
     this._renderCardIfChanged(outer, node);
     return outer;

@@ -822,15 +822,6 @@
   margin-bottom: 0;
 }
 
-.delegation-task-pending {
-  color: var(--muted);
-  font-size: 12px;
-  font-style: italic;
-  padding: 7px 10px;
-  border: 1px solid var(--step-feed-idle-border);
-  border-radius: 8px;
-}
-
 .step-feed-child-list {
   display: flex;
   flex-direction: column;

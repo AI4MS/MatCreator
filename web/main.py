@@ -1024,7 +1024,12 @@ async def _proxy_sse(request: Request, target_url: str, path: str):
                 async for chunk in resp.aiter_bytes():
                     yield chunk
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        # Preserve direct ADK SSE chunks through the proxy without buffering.
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 class ManagedRunBody(BaseModel):
@@ -1226,7 +1231,13 @@ async def stream_managed_run_events(run_id: str, after: int = Query(default=0, g
         async for event in _run_registry.subscribe(run, after=after):
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        # Nginx honors this in addition to its dedicated SSE location, which
+        # keeps each activity/text event visible as soon as it is produced.
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.api_route("/run_sse", methods=["GET", "POST"])

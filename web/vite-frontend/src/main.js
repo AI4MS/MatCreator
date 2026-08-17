@@ -1100,6 +1100,8 @@ function ensureAgentRunningIndicatorAttached() {
 
 function updateAgentRunningStatus(phase = "working") {
   const phases = {
+    connecting: ["Connecting to MatCreator…", "thinking"],
+    connected: ["Connected — MatCreator is working…", "thinking"],
     working: ["MatCreator is working. Please wait…", "thinking"],
     thinking: ["MatCreator is thinking…", "thinking"],
     planning: ["MatCreator is planning the workflow…", "thinking"],
@@ -2835,13 +2837,6 @@ function createDelegationGroup(calls, { isNew = false } = {}) {
     const host = document.createElement("div");
     host.className = "step-feed-inline-region delegation-task-host";
     host.dataset.stepInlineHost = call.id || executorNodeId(call) || call.name;
-    const pending = document.createElement("div");
-    pending.className = "delegation-task-pending";
-    const action = call.input?.action || call.semanticAction || "Starting delegated task";
-    pending.textContent = call.status === "running"
-      ? `Starting: ${action}`
-      : (call.semanticSummary || action);
-    host.appendChild(pending);
     task.appendChild(host);
     list.appendChild(task);
 

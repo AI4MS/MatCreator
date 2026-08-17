@@ -132,7 +132,10 @@ export function createMessageStreamController(deps) {
       backendUserId: activeSessionBackendUserId(), controller: new AbortController(), lastSequence: 0, runId: null,
     };
     state.activeRequests.set(request.key, request);
-    updateAgentRunningStatus("thinking");
+    // Make connection progress explicit even before the agent has emitted its
+    // first thought, tool call, or text token.  This is especially important
+    // while a server-mode worker is starting.
+    updateAgentRunningStatus("connecting");
     updateSendButtonState();
 
     let lineBuffer = "";
@@ -217,6 +220,7 @@ export function createMessageStreamController(deps) {
       request.runId = (await startResponse.json()).run_id;
       const eventsResponse = await fetch(managedRunEventsUrl(request), { headers: { Accept: "text/event-stream" }, signal: request.controller.signal });
       if (!eventsResponse.ok) throw new Error(`HTTP ${eventsResponse.status}`);
+      updateAgentRunningStatus("connected");
       const reader = eventsResponse.body.getReader();
       const decoder = new TextDecoder();
       let eventBuffer = "";
