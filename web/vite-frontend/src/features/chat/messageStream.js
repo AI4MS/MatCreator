@@ -134,8 +134,16 @@ export function createMessageStreamController(deps) {
     let summaryTriggered = false;
     let validatedPlanThisTurn = false;
     let executionApprovedThisTurn = false;
+    let pendingTimelineFrame = null;
     const renderPendingTimeline = () => {
-      if (timeline.length) renderTimeline(timelineContainer, timeline, shownPlotPaths);
+      if (!timeline.length || pendingTimelineFrame !== null) return;
+      // A single SSE message can contain several parts. Rendering each part
+      // independently creates competing height changes in the activity and
+      // assistant text; coalesce them into one browser frame instead.
+      pendingTimelineFrame = requestAnimationFrame(() => {
+        pendingTimelineFrame = null;
+        if (timelineContainer.isConnected) renderTimeline(timelineContainer, timeline, shownPlotPaths);
+      });
     };
     const handleAdkData = (data) => {
       if (data === "[DONE]") return;

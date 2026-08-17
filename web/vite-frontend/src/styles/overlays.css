@@ -588,18 +588,15 @@ details.agent-activity {
   list-style: none;
 }
 .agent-activity > summary::-webkit-details-marker,
-.agent-activity-action > summary::-webkit-details-marker,
-.activity-action-execution > summary::-webkit-details-marker { display: none; }
+.agent-activity-action > summary::-webkit-details-marker { display: none; }
 .agent-activity > summary::before,
-.agent-activity-action > summary::before,
-.activity-action-execution > summary::before {
+.agent-activity-action > summary::before {
   content: "▸";
   color: var(--muted);
   transition: transform 0.15s ease;
 }
 .agent-activity[open] > summary::before,
-.agent-activity-action[open] > summary::before,
-.activity-action-execution[open] > summary::before { transform: rotate(90deg); }
+.agent-activity-action[open] > summary::before { transform: rotate(90deg); }
 .agent-activity-title { color: var(--text); font-size: 12px; font-weight: 650; }
 .agent-activity-meta { margin-left: auto; color: var(--muted); font-size: 11px; }
 .agent-activity-body { padding: 0 10px 9px 25px; }
@@ -612,6 +609,12 @@ details.agent-activity-action {
 }
 details.agent-activity-action:hover,
 details.agent-activity-action[open] { background: rgba(255, 255, 255, 0.04); }
+@keyframes agent-activity-entry {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.agent-activity-action.is-entering,
+.agent-activity-reasoning-entry.is-entering { animation: agent-activity-entry 180ms ease-out both; }
 .agent-activity-action > summary {
   display: grid;
   /* The disclosure chevron is a real ::before grid item. Reserve a column
@@ -626,17 +629,10 @@ details.agent-activity-action[open] { background: rgba(255, 255, 255, 0.04); }
 .agent-activity-status { font-weight: 700; text-align: center; }
 .agent-activity-action.is-failed .agent-activity-status { color: var(--danger, #ef7676); }
 .activity-action-heading { min-width: 0; display: flex; align-items: baseline; gap: 5px; overflow: hidden; }
-.activity-action-title { color: var(--text); }
+.activity-action-title { color: var(--text); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-activity-duration { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11px; }
-.activity-action-body { padding: 2px 8px 9px 26px; display: flex; flex-direction: column; gap: 9px; }
-.activity-action-summary { color: var(--text); font-size: 12px; line-height: 1.45; }
-.activity-action-section { display: flex; flex-direction: column; gap: 3px; }
-.activity-action-label, .tool-call-raw-label { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
-.activity-action-content { color: var(--muted); font-size: 12px; line-height: 1.45; }
-.activity-action-content > :first-child { margin-top: 0; }
-.activity-action-content > :last-child { margin-bottom: 0; }
-details.activity-action-long-content { margin-top: 1px; }
-.activity-action-long-content > summary { padding: 1px 0; font-size: 11px; }
+.activity-action-body { padding: 2px 8px 9px 26px; display: flex; flex-direction: column; gap: 7px; }
+.tool-call-raw-label { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
 .activity-action-tool {
   display: grid;
   grid-template-columns: 14px minmax(0, 1fr) auto;
@@ -645,13 +641,59 @@ details.activity-action-long-content { margin-top: 1px; }
   padding: 3px 0 0;
 }
 .activity-action-tool-result { color: var(--muted); font-size: 11px; padding-left: 20px; }
+.activity-action-tool-result.is-standalone { padding-left: 0; }
 .activity-action-tool.is-failed .tool-call-status { color: var(--danger, #ef7676); }
-.activity-action-execution { margin-top: 1px; }
-.activity-action-execution > summary { padding: 3px 0; font-size: 11px; }
-.activity-action-execution-body { padding: 3px 0 0; display: flex; flex-direction: column; gap: 3px; }
 .activity-action-raw { padding: 5px 0 0; display: flex; flex-direction: column; gap: 8px; }
 .activity-action-raw > section > .tool-call-raw { padding-left: 0; }
-.agent-activity-thinking { color: var(--muted); font-size: 12px; padding: 4px 0; }
+.agent-activity-reasoning-entry { color: var(--muted); font-size: 12px; line-height: 1.45; padding: 3px 6px; margin: 0; border: 0; }
+.agent-activity-reasoning-entry .markdown-content { padding: 0; border-radius: 0; font-size: 12px; line-height: 1.45; }
+.agent-activity-reasoning-entry .markdown-content > :first-child { margin-top: 0; }
+.agent-activity-reasoning-entry .markdown-content > :last-child { margin-bottom: 0; }
+.agent-activity-reasoning-entry .markdown-content p { margin: 0; }
+.agent-activity-reasoning-entry .markdown-content p + p { margin-top: 0.5em; }
+.agent-activity-reasoning-entry .markdown-content ul,
+.agent-activity-reasoning-entry .markdown-content ol { margin: 0.35em 0; padding-left: 0; list-style-position: inside; }
+.agent-activity-reasoning-entry .markdown-content ul ul,
+.agent-activity-reasoning-entry .markdown-content ul ol,
+.agent-activity-reasoning-entry .markdown-content ol ul,
+.agent-activity-reasoning-entry .markdown-content ol ol { padding-left: 1.2em; }
+details.agent-activity-reasoning-entry { padding: 0; }
+.agent-activity-reasoning-entry > summary {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 3px 6px;
+  font-size: 12px;
+  line-height: 1.45;
+  cursor: pointer;
+  list-style: none;
+}
+.agent-activity-reasoning-entry > summary::-webkit-details-marker { display: none; }
+.agent-activity-reasoning-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  mask-image: linear-gradient(to right, #000 62%, transparent 100%);
+}
+.agent-activity-reasoning-ellipsis { flex: 0 0 auto; color: var(--muted); }
+.agent-activity-reasoning-chevron { flex: 0 0 auto; color: var(--muted); font-size: 14px; line-height: 10px; transition: transform 0.15s ease; }
+.agent-activity-reasoning-entry[open] > summary .agent-activity-reasoning-chevron { transform: rotate(90deg); }
+details.agent-activity-reasoning-entry[open] > summary { display: none; }
+.agent-activity-reasoning-content { padding: 3px 6px; display: flex; flex-direction: column; gap: 2px; }
+.agent-activity-reasoning-collapse {
+  align-self: flex-end;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: 14px/10px var(--mono);
+  padding: 3px 4px;
+  transform: rotate(-90deg);
+}
+.agent-activity-reasoning-collapse:hover,
+.agent-activity-reasoning-collapse:focus-visible { color: var(--text); }
 details.timeline-tool-call {
   margin: 1px 0;
   padding: 0;

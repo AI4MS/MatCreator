@@ -780,6 +780,57 @@
   margin-top: 8px;
 }
 
+.delegation-group {
+  margin: 10px 0;
+  padding: 8px 0 0 12px;
+  border-left: 2px solid var(--step-feed-idle-border);
+}
+
+.delegation-group.is-entering {
+  animation: agent-activity-entry 180ms ease-out both;
+}
+
+.delegation-group-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 7px;
+}
+
+.delegation-group-title {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.delegation-group-meta {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.delegation-group-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.delegation-task-host {
+  margin: 0;
+}
+
+.delegation-task-host > .step-feed-message {
+  margin-bottom: 0;
+}
+
+.delegation-task-pending {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
+  padding: 7px 10px;
+  border: 1px solid var(--step-feed-idle-border);
+  border-radius: 8px;
+}
+
 .step-feed-child-list {
   display: flex;
   flex-direction: column;
@@ -852,8 +903,29 @@
   font-size: 13px;
   font-weight: 700;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.step-feed-task,
+.step-feed-identity,
+.step-feed-result-preview {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.step-feed-identity,
+.step-feed-result-preview {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.step-feed-result-preview {
+  font-size: 12px;
 }
 
 .step-feed-status {

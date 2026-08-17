@@ -2625,6 +2625,22 @@ function isExecutorLauncherTool(name) {
   return ["run_flash_step", "run_node_executor", "run_sub_agent"].includes(name || "");
 }
 
+function executorNodeId(call) {
+  const input = call?.input || {};
+  return input.node_id || input.step_id || input.step_number || "";
+}
+
+function activityToolCalls(action) {
+  return (action.toolCalls || []).filter((call) => !isExecutorLauncherTool(call.name));
+}
+
+function delegationToolCalls(items) {
+  return items
+    .filter((item) => item.type === "activity_action")
+    .flatMap((action) => action.toolCalls || [])
+    .filter((call) => isExecutorLauncherTool(call.name));
+}
+
 function formatToolDuration(toolCall) {
   const duration = toolCall.durationMs ?? (toolCall.startedAt ? Date.now() - toolCall.startedAt : null);
   if (!Number.isFinite(duration)) return toolCall.status === "running" ? "running…" : "";
@@ -2673,105 +2689,165 @@ function createActionRawView(action) {
   return body;
 }
 
-function createActionReasoning(action) {
-  if (!action.reasoning?.length) return null;
-  const text = action.reasoning.map((entry) => entry.text || "").filter(Boolean).join("\n\n");
-  if (!text) return null;
-  const section = document.createElement("section");
-  section.className = "activity-action-section activity-action-reasoning";
-  const heading = document.createElement("div");
-  heading.className = "activity-action-label";
-  heading.textContent = "Reasoning";
-  const preview = document.createElement("div");
-  preview.className = "activity-action-content";
-  const previewLimit = 360;
-  if (text.length <= previewLimit) {
-    preview.innerHTML = renderMarkdown(text);
-    section.append(heading, preview);
-    return section;
+function createTimelineReasoning(entry, wireTimelineDetails, collapsed = false, isNew = false) {
+  if (collapsed) {
+    const details = document.createElement("details");
+    details.className = "agent-activity-reasoning-entry is-collapsed";
+    const summary = document.createElement("summary");
+    const preview = document.createElement("span");
+    preview.className = "agent-activity-reasoning-preview";
+    preview.textContent = String(entry.text || "").replace(/\s+/g, " ").trim();
+    const ellipsis = document.createElement("span");
+    ellipsis.className = "agent-activity-reasoning-ellipsis";
+    ellipsis.textContent = "…";
+    const chevron = document.createElement("span");
+    chevron.className = "agent-activity-reasoning-chevron";
+    chevron.textContent = "›";
+    const content = document.createElement("div");
+    content.className = "agent-activity-reasoning-content";
+    const markdown = document.createElement("div");
+    markdown.className = "markdown-content";
+    markdown.innerHTML = renderMarkdown(entry.text || "");
+    const collapse = document.createElement("button");
+    collapse.type = "button";
+    collapse.className = "agent-activity-reasoning-collapse";
+    // Reuse the same chevron as the collapsed preview, rotated upward to
+    // communicate the reverse action without introducing a new icon style.
+    collapse.textContent = "›";
+    collapse.title = "Collapse reasoning";
+    collapse.setAttribute("aria-label", "Collapse reasoning");
+    collapse.addEventListener("click", () => { details.open = false; });
+    content.append(markdown, collapse);
+    summary.append(preview, ellipsis, chevron);
+    details.append(summary, content);
+    wireTimelineDetails(details, `${entry.timelineId}:reasoning`);
+    // Decide from the rendered height rather than character count: CJK text,
+    // narrow panes, lists, and links all wrap differently. Short reasoning
+    // stays fully visible and does not pretend to be a disclosure.
+    requestAnimationFrame(() => {
+      if (!details.isConnected) return;
+      const wasOpen = details.open;
+      details.open = true;
+      const lineHeight = Number.parseFloat(getComputedStyle(markdown).lineHeight) || 17;
+      const isShort = markdown.getBoundingClientRect().height <= lineHeight * 3 + 1;
+      if (isShort) {
+        details.classList.add("is-static");
+        collapse.remove();
+      } else {
+        details.open = wasOpen;
+      }
+    });
+    return details;
   }
-  preview.textContent = `${text.slice(0, previewLimit).trimEnd()}…`;
-  const more = document.createElement("details");
-  more.className = "activity-action-long-content";
-  const moreSummary = document.createElement("summary");
-  moreSummary.textContent = "Show more";
-  const full = document.createElement("div");
-  full.className = "markdown-content";
-  full.innerHTML = renderMarkdown(text);
-  more.append(moreSummary, full);
-  section.append(heading, preview, more);
+  const section = document.createElement("div");
+  section.className = `agent-activity-reasoning-entry${isNew ? " is-entering" : ""}`;
+  const content = document.createElement("div");
+  content.className = "markdown-content";
+  content.innerHTML = renderMarkdown(entry.text || "");
+  section.appendChild(content);
   return section;
 }
 
-function createActivityAction(action, wireTimelineDetails) {
+function createActivityAction(action, wireTimelineDetails, { isNew = false } = {}) {
+  const toolCalls = activityToolCalls(action);
+  if (!toolCalls.length) return null;
+  const displayAction = {
+    ...action,
+    toolCalls,
+    status: toolCalls.some((call) => call.status === "failed") ? "failed"
+      : toolCalls.some((call) => call.status === "running") ? "running" : "success",
+    durationMs: toolCalls.reduce((total, call) => total + (call.durationMs || 0), 0) || null,
+  };
   const details = document.createElement("details");
-  details.className = `agent-activity-action is-${action.status}`;
+  details.className = `agent-activity-action is-${displayAction.status}${isNew ? " is-entering" : ""}`;
   const summary = document.createElement("summary");
   const icon = document.createElement("span");
   icon.className = "agent-activity-status";
-  icon.textContent = toolStatusIcon(action);
+  icon.textContent = toolStatusIcon(displayAction);
   const text = document.createElement("span");
   text.className = "activity-action-heading";
   const title = document.createElement("span");
   title.className = "activity-action-title";
-  title.textContent = action.title;
+  title.textContent = displayAction.toolCalls.map((call) => call.name).join(" · ");
   text.appendChild(title);
   const duration = document.createElement("span");
   duration.className = "agent-activity-duration";
-  duration.textContent = formatToolDuration(action);
+  duration.textContent = formatToolDuration(displayAction);
   summary.append(icon, text, duration);
   details.appendChild(summary);
 
   const body = document.createElement("div");
   body.className = "activity-action-body";
-  if (action.summary) {
-    const semantic = document.createElement("div");
-    semantic.className = "activity-action-summary";
-    semantic.textContent = action.summary;
-    body.appendChild(semantic);
-  }
-  const reasoning = createActionReasoning(action);
-  if (reasoning) body.appendChild(reasoning);
-
-  const execution = document.createElement("details");
-  execution.className = "activity-action-execution";
-  const executionLabel = document.createElement("summary");
-  executionLabel.textContent = "Execution";
-  execution.appendChild(executionLabel);
-  const executionBody = document.createElement("div");
-  executionBody.className = "activity-action-execution-body";
-  action.toolCalls.forEach((call) => {
-    const row = document.createElement("div");
-    row.className = `activity-action-tool is-${call.status}`;
-    row.innerHTML = `<span class="tool-call-status">${toolStatusIcon(call)}</span><span class="tool-call-name">${call.name}</span><span class="tool-call-duration">${formatToolDuration(call)}</span>`;
+  displayAction.toolCalls.forEach((call) => {
     const result = document.createElement("div");
-    result.className = "activity-action-tool-result";
+    result.className = `activity-action-tool-result${displayAction.toolCalls.length === 1 ? " is-standalone" : ""}`;
     result.textContent = call.semanticSummary;
-    executionBody.append(row, result);
-    if (isExecutorLauncherTool(call.name)) {
-      const inlineHost = document.createElement("div");
-      inlineHost.className = "step-feed-inline-region";
-      inlineHost.dataset.stepInlineHost = call.name;
-      executionBody.appendChild(inlineHost);
-      if (Array.isArray(call.stepNodes) && call.stepNodes.length) {
-        call.stepNodes.forEach((node) => stepExecutionFeed.appendStatic(node, inlineHost));
-      } else if (activeSessionRequest() && !stepExecutionFeed.attachLiveToolHost(inlineHost)) {
-        inlineHost.remove();
-      }
+    if (displayAction.toolCalls.length > 1) {
+      const row = document.createElement("div");
+      row.className = `activity-action-tool is-${call.status}`;
+      row.innerHTML = `<span class="tool-call-status">${toolStatusIcon(call)}</span><span class="tool-call-name">${call.name}</span><span class="tool-call-duration">${formatToolDuration(call)}</span>`;
+      body.appendChild(row);
     }
+    body.appendChild(result);
   });
-  executionBody.appendChild(createActionRawView(action));
-  execution.appendChild(executionBody);
-  body.appendChild(execution);
+  body.appendChild(createActionRawView(displayAction));
   details.appendChild(body);
-  wireTimelineDetails(details, `${action.timelineId}:action`);
-  wireTimelineDetails(execution, `${action.timelineId}:execution`);
+  wireTimelineDetails(details, `${action.timelineId}:tool`);
   return details;
 }
 
+function createDelegationGroup(calls, { isNew = false } = {}) {
+  const group = document.createElement("section");
+  group.className = `delegation-group${isNew ? " is-entering" : ""}`;
+  const header = document.createElement("div");
+  header.className = "delegation-group-header";
+  const title = document.createElement("span");
+  title.className = "delegation-group-title";
+  title.textContent = "Delegated tasks";
+  const meta = document.createElement("span");
+  meta.className = "delegation-group-meta";
+  const running = calls.filter((call) => call.status === "running").length;
+  meta.textContent = `${calls.length} task${calls.length === 1 ? "" : "s"}${running ? ` · ${running} running` : ""}`;
+  header.append(title, meta);
+  group.appendChild(header);
+
+  const list = document.createElement("div");
+  list.className = "delegation-group-list";
+  calls.forEach((call) => {
+    const task = document.createElement("div");
+    task.className = "delegation-task";
+    const host = document.createElement("div");
+    host.className = "step-feed-inline-region delegation-task-host";
+    host.dataset.stepInlineHost = call.id || executorNodeId(call) || call.name;
+    const pending = document.createElement("div");
+    pending.className = "delegation-task-pending";
+    const action = call.input?.action || call.semanticAction || "Starting delegated task";
+    pending.textContent = call.status === "running"
+      ? `Starting: ${action}`
+      : (call.semanticSummary || action);
+    host.appendChild(pending);
+    task.appendChild(host);
+    list.appendChild(task);
+
+    if (Array.isArray(call.stepNodes) && call.stepNodes.length) {
+      call.stepNodes.forEach((node) => stepExecutionFeed.appendStatic(node, host));
+    } else if (activeSessionRequest()) {
+      stepExecutionFeed.attachLiveToolHost(host, executorNodeId(call));
+    }
+  });
+  group.appendChild(list);
+  return group;
+}
+
 function createAgentActivity(items, wireTimelineDetails, options) {
-  const actions = items.filter((item) => item.type === "activity_action");
-  const pendingReasoning = items.filter((item) => item.type === "reasoning");
+  const actions = items
+    .filter((item) => item.type === "activity_action")
+    .map((action) => ({ ...action, toolCalls: activityToolCalls(action) }))
+    .filter((action) => action.toolCalls.length);
+  const hasReasoning = items.some((item) => item.type === "reasoning");
+  if (!actions.length && !hasReasoning) return null;
+  const completed = actions.length > 0 && !activeSessionRequest()
+    && actions.every((action) => action.status !== "running");
   const activity = document.createElement("details");
   activity.className = "agent-activity";
   const summary = document.createElement("summary");
@@ -2793,13 +2869,22 @@ function createAgentActivity(items, wireTimelineDetails, options) {
   body.className = "agent-activity-body";
   const actionList = document.createElement("div");
   actionList.className = "agent-activity-action-list";
-  actions.forEach((action) => actionList.appendChild(createActivityAction(action, wireTimelineDetails)));
-  if (!actions.length && pendingReasoning.length) {
-    const thinking = document.createElement("div");
-    thinking.className = "agent-activity-thinking";
-    thinking.textContent = "◌ Planning next step…";
-    actionList.appendChild(thinking);
-  }
+  items.forEach((item) => {
+    if (item.type === "reasoning") {
+      actionList.appendChild(createTimelineReasoning(
+        item,
+        wireTimelineDetails,
+        completed,
+        !options.previousItemIds?.has(item.timelineId),
+      ));
+    }
+    if (item.type === "activity_action") {
+      const action = createActivityAction(item, wireTimelineDetails, {
+        isNew: !options.previousItemIds?.has(item.timelineId),
+      });
+      if (action) actionList.appendChild(action);
+    }
+  });
   body.appendChild(actionList);
   activity.appendChild(body);
   wireTimelineDetails(activity, `${options.activityKey}:container`, true);
@@ -2833,6 +2918,10 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
     // Persist their actual DOM state first; defaults alone are insufficient
     // once a running Node has become completed but remains visibly open.
     disclosures.capture(chatArea);
+    const previousActivityItemIds = container._activityItemIds || new Set();
+    const currentActivityItemIds = new Set(timeline
+      .filter((item) => item.type === "activity_action" || item.type === "reasoning")
+      .map((item) => item.timelineId));
     container.innerHTML = "";
     const containerPlotPaths = container._plotPaths || new Set();
     const visiblePlotPaths = new Set();
@@ -2841,7 +2930,17 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
     const flushActivity = () => {
       if (!activityItems.length) return;
       const activityKey = `activity:${activityItems[0].timelineId || activityCount}`;
-      container.appendChild(createAgentActivity(activityItems, wireTimelineDetails, { activityKey }));
+      const activity = createAgentActivity(activityItems, wireTimelineDetails, {
+        activityKey,
+        previousItemIds: previousActivityItemIds,
+      });
+      if (activity) container.appendChild(activity);
+      const delegationCalls = delegationToolCalls(activityItems);
+      if (delegationCalls.length) {
+        container.appendChild(createDelegationGroup(delegationCalls, {
+          isNew: delegationCalls.some((call) => !previousActivityItemIds.has(call.action?.timelineId)),
+        }));
+      }
       const calls = activityItems
         .filter((item) => item.type === "activity_action")
         .flatMap((action) => action.toolCalls || []);
@@ -2879,6 +2978,7 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
     flushActivity();
     disclosures.prunePrefix(disclosurePrefix, liveKeys);
     container._plotPaths = visiblePlotPaths;
+    container._activityItemIds = currentActivityItemIds;
     visiblePlotPaths.forEach((path) => shownPlotPaths?.add(path));
   });
 }
@@ -2994,9 +3094,13 @@ function formatStepDuration(node) {
 
 function stepFeedTitle(node) {
   const input = node.input || {};
-  // The durable node identifier is the scan-friendly title. The often long
-  // instruction/action remains available in the expanded task details.
-  return input.node_id || input.step_id || node.id || node.label;
+  // A user needs to recognize the work before they need its durable ID. Keep
+  // the latter as a secondary label in the card header, while leading with
+  // the task the executor was delegated to perform.
+  return {
+    action: input.action || node.label || input.node_id || input.step_id || node.id || "Task",
+    identifier: input.node_id || input.step_id || node.id || "",
+  };
 }
 
 function renderStepInput(input) {

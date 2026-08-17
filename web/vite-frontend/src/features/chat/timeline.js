@@ -46,8 +46,8 @@ export function upsertTimelineThought(timeline, text) {
     last.text = compactRepeatedPrefixSnapshots(mergeReplayedText(last.text || "", compacted));
     return;
   }
-  // Reasoning is retained for inspection, but is not a peer of an action in
-  // the default execution trace. A following tool call makes it transient.
+  // Reasoning remains a chronological timeline entry. It is intentionally
+  // not inferred to belong to a later tool call without explicit metadata.
   timeline.push({ type: "reasoning", timelineId: nextTimelineItemId(timeline, "reasoning"), text: compacted });
 }
 
@@ -193,16 +193,6 @@ function findActionForNewCall(timeline, event) {
   return timeline.find((item) => item.type === "activity_action" && item.backendActionId === metadataId) || null;
 }
 
-function attachPendingReasoning(timeline, action) {
-  const index = timeline.findLastIndex((item) => item.type === "reasoning");
-  if (index < 0) return;
-  // Only reasoning immediately adjacent to this action is pending. Earlier
-  // reasoning belongs to an already-normalized action or planner state.
-  if (index < timeline.length - 2) return;
-  action.reasoning.push(timeline[index]);
-  timeline.splice(index, 1);
-}
-
 /**
  * Adapter from backend protocol events to the presentation model. Components
  * only receive unified ToolCall objects; input and output remain available as
@@ -219,7 +209,6 @@ export function upsertTimelineEvent(timeline, event) {
       id: event.id || nextTimelineItemId(timeline, "action-id"),
       backendActionId: actionMetadata(event),
       toolCalls: [],
-      reasoning: [],
       rawEvents: [],
     };
     call = {
@@ -234,7 +223,6 @@ export function upsertTimelineEvent(timeline, event) {
     };
     action.toolCalls.push(call);
     if (!timeline.includes(action)) timeline.push(action);
-    attachPendingReasoning(timeline, action);
   }
   if (isInput) {
     call.id ||= event.id;
