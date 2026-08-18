@@ -102,7 +102,10 @@ export function createSessionRuntime({
   }
 
   function attachStepNodes(timeline, pendingStepNodes) {
-    const launcherCalls = timeline.filter((item) => item.type === "function_call" && isExecutorLauncherTool(item.name));
+    const launcherCalls = timeline
+      .filter((item) => item.type === "activity_action")
+      .flatMap((action) => action.toolCalls || [])
+      .filter((call) => isExecutorLauncherTool(call.name));
     if (!launcherCalls.length) return timeline;
 
     // A resumed session may contain several parallel run_node_executor calls

@@ -1,5 +1,6 @@
 import { Network, DataSet } from "vis-network/standalone";
 import { createDisclosureController } from "../ui/disclosureState.js";
+import { installNetworkWheelZoom } from "./networkWheelZoom.js";
 
 const NODE_COLORS = {
   orchestrator: { core: "124, 58, 237", edge: "196, 181, 253", font: "#f5f3ff" },
@@ -117,7 +118,9 @@ export class AgentGraphView {
         tooltipDelay: 200,
         dragNodes: true,
         dragView: true,
-        zoomView: true,
+        // vis-network zooms a fixed amount for each event, which is unstable
+        // for high-resolution wheels and touchpads.
+        zoomView: false,
       },
     };
 
@@ -126,6 +129,7 @@ export class AgentGraphView {
       { nodes: this._nodes, edges: this._edges },
       options
     );
+    installNetworkWheelZoom(this._container, this._network);
 
     this._network.on("selectNode", (params) => {
       if (params.nodes.length) this._showDetail(params.nodes[0]);
@@ -1152,7 +1156,7 @@ export class StepExecutionFeed {
     this._liveAnchorEl = null;
     this._liveContainerEl = null;
     this._liveStartedAt = null;
-    this._liveToolHostEl = null;
+    this._liveToolHosts = new Map();
     this._stepById = new Map();
     this._childNodes = new Map();
   }
@@ -1164,7 +1168,7 @@ export class StepExecutionFeed {
     this._liveAnchorEl = null;
     this._liveContainerEl = null;
     this._liveStartedAt = null;
-    this._liveToolHostEl = null;
+    this._liveToolHosts.clear();
     this._stepById = new Map();
     this._childNodes = new Map();
   }
@@ -1179,7 +1183,7 @@ export class StepExecutionFeed {
     this._liveContainerEl = document.createElement("div");
     this._liveContainerEl.className = "step-feed-live-region";
     this._liveContainerEl.dataset.stepLiveRegion = "true";
-    this._liveToolHostEl = null;
+    this._liveToolHosts.clear();
 
     if (hostEl?.isConnected) {
       hostEl.appendChild(this._liveContainerEl);
@@ -1192,19 +1196,20 @@ export class StepExecutionFeed {
     return this._liveContainerEl;
   }
 
-  attachLiveToolHost(hostEl) {
-    if (!hostEl || !this._liveContainerEl) return false;
+  attachLiveToolHost(hostEl, nodeId = "") {
+    if (!hostEl) return false;
+    const key = String(nodeId || "");
+    if (!key) return false;
 
-    // The timeline is rebuilt for every streamed event. Its inline host is
-    // therefore transient, but the live feed and its cards are not. Move that
-    // persistent region into the current host for the executor tool call so
-    // cards appear at their chronological point in the assistant message,
-    // rather than remaining at the bottom of the bubble.
-    if (this._liveToolHostEl?.isConnected && this._liveToolHostEl !== hostEl) return false;
-    if (this._liveToolHostEl === hostEl && this._liveContainerEl.parentElement === hostEl) return true;
-
-    hostEl.appendChild(this._liveContainerEl);
-    this._liveToolHostEl = hostEl;
+    // A turn can launch several independent executors. Associate each live
+    // node with its own host instead of moving one shared region between
+    // calls, which previously made every card land in the final action.
+    this._liveToolHosts.set(key, hostEl);
+    const node = [...this._stepById.values()].find((item) => this._nodeExecutionKey(item) === key);
+    const card = node && this._cards.get(node.id);
+    if (node && card) {
+      this._insertIntoLiveContainer(hostEl, card, node);
+    }
     return true;
   }
 
@@ -1212,15 +1217,15 @@ export class StepExecutionFeed {
     this._liveAnchorEl = null;
     this._liveContainerEl = null;
     this._liveStartedAt = null;
-    this._liveToolHostEl = null;
+    this._liveToolHosts.clear();
   }
 
   update(graphData) {
     if (!graphData || typeof graphData.nodes !== "object") return;
-    const liveContainer = this._activeLiveContainer();
+    const hasLiveDestination = this._liveToolHosts.size > 0 || this._activeLiveContainer();
     const steps = Object.values(graphData.nodes)
       .filter((node) => node.type === "step")
-      .filter((node) => !liveContainer || this._isLiveStep(node))
+      .filter((node) => !hasLiveDestination || this._isLiveStep(node))
       .sort((a, b) => {
         const ta = a.start_time ? new Date(a.start_time).getTime() : Infinity;
         const tb = b.start_time ? new Date(b.start_time).getTime() : Infinity;
@@ -1264,12 +1269,19 @@ export class StepExecutionFeed {
   }
 
   _activeLiveContainer() {
-    if (this._liveToolHostEl && document.body.contains(this._liveToolHostEl)) {
-      return this._liveToolHostEl;
-    }
     return this._liveContainerEl && this._liveContainerEl.isConnected
       ? this._liveContainerEl
       : null;
+  }
+
+  _nodeExecutionKey(node) {
+    const input = node?.input || {};
+    return String(input.node_id || input.step_id || node?.id || "");
+  }
+
+  _liveHostForNode(node) {
+    const host = this._liveToolHosts.get(this._nodeExecutionKey(node));
+    return host?.isConnected ? host : null;
   }
 
   _isLiveStep(node) {
@@ -1318,7 +1330,7 @@ export class StepExecutionFeed {
 
   _placeCard(outer, node) {
     outer.classList.remove("step-feed-child-message");
-    const liveContainer = this._activeLiveContainer();
+    const liveContainer = this._liveHostForNode(node) || this._activeLiveContainer();
     if (liveContainer) {
       this._insertIntoLiveContainer(liveContainer, outer, node);
       return;
@@ -1490,27 +1502,43 @@ export class StepExecutionFeed {
 
     const details = outer.querySelector(".step-feed-details");
     const cardKey = `step:${node.id}:card`;
+    const isRunning = node.status === "running";
+    if (!isRunning) this._disclosures.state.delete(cardKey);
     const userChoice = this._disclosures.state.get(cardKey);
-    // Preserve an already-open running card when polling changes its status
-    // to completed/cancelled. Otherwise that status transition collapses the
-    // Node before the following session snapshot can preserve its UI state.
-    details.open = userChoice === undefined
-      ? details.open || node.status === "running"
-      : userChoice;
+    // A card stays open while work is live, then automatically compacts at
+    // completion. A reader can still opt out of the live default explicitly.
+    details.open = isRunning && (userChoice === undefined ? true : userChoice);
     details.innerHTML = "";
 
     const summary = document.createElement("summary");
     summary.className = "step-feed-summary";
+    const titleInfo = this._stepFeedTitle(node);
     const title = document.createElement("span");
     title.className = "step-feed-title";
-    title.textContent = this._stepFeedTitle(node);
-    const badge = document.createElement("span");
-    badge.className = `badge badge-${node.status || "idle"}`;
-    badge.textContent = node.status || "idle";
+    const task = document.createElement("span");
+    task.className = "step-feed-task";
+    task.textContent = titleInfo.action;
+    title.appendChild(task);
+    if (titleInfo.identifier) {
+      const identity = document.createElement("span");
+      identity.className = "step-feed-identity";
+      identity.textContent = `Sub-agent · ${titleInfo.identifier}`;
+      title.appendChild(identity);
+    }
+    if (node.summary) {
+      const result = document.createElement("span");
+      result.className = "step-feed-result-preview";
+      result.textContent = node.summary;
+      title.appendChild(result);
+    }
+    const status = document.createElement("span");
+    status.className = `step-feed-status step-feed-status-${node.status || "idle"}`;
+    status.textContent = ["failed", "cancelled", "blocked"].includes(node.status) ? "!" : node.status === "running" ? "◌" : "✓";
+    status.title = node.status || "idle";
     const meta = document.createElement("span");
     meta.className = "step-feed-meta";
     meta.textContent = this._formatStepDuration(node);
-    summary.append(title, badge, meta);
+    summary.append(status, title, meta);
 
     const stepNumber = node.input && node.input.step_number;
     if (node.status === "running" && stepNumber !== undefined && stepNumber !== null) {

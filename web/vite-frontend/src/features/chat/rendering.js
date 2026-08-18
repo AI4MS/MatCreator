@@ -173,7 +173,7 @@ export function createChatRenderer({ chatArea, bottomOverlay = null }) {
   function getCharWidths() {
     if (asciiWidth) return { ascii: asciiWidth, cjk: cjkWidth };
     const sample = document.createElement("span");
-    sample.style.cssText = "position:absolute;visibility:hidden;font:14px 'Courier New',Consolas,monospace;white-space:pre;";
+    sample.style.cssText = "position:absolute;visibility:hidden;font:14px var(--mono);white-space:pre;";
     document.body.appendChild(sample);
     sample.textContent = "x";
     asciiWidth = sample.getBoundingClientRect().width;

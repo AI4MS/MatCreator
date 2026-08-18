@@ -11,6 +11,7 @@ export function createMessageStreamController(deps) {
     canWriteActiveSession, showLoginModal, createSession, addMessage, addAgentTimelineMessage,
     addPlanApprovalActions, renderTimeline, messageWithUploadNames, messageWithUploadContext, clearCurrentUploads,
     autoResizeTextInput, stepExecutionFeed, agentGraph, planGraph, updateSendButtonState, updateAgentRunningStatus,
+    attachAgentRunningIndicator,
     releaseSessionRequest, managedRunEventsUrl, shouldRefreshPlanGraphForTool,
     generateSessionSummary, refreshSessionFiles, sessionRuntime,
   } = deps;
@@ -110,6 +111,10 @@ export function createMessageStreamController(deps) {
     const timeline = [];
     const shownPlotPaths = new Set();
     const timelineContainer = addAgentTimelineMessage(timeline, shownPlotPaths);
+    // The agent shell is visible immediately while the first SSE event is
+    // pending, so the user sees progress in the conversational flow rather
+    // than an isolated indicator above the composer.
+    attachAgentRunningIndicator(timelineContainer);
 
     const previousPlanGraphKey = planGraph.currentGraphKey();
     agentGraph.reset();
@@ -127,15 +132,26 @@ export function createMessageStreamController(deps) {
       backendUserId: activeSessionBackendUserId(), controller: new AbortController(), lastSequence: 0, runId: null,
     };
     state.activeRequests.set(request.key, request);
-    updateAgentRunningStatus("thinking");
+    // Make connection progress explicit even before the agent has emitted its
+    // first thought, tool call, or text token.  This is especially important
+    // while a server-mode worker is starting.
+    updateAgentRunningStatus("connecting");
     updateSendButtonState();
 
     let lineBuffer = "";
     let summaryTriggered = false;
     let validatedPlanThisTurn = false;
     let executionApprovedThisTurn = false;
+    let pendingTimelineFrame = null;
     const renderPendingTimeline = () => {
-      if (timeline.length) renderTimeline(timelineContainer, timeline, shownPlotPaths);
+      if (!timeline.length || pendingTimelineFrame !== null) return;
+      // A single SSE message can contain several parts. Rendering each part
+      // independently creates competing height changes in the activity and
+      // assistant text; coalesce them into one browser frame instead.
+      pendingTimelineFrame = requestAnimationFrame(() => {
+        pendingTimelineFrame = null;
+        if (timelineContainer.isConnected) renderTimeline(timelineContainer, timeline, shownPlotPaths);
+      });
     };
     const handleAdkData = (data) => {
       if (data === "[DONE]") return;
@@ -204,6 +220,7 @@ export function createMessageStreamController(deps) {
       request.runId = (await startResponse.json()).run_id;
       const eventsResponse = await fetch(managedRunEventsUrl(request), { headers: { Accept: "text/event-stream" }, signal: request.controller.signal });
       if (!eventsResponse.ok) throw new Error(`HTTP ${eventsResponse.status}`);
+      updateAgentRunningStatus("connected");
       const reader = eventsResponse.body.getReader();
       const decoder = new TextDecoder();
       let eventBuffer = "";

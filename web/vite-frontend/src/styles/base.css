@@ -48,7 +48,7 @@ body[data-theme="dark"] {
   --timeline-badge-out-bg: #6E9B89;
   --timeline-badge-out-text: #121616;
 
-  /* Fixed terminal surface, intentionally shared by both themes. */
+  /* Terminal/code surface; overridden for the light theme below. */
   --terminal-bg: #121616;
   --terminal-border: #2C3331;
   --terminal-text: #EBEEEC;
@@ -77,7 +77,10 @@ body[data-theme="dark"] {
   --scrollbar-track: rgba(18, 22, 22, 0.72);
   --scrollbar-thumb: rgba(195, 100, 77, 0.22);
   --scrollbar-thumb-hover: rgba(195, 100, 77, 0.38);
-  --mono: 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', 'Cascadia Mono', 'Fira Code', 'JetBrains Mono', 'Consolas', 'Menlo', monospace;
+  /* Coding font stack: prefer modern VS Code-style fonts, then platform fallbacks. */
+  --mono: 'Cascadia Code', 'Cascadia Mono', 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', 'Roboto Mono', 'Consolas', 'Menlo', 'Monaco', 'Liberation Mono', 'DejaVu Sans Mono', monospace;
+  /* Manrope has no CJK glyphs, so keep an explicit sans-serif CJK fallback. */
+  --font-sans: 'Manrope', 'Noto Sans SC', 'Noto Sans CJK SC', 'Source Han Sans SC', 'Microsoft YaHei', 'PingFang SC', system-ui, -apple-system, sans-serif;
   --composer-height: 68px;
   --composer-gap: 16px;
   /* Shared message tokens (non-color) */
@@ -100,6 +103,11 @@ body[data-theme="light"] {
   --bg-canvas: #ECEDEF;
   --bg-surface: #F7F7F6;
   --bg-elevated: #FFFFFF;
+
+  --terminal-bg: #f5f6f7;
+  --terminal-border: #D4D7DA;
+  --terminal-text: #22262C;
+  --terminal-muted: #626972;
 
   --text-primary: #22262C;
   --text-secondary: #626972;
@@ -207,11 +215,18 @@ body[data-theme="light"] {
 }
 
 body {
-  font-family: 'Manrope', system-ui, -apple-system, sans-serif;
+  font-family: var(--font-sans);
   background: var(--bg);
   color: var(--text);
   min-height: 100vh;
   padding: 16px;
+}
+
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
 }
 
 .page {
