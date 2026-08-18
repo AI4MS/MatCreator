@@ -19,7 +19,10 @@ server {
     proxy_send_timeout 3600s;
 
     # SSE routes — no buffering, long timeout
-    location ~ ^/(run_sse|apps|list-apps) {
+    # Managed chat runs are relayed through /api/runs/<id>/events.  Keep this
+    # route here as well: otherwise nginx's default proxy buffering holds both
+    # agent activity and assistant text until the run finishes.
+    location ~ ^/(run_sse|apps|list-apps|api/runs/[^/]+/events)$ {
         proxy_pass http://control_plane;
         proxy_http_version 1.1;
         proxy_set_header Connection "";

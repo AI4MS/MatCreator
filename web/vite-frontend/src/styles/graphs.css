@@ -213,7 +213,7 @@ body[data-theme="light"] .graph-panel-title {
   background: rgba(var(--panel-rgb), 0.98) !important;
   color: var(--text) !important;
   box-shadow: var(--popup-shadow) !important;
-  font-family: 'Manrope', system-ui, -apple-system, sans-serif !important;
+  font-family: var(--font-sans) !important;
   font-size: 12px !important;
   line-height: 1.4;
   padding: 7px 9px !important;
