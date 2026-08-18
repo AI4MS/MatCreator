@@ -2,6 +2,31 @@
 
 <!-- version list -->
 
+## v2.19.0 (2026-08-18)
+
+### Bug Fixes
+
+- Avoid uncontrolled zooming in graphs
+  ([`beb03f3`](https://github.com/AI4MS/MatCreator/commit/beb03f3064094abcb769fc0e635faf4efb95dcc8))
+
+- Json parsing error when two json sticking together
+  ([`3e78e3d`](https://github.com/AI4MS/MatCreator/commit/3e78e3dc351e00dd6a69e1873192a0e687ae2dd4))
+
+- Remove sub agent card redundant gizmos
+  ([`2fa6de9`](https://github.com/AI4MS/MatCreator/commit/2fa6de9e8663b419b5666b3fba48377ef8f2269d))
+
+### Features
+
+- Auto folding of finished activities
+  ([`94dbd5e`](https://github.com/AI4MS/MatCreator/commit/94dbd5e154c7d9408d9034980a7e14e727225680))
+
+- Chat bubble agent info optimization
+  ([`1f95cb6`](https://github.com/AI4MS/MatCreator/commit/1f95cb6441c227af54a5cb32f5992e524dda62f6))
+
+- Cleaning the agent chat bubbles
+  ([`c145652`](https://github.com/AI4MS/MatCreator/commit/c1456525cb16cc1877394524df3463252ccb57e6))
+
+
 ## v2.18.1 (2026-08-15)
 
 ### Bug Fixes
