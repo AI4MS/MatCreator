@@ -1302,8 +1302,10 @@ export function createSkillGraphController({
     actions.className = "skill-graph-header-actions";
     const addNode = document.createElement("button");
     addNode.type = "button";
-    addNode.className = "ghost mini-btn";
-    addNode.textContent = "Add node";
+    addNode.className = "primary mini-btn skill-graph-add-node";
+    addNode.setAttribute("aria-label", "Add node");
+    addNode.dataset.tooltip = "Add node";
+    addNode.textContent = "+";
     addNode.addEventListener("click", renderSkillGraphCreatePanel);
     const unofficialToggle = document.createElement("button");
     unofficialToggle.type = "button";
