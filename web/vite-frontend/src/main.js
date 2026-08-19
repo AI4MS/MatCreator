@@ -1012,15 +1012,13 @@ const agentGraph = new AgentGraphView("agent-graph", {
   graphViewport,
   requestStepCancellation,
   createArtifactListItem,
-  createJsonBlock,
-  getStructurePaths,
-  createStructureViewButton,
+  renderStepConversationEvent,
+  renderStepToolCall,
   syncPanelResizerVisibility: () => layoutController.syncPanelResizerVisibility(),
 });
 const planGraph = new ExecutionPlanView("plan-graph-canvas", {
   toggleButton: document.getElementById("plan-graph-toggle"),
   thumbnailElement: document.getElementById("plan-graph-thumbnail"),
-  onNewGraph: () => showPlanGraph(),
 });
 const layoutController = createLayoutController({
   getUserId: () => state.userId,
@@ -1105,6 +1103,7 @@ function updateAgentRunningStatus(phase = "working") {
     working: ["MatCreator is working. Please wait…", "thinking"],
     thinking: ["MatCreator is thinking…", "thinking"],
     planning: ["MatCreator is planning the workflow…", "thinking"],
+    finalizing_plan: ["Plan validated — preparing it for review…", "thinking"],
     searching: ["MatCreator is searching for information…", "searching"],
     executing: ["MatCreator is executing the workflow…", "computing"],
     computing: ["MatCreator is computing…", "computing"],
@@ -1169,10 +1168,13 @@ function showPlanGraph() {
   planGraphToggleBtn?.setAttribute("aria-pressed", "true");
   planGraphToggleBtn?.setAttribute("title", "Close roadmap");
   planGraphToggleBtn?.setAttribute("aria-label", "Close roadmap");
-  requestAnimationFrame(() => {
+  // vis-network calculates its camera from the canvas dimensions. Because the
+  // popup was `display: none`, wait for one layout frame to expose it and a
+  // second frame for flex sizing to settle before fitting the initial view.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
     planGraph.notifyLayoutChanged();
-    planGraph.fitToView();
-  });
+    planGraph.fitToView({ animate: false });
+  }));
 }
 
 function hidePlanGraph() {
@@ -3243,6 +3245,7 @@ const messageStreamController = createMessageStreamController({
   generateSessionSummary,
   refreshSessionFiles,
   sessionRuntime,
+  showPlanGraph,
 });
 
 function setUploadStatus(message, tone = "idle") {

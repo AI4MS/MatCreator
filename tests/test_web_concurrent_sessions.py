@@ -32,7 +32,7 @@ def test_plan_approval_uses_live_validation_and_consumes_stale_prompt() -> None:
     assert 'querySelectorAll(".plan-approval-message")' in content
     assert "let validatedPlanThisTurn = false;" in content
     assert 'response.name === "validate_graph"' in content
-    assert "validatedPlanThisTurn && !executionApprovedThisTurn" in content
+    assert '!validatedPlanThisTurn || executionApprovedThisTurn' in content
     assert "sessionRuntime.restorePlanApproval(request.sessionId);" in content
     assert "addPlanApprovalActions(latestTimeline);" in content
 
@@ -95,8 +95,37 @@ def test_completed_request_releases_composer_before_refreshes() -> None:
     finally_block = send_message[send_message.index("} finally {"):]
 
     assert finally_block.index("releaseSessionRequest(request);") < finally_block.index(
-        "await agentGraph._poll(request.sessionId);"
+        "await Promise.allSettled(["
     )
+    assert 'terminalStatus = event.status;' in send_message
+    assert 'updateAgentRunningStatus("finalizing_plan");' in send_message
+    assert 'finalizing_plan: ["Plan validated — preparing it for review…", "thinking"]' in _main_js()
+    assert send_message.index("releaseSessionRequest(request);") < send_message.index("revealPlanApproval();")
+    assert finally_block.index("revealPlanApproval();") < finally_block.index("await Promise.allSettled([")
+
+
+def test_roadmap_auto_opens_at_completed_plan_handoff() -> None:
+    main = _main_js()
+    streams = _message_stream_js()
+    graph = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "graphs" / "ExecutionPlanView.js").read_text(encoding="utf-8")
+
+    assert "showPlanGraph," in main
+    assert "let roadmapOpenedForPlan = false;" in streams
+    assert "showPlanGraph();" in streams
+    assert streams.index('terminalStatus = event.status;') < streams.index("revealPlanApproval();", streams.index('terminalStatus = event.status;'))
+    assert "onNewGraph: () => showPlanGraph()" not in main
+    assert "autoOpenOnNewGraph" not in streams
+    assert "_autoOpenOnNewGraph" not in graph
+
+
+def test_roadmap_fits_after_the_popup_has_a_stable_layout() -> None:
+    main = _main_js()
+    graph = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "graphs" / "ExecutionPlanView.js").read_text(encoding="utf-8")
+
+    show_roadmap = main[main.index("function showPlanGraph()") : main.index("function hidePlanGraph()")]
+    assert "requestAnimationFrame(() => requestAnimationFrame(() =>" in show_roadmap
+    assert "planGraph.fitToView({ animate: false });" in show_roadmap
+    assert "fitToView({ animate = true } = {})" in graph
 
 
 def test_running_session_switch_discovers_and_reconnects_managed_run() -> None:
@@ -144,7 +173,8 @@ def test_stop_feedback_uses_managed_run_status_and_survives_session_refresh() ->
     assert 'fetch(`/api/runs/${encodeURIComponent(request.runId)}`)' in content
     assert '["completed", "failed", "cancelled"].includes(run.status)' in content
     assert "request.stopStatus = \"stopped\";\n        releaseSessionRequest(request);" in content
-    assert "await reloadSessionSnapshot();\n      // A session snapshot replaces the chat DOM." in content
+    assert "reloadSessionSnapshot()," in content
+    assert "await Promise.allSettled([" in content
     assert "renderStopStatus(request);" in content
     assert "cancellation_requested" not in content
 

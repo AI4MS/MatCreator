@@ -13,7 +13,7 @@ export function createMessageStreamController(deps) {
     autoResizeTextInput, stepExecutionFeed, agentGraph, planGraph, updateSendButtonState, updateAgentRunningStatus,
     attachAgentRunningIndicator,
     releaseSessionRequest, managedRunEventsUrl, shouldRefreshPlanGraphForTool,
-    generateSessionSummary, refreshSessionFiles, sessionRuntime,
+    generateSessionSummary, refreshSessionFiles, sessionRuntime, showPlanGraph,
   } = deps;
 
   function renderStopStatus(request) {
@@ -116,12 +116,11 @@ export function createMessageStreamController(deps) {
     // than an isolated indicator above the composer.
     attachAgentRunningIndicator(timelineContainer);
 
-    const previousPlanGraphKey = planGraph.currentGraphKey();
     agentGraph.reset();
     planGraph.reset();
     const liveTurn = stepExecutionFeed.startLiveTurn(userMessage, startedAt, timelineContainer.parentElement);
     agentGraph.startPolling(state.sessionId);
-    planGraph.startPolling(state.sessionId, { autoOpenOnNewGraph: true, autoOpenBaselineKey: previousPlanGraphKey });
+    planGraph.startPolling(state.sessionId);
     const owner = state.activeSessionUserId || state.userId;
     // The optimistic user message and live assistant shell already represent
     // this session. Mark it before the first persisted snapshot arrives so
@@ -142,6 +141,8 @@ export function createMessageStreamController(deps) {
     let summaryTriggered = false;
     let validatedPlanThisTurn = false;
     let executionApprovedThisTurn = false;
+    let terminalStatus = null;
+    let roadmapOpenedForPlan = false;
     let pendingTimelineFrame = null;
     const renderPendingTimeline = () => {
       if (!timeline.length || pendingTimelineFrame !== null) return;
@@ -152,6 +153,34 @@ export function createMessageStreamController(deps) {
         pendingTimelineFrame = null;
         if (timelineContainer.isConnected) renderTimeline(timelineContainer, timeline, shownPlotPaths);
       });
+    };
+    const flushPendingTimeline = () => {
+      if (pendingTimelineFrame !== null) {
+        cancelAnimationFrame(pendingTimelineFrame);
+        pendingTimelineFrame = null;
+      }
+      if (timeline.length && timelineContainer.isConnected) {
+        renderTimeline(timelineContainer, timeline, shownPlotPaths);
+      }
+    };
+    const revealPlanApproval = () => {
+      if (terminalStatus !== "completed" || !validatedPlanThisTurn || executionApprovedThisTurn
+        || sessionRequestKey(request.sessionId, request.owner) !== sessionRequestKey()) return;
+      // The terminal event is the safe handoff boundary: the backend no longer
+      // owns this session, so approval can start a new run immediately. Do not
+      // make the user wait for graph, file, and persisted-session refreshes.
+      flushPendingTimeline();
+      sessionRuntime.restorePlanApproval(request.sessionId);
+      const latestTimeline = timelineContainer.isConnected
+        ? timelineContainer
+        : Array.from(chatArea.querySelectorAll(".agent-message .timeline-container")).at(-1);
+      if (latestTimeline) addPlanApprovalActions(latestTimeline);
+      // Open once at the completed-plan handoff, not when validate_graph first
+      // creates the graph. Closing it afterward remains the user's choice.
+      if (!roadmapOpenedForPlan) {
+        roadmapOpenedForPlan = true;
+        showPlanGraph();
+      }
     };
     const handleAdkData = (data) => {
       if (data === "[DONE]") return;
@@ -171,11 +200,16 @@ export function createMessageStreamController(deps) {
             updateAgentRunningStatus(phaseForTool(response.name));
             if (shouldRefreshPlanGraphForTool(response.name)) planGraph.refresh(request.sessionId);
             if ((response.name === "validate_graph" || response.name === "validate_plan")
-              && response.response?.status === "ok") validatedPlanThisTurn = true;
+              && response.response?.status === "ok") {
+              validatedPlanThisTurn = true;
+              updateAgentRunningStatus("finalizing_plan");
+            }
             if ((response.name === "confirm_plan_and_start_execution" || response.name === "resume_execution")
               && response.response?.status === "ok") executionApprovedThisTurn = true;
           } else if (part.text) {
-            updateAgentRunningStatus("thinking");
+            updateAgentRunningStatus(validatedPlanThisTurn && !executionApprovedThisTurn
+              ? "finalizing_plan"
+              : "thinking");
             upsertTimelineText(timeline, part.text);
             if (!summaryTriggered && !state.summaryGeneratedFor.has(request.sessionId) && !state.sessionSummaries[request.sessionId]) {
               summaryTriggered = true;
@@ -193,10 +227,16 @@ export function createMessageStreamController(deps) {
       lines.forEach((line) => { const trimmed = line.trim(); if (trimmed.startsWith("data: ")) handleAdkData(trimmed.slice(6)); });
     };
     const reloadSessionSnapshot = async () => {
+      const newerRequestIsActive = () => {
+        const active = activeSessionRequest();
+        return active && active !== request;
+      };
+      if (newerRequestIsActive()) return;
       // ADK may close the managed SSE stream before its session database has
       // received the final events. Do not let such an incomplete snapshot
       // erase the optimistic user message and already-streamed agent reply.
       const restored = await sessionRuntime.loadSession(request.sessionId, request.owner, { render: false });
+      if (newerRequestIsActive()) return;
       const events = restored?.events || [];
       const userEventIndex = events.findIndex((event) => event?.author === "user"
         && (event.content?.parts || []).some((part) => String(part.text || "").includes(backendMessage)));
@@ -242,7 +282,13 @@ export function createMessageStreamController(deps) {
           else if (event.type === "snapshot_required") await reloadSessionSnapshot();
           else if (event.type === "terminal") {
             request.lastSequence = event.latest_sequence || request.lastSequence;
+            terminalStatus = event.status;
             if (event.status === "failed") throw new Error(event.error || "Agent run failed");
+            if (event.status === "completed") {
+              releaseSessionRequest(request);
+              stepExecutionFeed.finishLiveTurn();
+              revealPlanApproval();
+            }
           }
         }
       }
@@ -254,13 +300,19 @@ export function createMessageStreamController(deps) {
       // does. Keep the composer locked until cancellation polling observes a
       // terminal run, otherwise a new send would clear the cancellation flag.
       if (request.stopStatus !== "waiting") releaseSessionRequest(request);
-      await agentGraph._poll(request.sessionId);
-      agentGraph.stopPolling();
-      await planGraph._poll(request.sessionId);
-      planGraph.stopPolling();
-      await refreshSessionFiles(request.sessionId, request.owner);
       stepExecutionFeed.finishLiveTurn();
-      await reloadSessionSnapshot();
+      revealPlanApproval();
+      // These are independent reconciliation tasks. They keep the durable
+      // session, roadmap, agent graph, and files current, but none is required
+      // before the user can act on a completed plan.
+      await Promise.allSettled([
+        agentGraph._poll(request.sessionId),
+        planGraph._poll(request.sessionId),
+        refreshSessionFiles(request.sessionId, request.owner),
+        reloadSessionSnapshot(),
+      ]);
+      agentGraph.stopPolling();
+      planGraph.stopPolling();
       // A session snapshot replaces the chat DOM. Restore the stop indicator
       // from the request state so cancellation feedback is never lost during
       // the final refresh.
@@ -268,14 +320,7 @@ export function createMessageStreamController(deps) {
       // Do not depend on session DB timing for the prompt.  The live ADK
       // response is authoritative; the persisted snapshot remains a fallback
       // for page refreshes and reconnects.
-      if (validatedPlanThisTurn && !executionApprovedThisTurn
-        && sessionRequestKey(request.sessionId, request.owner) === sessionRequestKey()) {
-        sessionRuntime.restorePlanApproval(request.sessionId);
-        const latestTimeline = timelineContainer.isConnected
-          ? timelineContainer
-          : Array.from(chatArea.querySelectorAll(".agent-message .timeline-container")).at(-1);
-        if (latestTimeline) addPlanApprovalActions(latestTimeline);
-      }
+      revealPlanApproval();
     }
   }
 
