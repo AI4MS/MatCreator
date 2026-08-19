@@ -12,8 +12,15 @@ export function createImageLightbox() {
     dragStartY: 0,
     dragStartTranslateX: 0,
     dragStartTranslateY: 0,
+    closeTimer: null,
+    closeTransitionHandler: null,
 
     open(src) {
+      window.clearTimeout(this.closeTimer);
+      if (this.closeTransitionHandler) {
+        this.el.removeEventListener("transitionend", this.closeTransitionHandler);
+        this.closeTransitionHandler = null;
+      }
       this.scale = 1;
       this.translateX = 0;
       this.translateY = 0;
@@ -24,8 +31,30 @@ export function createImageLightbox() {
     },
 
     close() {
+      window.clearTimeout(this.closeTimer);
+      if (this.closeTransitionHandler) {
+        this.el.removeEventListener("transitionend", this.closeTransitionHandler);
+        this.closeTransitionHandler = null;
+      }
       this.el.classList.add("hidden");
-      this.img.src = "";
+      if (window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+        this.img.removeAttribute("src");
+        return;
+      }
+
+      const releaseImage = () => {
+        window.clearTimeout(this.closeTimer);
+        if (this.closeTransitionHandler) {
+          this.el.removeEventListener("transitionend", this.closeTransitionHandler);
+          this.closeTransitionHandler = null;
+        }
+        if (this.el.classList.contains("hidden")) this.img.removeAttribute("src");
+      };
+      this.closeTransitionHandler = (event) => {
+        if (event.target === this.el && event.propertyName === "opacity") releaseImage();
+      };
+      this.el.addEventListener("transitionend", this.closeTransitionHandler);
+      this.closeTimer = window.setTimeout(releaseImage, 250);
     },
 
     applyTransform() {
