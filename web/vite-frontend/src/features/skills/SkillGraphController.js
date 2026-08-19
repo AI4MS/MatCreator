@@ -1305,10 +1305,35 @@ export function createSkillGraphController({
     addNode.className = "ghost mini-btn";
     addNode.textContent = "Add node";
     addNode.addEventListener("click", renderSkillGraphCreatePanel);
+    const unofficialToggle = document.createElement("button");
+    unofficialToggle.type = "button";
+    unofficialToggle.className = "ghost mini-btn warning";
+    unofficialToggle.textContent = "Disable unofficial";
+    unofficialToggle.title = "Disable every KDG node except maintained builtin and SkillForge skills.";
+    unofficialToggle.addEventListener("click", async () => {
+      const enable = skillGraphTab?.unofficialNodesAllDisabled === true;
+      unofficialToggle.disabled = true;
+      try {
+        const resp = await fetch("/api/skill-graph/unofficial/toggle", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ disabled: !enable }),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        const result = await resp.json();
+        await refreshSkillGraphData();
+        skillGraphTab.status.textContent = `${enable ? "enabled" : "disabled"} ${result.changed} unofficial node${result.changed === 1 ? "" : "s"}`;
+      } catch (err) {
+        skillGraphTab.status.className = "graph-status status-idle";
+        skillGraphTab.status.textContent = `${enable ? "enable" : "disable"} failed: ${String(err.message || err)}`;
+      } finally {
+        unofficialToggle.disabled = false;
+      }
+    });
     const status = document.createElement("span");
     status.className = "graph-status status-idle";
     status.textContent = "idle";
-    actions.append(addNode, status);
+    actions.append(addNode, unofficialToggle, status);
     header.append(heading, knowledgeReviewBanner, actions);
 
     const body = document.createElement("div");
@@ -1326,6 +1351,8 @@ export function createSkillGraphController({
       button,
       panel,
       status,
+      unofficialToggle,
+      unofficialNodesAllDisabled: false,
       canvas,
       detail,
       network: null,
@@ -1394,6 +1421,25 @@ export function createSkillGraphController({
     if (items.length) dataSet.update(items);
   }
 
+  function updateUnofficialToggle(summary) {
+    const tab = skillGraphTab;
+    if (!tab?.unofficialToggle) return;
+    const total = Number(summary?.total || 0);
+    const enabled = Number(summary?.enabled || 0);
+    const officialDisabled = Number(summary?.official_disabled || 0);
+    const allDisabled = total > 0 && enabled === 0 && officialDisabled === 0;
+    tab.unofficialNodesAllDisabled = allDisabled;
+    tab.unofficialToggle.textContent = allDisabled ? "Enable unofficial" : "Disable unofficial";
+    tab.unofficialToggle.title = allDisabled
+      ? `Restore ${total} non-official KDG node${total === 1 ? "" : "s"}.`
+      : officialDisabled > 0
+        ? `Disable non-official nodes and restore ${officialDisabled} maintained base node${officialDisabled === 1 ? "" : "s"}.`
+        : `Disable ${enabled} enabled non-official KDG node${enabled === 1 ? "" : "s"}.`;
+    tab.unofficialToggle.classList.toggle("success", allDisabled);
+    tab.unofficialToggle.classList.toggle("warning", !allDisabled);
+    tab.unofficialToggle.disabled = total === 0;
+  }
+
   async function refreshSkillGraphData({ selectedNodeId = null } = {}) {
     const tab = skillGraphTab;
     if (!tab?.network || !tab.nodesDataSet || !tab.edgesDataSet) {
@@ -1406,6 +1452,7 @@ export function createSkillGraphController({
     const resp = await fetch("/api/skill-graph/data?limit=500");
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
+    updateUnofficialToggle(data.unofficial);
     const positions = tab.network.getPositions();
     tab.nodeData = new Map((data.nodes || []).map((node) => [node.id, node]));
     tab.edges = data.edges || [];
@@ -1441,6 +1488,7 @@ export function createSkillGraphController({
       const resp = await fetch("/api/skill-graph/data?limit=500");
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
+      updateUnofficialToggle(data.unofficial);
       tab.nodeData = new Map((data.nodes || []).map((node) => [node.id, node]));
       tab.edges = data.edges || [];
 
