@@ -52,15 +52,16 @@ and the latest connectivity observation without conflating them.
 | `BohrSandboxAdapter` | `src/matcreator/control_plane/providers/bohr_sandbox.py` | Interactive sandbox via the `bohr` CLI (`bohr sandbox create/exec/files/describe/delete`). No pause/resume — the CLI has no such subcommand. |
 | `BohrJobAdapter` | `src/matcreator/control_plane/providers/bohr_job.py` | Batch/HPC-style job via the `bohr` CLI (`bohr job submit/describe/download/terminate`). Submit-time inputs only; no interactive exec. |
 | `RemoteJobMonitor` | `src/matcreator/control_plane/remote_job_monitor.py` | Periodically reconciles active jobs of every registered provider, using each adapter's own `poll_interval_seconds` for backoff scheduling. |
-| Agent tools | `src/matcreator/agents/execution_agent/remote_job_tools.py` | Provider-specific submit tools (`submit_e2b_sandbox`, `submit_bohr_sandbox`, `submit_bohr_job`) plus provider-generic post-submission tools that dispatch on `job_id` alone. |
+| Agent tools | `src/matcreator/agents/execution_agent/remote_job_tools.py` | Provider-specific submit tools (`submit_bohr_sandbox`, `submit_bohr_job`; `submit_e2b_sandbox` is retained for existing e2b jobs but is no longer registered on the step executor) plus provider-generic post-submission tools that dispatch on `job_id` alone. |
 | Middleware APIs | `web/main.py` | List jobs/events and offer session-owner pause, terminate, and refresh endpoints, generic across providers. |
 
 ## Submission and Persistence
 
 Submission is provider-specific — an interactive sandbox needs a template
 while a batch job needs a machine type and image — so there is one submit
-tool per provider: `submit_e2b_sandbox`, `submit_bohr_sandbox`,
-`submit_bohr_job`. Each builds a deterministic idempotency key from the
+tool per provider: `submit_bohr_sandbox`, `submit_bohr_job` (`submit_e2b_sandbox`
+is retained for existing e2b jobs but is no longer exposed to the step
+executor). Each builds a deterministic idempotency key from the
 session, execution node, and a provider-specific discriminator, then
 delegates to `RemoteJobService.submit_job(provider=..., spec=...)`.
 

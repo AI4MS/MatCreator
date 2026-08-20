@@ -15,7 +15,6 @@ from .base import RemoteJobAdapter, RemoteJobCapability, RemoteJobStatus
 # client-side guard by default; the key is still sent verbatim as the
 # X-API-KEY header, so server-side auth is unaffected. An explicit
 # E2B_VALIDATE_API_KEY in the environment takes precedence.
-# See skills/vasp-pymatgen/references/e2b-sandbox-execution.md.
 os.environ.setdefault("E2B_VALIDATE_API_KEY", "false")
 
 

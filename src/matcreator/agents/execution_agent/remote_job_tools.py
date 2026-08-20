@@ -1,11 +1,15 @@
 """Remote-job tools available to isolated step executors.
 
-Submission is provider-specific — an E2B/bohr sandbox needs a template while
-a batch job needs a machine type and image, so there is one submit tool per
-provider (``submit_e2b_sandbox``, ``submit_bohr_sandbox``,
-``submit_bohr_job``). Every operation after submission dispatches on the
-``job_id`` alone and works the same for any provider, so adding a new
-provider plugin never requires a new post-submission tool here.
+Submission is provider-specific — a bohr sandbox needs a template while a
+batch job needs a machine type and image, so there is one submit tool per
+provider (``submit_bohr_sandbox``, ``submit_bohr_job``). Every operation
+after submission dispatches on the ``job_id`` alone and works the same for
+any provider, so adding a new provider plugin never requires a new
+post-submission tool here.
+
+``submit_e2b_sandbox`` is retained below for existing/in-flight e2b jobs and
+its unit tests, but is no longer registered on the step executor — new
+submissions go through ``submit_bohr_sandbox``/``submit_bohr_job`` instead.
 """
 from __future__ import annotations
 

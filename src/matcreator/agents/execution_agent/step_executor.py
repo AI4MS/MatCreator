@@ -28,7 +28,6 @@ from .remote_job_tools import (
     start_remote_job_command,
     submit_bohr_job,
     submit_bohr_sandbox,
-    submit_e2b_sandbox,
     terminate_remote_job,
     upload_remote_job_input,
 )
@@ -144,7 +143,7 @@ When `prior_context` mentions a previously submitted remote job (e.g. Bohrium/Sl
 If your `prior_context` contains "REMOTE JOB ALREADY SUBMITTED", a tracked remote job
 (sandbox or batch job) for this exact step is already running:
 1. Call `get_remote_job_status` with the given `job_id` FIRST.
-2. NEVER call `submit_e2b_sandbox`, `submit_bohr_sandbox`, or `submit_bohr_job` for that
+2. NEVER call `submit_bohr_sandbox` or `submit_bohr_job` for that
    step — it would duplicate a running job.
 3. If its `snapshot` contains `background_command`, a command is (or was) running in the
    background — call `poll_remote_job_command` FIRST rather than issuing a new command. Never
@@ -157,10 +156,9 @@ If your `prior_context` contains "REMOTE JOB ALREADY SUBMITTED", a tracked remot
    that the job has not finished yet and quoting its job_id and status.
 
 ## Choosing a remote-job submit tool
-- `submit_e2b_sandbox`: interactive E2B sandbox (default choice when the E2B SDK/API key
-  is configured).
-- `submit_bohr_sandbox`: interactive sandbox via the `bohr` CLI — use only when the E2B
-  path is unavailable; both reach the same Bohrium sandbox platform.
+- `submit_bohr_sandbox`: interactive sandbox via the `bohr` CLI — the default for any work
+  that needs command execution or file transfer after submission. Requires an explicit
+  `template`.
 - `submit_bohr_job`: batch/HPC-style job via `bohr job submit`. There is no interactive
   command execution for this provider — express the entire computation in `command`, then
   poll `get_remote_job_status` until `succeeded` and call `collect_remote_job_outputs`.
@@ -296,7 +294,6 @@ def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
             FunctionTool(get_user_skills_root),
             FunctionTool(run_python),
             FunctionTool(run_bash),
-            FunctionTool(submit_e2b_sandbox),
             FunctionTool(submit_bohr_sandbox),
             FunctionTool(submit_bohr_job),
             FunctionTool(get_remote_job_status),
