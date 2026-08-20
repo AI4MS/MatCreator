@@ -410,23 +410,26 @@ export function createSkillGraphController({
   }
 
   function createSkillGraphEditToggle(node) {
-    if (!node.skill_name && !node.graph_editable) return null;
+    if (node.virtual) return null;
     const host = document.createElement("section");
     host.className = "skill-graph-edit-toggle skill-graph-detail-section";
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "ghost mini-btn";
-    button.textContent = node.skill_name ? "Edit" : "Edit node";
-    button.addEventListener("click", () => {
-      skillGraphTab.detail.innerHTML = "";
-      const editorHost = document.createElement("section");
-      editorHost.className = "skill-graph-editor";
-      editorHost.innerHTML = `<h4>${node.skill_name ? "Edit Skill" : "Edit Node"}</h4><div class="skill-graph-editor-status">Loading editor...</div>`;
-      skillGraphTab.detail.appendChild(editorHost);
-      if (node.skill_name) loadSkillGraphEditor(node, editorHost);
-      else loadSkillGraphNodeEditor(node, editorHost);
-    });
-    host.appendChild(button);
+    if (node.skill_name || node.graph_editable) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "ghost mini-btn";
+      button.textContent = node.skill_name ? "Edit" : "Edit node";
+      button.addEventListener("click", () => {
+        skillGraphTab.detail.innerHTML = "";
+        const editorHost = document.createElement("section");
+        editorHost.className = "skill-graph-editor";
+        editorHost.innerHTML = `<h4>${node.skill_name ? "Edit Skill" : "Edit Node"}</h4><div class="skill-graph-editor-status">Loading editor...</div>`;
+        skillGraphTab.detail.appendChild(editorHost);
+        if (node.skill_name) loadSkillGraphEditor(node, editorHost);
+        else loadSkillGraphNodeEditor(node, editorHost);
+      });
+      host.appendChild(button);
+    }
+    host.appendChild(createSkillGraphDisableToggle(node));
     if (node.skill_name) {
       const remove = document.createElement("button");
       remove.type = "button";
@@ -443,6 +446,51 @@ export function createSkillGraphController({
       host.appendChild(remove);
     }
     return host;
+  }
+
+  function createSkillGraphDisableToggle(node) {
+    const isDisabled = node.graph_disabled === true;
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "ghost mini-btn skill-graph-toggle-btn";
+    toggle.classList.toggle("warning", !isDisabled);
+    toggle.classList.toggle("success", isDisabled);
+    toggle.textContent = isDisabled ? "Enable" : "Disable";
+    toggle.title = isDisabled
+      ? "Restore this node to search and retrieval."
+      : "Hide this node from search and retrieval without deleting it.";
+    toggle.addEventListener("click", async () => {
+      toggle.disabled = true;
+      try {
+        await toggleSkillGraphNodeDisabled(node, !isDisabled);
+      } finally {
+        toggle.disabled = false;
+      }
+    });
+    return toggle;
+  }
+
+  async function toggleSkillGraphNodeDisabled(node, disable) {
+    if (!node?.id) return;
+    const previousStatus = skillGraphTab.status.textContent;
+    skillGraphTab.status.textContent = disable ? "disabling" : "enabling";
+    skillGraphTab.status.className = "graph-status status-polling";
+    try {
+      const resp = await fetch(`/api/skill-graph/nodes/${encodeURIComponent(node.id)}/toggle`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ disabled: disable }),
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      await refreshSkillGraphData({ selectedNodeId: node.id });
+    } catch (err) {
+      skillGraphTab.status.className = "graph-status status-idle";
+      skillGraphTab.status.textContent = previousStatus || "idle";
+      const error = document.createElement("div");
+      error.className = "skill-graph-editor-status error";
+      error.textContent = `${disable ? "Disable" : "Enable"} failed: ${String(err.message || err)}`;
+      skillGraphTab.detail.prepend(error);
+    }
   }
 
   function skillGraphConnectedSkillNames(node) {
@@ -1123,10 +1171,15 @@ export function createSkillGraphController({
 
     const meta = document.createElement("div");
     meta.className = "skill-graph-detail-meta";
+    const disabledReason = node.graph_disabled
+      ? "disabled (graph)"
+      : node.config_disabled
+        ? "disabled (config)"
+        : null;
     const metaItems = [
       skillGraphDisplayNodeType(node.entry_type, metadata?.skill_level),
       node.virtual ? "virtual / backing skill missing" : null,
-      node.enabled === false ? "disabled" : "enabled",
+      disabledReason || (node.enabled === false ? "disabled" : "enabled"),
       node.verification_status,
       node.refinement_status,
     ].filter(Boolean);
@@ -1147,6 +1200,8 @@ export function createSkillGraphController({
       ["Slug", node.slug],
       ["Skill", node.skill_name],
       ["Enabled", node.enabled !== false],
+      ["Graph disabled", node.graph_disabled === true],
+      ["Config disabled", node.config_disabled === true],
       ["Virtual", node.virtual === true],
       ["Type", skillGraphDisplayNodeType(node.entry_type, metadata.skill_level)],
       ["Aliases", node.aliases],
@@ -1247,13 +1302,40 @@ export function createSkillGraphController({
     actions.className = "skill-graph-header-actions";
     const addNode = document.createElement("button");
     addNode.type = "button";
-    addNode.className = "ghost mini-btn";
-    addNode.textContent = "Add node";
+    addNode.className = "primary mini-btn skill-graph-add-node";
+    addNode.setAttribute("aria-label", "Add node");
+    addNode.dataset.tooltip = "Add node";
+    addNode.textContent = "+";
     addNode.addEventListener("click", renderSkillGraphCreatePanel);
+    const unofficialToggle = document.createElement("button");
+    unofficialToggle.type = "button";
+    unofficialToggle.className = "ghost mini-btn warning";
+    unofficialToggle.textContent = "Disable unofficial";
+    unofficialToggle.title = "Disable every KDG node except maintained builtin and SkillForge skills.";
+    unofficialToggle.addEventListener("click", async () => {
+      const enable = skillGraphTab?.unofficialNodesAllDisabled === true;
+      unofficialToggle.disabled = true;
+      try {
+        const resp = await fetch("/api/skill-graph/unofficial/toggle", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ disabled: !enable }),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        const result = await resp.json();
+        await refreshSkillGraphData();
+        skillGraphTab.status.textContent = `${enable ? "enabled" : "disabled"} ${result.changed} unofficial node${result.changed === 1 ? "" : "s"}`;
+      } catch (err) {
+        skillGraphTab.status.className = "graph-status status-idle";
+        skillGraphTab.status.textContent = `${enable ? "enable" : "disable"} failed: ${String(err.message || err)}`;
+      } finally {
+        unofficialToggle.disabled = false;
+      }
+    });
     const status = document.createElement("span");
     status.className = "graph-status status-idle";
     status.textContent = "idle";
-    actions.append(addNode, status);
+    actions.append(addNode, unofficialToggle, status);
     header.append(heading, knowledgeReviewBanner, actions);
 
     const body = document.createElement("div");
@@ -1271,6 +1353,8 @@ export function createSkillGraphController({
       button,
       panel,
       status,
+      unofficialToggle,
+      unofficialNodesAllDisabled: false,
       canvas,
       detail,
       network: null,
@@ -1339,6 +1423,25 @@ export function createSkillGraphController({
     if (items.length) dataSet.update(items);
   }
 
+  function updateUnofficialToggle(summary) {
+    const tab = skillGraphTab;
+    if (!tab?.unofficialToggle) return;
+    const total = Number(summary?.total || 0);
+    const enabled = Number(summary?.enabled || 0);
+    const officialDisabled = Number(summary?.official_disabled || 0);
+    const allDisabled = total > 0 && enabled === 0 && officialDisabled === 0;
+    tab.unofficialNodesAllDisabled = allDisabled;
+    tab.unofficialToggle.textContent = allDisabled ? "Enable unofficial" : "Disable unofficial";
+    tab.unofficialToggle.title = allDisabled
+      ? `Restore ${total} non-official KDG node${total === 1 ? "" : "s"}.`
+      : officialDisabled > 0
+        ? `Disable non-official nodes and restore ${officialDisabled} maintained base node${officialDisabled === 1 ? "" : "s"}.`
+        : `Disable ${enabled} enabled non-official KDG node${enabled === 1 ? "" : "s"}.`;
+    tab.unofficialToggle.classList.toggle("success", allDisabled);
+    tab.unofficialToggle.classList.toggle("warning", !allDisabled);
+    tab.unofficialToggle.disabled = total === 0;
+  }
+
   async function refreshSkillGraphData({ selectedNodeId = null } = {}) {
     const tab = skillGraphTab;
     if (!tab?.network || !tab.nodesDataSet || !tab.edgesDataSet) {
@@ -1351,6 +1454,7 @@ export function createSkillGraphController({
     const resp = await fetch("/api/skill-graph/data?limit=500");
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
+    updateUnofficialToggle(data.unofficial);
     const positions = tab.network.getPositions();
     tab.nodeData = new Map((data.nodes || []).map((node) => [node.id, node]));
     tab.edges = data.edges || [];
@@ -1386,6 +1490,7 @@ export function createSkillGraphController({
       const resp = await fetch("/api/skill-graph/data?limit=500");
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
+      updateUnofficialToggle(data.unofficial);
       tab.nodeData = new Map((data.nodes || []).map((node) => [node.id, node]));
       tab.edges = data.edges || [];
 

@@ -147,18 +147,22 @@
 }
 
 .skill-graph-tab-panel {
-  background: rgba(var(--panel-rgb), 0.72);
+  background: var(--bg-surface);
   min-height: 0;
 }
 
 .skill-graph-header {
+  position: relative;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-surface) 86%, var(--bg-elevated));
   flex: 0 0 auto;
+  overflow: visible;
 }
 
 .skill-graph-header strong {
@@ -166,22 +170,103 @@
 }
 
 .skill-graph-header .knowledge-review-banner {
-  flex: 0 1 420px;
+  flex: 0 1 340px;
   width: auto;
-  max-width: 420px;
+  max-width: 340px;
+  min-height: 32px;
+  padding: 6px 10px;
+  justify-content: flex-start;
+  gap: 7px;
+  border-color: var(--border-default);
+  border-radius: 7px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
+  font-size: 11px;
+  font-weight: 700;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.skill-graph-header-actions .mini-btn {
+  min-height: 32px;
+}
+
+.skill-graph-header .knowledge-review-banner::before {
+  content: "↻";
+  flex: 0 0 auto;
+  color: currentColor;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.skill-graph-header .knowledge-review-banner:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+  color: var(--text);
+  transform: translateY(-1px);
+}
+
+.skill-graph-header .knowledge-review-banner.status-idle,
+.skill-graph-header .knowledge-review-banner.status-completed {
+  border-color: color-mix(in srgb, var(--accent-primary) 58%, var(--border-default));
+  background: var(--accent-primary-soft);
+  color: var(--accent-primary);
+}
+
+.skill-graph-header .knowledge-review-banner.status-running,
+.skill-graph-header .knowledge-review-banner.status-completed_with_errors {
+  border-color: color-mix(in srgb, var(--warning) 58%, var(--border-default));
+  background: color-mix(in srgb, var(--warning) 11%, var(--bg-elevated));
+  color: var(--warning);
+}
+
+.skill-graph-header .knowledge-review-banner.status-failed {
+  border-color: color-mix(in srgb, var(--danger) 62%, var(--border-default));
+  background: color-mix(in srgb, var(--danger) 11%, var(--bg-elevated));
+  color: var(--danger);
+}
+
+.skill-graph-header .knowledge-review-banner.status-idle:hover:not(:disabled),
+.skill-graph-header .knowledge-review-banner.status-completed:hover:not(:disabled) {
+  border-color: var(--accent-primary);
+  background: color-mix(in srgb, var(--accent-primary) 22%, var(--bg-elevated));
+  color: var(--accent-primary);
+}
+
+.skill-graph-header .knowledge-review-banner.status-running:hover:not(:disabled),
+.skill-graph-header .knowledge-review-banner.status-completed_with_errors:hover:not(:disabled) {
+  border-color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 22%, var(--bg-elevated));
+  color: var(--warning);
+}
+
+.skill-graph-header .knowledge-review-banner.status-failed:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 22%, var(--bg-elevated));
+  color: var(--danger);
+}
+
+.skill-graph-header .knowledge-review-banner:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.skill-graph-header .knowledge-review-banner:disabled {
+  cursor: wait;
+  opacity: 0.78;
+}
+
+.skill-graph-header .knowledge-review-spinner {
+  border-color: color-mix(in srgb, currentColor 28%, transparent);
+  border-top-color: currentColor;
 }
 
 .skill-graph-header-actions,
 .skill-graph-edit-toggle {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
-}
-
-.mini-btn.danger {
-  color: #f87171;
-  border-color: rgba(248, 113, 113, 0.35);
-  background: rgba(248, 113, 113, 0.06);
 }
 
 .skill-graph-body {
@@ -199,7 +284,9 @@
   min-width: 0;
   min-height: 0;
   position: relative;
-  background: rgba(var(--panel-rgb), 0.42);
+  background:
+    radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--border-default) 38%, transparent) 1px, transparent 0) 0 0 / 20px 20px,
+    color-mix(in srgb, var(--bg-canvas) 42%, var(--bg-surface));
 }
 
 .skill-graph-detail {
@@ -208,7 +295,7 @@
   padding: 14px;
   overflow-y: auto;
   min-width: 0;
-  background: rgba(255, 255, 255, 0.018);
+  background: color-mix(in srgb, var(--bg-surface) 92%, var(--bg-elevated));
 }
 
 .skill-graph-tab-panel.has-selection .skill-graph-detail {
@@ -244,12 +331,13 @@
 }
 
 .skill-graph-tags span {
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--accent-primary) 38%, var(--border-default));
   border-radius: 999px;
-  color: var(--accent);
+  color: var(--accent-primary);
   font-size: 11px;
-  padding: 3px 7px;
-  background: rgba(125, 211, 252, 0.06);
+  font-weight: 650;
+  padding: 4px 8px;
+  background: var(--accent-primary-soft);
 }
 
 .skill-graph-detail-content {
@@ -375,11 +463,150 @@
   justify-content: flex-end;
 }
 
-.mini-btn {
-  min-height: 28px;
-  padding: 5px 9px;
+/* Skill Graph controls use the same token-driven hierarchy in every state.
+   This remains scoped to the tab while older panels finish their migration. */
+.skill-graph-tab-panel .mini-btn {
+  min-height: 30px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 7px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
+  font: inherit;
   font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
+
+.skill-graph-tab-panel .ghost.mini-btn:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+  color: var(--text);
+  transform: translateY(-1px);
+}
+
+.skill-graph-tab-panel .primary.mini-btn {
+  border-color: var(--accent-primary);
+  background: var(--accent-primary);
+  color: #fff;
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--accent-primary) 24%, transparent);
+}
+
+.skill-graph-tab-panel .primary.mini-btn:hover:not(:disabled) {
+  border-color: var(--accent-primary-hover);
+  background: var(--accent-primary-hover);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.skill-graph-editor-actions .ghost.mini-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent-primary) 58%, var(--border-default));
+  background: var(--accent-primary-soft);
+  color: var(--accent-primary);
+}
+
+.skill-graph-tab-panel .mini-btn.warning {
+  border-color: color-mix(in srgb, var(--warning) 58%, var(--border-default));
+  background: color-mix(in srgb, var(--warning) 11%, var(--bg-elevated));
+  color: var(--warning);
+}
+
+.skill-graph-tab-panel .mini-btn.success {
+  border-color: color-mix(in srgb, var(--success) 58%, var(--border-default));
+  background: color-mix(in srgb, var(--success) 11%, var(--bg-elevated));
+  color: var(--success);
+}
+
+.skill-graph-tab-panel .mini-btn.danger,
+.skill-graph-tab-panel .skill-graph-attachment-row .mini-btn[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--danger) 62%, var(--border-default));
+  background: color-mix(in srgb, var(--danger) 11%, var(--bg-elevated));
+  color: var(--danger);
+}
+
+.skill-graph-tab-panel .mini-btn.warning:hover:not(:disabled) {
+  border-color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 18%, var(--bg-elevated));
+  color: var(--warning);
+  transform: translateY(-1px);
+}
+
+.skill-graph-tab-panel .mini-btn.success:hover:not(:disabled) {
+  border-color: var(--success);
+  background: color-mix(in srgb, var(--success) 18%, var(--bg-elevated));
+  color: var(--success);
+  transform: translateY(-1px);
+}
+
+.skill-graph-tab-panel .mini-btn.danger:hover:not(:disabled),
+.skill-graph-tab-panel .skill-graph-attachment-row .mini-btn[aria-pressed="true"]:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 18%, var(--bg-elevated));
+  color: var(--danger);
+  transform: translateY(-1px);
+}
+
+.skill-graph-tab-panel .mini-btn:focus-visible,
+.skill-graph-link-row:focus-visible,
+.skill-graph-editor-field :is(input, select, textarea):focus-visible,
+.skill-graph-new-folder input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.skill-graph-tab-panel .mini-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+  box-shadow: none;
+  transform: none;
+}
+
+.skill-graph-add-node {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  min-width: 32px;
+  min-height: 32px !important;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  font-size: 20px !important;
+  font-weight: 450 !important;
+  line-height: 1 !important;
+}
+
+.skill-graph-add-node::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 8px);
+  right: 0;
+  padding: 5px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  box-shadow: var(--popup-shadow);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-3px);
+  transition: opacity 130ms ease, transform 130ms ease;
+}
+
+.skill-graph-add-node:hover::after,
+.skill-graph-add-node:focus-visible::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 
 .skill-graph-editor-grid {
   display: grid;
@@ -404,12 +631,18 @@
   min-width: 0;
   border: 1px solid var(--border);
   border-radius: 7px;
-  background: rgba(var(--panel-rgb), 0.56);
+  background: var(--bg-elevated);
   color: var(--text);
   font: inherit;
   font-size: 12px;
   padding: 7px 8px;
   outline: none;
+}
+
+.skill-graph-editor-field :is(input, select, textarea):focus,
+.skill-graph-new-folder input:focus {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-primary) 16%, transparent);
 }
 
 .skill-graph-editor-field textarea {
@@ -442,7 +675,7 @@
   overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: 7px;
-  background: rgba(var(--panel-rgb), 0.34);
+  background: var(--bg-elevated);
   padding: 6px;
 }
 
@@ -483,7 +716,7 @@
 .skill-graph-folder-card {
   border: 1px solid var(--border);
   border-radius: 7px;
-  background: rgba(var(--panel-rgb), 0.28);
+  background: var(--bg-surface);
   overflow: hidden;
 }
 
@@ -493,7 +726,8 @@
   gap: 8px;
   align-items: center;
   padding: 7px 8px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-elevated) 72%, var(--bg-surface));
 }
 
 .skill-graph-folder-header span {
@@ -530,14 +764,14 @@
 }
 
 .skill-graph-pending-file {
-  border: 1px dashed rgba(125, 211, 252, 0.38);
+  border: 1px dashed color-mix(in srgb, var(--accent-primary) 52%, var(--border-default));
   border-radius: 6px;
-  color: var(--accent);
+  color: var(--accent-primary);
   font-family: var(--mono);
   font-size: 11px;
   overflow-wrap: anywhere;
   padding: 5px 7px;
-  background: rgba(125, 211, 252, 0.06);
+  background: var(--accent-primary-soft);
 }
 
 .skill-graph-attachment-row {
@@ -546,7 +780,7 @@
   gap: 8px;
   align-items: center;
   padding: 6px 0;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  border-bottom: 1px solid var(--border);
 }
 
 .skill-graph-attachment-row span {
@@ -572,7 +806,7 @@
 }
 
 .skill-graph-editor-status.error {
-  color: #f87171;
+  color: var(--danger);
 }
 
 .skill-graph-editor-empty {
@@ -635,7 +869,7 @@
 .skill-graph-object-list details {
   border: 1px solid var(--border);
   border-radius: 7px;
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--bg-elevated);
 }
 
 .skill-graph-object-list summary {
@@ -663,19 +897,21 @@
   gap: 3px 8px;
   width: 100%;
   padding: 8px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-default);
   border-radius: 7px;
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--bg-elevated);
   color: var(--text);
   font: inherit;
   font-size: 12px;
   text-align: left;
   cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
 }
 
 .skill-graph-link-row:hover {
-  border-color: rgba(125, 211, 252, 0.42);
-  background: rgba(125, 211, 252, 0.06);
+  border-color: color-mix(in srgb, var(--accent-primary) 58%, var(--border-default));
+  background: var(--accent-primary-soft);
+  transform: translateY(-1px);
 }
 
 .skill-graph-link-direction {

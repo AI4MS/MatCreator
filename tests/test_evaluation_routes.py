@@ -16,6 +16,55 @@ if str(WEB_DIR) not in sys.path:
 import main
 
 
+def test_toggle_skill_graph_node_updates_and_reports_graph_state(monkeypatch) -> None:
+    class Metadata:
+        disabled = False
+
+    class Entry:
+        id = "node-1"
+        metadata = Metadata()
+
+    class FakeGraph:
+        def set_disabled(self, node_id: str, disabled: bool) -> Entry:
+            if node_id != "node-1":
+                raise KeyError(node_id)
+            Entry.metadata.disabled = disabled
+            return Entry()
+
+    monkeypatch.setattr(main, "_get_kg", FakeGraph)
+    client = TestClient(main.app)
+
+    response = client.patch("/api/skill-graph/nodes/node-1/toggle", json={"disabled": True})
+    assert response.status_code == 200, response.json()
+    assert response.json() == {"status": "ok", "id": "node-1", "disabled": True}
+
+    restored = client.patch("/api/skill-graph/nodes/node-1/toggle", json={"disabled": False})
+    assert restored.status_code == 200, restored.json()
+    assert restored.json()["disabled"] is False
+
+    missing = client.patch("/api/skill-graph/nodes/missing/toggle", json={"disabled": False})
+    assert missing.status_code == 404
+
+
+def test_toggle_unofficial_skill_graph_nodes_uses_bulk_kdg_helper(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "matcreator.skill.set_unofficial_skill_nodes_disabled",
+        lambda disabled: {"disabled": disabled, "affected": 4, "changed": 3, "node_ids": ["a", "b", "c", "d"]},
+    )
+    client = TestClient(main.app)
+
+    response = client.patch("/api/skill-graph/unofficial/toggle", json={"disabled": True})
+
+    assert response.status_code == 200, response.json()
+    assert response.json() == {
+        "status": "ok",
+        "disabled": True,
+        "affected": 4,
+        "changed": 3,
+        "node_ids": ["a", "b", "c", "d"],
+    }
+
+
 def test_create_evaluation_campaign_reads_json_body(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(main, "_evaluation_store_for_owner", lambda _owner: main.EvaluationStore(tmp_path / "evaluations.db"))
     monkeypatch.setattr(main, "_evaluation_workspace_for_owner", lambda _owner: tmp_path / "workspaces")

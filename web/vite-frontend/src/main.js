@@ -27,6 +27,34 @@ const THEME_KEY = "mat_theme";
 const DUMMY_REMOTE_JOBS = import.meta.env.VITE_DUMMY_REMOTE_JOBS === "true";
 const dummyRemoteJobsBySession = new Map();
 
+function removeOverlayWithMotion(overlay) {
+  if (!overlay?.isConnected) return Promise.resolve();
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+    overlay.remove();
+    return Promise.resolve();
+  }
+  if (overlay.classList.contains("is-closing")) {
+    return overlay._motionRemoval || Promise.resolve();
+  }
+
+  overlay.classList.add("is-closing");
+  overlay._motionRemoval = new Promise((resolve) => {
+    let fallbackTimer;
+    const onAnimationEnd = (event) => {
+      if (event.target === overlay) finish();
+    };
+    const finish = () => {
+      clearTimeout(fallbackTimer);
+      overlay.removeEventListener("animationend", onAnimationEnd);
+      overlay.remove();
+      resolve();
+    };
+    overlay.addEventListener("animationend", onAnimationEnd);
+    fallbackTimer = window.setTimeout(finish, 250);
+  });
+  return overlay._motionRemoval;
+}
+
 const state = {
   sessionId: localStorage.getItem(SESSION_ID_KEY) || newSessionId(),
   userId: localStorage.getItem("mat_userId") || "",
@@ -349,7 +377,7 @@ function showEvaluationQuestionTemplateModal({ templateId = "", template = {}, c
   close.className = "ghost";
   close.type = "button";
   close.textContent = "Close";
-  close.addEventListener("click", () => overlay.remove());
+  close.addEventListener("click", () => void removeOverlayWithMotion(overlay));
   header.append(heading, close);
   const json = document.createElement("textarea");
   json.className = "evaluation-draft-yaml";
@@ -407,7 +435,7 @@ function showEvaluationQuestionTemplateModal({ templateId = "", template = {}, c
       state.activeEvaluationQuestionTemplateId = data.template_id;
       await loadEvaluationQuestionTemplates();
       setEvaluationStatus("Question template saved");
-      overlay.remove();
+      await removeOverlayWithMotion(overlay);
     } catch (error) {
       status.textContent = error.message;
       status.className = "evaluation-draft-action-status is-error";
@@ -419,7 +447,9 @@ function showEvaluationQuestionTemplateModal({ templateId = "", template = {}, c
   overlay.appendChild(card);
   document.body.appendChild(overlay);
   json.focus();
-  overlay.addEventListener("click", (event) => { if (event.target === overlay) overlay.remove(); });
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) void removeOverlayWithMotion(overlay);
+  });
 }
 
 async function openEvaluationQuestionTemplate(templateId, copy = false) {
@@ -1012,15 +1042,13 @@ const agentGraph = new AgentGraphView("agent-graph", {
   graphViewport,
   requestStepCancellation,
   createArtifactListItem,
-  createJsonBlock,
-  getStructurePaths,
-  createStructureViewButton,
+  renderStepConversationEvent,
+  renderStepToolCall,
   syncPanelResizerVisibility: () => layoutController.syncPanelResizerVisibility(),
 });
 const planGraph = new ExecutionPlanView("plan-graph-canvas", {
   toggleButton: document.getElementById("plan-graph-toggle"),
   thumbnailElement: document.getElementById("plan-graph-thumbnail"),
-  onNewGraph: () => showPlanGraph(),
 });
 const layoutController = createLayoutController({
   getUserId: () => state.userId,
@@ -1105,6 +1133,7 @@ function updateAgentRunningStatus(phase = "working") {
     working: ["MatCreator is working. Please wait…", "thinking"],
     thinking: ["MatCreator is thinking…", "thinking"],
     planning: ["MatCreator is planning the workflow…", "thinking"],
+    finalizing_plan: ["Plan validated — preparing it for review…", "thinking"],
     searching: ["MatCreator is searching for information…", "searching"],
     executing: ["MatCreator is executing the workflow…", "computing"],
     computing: ["MatCreator is computing…", "computing"],
@@ -1169,10 +1198,13 @@ function showPlanGraph() {
   planGraphToggleBtn?.setAttribute("aria-pressed", "true");
   planGraphToggleBtn?.setAttribute("title", "Close roadmap");
   planGraphToggleBtn?.setAttribute("aria-label", "Close roadmap");
-  requestAnimationFrame(() => {
+  // vis-network calculates its camera from the canvas dimensions. Because the
+  // popup was `display: none`, wait for one layout frame to expose it and a
+  // second frame for flex sizing to settle before fitting the initial view.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
     planGraph.notifyLayoutChanged();
-    planGraph.fitToView();
-  });
+    planGraph.fitToView({ animate: false });
+  }));
 }
 
 function hidePlanGraph() {
@@ -1864,7 +1896,11 @@ function showConfirmDialog(message) {
 
   return new Promise((resolve) => {
     let settled = false;
-    const done = (result) => { if (settled) return; settled = true; overlay.remove(); resolve(result); };
+    const done = (result) => {
+      if (settled) return;
+      settled = true;
+      void removeOverlayWithMotion(overlay).then(() => resolve(result));
+    };
 
     const overlay = document.createElement("div");
     overlay.className = "confirm-overlay";
@@ -1973,7 +2009,7 @@ function showEvaluationQuestionDraftModal(draft, actionMessage = "") {
   close.className = "ghost";
   close.type = "button";
   close.textContent = "Close";
-  close.addEventListener("click", () => overlay.remove());
+  close.addEventListener("click", () => void removeOverlayWithMotion(overlay));
   header.append(heading, close);
 
   const isLocked = draft.status === "exported" || draft.status === "published";
@@ -2233,7 +2269,9 @@ function showEvaluationQuestionDraftModal(draft, actionMessage = "") {
   overlay.appendChild(card);
   document.body.appendChild(overlay);
   close.focus();
-  overlay.addEventListener("click", (event) => { if (event.target === overlay) overlay.remove(); });
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) void removeOverlayWithMotion(overlay);
+  });
 }
 
 function showEvaluationQuestionDraftError(error) {
@@ -2279,12 +2317,14 @@ function showEvaluationQuestionDraftError(error) {
   close.className = "ghost";
   close.type = "button";
   close.textContent = "Close";
-  close.addEventListener("click", () => overlay.remove());
+  close.addEventListener("click", () => void removeOverlayWithMotion(overlay));
   card.appendChild(close);
   overlay.appendChild(card);
   document.body.appendChild(overlay);
   close.focus();
-  overlay.addEventListener("click", (event) => { if (event.target === overlay) overlay.remove(); });
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) void removeOverlayWithMotion(overlay);
+  });
 }
 
 function showNoEvaluationQuestionExtracted(result) {
@@ -2307,12 +2347,14 @@ function showNoEvaluationQuestionExtracted(result) {
   close.className = "ghost";
   close.type = "button";
   close.textContent = "Close";
-  close.addEventListener("click", () => overlay.remove());
+  close.addEventListener("click", () => void removeOverlayWithMotion(overlay));
   card.append(heading, detail, close);
   overlay.appendChild(card);
   document.body.appendChild(overlay);
   close.focus();
-  overlay.addEventListener("click", (event) => { if (event.target === overlay) overlay.remove(); });
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) void removeOverlayWithMotion(overlay);
+  });
 }
 
 function showEvaluationQuestionDraftGenerating(generatorLabel = "selected generator") {
@@ -2425,7 +2467,7 @@ async function showSessionQuestionGeneratorPicker(sessionId, owner = state.userI
   cancel.className = "ghost";
   cancel.type = "button";
   cancel.textContent = "Cancel";
-  cancel.addEventListener("click", () => overlay.remove());
+  cancel.addEventListener("click", () => void removeOverlayWithMotion(overlay));
   const generate = document.createElement("button");
   generate.className = "evaluation-draft-export";
   generate.type = "button";
@@ -2440,7 +2482,9 @@ async function showSessionQuestionGeneratorPicker(sessionId, owner = state.userI
   overlay.appendChild(card);
   document.body.appendChild(overlay);
   select.focus();
-  overlay.addEventListener("click", (event) => { if (event.target === overlay) overlay.remove(); });
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) void removeOverlayWithMotion(overlay);
+  });
 }
 
 async function showSavedQuestionDrafts() {
@@ -2465,7 +2509,7 @@ async function showSavedQuestionDrafts() {
     close.type = "button";
     close.className = "ghost";
     close.textContent = "Close";
-    close.addEventListener("click", () => overlay.remove());
+    close.addEventListener("click", () => void removeOverlayWithMotion(overlay));
     header.append(heading, close);
     const list = document.createElement("div");
     list.className = "evaluation-draft-list";
@@ -2502,7 +2546,9 @@ async function showSavedQuestionDrafts() {
     overlay.appendChild(card);
     document.body.appendChild(overlay);
     close.focus();
-    overlay.addEventListener("click", (event) => { if (event.target === overlay) overlay.remove(); });
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) void removeOverlayWithMotion(overlay);
+    });
   } catch (error) {
     showEvaluationQuestionDraftError(error.message || "Saved drafts could not be loaded.");
   }
@@ -3243,6 +3289,7 @@ const messageStreamController = createMessageStreamController({
   generateSessionSummary,
   refreshSessionFiles,
   sessionRuntime,
+  showPlanGraph,
 });
 
 function setUploadStatus(message, tone = "idle") {

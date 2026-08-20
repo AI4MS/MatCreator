@@ -433,23 +433,25 @@
 }
 .tree-dir-summary {
   padding: 4px 8px;
-  font-size: 10px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--muted);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  letter-spacing: 0.01em;
   cursor: pointer;
   user-select: none;
   border-radius: 6px;
   list-style: none;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
 }
 .tree-dir-summary::-webkit-details-marker { display: none; }
 .tree-dir-summary::before {
   content: "▶";
-  font-size: 8px;
+  width: 10px;
+  display: inline-grid;
+  place-items: center;
+  font-size: 7px;
   color: var(--muted);
   transition: transform 0.15s;
   flex-shrink: 0;
@@ -458,14 +460,14 @@ details[open] > .tree-dir-summary::before { transform: rotate(90deg); }
 .tree-dir-summary:hover { color: var(--text); background: rgba(255,255,255,0.04); }
 .tree-dir-children {
   list-style: none;
-  padding-left: 14px;
+  padding-left: 10px;
   border-left: 1px solid rgba(255,255,255,0.06);
-  margin-left: 10px;
+  margin: 1px 0 1px 8px;
 }
 .tree-file {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   padding: 3px 8px;
   border: 1px solid transparent;
   border-radius: 6px;
@@ -476,7 +478,22 @@ details[open] > .tree-dir-summary::before { transform: rotate(90deg); }
   background: rgba(125, 211, 252, 0.07);
   border-color: rgba(125, 211, 252, 0.12);
 }
-.tree-file-indent { padding-left: 18px; }
+.tree-node-indent {
+  width: 10px;
+  flex: 0 0 10px;
+}
+.tree-icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+.tree-icon svg {
+  width: 100%;
+  height: 100%;
+}
+.tree-dir-summary > .tree-icon { color: color-mix(in srgb, var(--accent) 70%, var(--muted)); }
+.tree-file > .tree-icon { color: color-mix(in srgb, var(--accent) 54%, var(--muted)); }
 .tree-filename {
   flex: 1;
   overflow: hidden;
@@ -491,25 +508,40 @@ details[open] > .tree-dir-summary::before { transform: rotate(90deg); }
 }
 .tree-actions {
   display: flex;
-  gap: 3px;
+  gap: 4px;
   opacity: 0;
-  transition: opacity 0.15s;
+  transition: opacity 0.15s, transform 0.15s;
+  transform: translateX(2px);
 }
-.tree-file:hover .tree-actions { opacity: 1; }
+.tree-file:hover .tree-actions,
+.tree-file:focus-within .tree-actions { opacity: 1; transform: translateX(0); }
 .tree-btn {
-  background: rgba(255,255,255,0.08);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text);
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  justify-content: center;
+  background: rgba(255,255,255,0.045);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 6px;
+  color: var(--muted);
   cursor: pointer;
-  font-size: 11px;
   line-height: 1;
-  padding: 2px 5px;
   text-decoration: none;
   display: inline-flex;
   align-items: center;
+  transition: color 0.15s, background 0.15s, border-color 0.15s, transform 0.15s;
 }
-.tree-btn:hover { background: rgba(255,255,255,0.15); }
+.tree-btn .tree-icon { width: 14px; height: 14px; flex-basis: 14px; }
+.tree-btn:hover {
+  background: rgba(125, 211, 252, 0.12);
+  border-color: rgba(125, 211, 252, 0.36);
+  color: var(--accent);
+  transform: translateY(-1px);
+}
+.tree-btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
 
 /* ── JSON blocks in timeline ─────────────────────────────── */
 .json-block {

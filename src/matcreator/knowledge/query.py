@@ -15,6 +15,7 @@ from know_do_graph import (
 from .kdg_memory import (
     add_memory,
     increment_usage,
+    is_entry_disabled,
 )
 from .review import (
     normalize_review_model,
@@ -218,7 +219,9 @@ def query_knowledge_graph(query: str, depth: int = 2, top_k: int = 15) -> str:
                 mode="hybrid",
                 include_procedures=True,
             )
-            if entry.entry_type != EntryType.memory and not _is_virtual(entry)
+            if entry.entry_type != EntryType.memory
+            and not _is_virtual(entry)
+            and not is_entry_disabled(entry)
         ][:top_k]
         for entry in durable:
             increment_usage(graph, entry)
@@ -232,6 +235,7 @@ def query_knowledge_graph(query: str, depth: int = 2, top_k: int = 15) -> str:
                 mode="hybrid",
             )
             if not entry.metadata.custom.get("memory", {}).get("promoted", False)
+            and not is_entry_disabled(entry)
         ]
         for entry in memory_entries:
             increment_usage(graph, entry)
@@ -300,6 +304,7 @@ def search_skills(query: str, top_k: int = 5) -> str:
             if "matcreator-skill" in entry.tags
             and entry.title not in disabled
             and not _is_virtual(entry)
+            and not is_entry_disabled(entry)
         ][:top_k]
         for entry in results:
             increment_usage(graph, entry)
@@ -339,6 +344,8 @@ def search_skill_context(
             start = matches[0] if matches else None
         if start is None:
             return f"No L1/L2 node found matching '{skill}'."
+        if is_entry_disabled(start):
+            return f"Skill '{start.title}' is disabled."
         if _is_virtual(start):
             return f"Skill '{start.title}' is a virtual node; its backing skill is not installed."
 
@@ -354,6 +361,7 @@ def search_skill_context(
                 limit=top_k,
                 mode="hybrid",
             )
+            heuristics = [entry for entry in heuristics if not is_entry_disabled(entry)]
             if heuristics:
                 sections.append(
                     f"### Attached L3 Heuristics ({len(heuristics)}/{total})\n"
@@ -368,6 +376,7 @@ def search_skill_context(
                 limit=top_k,
                 mode="hybrid",
             )
+            constraints = [entry for entry in constraints if not is_entry_disabled(entry)]
             if constraints:
                 sections.append(
                     f"### Attached L4 Constraints ({len(constraints)}/{total})\n"
@@ -398,11 +407,14 @@ def get_related_skills(start_node: str, top_k: int = 5, depth: int = 2) -> str:
             start = matches[0] if matches else None
         if start is None:
             return f"No skill node found matching '{start_node}'."
+        if is_entry_disabled(start):
+            return f"Skill '{start.title}' is disabled."
 
         related = [
             entry
             for entry in graph.related(start.id, depth=depth)
             if "matcreator-skill" in entry.tags
+            and not is_entry_disabled(entry)
         ][:top_k]
         for entry in related:
             increment_usage(graph, entry)

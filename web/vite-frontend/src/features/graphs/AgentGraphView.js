@@ -50,9 +50,8 @@ export class AgentGraphView {
     this._graphViewport = dependencies.graphViewport;
     this._requestStepCancellation = dependencies.requestStepCancellation;
     this._createArtifactListItem = dependencies.createArtifactListItem;
-    this._createJsonBlock = dependencies.createJsonBlock;
-    this._getStructurePaths = dependencies.getStructurePaths;
-    this._createStructureViewButton = dependencies.createStructureViewButton;
+    this._renderStepConversationEvent = dependencies.renderStepConversationEvent;
+    this._renderStepToolCall = dependencies.renderStepToolCall;
     this._syncPanelResizerVisibility = dependencies.syncPanelResizerVisibility;
     this._container = document.getElementById(containerId);
     this._surfaceEl = document.getElementById("graph-surface");
@@ -81,6 +80,7 @@ export class AgentGraphView {
     this._detailToolcalls = document.getElementById("detail-toolcalls");
     this._detailToolcallsCount = document.getElementById("detail-toolcalls-count");
     this._detailConversation = document.getElementById("detail-conversation");
+    this._detailConversationCount = document.getElementById("detail-conversation-count");
     this._nodeData = {};
     this._activeDetailNodeId = null;
     this._detailDisclosures = createDisclosureController({
@@ -1057,26 +1057,8 @@ export class AgentGraphView {
     this._detailToolcalls.innerHTML = "";
     if (toolCalls.length) {
       toolCalls.forEach((tc, index) => {
-        const d = document.createElement("details");
-        d.className = "timeline-function-call";
+        const d = this._renderStepToolCall(tc);
         const disclosureKey = `detail:${nodeId}:tool:${tc.id || `${index}:${tc.name}:${tc.start_time || ""}`}`;
-        const dur = tc.start_time && tc.end_time
-          ? ` (${((new Date(tc.end_time) - new Date(tc.start_time)) / 1000).toFixed(1)}s)`
-          : "";
-        const s = document.createElement("summary");
-        s.textContent = `🔧 ${tc.name}${dur}`;
-        d.appendChild(s);
-        if (tc.args_summary) {
-          d.appendChild(this._createJsonBlock(tc.args_summary));
-        }
-        if (tc.result_summary) {
-          const pre = this._createJsonBlock(`→ ${tc.result_summary}`);
-          pre.style.borderTop = "1px solid rgba(255,255,255,0.06)";
-          d.appendChild(pre);
-        }
-        this._getStructurePaths(tc).forEach((path) => {
-          d.appendChild(this._createStructureViewButton(path));
-        });
         this._detailDisclosures.wire(d, disclosureKey);
         this._detailToolcalls.appendChild(d);
       });
@@ -1088,15 +1070,10 @@ export class AgentGraphView {
     // Conversation transcript is rendered live in the main chat step feed.
     const conversation = raw.type === "step" ? [] : (raw.conversation || []);
     this._detailConversation.innerHTML = "";
+    this._detailConversationCount.textContent = conversation.length;
     if (conversation.length) {
       conversation.forEach((evt, index) => {
-        const d = document.createElement("details");
-        d.className = `timeline-${evt.type}`;
-        const s = document.createElement("summary");
-        const icon = evt.type === "thought" ? "💭" : evt.type === "text" ? "💬" : evt.type === "function_call" ? "🔧" : "↩";
-        s.textContent = `${icon} [${evt.author}] ${evt.type}`;
-        d.appendChild(s);
-        d.appendChild(this._createJsonBlock(evt.content));
+        const d = this._renderStepConversationEvent(evt);
         this._detailDisclosures.wire(d, `detail:${nodeId}:conversation:${index}:${evt.timestamp || ""}:${evt.type || ""}`);
         this._detailConversation.appendChild(d);
       });

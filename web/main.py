@@ -123,6 +123,12 @@ from matcreator.control_plane.session_question_generator import (  # noqa: E402
     list_session_question_generators,
 )
 from matcreator.knowledge.query import _get_kg  # noqa: E402
+from matcreator.knowledge.kdg_memory import (  # noqa: E402
+    is_entry_disabled,
+    is_official_skill_entry,
+    iter_entries_including_disabled,
+    set_entry_disabled,
+)
 from matcreator.knowledge.review import run_review_pipeline  # noqa: E402
 from matcreator.ports import get_adk_port, get_local_adk_command, get_web_port, get_worker_base_port  # noqa: E402
 
@@ -864,80 +870,78 @@ def _load_skill_graph_payload(*, limit: int = 400) -> dict:
     workspace_skill_root = workspace_skills_dir().resolve()
     nodes = []
     included_ids: set[str] = set()
-    offset = 0
-    page_size = 200
-
-    while len(nodes) < limit:
-        page = graph.list(limit=page_size, offset=offset)
-        if not page:
-            break
-        for entry in page:
-            entry_type = _entry_value(entry.entry_type)
-            if entry_type == "memory":
-                continue
-            metadata = entry.metadata
-            metadata_payload = _json_ready(metadata)
-            skill_name = entry.title if "matcreator-skill" in entry.tags else None
-            skill_dir = skill_dirs.get(skill_name) if skill_name else None
-            virtual = bool(metadata.custom.get("virtual")) or bool(
-                skill_name
-                and "matcreator-guide" not in entry.tags
-                and skill_dir is None
-            )
-            enabled = (
-                skill_name not in disabled_skills and not virtual
-                if skill_name
-                else not virtual
-            )
-            skill_path = str(skill_dir.resolve()) if skill_dir else None
-            source = get_skill_source(skill_name) if skill_name else None
-            removable = bool(
-                skill_name
-                and skill_dir is not None
-                and source
-                and source.editable
-                and skill_dir.resolve().is_relative_to(workspace_skill_root)
-            )
-            nodes.append(
-                {
-                    "id": entry.id,
-                    "label": entry.title,
-                    "title": entry.title,
-                    "slug": entry.slug,
-                    "skill_name": skill_name,
-                    "skill_path": skill_path,
-                    "source": source.name if source else None,
-                    "editable": bool(source and source.editable),
-                    "graph_editable": _editable_skill_graph_entry(entry),
-                    "managed": bool(source and source.managed),
-                    "trusted": bool(source and source.trusted),
-                    "is_custom": bool(source and source.name in {"custom", "workspace"}),
-                    "removable": removable,
-                    "remove_requires_confirmation": bool(skill_name and source and source.managed),
-                    "enabled": enabled,
-                    "virtual": virtual,
-                    "entry_type": entry_type,
-                    "content": "" if virtual else entry.content,
-                    "content_preview": "" if virtual else _entry_preview(entry.content),
-                    "tags": entry.tags,
-                    "aliases": entry.aliases,
-                    "internal_refs": [] if virtual else entry.internal_refs,
-                    "scripts": [] if virtual else _json_ready(entry.scripts),
-                    "assets": [] if virtual else _json_ready(entry.assets),
-                    "metadata": metadata_payload,
-                    "verification_status": _entry_value(metadata.verification_status),
-                    "refinement_status": _entry_value(metadata.refinement_status),
-                    "usage_count": metadata.usage_count,
-                    "source_provenance": metadata.source_provenance,
-                    "trust_score": metadata.trust_score,
-                }
-            )
-            included_ids.add(entry.id)
-            if len(nodes) >= limit:
-                break
-        if len(page) < page_size:
-            break
-        offset += len(page)
+    unofficial_total = 0
+    unofficial_enabled = 0
+    official_disabled = 0
+    for entry in iter_entries_including_disabled(graph):
+        if is_official_skill_entry(entry):
+            official_disabled += int(is_entry_disabled(entry))
+        else:
+            unofficial_total += 1
+            unofficial_enabled += int(not is_entry_disabled(entry))
+        if _entry_value(entry.entry_type) == "memory":
+            continue
+        if len(nodes) >= limit:
+            continue
+        entry_type = _entry_value(entry.entry_type)
+        metadata = entry.metadata
+        metadata_payload = _json_ready(metadata)
+        skill_name = entry.title if "matcreator-skill" in entry.tags else None
+        skill_dir = skill_dirs.get(skill_name) if skill_name else None
+        virtual = bool(metadata.custom.get("virtual")) or bool(
+            skill_name
+            and "matcreator-guide" not in entry.tags
+            and skill_dir is None
+        )
+        graph_disabled = is_entry_disabled(entry)
+        config_disabled = skill_name in disabled_skills if skill_name else False
+        enabled = not virtual and not graph_disabled and not config_disabled
+        skill_path = str(skill_dir.resolve()) if skill_dir else None
+        source = get_skill_source(skill_name) if skill_name else None
+        removable = bool(
+            skill_name
+            and skill_dir is not None
+            and source
+            and source.editable
+            and skill_dir.resolve().is_relative_to(workspace_skill_root)
+        )
+        nodes.append(
+            {
+                "id": entry.id,
+                "label": entry.title,
+                "title": entry.title,
+                "slug": entry.slug,
+                "skill_name": skill_name,
+                "skill_path": skill_path,
+                "source": source.name if source else None,
+                "editable": bool(source and source.editable),
+                "graph_editable": _editable_skill_graph_entry(entry),
+                "managed": bool(source and source.managed),
+                "trusted": bool(source and source.trusted),
+                "is_custom": bool(source and source.name in {"custom", "workspace"}),
+                "removable": removable,
+                "remove_requires_confirmation": bool(skill_name and source and source.managed),
+                "enabled": enabled,
+                "graph_disabled": graph_disabled,
+                "config_disabled": config_disabled,
+                "virtual": virtual,
+                "entry_type": entry_type,
+                "content": "" if virtual else entry.content,
+                "content_preview": "" if virtual else _entry_preview(entry.content),
+                "tags": entry.tags,
+                "aliases": entry.aliases,
+                "internal_refs": [] if virtual else entry.internal_refs,
+                "scripts": [] if virtual else _json_ready(entry.scripts),
+                "assets": [] if virtual else _json_ready(entry.assets),
+                "metadata": metadata_payload,
+                "verification_status": _entry_value(metadata.verification_status),
+                "refinement_status": _entry_value(metadata.refinement_status),
+                "usage_count": metadata.usage_count,
+                "source_provenance": metadata.source_provenance,
+                "trust_score": metadata.trust_score,
+            }
+        )
+        included_ids.add(entry.id)
 
     edges = []
     if included_ids and KNOW_DO_GRAPH_DB.exists():
@@ -976,6 +980,12 @@ def _load_skill_graph_payload(*, limit: int = 400) -> dict:
         "truncated": stats.get("nodes", len(nodes)) > len(nodes),
         "total_nodes": stats.get("nodes", len(nodes)),
         "total_edges": stats.get("edges", len(edges)),
+        "unofficial": {
+            "total": unofficial_total,
+            "enabled": unofficial_enabled,
+            "disabled": unofficial_total - unofficial_enabled,
+            "official_disabled": official_disabled,
+        },
     }
 
 
@@ -4295,6 +4305,41 @@ async def get_skill_graph_node_edit(node_id: str) -> JSONResponse:
         "metadata": _json_ready(entry.metadata),
         "dependent_node_ids": dependent_node_ids,
         "available_nodes": available_nodes,
+    })
+
+
+class SkillGraphNodeToggleBody(BaseModel):
+    disabled: bool
+
+
+@app.patch("/api/skill-graph/unofficial/toggle")
+async def toggle_unofficial_skill_graph_nodes(body: SkillGraphNodeToggleBody) -> JSONResponse:
+    """Bulk-toggle every non-official skill node through KDG's API."""
+    from matcreator.skill import set_unofficial_skill_nodes_disabled  # noqa: PLC0415
+
+    try:
+        result = await asyncio.to_thread(set_unofficial_skill_nodes_disabled, body.disabled)
+    except Exception:
+        logger.exception("Failed to toggle unofficial skill graph nodes")
+        raise HTTPException(status_code=500, detail="Failed to update unofficial skill nodes.") from None
+    return JSONResponse({"status": "ok", **result})
+
+
+@app.patch("/api/skill-graph/nodes/{node_id}/toggle")
+async def toggle_skill_graph_node(node_id: str, body: SkillGraphNodeToggleBody) -> JSONResponse:
+    """Hide or restore a graph node without deleting its data or edges."""
+    graph = _get_kg()
+    try:
+        updated = set_entry_disabled(graph, node_id, body.disabled)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Graph node '{node_id}' not found.") from None
+    except Exception:
+        logger.exception("Failed to toggle graph node %s", node_id)
+        raise HTTPException(status_code=500, detail="Failed to update graph node.") from None
+    return JSONResponse({
+        "status": "ok",
+        "id": updated.id,
+        "disabled": is_entry_disabled(updated),
     })
 
 

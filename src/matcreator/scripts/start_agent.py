@@ -17,6 +17,7 @@ Knowledge Graph Commands (matcreator graph ...):
     export        Export graph entries.
     clear-memory  Delete memory nodes without changing skill nodes.
     reset         Rebuild the graph from installed built-in and custom skills.
+    disable-unofficial  Disable every KDG node except maintained base skills.
 
 Knowledge Management Commands (matcreator knowledge ...):
     query         Search the knowledge graph for nodes matching a query string.
@@ -420,6 +421,34 @@ def graph_reset(yes: bool, no_backup: bool) -> None:
     if result.get("backup_path"):
         click.echo(f"Backup: {result['backup_path']}")
     click.echo(result["message"])
+
+
+@graph_group.command("disable-unofficial")
+def graph_disable_unofficial() -> None:
+    """Disable every KDG node except maintained base skills with KDG's API."""
+    from matcreator.skill import set_unofficial_skill_nodes_disabled
+
+    try:
+        result = set_unofficial_skill_nodes_disabled(True)
+    except Exception as exc:
+        raise click.ClickException(f"Failed to disable unofficial skill nodes: {exc}") from exc
+    click.echo(
+        f"Disabled {result['changed']} of {result['affected']} unofficial node(s)."
+    )
+
+
+@graph_group.command("enable-unofficial")
+def graph_enable_unofficial() -> None:
+    """Restore every non-official skill node disabled with the bulk command."""
+    from matcreator.skill import set_unofficial_skill_nodes_disabled
+
+    try:
+        result = set_unofficial_skill_nodes_disabled(False)
+    except Exception as exc:
+        raise click.ClickException(f"Failed to enable unofficial skill nodes: {exc}") from exc
+    click.echo(
+        f"Enabled {result['changed']} of {result['affected']} unofficial node(s)."
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -24,7 +24,6 @@ def test_step_executor_registers_tracked_remote_job_tools() -> None:
     tool_names = {tool.name for tool in agent.tools if hasattr(tool, "name")}
 
     assert {
-        "submit_e2b_sandbox",
         "submit_bohr_sandbox",
         "submit_bohr_job",
         "get_remote_job_status",
@@ -37,6 +36,7 @@ def test_step_executor_registers_tracked_remote_job_tools() -> None:
         "pause_remote_job",
         "terminate_remote_job",
     } <= tool_names
+    assert "submit_e2b_sandbox" not in tool_names
 
 
 class _FakeState:
@@ -437,7 +437,7 @@ def test_resumed_node_receives_explicit_reattachment_instructions():
     assert "job-1" in context
     assert "sbx-1" in context
     assert "get_remote_job_status" in context
-    assert "Do NOT call submit_e2b_sandbox" in context
+    assert "Do NOT call submit_bohr_sandbox" in context
 
 
 def test_node_without_remote_job_gets_no_reattachment_instructions():

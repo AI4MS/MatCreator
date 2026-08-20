@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import inspect
 import json
 import logging
 import sqlite3
@@ -21,6 +22,11 @@ from know_do_graph import (
 )
 
 logger = logging.getLogger(__name__)
+
+# KDG 0.1.9 does not yet expose a native disabled field. Keep the state in
+# KDG's durable custom metadata until that API is available, while supporting
+# newer KDG releases that provide ``set_disabled`` and ``metadata.disabled``.
+MATCREATOR_DISABLED_METADATA_KEY = "matcreator_disabled"
 
 LEGACY_RELATIONS = {
     "depends_on": EdgeRelation.dependency,
@@ -41,6 +47,84 @@ def iter_entries(graph: KnowDoGraph, *, page_size: int = 200) -> Iterable[Entry]
         if len(page) < page_size:
             return
         offset += page_size
+
+
+def iter_entries_including_disabled(
+    graph: KnowDoGraph,
+    *,
+    page_size: int = 200,
+) -> Iterable[Entry]:
+    """Yield all KDG entries across old and new disabled-node APIs."""
+    try:
+        supports_disabled = "disabled" in inspect.signature(graph.list).parameters
+    except (TypeError, ValueError):
+        supports_disabled = False
+
+    if not supports_disabled:
+        yield from iter_entries(graph, page_size=page_size)
+        return
+
+    seen_ids: set[str] = set()
+    for disabled in (False, True):
+        offset = 0
+        while True:
+            page = graph.list(limit=page_size, offset=offset, disabled=disabled)
+            for entry in page:
+                if entry.id not in seen_ids:
+                    seen_ids.add(entry.id)
+                    yield entry
+            if len(page) < page_size:
+                break
+            offset += page_size
+
+
+def is_entry_disabled(entry: Entry) -> bool:
+    """Return KDG-native or MatCreator-compatible disabled state for *entry*."""
+    metadata = entry.metadata
+    return bool(
+        getattr(metadata, "disabled", False)
+        or (metadata.custom or {}).get(MATCREATOR_DISABLED_METADATA_KEY, False)
+    )
+
+
+def is_official_skill_entry(entry: Entry) -> bool:
+    """Return whether *entry* is a maintained base skill node.
+
+    MatCreator bundles maintained skills under ``builtin`` and may additionally
+    install SkillForge skills under ``official``. Attached L3/L4 knowledge and
+    memories are deliberately not official, even when they reference one of
+    those maintained skills.
+    """
+    custom = entry.metadata.custom or {}
+    source = str(custom.get("skill_source") or "")
+    if not source:
+        source = next(
+            (tag.removeprefix("skill-source:") for tag in entry.tags if tag.startswith("skill-source:")),
+            "",
+        )
+    entry_type = getattr(entry.entry_type, "value", entry.entry_type)
+    return (
+        source in {"builtin", "official"}
+        and "matcreator-skill" in entry.tags
+        and entry_type not in {"memory", "heuristic", "constraint"}
+    )
+
+
+def set_entry_disabled(graph: KnowDoGraph, identifier: str, disabled: bool) -> Entry:
+    """Persist disabled state through the available KDG API."""
+    set_disabled = getattr(graph, "set_disabled", None)
+    if callable(set_disabled):
+        return set_disabled(identifier, disabled)
+
+    entry = graph.get(identifier)
+    if entry is None:
+        raise KeyError(identifier)
+    metadata = entry.metadata.model_copy(deep=True)
+    metadata.custom = {
+        **(metadata.custom or {}),
+        MATCREATOR_DISABLED_METADATA_KEY: disabled,
+    }
+    return graph.update(entry.id, metadata=metadata)
 
 
 def find_entry(

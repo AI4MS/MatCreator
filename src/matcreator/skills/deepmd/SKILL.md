@@ -4,7 +4,7 @@ description: Deep potential models finetuning and testing using the DeePMD-kit.
   Use this skill whenever finetuning a Deep Potential (DPA-1 / DPA-2 / DPA-3 / DPA-4) model
   or running model tests on a dataset. The oldest DP descriptors such as se_e2_a, se_e2_r,
   and se_e3 are no longer supported. 
-  Training from scratch is NEVER advised unless distilling a student model from a teacher model.
+  Training from scratch is NEVER advised unless fine-tuning a DPA-4c model on data labeled by a fine-tuned model.
   Multitask fine-tuning is NOT supported.
 metadata:
   tools:
@@ -100,6 +100,8 @@ dp --pt train input.json --restart model.ckpt.pt
 > 1. The restart command must be run from the workdir.
 > 2. When resuming a Bohrium run, you must first download the bohrium output, copy model.ckpt.pt to the workdir,
 >    and then resubmit with the restart command.
+> 3. For a **DPA-4c** run, use `dp --pt-expt train input.json --restart model.ckpt.pt` instead
+>    of `--pt train` — DPA-4c requires `--pt-expt` for every backend (see the DPA-4c section).
 
 ### Expected output files
 
@@ -138,21 +140,36 @@ dp show <model_file> descriptor
 
 ---
 
-# DPA-4c distillation (student model training)
+# DPA-4c fine-tuning
 
-Distilling a student model from a fine-tuned DPA-4 teacher is the only scenario where
-training a model is advised (see the description of this skill). The student architecture
-for distillation is **DPA-4c** (`descriptor.type = "dpa4c"`), whose CLI usage differs
+Fine-tuning a DPA-4c model from a fine-tuned model is the only scenario where
+training a model is advised (see the description of this skill). The architecture
+for fine-tuning is **DPA-4c** (`descriptor.type = "dpa4c"`), whose CLI usage differs
 from regular fine-tuning.
 
-> **Prerequisite gate:** distillation requires the concept-level Stage A (teacher NPT MD
-> exploration) and Stage B (teacher inference labeling) to be completed first — see the
-> `machine-learning-force-field` skill ([references/distillation.md](../concepts/machine-learning-force-field/references/distillation.md)).
+> **Prerequisite gate:** fine-tuning requires the concept-level Stage A (NPT MD
+> exploration) and Stage B (inference labeling) to be completed first — see the
+> `machine-learning-force-field` skill ([SKILL.md](../concepts/machine-learning-force-field/SKILL.md)).
 > Training directly on the seed/static structures is forbidden.
 
 The concrete DPA-4c training command, the verified input template, and the recommended
 Bohrium image/machine are documented in
 [references/supported_deepmd_models.md](references/supported_deepmd_models.md) ("DPA-4c" section).
+
+After training, freeze the model and then compress the frozen model for deployment.
+**Every DPA-4c CLI backend must use `--pt-expt` (train, freeze, compress, test) — never `--pt`.**
+The standard `--pt` (PyTorch) backend produces wrong forces + virials/pressure and crashes on
+the DPA-4c `sel=[999999]` selection, so it is forbidden for DPA-4c in any stage:
+
+```bash
+dp --pt-expt freeze -c model.ckpt.pt -o frozen
+dp --pt-expt compress -i frozen.pt2 -o compressed_model.pt2
+```
+
+> The `--pt-expt compress` step is specific to DPA-4c; it reduces the frozen model
+> size for inference. `dp ... freeze -o frozen` writes `frozen.pt2` (the backend
+> appends `.pt2`), which `compress` then reads via `-i frozen.pt2`. See the
+> "Freeze to `.pt2`" section below for general freeze details.
 
 ---
 # DeePMD-kit python interface (ASE calculator)
@@ -256,7 +273,7 @@ but instead freeze your own model with the desired settings from `model.ckpt.pt`
 - `dpa4_prepare.py` requires `ase`, `dpdata`, and `numpy` in the local Python environment.
 
 **Data & model:**
-- All input structures must be **labelled** (having energy + forces + virial, either by DFT or by a teacher model). 
+- All input structures must be **labelled** (having energy + forces + virial, either by DFT or by a fine-tuned model). 
   Unlabeled structures raise an error during dpdata export.
 - Base model for finetuning must be a `.pt` checkpoint file. **Frozen models cannot be fine-tuned.**
 - Model variant and input parameters must match exactly — do not mix across variants.
