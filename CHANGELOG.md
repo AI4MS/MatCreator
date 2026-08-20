@@ -2,6 +2,31 @@
 
 <!-- version list -->
 
+## v2.20.0 (2026-08-20)
+
+### Bug Fixes
+
+- Add skill for remote jobs
+  ([`05bff5e`](https://github.com/AI4MS/MatCreator/commit/05bff5e90db5d133ec2293414906e08337848599))
+
+- Laggy during planning roadmap popping up and agent response stops
+  ([`5fb9044`](https://github.com/AI4MS/MatCreator/commit/5fb9044b8985cfec70450512cd31acda929a1892))
+
+### Features
+
+- Animations for transition
+  ([`c8801a5`](https://github.com/AI4MS/MatCreator/commit/c8801a5b7abb6e35147d12cbc88930e1811e42a9))
+
+- Batch enable/disable unofficial nodes
+  ([`ab97872`](https://github.com/AI4MS/MatCreator/commit/ab97872bc4edc8b3bcbdc0004af0fc27252d1c86))
+
+- Fancier files and skill graph panels.
+  ([`dac16af`](https://github.com/AI4MS/MatCreator/commit/dac16af6a52877e27475be81ea4cca4850a316e5))
+
+- Toggle skill graph nodes
+  ([`6970d12`](https://github.com/AI4MS/MatCreator/commit/6970d122942e0c5e47664a917078adc23f1b0722))
+
+
 ## v2.19.0 (2026-08-18)
 
 ### Bug Fixes
