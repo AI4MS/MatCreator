@@ -31,6 +31,9 @@ Check the current configuration without revealing secrets:
 matcreator config show
 ```
 
+See the [Configuration](configuration.md) page for the full `config.yaml` reference,
+including how to set up multiple LLM models with executor LLM cards.
+
 ## Install the Vite frontend
 
 The Vite frontend uses Ketcher and requires Node.js 24.14.1 or later. Install
@@ -135,5 +138,6 @@ matcreator knowledge query "structure generation"
 ## Next Steps
 
 - Read the [Overview](overview.md) to understand the harness architecture.
+- See the [Configuration](configuration.md) reference for the full `config.yaml` schema and multi-model LLM setup.
 - Choose a [Deployment](deployment.md) path for personal or shared use.
 - Learn how MatCreator's [Knowledge](knowledge/index.md) layer works.
