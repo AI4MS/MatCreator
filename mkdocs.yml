@@ -38,6 +38,7 @@ theme:
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
+  - Configuration: configuration.md
   - Overview: overview.md
   - Architecture Components: architecture_components.md
   - Evaluation: evaluation.md
