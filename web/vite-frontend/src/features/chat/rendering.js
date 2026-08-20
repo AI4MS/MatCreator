@@ -1,4 +1,5 @@
 import { marked } from "marked";
+import { sanitizeRenderedHtml } from "../../shared/rendering/sanitizeHtml.js";
 
 const BOX_RE = /[┌┐└┘├┤┬┴┼│━─]/;
 const CJK_RE = /[一-鿿㐀-䶿豈-﫿　-〿＀-￯]/;
@@ -155,14 +156,24 @@ export function createChatRenderer({ chatArea, bottomOverlay = null }) {
     let html = marked.parse(text);
     const wrapAsciiArt = (match, inner) => {
       const decoded = inner.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
-      return BOX_RE.test(decoded) ? `<pre class="ascii-art">${decoded}</pre>` : match;
+      return BOX_RE.test(decoded) ? `<pre class="ascii-art">${escapeHtml(decoded)}</pre>` : match;
     };
     html = html.replace(/<pre><code>([\s\S]*?)<\/code><\/pre>/gi, wrapAsciiArt);
     html = html.replace(/<p>([\s\S]*?)<\/p>/gi, wrapAsciiArt);
-    return html.replace(
+    html = html.replace(
       /<table>([\s\S]*?)<\/table>/gi,
       '<div class="markdown-table-scroll" role="region" aria-label="Scrollable table" tabindex="0"><table>$1</table></div>',
     );
+    return sanitizeRenderedHtml(html);
+  }
+
+  function escapeHtml(value) {
+    return String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
   }
 
   function unescapeText(text) {
@@ -240,7 +251,15 @@ export function createChatRenderer({ chatArea, bottomOverlay = null }) {
   function getUserAvatar() { return localStorage.getItem("user-avatar-url") || null; }
   function applyUserAvatarToEl(element) {
     const url = getUserAvatar();
-    element.innerHTML = url ? `<img src="${url}" alt="User">` : USER_AVATAR_SVG;
+    element.replaceChildren();
+    if (url) {
+      const image = document.createElement("img");
+      image.src = url;
+      image.alt = "User";
+      element.appendChild(image);
+    } else {
+      element.innerHTML = USER_AVATAR_SVG;
+    }
   }
   function setUserAvatar(dataUrl) {
     localStorage.setItem("user-avatar-url", dataUrl);

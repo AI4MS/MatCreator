@@ -1064,7 +1064,7 @@ export function createSkillGraphController({
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       renderSkillGraphNodeEditor(host, node, await resp.json());
     } catch (err) {
-      host.innerHTML = `<h4>Edit Node</h4><div class="skill-graph-editor-status error">Editor unavailable: ${String(err.message || err)}</div>`;
+      renderSkillGraphEditorError(host, "Edit Node", err);
     }
   }
 
@@ -1108,8 +1108,17 @@ export function createSkillGraphController({
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       renderSkillGraphEditor(host, node, await resp.json());
     } catch (err) {
-      host.innerHTML = `<h4>Edit Skill</h4><div class="skill-graph-editor-status error">Editor unavailable: ${String(err.message || err)}</div>`;
+      renderSkillGraphEditorError(host, "Edit Skill", err);
     }
+  }
+
+  function renderSkillGraphEditorError(host, title, error) {
+    const heading = document.createElement("h4");
+    heading.textContent = title;
+    const status = document.createElement("div");
+    status.className = "skill-graph-editor-status error";
+    status.textContent = `Editor unavailable: ${String(error?.message || error)}`;
+    host.replaceChildren(heading, status);
   }
 
   async function saveSkillGraphEditor(host) {

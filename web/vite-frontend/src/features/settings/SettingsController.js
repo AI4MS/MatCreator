@@ -1,3 +1,5 @@
+import { createDialogController } from "../../shared/ui/dialog.js";
+
 export function createSettingsController({ state, applyLogin }) {
 
   const settingsModal = document.getElementById("settings-modal");
@@ -15,6 +17,11 @@ export function createSettingsController({ state, applyLogin }) {
   const settingsLlmCards = document.getElementById("settings-llm-cards");
   const settingsLlmCardAdd = document.getElementById("settings-llm-card-add");
   const CUSTOM_ENV_CONFIG_KEY = "CUSTOM_ENV";
+  const settingsDialog = createDialogController({
+    element: settingsModal,
+    labelledBy: "settings-dialog-title",
+    initialFocus: settingsClose,
+  });
 
   // Env config input refs
   const envInputs = {
@@ -255,14 +262,14 @@ export function createSettingsController({ state, applyLogin }) {
   }
 
   function openSettingsModal() {
-    settingsModal.classList.remove("hidden");
+    if (!settingsDialog.open()) return;
     settingsUsername.value = state.displayName || "";
     settingsUuid.value = state.userId || "";
     loadSettingsData();
   }
 
   function closeSettingsModal() {
-    settingsModal.classList.add("hidden");
+    settingsDialog.close();
   }
 
   // ---- tree helpers ----------------------------------------------------------
@@ -556,7 +563,10 @@ export function createSettingsController({ state, applyLogin }) {
       renderExecutorCards(llmCfg.executor_cards || {});
       renderEnvPairs(envCfg[CUSTOM_ENV_CONFIG_KEY] || {});
     } catch (err) {
-      skillsChecklist.innerHTML = `<p class="settings-hint" style="color:#f87171">Failed to load: ${err.message}</p>`;
+      const error = document.createElement("p");
+      error.className = "settings-hint settings-error";
+      error.textContent = `Failed to load: ${err.message}`;
+      skillsChecklist.replaceChildren(error);
     }
   }
 

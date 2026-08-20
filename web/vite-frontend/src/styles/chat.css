@@ -1311,6 +1311,8 @@ details.step-feed-nested {
 }
 
 .avatar-upload-btn {
+  appearance: none;
+  padding: 0;
   cursor: pointer; transition: transform 0.15s, box-shadow 0.15s;
   position: relative;
 }

@@ -1,6 +1,21 @@
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import "@xterm/xterm/css/xterm.css";
+let terminalRuntimePromise = null;
+
+function loadTerminalRuntime() {
+  terminalRuntimePromise ||= Promise.all([
+    import("@xterm/xterm"),
+    import("@xterm/addon-fit"),
+    import("@xterm/xterm/css/xterm.css"),
+  ])
+    .then(([terminalModule, fitModule]) => ({
+      Terminal: terminalModule.Terminal,
+      FitAddon: fitModule.FitAddon,
+    }))
+    .catch((error) => {
+      terminalRuntimePromise = null;
+      throw error;
+    });
+  return terminalRuntimePromise;
+}
 
 export function createWorkspaceTerminalController({ state, container, panel, toggleButton }) {
   let terminal = null;
@@ -9,6 +24,7 @@ export function createWorkspaceTerminalController({ state, container, panel, tog
   let pointerDown = false;
   let selectionReleasedAt = 0;
   let ctrlCKeyAt = 0;
+  let lifecycleVersion = 0;
 
   function socketUrl() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -72,24 +88,43 @@ export function createWorkspaceTerminalController({ state, container, panel, tog
     return now - selectionReleasedAt < 500 && now - ctrlCKeyAt >= 500;
   }
 
-  function start() {
+  async function start() {
     if (!container) return;
     if (socket?.readyState === WebSocket.OPEN) {
       terminal?.focus();
       resize();
       return;
     }
+    const version = ++lifecycleVersion;
+    let runtime;
+    try {
+      runtime = await loadTerminalRuntime();
+    } catch (error) {
+      if (version === lifecycleVersion) {
+        container.textContent = `Unable to load the workspace terminal: ${String(error?.message || error)}`;
+      }
+      return;
+    }
+    if (version !== lifecycleVersion) return;
+    const { Terminal, FitAddon } = runtime;
+    socket?.close();
+    socket = null;
+    terminal?.dispose();
+    terminal = null;
+    fitAddon = null;
     container.innerHTML = "";
-    terminal = new Terminal({
+    const terminalInstance = new Terminal({
       cursorBlink: true,
       convertEol: true,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
       fontSize: 12,
       theme: { background: "#030712", foreground: "#d1fae5", cursor: "#7dd3fc", selectionBackground: "#1e40af88" },
     });
-    fitAddon = new FitAddon();
-    terminal.loadAddon(fitAddon);
-    terminal.open(container);
+    const fitAddonInstance = new FitAddon();
+    terminal = terminalInstance;
+    fitAddon = fitAddonInstance;
+    terminalInstance.loadAddon(fitAddonInstance);
+    terminalInstance.open(container);
     container.removeEventListener("copy", copySelection);
     container.addEventListener("copy", copySelection);
     container.removeEventListener("keydown", handleKeydown, true);
@@ -98,29 +133,40 @@ export function createWorkspaceTerminalController({ state, container, panel, tog
     container.addEventListener("pointerdown", handlePointerDown);
     container.removeEventListener("pointerup", handlePointerUp);
     container.addEventListener("pointerup", handlePointerUp);
-    terminal.write("\r\nStarting workspace terminal...\r\n");
-    fitAddon.fit();
-    terminal.focus();
+    terminalInstance.write("\r\nStarting workspace terminal...\r\n");
+    fitAddonInstance.fit();
+    terminalInstance.focus();
 
-    socket = new WebSocket(socketUrl());
-    socket.addEventListener("open", resize);
-    socket.addEventListener("message", (event) => {
+    const socketInstance = new WebSocket(socketUrl());
+    socket = socketInstance;
+    socketInstance.addEventListener("open", () => {
+      if (socket === socketInstance) resize();
+    });
+    socketInstance.addEventListener("message", (event) => {
+      if (socket !== socketInstance) return;
       try {
         const message = JSON.parse(event.data);
-        if (message.type === "output") terminal?.write(message.data || "");
+        if (message.type === "output") terminalInstance.write(message.data || "");
       } catch (_) {
-        terminal?.write(String(event.data || ""));
+        terminalInstance.write(String(event.data || ""));
       }
     });
-    socket.addEventListener("close", () => terminal?.write("\r\n[terminal closed]\r\n"));
-    socket.addEventListener("error", () => terminal?.write("\r\n[terminal connection error]\r\n"));
-    terminal.onData((data) => {
+    socketInstance.addEventListener("close", () => {
+      if (socket === socketInstance) terminalInstance.write("\r\n[terminal closed]\r\n");
+    });
+    socketInstance.addEventListener("error", () => {
+      if (socket === socketInstance) terminalInstance.write("\r\n[terminal connection error]\r\n");
+    });
+    terminalInstance.onData((data) => {
       if (shouldSuppressInput(data)) return;
-      if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "input", data }));
+      if (socket === socketInstance && socketInstance.readyState === WebSocket.OPEN) {
+        socketInstance.send(JSON.stringify({ type: "input", data }));
+      }
     });
   }
 
   function stop() {
+    lifecycleVersion += 1;
     socket?.close();
     socket = null;
     terminal?.dispose();
@@ -139,10 +185,15 @@ export function createWorkspaceTerminalController({ state, container, panel, tog
     panel?.classList.toggle("hidden", !open);
     toggleButton?.classList.toggle("is-active", open);
     toggleButton?.setAttribute("aria-expanded", String(open));
-    if (open) start();
+    if (open) void start();
     else stop();
   }
 
+  function destroy() {
+    stop();
+    window.removeEventListener("resize", resize);
+  }
+
   window.addEventListener("resize", resize);
-  return { setOpen, resize };
+  return { setOpen, resize, destroy };
 }

@@ -1,5 +1,6 @@
 import { Network, DataSet } from "vis-network/standalone";
 import { installNetworkWheelZoom } from "./networkWheelZoom.js";
+import { httpClient } from "../../shared/api/http.js";
 
 function clamp(number, min, max) {
   return Math.max(min, Math.min(max, number));
@@ -527,9 +528,8 @@ export class ExecutionPlanView {
 
   async _poll(sessionId) {
     try {
-      const resp = await fetch(`/api/execution-graph/${sessionId}`);
-      if (!resp.ok) return;
-      const data = await resp.json();
+      const data = await httpClient.getJson(`/api/execution-graph/${encodeURIComponent(sessionId)}`);
+      if (data === null) return;
       if (sessionId !== this._currentSessionId) return;
       this.update(data);
     } catch (_) {}

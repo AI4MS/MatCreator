@@ -79,7 +79,7 @@
 .lightbox-close-btn {
   font-size: 14px;
   color: #ccc;
-  cursor: pointer;
+  cursor: default;
   border-radius: 4px;
   padding: 3px 9px;
   line-height: 1;
@@ -161,11 +161,27 @@
   color: var(--accent);
 }
 .session-item-content {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  line-height: inherit;
+  text-align: left;
   flex: 1;
   min-width: 0;
   overflow: hidden;
 }
+
+.session-item-content:focus-visible {
+  border-radius: 3px;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .session-item-id {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -259,6 +275,7 @@
 .confirm-ok:hover { background: #ef4444; }
 
 .session-item-summary {
+  display: block;
   font-size: 12px;
   font-weight: 650;
   color: var(--text);
@@ -1169,4 +1186,14 @@ body[data-theme="light"] .panel-resizer.resizing::before {
   max-height: 340px;
   overflow-y: auto;
   padding-right: 4px;
+}
+.viewer-load-error,
+.file-viewer-error {
+  color: var(--danger);
+  font-size: 13px;
+  padding: 16px 20px;
+}
+
+.settings-error {
+  color: var(--danger);
 }

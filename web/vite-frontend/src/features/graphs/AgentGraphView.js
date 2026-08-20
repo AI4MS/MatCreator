@@ -1,6 +1,7 @@
 import { Network, DataSet } from "vis-network/standalone";
 import { createDisclosureController } from "../ui/disclosureState.js";
 import { installNetworkWheelZoom } from "./networkWheelZoom.js";
+import { httpClient } from "../../shared/api/http.js";
 
 const NODE_COLORS = {
   orchestrator: { core: "124, 58, 237", edge: "196, 181, 253", font: "#f5f3ff" },
@@ -962,9 +963,8 @@ export class AgentGraphView {
 
   async _poll(sessionId) {
     try {
-      const resp = await fetch(`/api/agent-graph/${sessionId}`);
-      if (!resp.ok) return;
-      const data = await resp.json();
+      const data = await httpClient.getJson(`/api/agent-graph/${encodeURIComponent(sessionId)}`);
+      if (data === null) return;
       if (sessionId !== this._currentSessionId) return;
       this.update(data);
     } catch (_) {
