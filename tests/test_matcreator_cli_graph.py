@@ -56,6 +56,36 @@ def test_graph_reset_calls_maintenance(monkeypatch) -> None:
     assert result.output.strip() == "Reset the skill graph."
 
 
+def test_graph_disable_unofficial_calls_kdg_bulk_toggle(monkeypatch) -> None:
+    from matcreator import skill
+
+    monkeypatch.setattr(
+        skill,
+        "set_unofficial_skill_nodes_disabled",
+        lambda disabled: {"disabled": disabled, "affected": 3, "changed": 2},
+    )
+
+    result = CliRunner().invoke(start_agent.main, ["graph", "disable-unofficial"])
+
+    assert result.exit_code == 0
+    assert result.output.strip() == "Disabled 2 of 3 unofficial node(s)."
+
+
+def test_graph_enable_unofficial_calls_kdg_bulk_toggle(monkeypatch) -> None:
+    from matcreator import skill
+
+    monkeypatch.setattr(
+        skill,
+        "set_unofficial_skill_nodes_disabled",
+        lambda disabled: {"disabled": disabled, "affected": 3, "changed": 2},
+    )
+
+    result = CliRunner().invoke(start_agent.main, ["graph", "enable-unofficial"])
+
+    assert result.exit_code == 0
+    assert result.output.strip() == "Enabled 2 of 3 unofficial node(s)."
+
+
 def test_graph_stats_uses_matcreator_kdg_db(monkeypatch) -> None:
     calls: list[tuple[list[str], dict[str, str]]] = []
 

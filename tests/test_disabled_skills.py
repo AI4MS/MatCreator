@@ -37,3 +37,65 @@ def test_run_skill_script_refuses_disabled_skill(monkeypatch):
     )
 
     assert result == "Skill 'disabled-skill' is disabled."
+
+
+def test_bulk_toggle_unofficial_skill_nodes_uses_kdg_disabled_state(monkeypatch):
+    from matcreator.skill import set_unofficial_skill_nodes_disabled
+
+    def entry(node_id, source, disabled=False, entry_type="capability"):
+        return SimpleNamespace(
+            id=node_id,
+            tags=["matcreator-skill", f"skill-source:{source}"],
+            metadata=SimpleNamespace(custom={"skill_source": source}, disabled=disabled),
+            entry_type=entry_type,
+        )
+
+    custom = entry("custom", "custom")
+    workspace = entry("workspace", "workspace", disabled=True)
+    builtin = entry("builtin", "builtin", disabled=True)
+    official = entry("official", "official")
+    limitation = entry("limitation", "builtin", entry_type="constraint")
+    memory = SimpleNamespace(
+        id="memory",
+        tags=["matcreator-memory"],
+        metadata=SimpleNamespace(custom={"memory": {"session_id": "test"}}, disabled=False),
+        entry_type="memory",
+    )
+
+    class FakeGraph:
+        def __init__(self):
+            self.entries = [custom, workspace, builtin, official, memory, limitation]
+            self.calls = []
+            self.refreshed = False
+
+        def list(self, *, disabled, **_kwargs):
+            return [item for item in self.entries if item.metadata.disabled is disabled]
+
+        def set_disabled(self, node_id, disabled):
+            self.calls.append((node_id, disabled))
+            next(item for item in self.entries if item.id == node_id).metadata.disabled = disabled
+
+        def refresh(self):
+            self.refreshed = True
+
+    graph = FakeGraph()
+    monkeypatch.setattr("matcreator.knowledge.query._get_kg", lambda: graph)
+
+    result = set_unofficial_skill_nodes_disabled(True)
+
+    assert result == {
+        "disabled": True,
+        "affected": 4,
+        "changed": 3,
+        "node_ids": ["custom", "memory", "limitation", "workspace"],
+        "restored_official": 1,
+    }
+    assert graph.calls == [
+        ("custom", True),
+        ("memory", True),
+        ("limitation", True),
+        ("builtin", False),
+    ]
+    assert graph.refreshed is True
+    assert builtin.metadata.disabled is False
+    assert official.metadata.disabled is False

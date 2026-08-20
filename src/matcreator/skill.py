@@ -20,6 +20,12 @@ from google.adk.tools.function_tool import FunctionTool
 from .workspace import workspace_skills_dir
 from .tools.workspace_tools import run_skill_script
 from .config import get_disabled_skills, get_planning_skills
+from .knowledge.kdg_memory import (
+    is_entry_disabled,
+    is_official_skill_entry,
+    iter_entries_including_disabled,
+    set_entry_disabled,
+)
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -159,6 +165,46 @@ def get_official_skill_names() -> set[str]:
 def get_managed_skill_names() -> set[str]:
     """Return skill names from managed builtin and official sources."""
     return get_default_skill_names() | get_official_skill_names()
+
+
+def set_unofficial_skill_nodes_disabled(disabled: bool = True) -> dict[str, object]:
+    """Enable or disable every non-official KDG node through KDG.
+
+    This intentionally changes KDG's native ``metadata.disabled`` state rather
+    than MatCreator's config-only skill filter.  Consequently the setting is
+    observed by KDG search and retrieval APIs as well as MatCreator's tools.
+    Maintained base skills (``skill_source=builtin`` or ``official``) are left
+    intact. Custom, workspace, legacy, memory, experience, and attached
+    heuristic/limitation nodes are all considered unofficial.
+    """
+    from .knowledge.query import _get_kg
+
+    graph = _get_kg()
+    affected: list[str] = []
+    changed: list[str] = []
+    restored_official: list[str] = []
+    for entry in iter_entries_including_disabled(graph):
+        if is_official_skill_entry(entry):
+            # Correct nodes disabled by an earlier bulk run that treated
+            # MatCreator's builtin source as unofficial.
+            if is_entry_disabled(entry):
+                set_entry_disabled(graph, entry.id, False)
+                restored_official.append(entry.id)
+            continue
+        affected.append(entry.id)
+        if is_entry_disabled(entry) != disabled:
+            set_entry_disabled(graph, entry.id, disabled)
+            changed.append(entry.id)
+
+    if changed or restored_official:
+        graph.refresh()
+    return {
+        "disabled": disabled,
+        "affected": len(affected),
+        "changed": len(changed),
+        "node_ids": affected,
+        "restored_official": len(restored_official),
+    }
 
 
 def load_skills() -> list:

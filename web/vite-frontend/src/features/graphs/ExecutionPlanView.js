@@ -30,7 +30,6 @@ export class ExecutionPlanView {
     this._container = document.getElementById(containerId);
     this._toggleButton = options.toggleButton || null;
     this._thumbnailElement = options.thumbnailElement || null;
-    this._onNewGraph = options.onNewGraph || (() => {});
     this._planNodes = new DataSet([]);
     this._planEdges = new DataSet([]);
     this._network = null;
@@ -41,9 +40,6 @@ export class ExecutionPlanView {
     this._currentIndex = 0;
     this._hierarchicalMode = true;
     this._latestGraphData = null;
-    this._latestGraphKey = null;
-    this._autoOpenOnNewGraph = false;
-    this._autoOpenBaselineKey = null;
     this._renderLayoutKey = null;
     this._init();
   }
@@ -225,26 +221,6 @@ export class ExecutionPlanView {
     };
   }
 
-  _graphContentKey(graphData) {
-    if (!graphData || typeof graphData.nodes !== "object") return null;
-    const rawEdges = graphData.edges || [];
-    const nodes = Object.entries(graphData.nodes)
-      .sort(([a], [b]) => String(a).localeCompare(String(b)))
-      .map(([id, node]) => ({
-        id,
-        label: node.label || "",
-        action: node.action || "",
-      }));
-    const edges = rawEdges
-      .map((e) => Array.isArray(e) ? { from: e[0], to: e[1] } : { from: e.from, to: e.to })
-      .sort((a, b) => `${a.from}->${a.to}`.localeCompare(`${b.from}->${b.to}`));
-    return JSON.stringify({ nodes, edges });
-  }
-
-  currentGraphKey() {
-    return this._latestGraphKey;
-  }
-
   _extractConnectedSubgraphs(graphData) {
     const nodes = graphData.nodes || {};
     const rawEdges = graphData.edges || [];
@@ -335,13 +311,7 @@ export class ExecutionPlanView {
     if (!graphData || typeof graphData.nodes !== "object") return;
     const nodeEntries = Object.entries(graphData.nodes);
     if (nodeEntries.length === 0) return;
-    const graphKey = this._graphContentKey(graphData);
     this._latestGraphData = graphData;
-    this._latestGraphKey = graphKey;
-    if (this._autoOpenOnNewGraph && graphKey && graphKey !== this._autoOpenBaselineKey) {
-      this._autoOpenOnNewGraph = false;
-      this._onNewGraph();
-    }
 
     const rawEdges = graphData.edges || [];
     const nodeIds = nodeEntries.map(([id]) => id);
@@ -538,19 +508,13 @@ export class ExecutionPlanView {
     }
   }
 
-  startPolling(sessionId, options = {}) {
+  startPolling(sessionId) {
     this.stopPolling();
-    this.refresh(sessionId, options);
+    this.refresh(sessionId);
   }
 
-  refresh(sessionId, options = {}) {
+  refresh(sessionId) {
     this._currentSessionId = sessionId;
-    if (Object.prototype.hasOwnProperty.call(options, "autoOpenOnNewGraph")) {
-      this._autoOpenOnNewGraph = Boolean(options.autoOpenOnNewGraph);
-    }
-    if (Object.prototype.hasOwnProperty.call(options, "autoOpenBaselineKey")) {
-      this._autoOpenBaselineKey = options.autoOpenBaselineKey || null;
-    }
     return this._poll(sessionId);
   }
 
@@ -587,9 +551,6 @@ export class ExecutionPlanView {
     this._subgraphs = [];
     this._currentIndex = 0;
     this._latestGraphData = null;
-    this._latestGraphKey = null;
-    this._autoOpenOnNewGraph = false;
-    this._autoOpenBaselineKey = null;
     this._renderThumbnail(null);
     this._updateNavUI();
     this.stopPolling();
@@ -685,8 +646,10 @@ export class ExecutionPlanView {
     this._network.moveTo({ scale, animation: { duration: 200, easingFunction: "easeInOutQuad" } });
   }
 
-  fitToView() {
+  fitToView({ animate = true } = {}) {
     if (!this._network) return;
-    this._network.fit({ animation: { duration: 300, easingFunction: "easeInOutQuad" } });
+    this._network.fit({
+      animation: animate ? { duration: 300, easingFunction: "easeInOutQuad" } : false,
+    });
   }
 }

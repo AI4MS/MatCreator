@@ -1,0 +1,246 @@
+/*
+ * Shared motion language.
+ *
+ * Floating UI uses opacity and the independent transform properties so the
+ * compositor can animate it without repainting the panel contents. Layout
+ * interpolation is deliberately limited to small, user-triggered disclosures.
+ */
+:root {
+  --motion-fast: 140ms;
+  --motion-panel: 200ms;
+  --motion-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-ease-in: cubic-bezier(0.4, 0, 1, 1);
+  interpolate-size: allow-keywords;
+}
+
+/* Persistent modal surfaces toggled with the shared .hidden utility. */
+:is(.settings-overlay, .login-overlay, .lightbox-overlay) {
+  opacity: 1;
+  visibility: visible;
+  transition:
+    opacity var(--motion-fast) ease,
+    visibility var(--motion-fast) allow-discrete,
+    display var(--motion-fast) allow-discrete;
+}
+
+:is(.settings-overlay, .login-overlay, .lightbox-overlay).hidden {
+  display: none !important;
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+:is(.settings-card, .file-viewer-card, .login-card) {
+  opacity: 1;
+  translate: 0 0;
+  scale: 1;
+  transition:
+    opacity var(--motion-fast) ease,
+    translate var(--motion-panel) var(--motion-ease-out),
+    scale var(--motion-panel) var(--motion-ease-out);
+}
+
+:is(.settings-overlay, .login-overlay).hidden > :is(.settings-card, .file-viewer-card, .login-card) {
+  opacity: 0;
+  translate: 0 10px;
+  scale: 0.985;
+}
+
+.lightbox-overlay .lightbox-toolbar,
+.lightbox-overlay .lightbox-viewport {
+  opacity: 1;
+  transition: opacity var(--motion-panel) ease;
+}
+
+.lightbox-overlay.hidden :is(.lightbox-toolbar, .lightbox-viewport) {
+  opacity: 0;
+}
+
+/* Center-panel popups retain their existing translateX centering transform. */
+:is(.graph-detail, .plan-graph-popup) {
+  opacity: 1;
+  translate: 0 0;
+  scale: 1;
+  transition:
+    opacity var(--motion-fast) ease,
+    translate var(--motion-panel) var(--motion-ease-out),
+    scale var(--motion-panel) var(--motion-ease-out),
+    display var(--motion-fast) allow-discrete;
+}
+
+:is(.graph-detail, .plan-graph-popup).hidden {
+  display: none !important;
+  opacity: 0;
+  pointer-events: none;
+  translate: 0 8px;
+  scale: 0.985;
+}
+
+/* The terminal is the only main-layout panel whose size is animated. */
+.workspace-cli {
+  block-size: auto;
+  opacity: 1;
+  transition:
+    block-size var(--motion-panel) var(--motion-ease-out),
+    margin-block var(--motion-panel) var(--motion-ease-out),
+    opacity var(--motion-fast) ease,
+    display var(--motion-panel) allow-discrete;
+}
+
+.workspace-cli.hidden {
+  display: none !important;
+  block-size: 0;
+  margin-block: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Small popovers can use the same enter/exit treatment without JS timers. */
+.remote-job-detail {
+  opacity: 0;
+  pointer-events: none;
+  translate: 0 -5px;
+  scale: 0.985;
+  transition:
+    opacity var(--motion-fast) ease,
+    translate var(--motion-fast) var(--motion-ease-out),
+    scale var(--motion-fast) var(--motion-ease-out),
+    display var(--motion-fast) allow-discrete;
+}
+
+.remote-job-detail.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+  translate: 0 0;
+  scale: 1;
+}
+
+/* Tab contents appear gently; their old pane remains an immediate swap. */
+:is(.settings-pane:not(.hidden), .center-tab-panel.active, .skill-graph-tab-panel.has-selection .skill-graph-detail) {
+  animation: motion-content-in var(--motion-panel) var(--motion-ease-out) both;
+}
+
+/* Native details get a short, scoped height transition in supporting browsers. */
+:is(
+  details.panel-block,
+  details.skill-upload-details,
+  details.advanced-options,
+  .detail-section > details,
+  .skill-graph-object-list details,
+  .tree-dir-node > details
+)::details-content {
+  block-size: 0;
+  overflow: clip;
+  opacity: 0;
+  transition:
+    block-size var(--motion-panel) var(--motion-ease-out),
+    content-visibility var(--motion-panel) allow-discrete,
+    opacity var(--motion-fast) ease;
+}
+
+:is(
+  details.panel-block,
+  details.skill-upload-details,
+  details.advanced-options,
+  .detail-section > details,
+  .skill-graph-object-list details,
+  .tree-dir-node > details
+)[open]::details-content {
+  block-size: auto;
+  opacity: 1;
+}
+
+/* Dynamically-created dialogs use these animations on insertion/removal. */
+:is(.confirm-overlay, .evaluation-draft-overlay) {
+  animation: motion-overlay-in var(--motion-fast) ease both;
+}
+
+:is(.confirm-card, .evaluation-draft-card) {
+  animation: motion-panel-in var(--motion-panel) var(--motion-ease-out) both;
+}
+
+:is(.confirm-overlay, .evaluation-draft-overlay).is-closing {
+  pointer-events: none;
+  animation: motion-overlay-out var(--motion-fast) ease both;
+}
+
+:is(.confirm-overlay, .evaluation-draft-overlay).is-closing > :is(.confirm-card, .evaluation-draft-card) {
+  animation: motion-panel-out var(--motion-fast) var(--motion-ease-in) both;
+}
+
+@starting-style {
+  :is(.settings-overlay, .login-overlay, .lightbox-overlay):not(.hidden) {
+    opacity: 0;
+  }
+
+  :is(.settings-overlay, .login-overlay):not(.hidden) > :is(.settings-card, .file-viewer-card, .login-card) {
+    opacity: 0;
+    translate: 0 10px;
+    scale: 0.985;
+  }
+
+  :is(.graph-detail, .plan-graph-popup):not(.hidden) {
+    opacity: 0;
+    translate: 0 8px;
+    scale: 0.985;
+  }
+
+  .workspace-cli:not(.hidden) {
+    block-size: 0;
+    margin-block: 0;
+    opacity: 0;
+  }
+
+  .remote-job-detail.is-visible {
+    opacity: 0;
+    translate: 0 -5px;
+    scale: 0.985;
+  }
+}
+
+@keyframes motion-content-in {
+  from { opacity: 0; translate: 0 4px; }
+  to { opacity: 1; translate: 0 0; }
+}
+
+@keyframes motion-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes motion-overlay-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes motion-panel-in {
+  from { opacity: 0; translate: 0 10px; scale: 0.985; }
+  to { opacity: 1; translate: 0 0; scale: 1; }
+}
+
+@keyframes motion-panel-out {
+  from { opacity: 1; translate: 0 0; scale: 1; }
+  to { opacity: 0; translate: 0 7px; scale: 0.99; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 1ms;
+    --motion-panel: 1ms;
+  }
+
+  :is(
+    .settings-overlay,
+    .login-overlay,
+    .lightbox-overlay,
+    .settings-card,
+    .file-viewer-card,
+    .login-card,
+    .graph-detail,
+    .plan-graph-popup,
+    .workspace-cli,
+    .remote-job-detail
+  ) {
+    transition-duration: 1ms;
+  }
+}

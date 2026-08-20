@@ -123,6 +123,12 @@ from matcreator.control_plane.session_question_generator import (  # noqa: E402
     list_session_question_generators,
 )
 from matcreator.knowledge.query import _get_kg  # noqa: E402
+from matcreator.knowledge.kdg_memory import (  # noqa: E402
+    is_entry_disabled,
+    is_official_skill_entry,
+    iter_entries_including_disabled,
+    set_entry_disabled,
+)
 from matcreator.knowledge.review import run_review_pipeline  # noqa: E402
 from matcreator.ports import get_adk_port, get_local_adk_command, get_web_port, get_worker_base_port  # noqa: E402
 
@@ -864,37 +870,19 @@ def _load_skill_graph_payload(*, limit: int = 400) -> dict:
     workspace_skill_root = workspace_skills_dir().resolve()
     nodes = []
     included_ids: set[str] = set()
-    page_size = 200
-
-    def list_entries(*, disabled: bool) -> list:
-        entries = []
-        offset = 0
-        while len(entries) < limit:
-            page_limit = min(page_size, limit - len(entries))
-            page = graph.list(limit=page_limit, offset=offset, disabled=disabled)
-            if not page:
-                break
-            entries.extend(
-                entry for entry in page if _entry_value(entry.entry_type) != "memory"
-            )
-            if len(page) < page_limit:
-                break
-            offset += len(page)
-        return entries
-
-    # Disabled entries must be included so users can restore them. List them
-    # first so a full enabled graph cannot hide the only nodes needing Enable.
-    disabled_entries = list_entries(disabled=True)
-    enabled_entries = list_entries(disabled=False)
-    seen_ids: set[str] = set()
-    for entry in disabled_entries + enabled_entries:
-        if entry.id in seen_ids:
-            continue
-        seen_ids.add(entry.id)
+    unofficial_total = 0
+    unofficial_enabled = 0
+    official_disabled = 0
+    for entry in iter_entries_including_disabled(graph):
+        if is_official_skill_entry(entry):
+            official_disabled += int(is_entry_disabled(entry))
+        else:
+            unofficial_total += 1
+            unofficial_enabled += int(not is_entry_disabled(entry))
         if _entry_value(entry.entry_type) == "memory":
             continue
         if len(nodes) >= limit:
-            break
+            continue
         entry_type = _entry_value(entry.entry_type)
         metadata = entry.metadata
         metadata_payload = _json_ready(metadata)
@@ -905,7 +893,7 @@ def _load_skill_graph_payload(*, limit: int = 400) -> dict:
             and "matcreator-guide" not in entry.tags
             and skill_dir is None
         )
-        graph_disabled = bool(metadata.disabled)
+        graph_disabled = is_entry_disabled(entry)
         config_disabled = skill_name in disabled_skills if skill_name else False
         enabled = not virtual and not graph_disabled and not config_disabled
         skill_path = str(skill_dir.resolve()) if skill_dir else None
@@ -992,6 +980,12 @@ def _load_skill_graph_payload(*, limit: int = 400) -> dict:
         "truncated": stats.get("nodes", len(nodes)) > len(nodes),
         "total_nodes": stats.get("nodes", len(nodes)),
         "total_edges": stats.get("edges", len(edges)),
+        "unofficial": {
+            "total": unofficial_total,
+            "enabled": unofficial_enabled,
+            "disabled": unofficial_total - unofficial_enabled,
+            "official_disabled": official_disabled,
+        },
     }
 
 
@@ -4318,12 +4312,25 @@ class SkillGraphNodeToggleBody(BaseModel):
     disabled: bool
 
 
+@app.patch("/api/skill-graph/unofficial/toggle")
+async def toggle_unofficial_skill_graph_nodes(body: SkillGraphNodeToggleBody) -> JSONResponse:
+    """Bulk-toggle every non-official skill node through KDG's API."""
+    from matcreator.skill import set_unofficial_skill_nodes_disabled  # noqa: PLC0415
+
+    try:
+        result = await asyncio.to_thread(set_unofficial_skill_nodes_disabled, body.disabled)
+    except Exception:
+        logger.exception("Failed to toggle unofficial skill graph nodes")
+        raise HTTPException(status_code=500, detail="Failed to update unofficial skill nodes.") from None
+    return JSONResponse({"status": "ok", **result})
+
+
 @app.patch("/api/skill-graph/nodes/{node_id}/toggle")
 async def toggle_skill_graph_node(node_id: str, body: SkillGraphNodeToggleBody) -> JSONResponse:
     """Hide or restore a graph node without deleting its data or edges."""
     graph = _get_kg()
     try:
-        updated = graph.set_disabled(node_id, body.disabled)
+        updated = set_entry_disabled(graph, node_id, body.disabled)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Graph node '{node_id}' not found.") from None
     except Exception:
@@ -4332,7 +4339,7 @@ async def toggle_skill_graph_node(node_id: str, body: SkillGraphNodeToggleBody) 
     return JSONResponse({
         "status": "ok",
         "id": updated.id,
-        "disabled": bool(updated.metadata.disabled),
+        "disabled": is_entry_disabled(updated),
     })
 
 

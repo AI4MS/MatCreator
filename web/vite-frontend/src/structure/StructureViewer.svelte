@@ -1,5 +1,6 @@
 <script>
   import { onDestroy, onMount, tick, untrack } from "svelte";
+  import { fade, fly, scale } from "svelte/transition";
   import { createStructureRenderer } from "./renderer.js";
   import { fractionalCoordinates, parseStructure, rendererAtoms, rendererLattice, serializeStructure } from "./model.js";
 
@@ -118,6 +119,9 @@
   );
 
   const formatCoordinate = (value) => Number(value).toFixed(4);
+  const motionDuration = (duration) => (
+    window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? 0 : duration
+  );
 
   function snapshotStructure(value) {
     return $state.snapshot(value);
@@ -642,7 +646,11 @@
   </nav>
 
   {#if workbenchOpen}
-    <aside class="model-workbench" class:interface-workbench={operation === "interface"}>
+    <aside
+      class="model-workbench"
+      class:interface-workbench={operation === "interface"}
+      transition:fly={{ x: -12, duration: motionDuration(180) }}
+    >
       <header><strong>{operationLabels[operation]}</strong><button class="close-button" title="Close" aria-label="Close modeling tool" onclick={() => workbenchOpen = false}>×</button></header>
 
       {#if operation === "surface"}
@@ -752,7 +760,7 @@
   {/if}
 
   {#if viewerMode === "edit-atoms" && activeSelectedSite}
-    <aside class="atom-inspector" aria-label="Selected atom editor">
+    <aside class="atom-inspector" aria-label="Selected atom editor" transition:fly={{ x: 12, duration: motionDuration(180) }}>
       <header>
         <div><strong>Atom {selectedSites[0] + 1}</strong><span>Cartesian editor</span></div>
         <button class="close-button" title="Deselect atom" aria-label="Deselect atom" onclick={() => selectedSites = []}>×</button>
@@ -763,7 +771,7 @@
           <strong>{selectedElement}</strong><span>Choose from periodic table</span>
         </button>
         {#if periodicTableOpen}
-          <div class="periodic-table" role="grid" aria-label="Periodic table">
+          <div class="periodic-table" role="grid" aria-label="Periodic table" transition:scale={{ start: 0.98, duration: motionDuration(150) }}>
             {#each periodicTable as element}
               <button
                 type="button"
@@ -794,7 +802,7 @@
       </div>
     </aside>
   {:else if viewerMode === "edit-atoms" && selectedSites.length > 1}
-    <aside class="atom-inspector atom-selection-summary">
+    <aside class="atom-inspector atom-selection-summary" transition:fly={{ x: 12, duration: motionDuration(180) }}>
       <header><div><strong>{selectedSites.length} atoms selected</strong><span>Transform group</span></div><button class="close-button" title="Clear selection" aria-label="Clear selection" onclick={() => selectedSites = []}>×</button></header>
       <p>Shift-drag on empty space to box-select. Ctrl/Cmd-click adds or removes individual atoms. Select one atom to edit its element and Cartesian coordinates.</p>
       <button class="secondary-button" type="button" onclick={deleteSelectedAtoms}>Delete selected atoms</button>
@@ -802,8 +810,8 @@
   {/if}
 
   {#if sketcherOpen}
-    <div class="sketcher-overlay" role="dialog" aria-modal="true" aria-label="Molecule drawing editor">
-      <div class="sketcher-dialog">
+    <div class="sketcher-overlay" role="dialog" aria-modal="true" aria-label="Molecule drawing editor" transition:fade={{ duration: motionDuration(140) }}>
+      <div class="sketcher-dialog" transition:scale={{ start: 0.985, duration: motionDuration(200) }}>
         <header><strong>Molecule Editor</strong><button class="close-button" aria-label="Close molecule editor" onclick={closeSketcher}>×</button></header>
         <div class="sketcher-host" bind:this={sketcherHost}></div>
         {#if sketcherLoading}<div class="sketcher-loading">Loading Ketcher…</div>{/if}
