@@ -717,9 +717,10 @@ export function createSettingsController({ state, applyLogin }) {
     const wdInput = document.getElementById("settings-default-workdir");
     if (wdInput) wdInput.value = "";
   });
-  settingsModal?.addEventListener("click", (e) => {
-    if (e.target === settingsModal) closeSettingsModal();
-  });
+  // Settings contain a multi-field draft. Do not dismiss it when the user
+  // clicks the backdrop: an imprecise click should never force them to
+  // re-enter values. Closing remains an explicit action (close button or
+  // Escape), and saving is handled by the Save button.
 
   return { open: openSettingsModal, close: closeSettingsModal, reload: loadSettingsData };
 }
