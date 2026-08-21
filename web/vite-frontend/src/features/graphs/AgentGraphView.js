@@ -4,14 +4,29 @@ import { installNetworkWheelZoom } from "./networkWheelZoom.js";
 import { httpClient } from "../../shared/api/http.js";
 
 // Node identity and execution state intentionally live in separate visual
-// vocabularies. Type owns the quiet pastel face and its letter; state only
-// owns a compact badge or the running orbit below.
+// vocabularies. Type owns the face and its letter; state only owns a compact
+// badge or the running orbit below.
 const NODE_TYPE_VISUALS = {
-  orchestrator: { fill: "224, 231, 255", border: "129, 140, 248", text: "#1e1b4b" },
-  planning:     { fill: "219, 234, 254", border: "96, 165, 250", text: "#172554" },
-  execution:    { fill: "209, 250, 229", border: "52, 211, 153", text: "#064e3b" },
-  tester:       { fill: "254, 243, 199", border: "245, 158, 11", text: "#713f12" },
-  step:         { fill: "226, 232, 240", border: "148, 163, 184", text: "#1e293b" },
+  orchestrator: {
+    fill: "224, 231, 255", border: "129, 140, 248", text: "#1e1b4b",
+    dark: { fill: "99, 102, 241", border: "165, 180, 252", text: "#eef2ff" },
+  },
+  planning: {
+    fill: "219, 234, 254", border: "96, 165, 250", text: "#172554",
+    dark: { fill: "14, 165, 233", border: "125, 211, 252", text: "#ecfeff" },
+  },
+  execution: {
+    fill: "209, 250, 229", border: "52, 211, 153", text: "#064e3b",
+    dark: { fill: "16, 185, 129", border: "110, 231, 183", text: "#ecfdf5" },
+  },
+  tester: {
+    fill: "254, 243, 199", border: "245, 158, 11", text: "#713f12",
+    dark: { fill: "217, 119, 6", border: "252, 211, 77", text: "#fffbeb" },
+  },
+  step: {
+    fill: "226, 232, 240", border: "148, 163, 184", text: "#1e293b",
+    dark: { fill: "71, 85, 105", border: "148, 163, 184", text: "#f8fafc" },
+  },
 };
 
 // These names mirror the graph logger / execution-plan lifecycle values.
@@ -425,23 +440,27 @@ export class AgentGraphView {
           ctx.fillStyle = isLight ? "#f8fafc" : "#172033";
           ctx.fill();
 
-          // A flat pastel type face keeps the identity legible without making
-          // lifecycle state compete through the same colour channel.
+          // A flat type face keeps the identity legible without making
+          // lifecycle state compete through the same colour channel. Dark
+          // mode uses a more saturated palette and an opaque face; blending
+          // the light pastel colors into the backing plate made every node
+          // look like the same grey, translucent chip.
           ctx.beginPath();
           ctx.arc(x, y, drawRadius - 0.7, 0, Math.PI * 2);
+          const palette = isLight ? typeVisual : typeVisual.dark || typeVisual;
           const faceAlpha = isCancelled ? 0.55 : 1;
-          ctx.fillStyle = rgba(typeVisual.fill, faceAlpha * (isLight
+          ctx.fillStyle = rgba(palette.fill, faceAlpha * (isLight
             ? (hover || selected ? 0.9 : 0.78)
-            : (hover || selected ? 0.72 : 0.58)));
+            : 1));
           ctx.fill();
           ctx.lineWidth = borderWidth;
           ctx.strokeStyle = rgba(
-            typeVisual.border,
-            faceAlpha * (selected ? 1 : hover ? 0.96 : 0.82),
+            palette.border,
+            faceAlpha * (isLight ? (selected ? 1 : hover ? 0.96 : 0.82) : 1),
           );
           ctx.stroke();
 
-          ctx.fillStyle = typeVisual.text;
+          ctx.fillStyle = palette.text;
           if (isCancelled) ctx.globalAlpha = 0.72;
           ctx.font = `800 ${badge.length > 1 ? 11 : 12.5}px Manrope, system-ui, sans-serif`;
           ctx.textAlign = "center";
@@ -464,6 +483,9 @@ export class AgentGraphView {
 
   _visNode(raw) {
     const typeVisual = NODE_TYPE_VISUALS[raw.type] || NODE_TYPE_VISUALS.step;
+    const palette = document.body.dataset.theme === "light"
+      ? typeVisual
+      : typeVisual.dark || typeVisual;
     const badge = this._nodeBadge(raw);
     const radius = this._nodeRadius(raw);
     return {
@@ -471,9 +493,9 @@ export class AgentGraphView {
       label: "",
       shape: "custom",
       color: {
-        background: rgba(typeVisual.fill, 0.7),
-        border: rgba(typeVisual.border, 0.82),
-        highlight: { background: rgba(typeVisual.fill, 0.9), border: rgba(typeVisual.border, 1) },
+        background: rgba(palette.fill, 1),
+        border: rgba(palette.border, 1),
+        highlight: { background: rgba(palette.fill, 1), border: rgba(palette.border, 1) },
       },
       // vis-network may retain a custom renderer between DataSet updates.
       // Resolve the current node data while painting so a completed node can
