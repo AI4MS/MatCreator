@@ -17,6 +17,7 @@ export function createSkillGraphController({
     workflow: { background: "#14B8A6", border: "#0F766E", highlight: { background: "#2DD4BF", border: "#5EEAD4" } },
     procedure: { background: "#14B8A6", border: "#0F766E", highlight: { background: "#2DD4BF", border: "#5EEAD4" } },
     heuristic: { background: "#F59E0B", border: "#D97706", highlight: { background: "#FBBF24", border: "#FDE68A" } },
+    memory: { background: "#a8a7a9", border: "#525152", highlight: { background: "#dfdfdf", border: "#9d9d9d" } },
     limitation: { background: "#EF4444", border: "#DC2626", highlight: { background: "#F87171", border: "#FCA5A5" } },
     constraint: { background: "#EF4444", border: "#DC2626", highlight: { background: "#F87171", border: "#FCA5A5" } },
     tool: { background: "#06B6D4", border: "#0891B2", highlight: { background: "#22D3EE", border: "#67E8F9" } },
@@ -371,6 +372,7 @@ export function createSkillGraphController({
   ];
 
   function skillGraphNodeKindFor(entryType, skillLevel) {
+    if (entryType === "memory") return { value: "memory", label: "Working memory" };
     if (entryType === "procedure") return SKILL_GRAPH_NODE_KINDS.find((kind) => kind.value === "workflow");
     if (entryType === "constraint") return SKILL_GRAPH_NODE_KINDS.find((kind) => kind.value === "limitation");
     if (entryType === "heuristic") return SKILL_GRAPH_NODE_KINDS.find((kind) => kind.value === "heuristic");
