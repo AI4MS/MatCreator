@@ -4,6 +4,7 @@ import { createLayoutController } from "./features/layout/resizers.js";
 import { createImageLightbox } from "./features/media/imageLightbox.js";
 import { classifyPath, createSessionFileTree } from "./features/session/fileTree.js";
 import { createSessionListController } from "./features/session/sessionList.js";
+import { createSessionDetailsController } from "./features/session/sessionDetails.js";
 import { createSessionRuntime } from "./features/session/runtime.js";
 import { createWorkspaceTerminalController } from "./features/workspace/terminal.js";
 import { AgentGraphView, StepExecutionFeed } from "./features/graphs/AgentGraphView.js";
@@ -260,6 +261,10 @@ const evaluationController = createEvaluationController({
   activateCenterTab,
   switchSession,
   removeOverlayWithMotion,
+});
+
+const sessionDetailsController = createSessionDetailsController({
+  getStatus: sessionDisplayStatus,
 });
 
 // ---------------------------------------------------------------------------
@@ -836,6 +841,7 @@ const { loadSessions, rerender: rerenderSessionList } = createSessionListControl
   downloadSessionLog,
   sessionDisplayStatus,
   showDraft: evaluationController.showSessionQuestionGeneratorPicker,
+  showSessionDetails: (session, owner) => sessionDetailsController.open(session, owner),
 });
 
 const remoteJobsController = createRemoteJobsController({

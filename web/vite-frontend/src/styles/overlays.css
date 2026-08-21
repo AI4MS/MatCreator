@@ -180,16 +180,18 @@
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-.session-item-id {
-  display: block;
+.session-item-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  overflow: hidden;
+}
+.session-item-name-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.session-item.has-summary .session-item-id {
-  font-size: 10px;
-  opacity: 0.62;
-  margin-top: 2px;
 }
 .session-item-log,
 .session-item-delete {
@@ -221,6 +223,70 @@
 .side-panel .artifact-list li.session-item {
   background: rgba(255,255,255,0.025);
   border-color: var(--border);
+}
+
+/* ── Session metadata dialog ────────────────────────────── */
+.session-details-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: var(--modal-overlay);
+}
+.session-details-overlay.hidden { display: none; }
+.session-details-card {
+  width: min(440px, 100%);
+  box-sizing: border-box;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--panel-shadow);
+}
+.session-details-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.session-details-title {
+  margin: 0;
+  color: var(--text);
+  font-size: 16px;
+}
+.session-details-close { padding: 4px 9px; }
+.session-details-hint {
+  margin: 6px 0 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.session-details-fields {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+}
+.session-details-field {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+.session-details-field dt { color: var(--muted); }
+.session-details-field dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.session-details-field code {
+  color: var(--text);
+  font: 11px/1.4 var(--mono);
+  user-select: text;
 }
 
 /* ── Confirm dialog ──────────────────────────────────────── */

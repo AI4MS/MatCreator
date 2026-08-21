@@ -18,6 +18,7 @@ export function createSessionListController({
   downloadSessionLog,
   sessionDisplayStatus: getSessionDisplayStatus,
   showDraft,
+  showSessionDetails,
 }) {
   let lastSessions = [];
 
@@ -71,33 +72,27 @@ export function createSessionListController({
     const content = document.createElement("button");
     content.type = "button";
     content.className = "session-item-content";
-    const label = state.isAdmin ? `${owner} / ${session.id}` : session.id;
-    const summary = session.summary || state.sessionSummaries[session.id];
-    const idLine = document.createElement("span");
-    idLine.className = "session-item-id";
-    idLine.textContent = label;
-    const statusIndicator = document.createElement("span");
-    statusIndicator.className = `session-status-indicator status-${status}`;
-    statusIndicator.title = status;
-    statusIndicator.setAttribute("aria-label", `${status} session`);
-    idLine.prepend(statusIndicator);
-
-    if (summary) {
-      item.classList.add("has-summary");
-      const summaryLine = document.createElement("span");
-      summaryLine.className = "session-item-summary";
-      summaryLine.textContent = summary;
-      content.append(summaryLine, idLine);
-    } else {
-      content.append(idLine);
-    }
+    const rawSummary = session.summary || state.sessionSummaries[session.id] || "";
+    const summary = typeof rawSummary === "string" ? rawSummary.trim() : "";
+    const nameLine = document.createElement("span");
+    nameLine.className = "session-item-name";
+    const nameText = document.createElement("span");
+    nameText.className = "session-item-name-text";
+    nameText.textContent = summary || "Unnamed session";
+    nameLine.appendChild(nameText);
+    content.append(nameLine);
     const buttons = [createLogButton(session.id, owner)];
     if (showDraft) buttons.push(createDraftButton(session.id, owner, status));
     buttons.push(createDeleteButton(session.id));
     item.append(content, ...buttons);
-    item.title = summary ? `${summary}\n${label}` : label;
+    item.title = `${summary || "Unnamed session"}\nRight-click for session details`;
     if (isActive) content.setAttribute("aria-current", "page");
     content.addEventListener("click", () => switchSession(session.id, owner));
+    item.addEventListener("contextmenu", (event) => {
+      if (event.target.closest("button") && !event.target.closest(".session-item-content")) return;
+      event.preventDefault();
+      showSessionDetails?.({ ...session, summary }, owner);
+    });
     sessionListEl.appendChild(item);
   }
 

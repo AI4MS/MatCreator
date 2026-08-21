@@ -320,9 +320,14 @@
   padding: 3px 6px;
   font: 600 10px/1 var(--mono);
   cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
 }
-.session-item-draft:hover:not(:disabled) { background: rgba(125, 211, 252, 0.17); }
-.session-item-draft:disabled { cursor: not-allowed; opacity: 0.45; }
+.session-item:hover .session-item-draft { opacity: 0.5; }
+.session-item-draft:hover:not(:disabled) { opacity: 1; background: rgba(125, 211, 252, 0.17); }
+.session-item-draft:focus-visible { opacity: 0.7; outline: 1px solid var(--accent); }
+.session-item-draft:disabled { cursor: not-allowed; opacity: 0; }
+.session-item:hover .session-item-draft:disabled { opacity: 0.45; }
 
 .evaluation-draft-overlay {
   position: fixed;
