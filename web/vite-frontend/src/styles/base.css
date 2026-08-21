@@ -78,7 +78,9 @@ body[data-theme="dark"] {
   --scrollbar-thumb: rgba(195, 100, 77, 0.22);
   --scrollbar-thumb-hover: rgba(195, 100, 77, 0.38);
   /* Keep UI copy and structured payloads visually distinct across platforms. */
-  --mono: 'SFMono-Regular', 'Cascadia Mono', 'Cascadia Code', 'JetBrains Mono', 'Roboto Mono', 'Consolas', 'Menlo', 'Monaco', 'Liberation Mono', 'DejaVu Sans Mono', monospace;
+  /* Keep Latin code glyphs monospaced, but do not let CJK fall back to a
+     platform-dependent serif font (Edge commonly uses SimSun here). */
+  --mono: 'SFMono-Regular', 'Cascadia Mono', 'Cascadia Code', 'JetBrains Mono', 'Roboto Mono', 'Consolas', 'Menlo', 'Monaco', 'Liberation Mono', 'DejaVu Sans Mono', 'Noto Sans SC', 'Noto Sans CJK SC', 'Source Han Sans SC', 'Microsoft YaHei', 'PingFang SC', monospace;
   --font-size-ui: 0.8125rem;
   --font-size-meta: 0.75rem;
   --font-size-code: 0.8125rem;

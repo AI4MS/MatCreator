@@ -1347,6 +1347,18 @@ details.step-feed-nested {
   overflow-wrap: anywhere;
 }
 .markdown-content a { color: var(--accent); text-decoration: none; font-weight: 600; }
+.markdown-content code {
+  font-family: var(--mono, monospace);
+}
+.markdown-content :not(pre) > code {
+  padding: 0.16em 0.38em;
+  border-radius: 4px;
+  background: var(--inline-code-bg);
+  color: var(--text);
+  font-size: 0.9em;
+  line-height: 1.35;
+  font-variant-ligatures: none;
+}
 .markdown-content .markdown-table-scroll {
   max-width: 100%;
   margin: 8px 0;
