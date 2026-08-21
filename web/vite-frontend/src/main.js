@@ -4,12 +4,15 @@ import { createLayoutController } from "./features/layout/resizers.js";
 import { createImageLightbox } from "./features/media/imageLightbox.js";
 import { classifyPath, createSessionFileTree } from "./features/session/fileTree.js";
 import { createSessionListController } from "./features/session/sessionList.js";
+import { createSessionDetailsController } from "./features/session/sessionDetails.js";
 import { createSessionRuntime } from "./features/session/runtime.js";
 import { createWorkspaceTerminalController } from "./features/workspace/terminal.js";
 import { AgentGraphView, StepExecutionFeed } from "./features/graphs/AgentGraphView.js";
 import { ExecutionPlanView } from "./features/graphs/ExecutionPlanView.js";
 import { createSkillGraphController } from "./features/skills/SkillGraphController.js";
 import { createSettingsController } from "./features/settings/SettingsController.js";
+import { createEvaluationController } from "./features/evaluation/EvaluationController.js";
+import { createRemoteJobsController } from "./features/remoteJobs/RemoteJobsController.js";
 import { mountOrbitalAgentIndicator } from "./components/mountOrbitalAgentIndicator.js";
 import { createDisclosureController } from "./features/ui/disclosureState.js";
 import "./styles/index.css";
@@ -24,8 +27,6 @@ const AGENT_MODE_KEY = "mat_agentMode";
 const SESSION_ID_KEY = "mat_sessionId";
 const SESSION_OWNER_KEY = "mat_sessionOwnerId";
 const THEME_KEY = "mat_theme";
-const DUMMY_REMOTE_JOBS = import.meta.env.VITE_DUMMY_REMOTE_JOBS === "true";
-const dummyRemoteJobsBySession = new Map();
 
 function removeOverlayWithMotion(overlay) {
   if (!overlay?.isConnected) return Promise.resolve();
@@ -75,11 +76,9 @@ const state = {
   sessionSummaries: {},   // { sessionId: "summary text" }
   summaryGeneratedFor: new Set(),  // sessionIds that have triggered summary generation
   remoteJobs: [],
-  remoteJobsExpanded: false,
   appMode: "workspace",
   evaluationCatalog: [],
   evaluationCatalogTotal: null,
-  evaluationCatalogFacets: {},
   evaluationQuestionSets: [],
   evaluationGeneratedQuestions: [],
   evaluationQuestionTemplates: [],
@@ -115,7 +114,6 @@ const themeToggle = document.getElementById("theme-toggle");
 const refreshSessionsBtn = document.getElementById("refresh-sessions");
 const sessionStatusFilter = document.getElementById("session-status-filter");
 const graphViewport = document.getElementById("graph-viewport");
-const graphRail = document.getElementById("graph-column");
 const graphDetail = document.getElementById("graph-detail");
 const centerTabs = document.getElementById("center-tabs");
 const centerTabsScroll = document.getElementById("center-tabs-scroll");
@@ -161,33 +159,7 @@ knowledgeReviewText.textContent = "Review Know-Do Graph";
 knowledgeReviewBanner.append(knowledgeReviewSpinner, knowledgeReviewText);
 const workspaceCli = document.getElementById("workspace-cli");
 const workspaceTerminalEl = document.getElementById("workspace-terminal");
-const remoteJobListEl = document.getElementById("remote-job-list");
-const refreshRemoteJobsBtn = document.getElementById("refresh-remote-jobs");
-const remoteJobsToggleBtn = document.getElementById("remote-jobs-toggle");
-const remoteJobsPane = document.getElementById("remote-jobs-pane");
-const workspaceModeBtn = document.getElementById("workspace-mode-btn");
-const evaluationModeBtn = document.getElementById("evaluation-mode-btn");
-const evaluationPane = document.getElementById("evaluation-pane");
-const evaluationTab = document.getElementById("tab-evaluation");
-const evaluationTabPanel = document.getElementById("evaluation-tab-panel");
-const evaluationQuestionList = document.getElementById("evaluation-question-list");
-const evaluationSelectionCount = document.getElementById("evaluation-selection-count");
-const evaluationStatus = document.getElementById("evaluation-status");
-const evaluationCampaignSummary = document.getElementById("evaluation-campaign-summary");
-const evaluationCampaignList = document.getElementById("evaluation-campaign-list");
-const evaluationLiveFeed = document.getElementById("evaluation-live-feed");
-let evaluationPoll = null;
-const remoteJobsDemoBadge = document.getElementById("remote-jobs-demo-badge");
-const remoteJobPopover = document.createElement("div");
-remoteJobPopover.className = "remote-job-detail";
-remoteJobPopover.id = "remote-job-detail-popover";
-remoteJobPopover.setAttribute("role", "dialog");
-remoteJobPopover.setAttribute("aria-label", "Remote job details");
-document.body.appendChild(remoteJobPopover);
 let knowledgeReviewPoll = null;
-let remoteJobsPoll = null;
-let remoteJobPopoverHideTimer = null;
-let visibleRemoteJobCard = null;
 const structureTabs = new Map();
 let structureViewerModulePromise = null;
 let svelteRuntimePromise = null;
@@ -284,739 +256,15 @@ sessionIdEl.textContent = state.sessionId;
 if (state.userId) userDisplay.textContent = state.displayName || state.userId;
 refreshKnowledgeReviewStatus();
 
-function setEvaluationStatus(message = "", isError = false) {
-  if (!evaluationStatus) return;
-  evaluationStatus.textContent = message;
-  evaluationStatus.classList.toggle("is-error", isError);
-}
-
-function questionSetById(setId) {
-  return state.evaluationQuestionSets.find((questionSet) => questionSet.set_id === setId) || null;
-}
-
-function questionTemplateById(templateId) {
-  return state.evaluationQuestionTemplates.find((template) => template.template_id === templateId) || null;
-}
-
-function renderEvaluationQuestionTemplates() {
-  const select = document.getElementById("evaluation-question-template-select");
-  const edit = document.getElementById("evaluation-template-edit");
-  const remove = document.getElementById("evaluation-template-delete");
-  if (!select) return;
-  select.innerHTML = "";
-  for (const template of state.evaluationQuestionTemplates) {
-    const option = document.createElement("option");
-    option.value = template.template_id;
-    option.textContent = `${template.name}${template.is_default ? " (default)" : ""}`;
-    select.appendChild(option);
-  }
-  if (!questionTemplateById(state.activeEvaluationQuestionTemplateId)) {
-    state.activeEvaluationQuestionTemplateId = state.evaluationQuestionTemplates[0]?.template_id || "";
-  }
-  select.value = state.activeEvaluationQuestionTemplateId;
-  const active = questionTemplateById(state.activeEvaluationQuestionTemplateId);
-  if (edit) edit.disabled = !active || active.is_default;
-  if (remove) remove.disabled = !active || active.is_default;
-}
-
-async function loadEvaluationQuestionTemplates() {
-  if (!state.userId) return;
-  try {
-    const response = await fetch(
-      `/api/evaluation-question-templates?user_id=${encodeURIComponent(state.userId)}`,
-    );
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
-    state.evaluationQuestionTemplates = data.templates || [];
-    renderEvaluationQuestionTemplates();
-  } catch (error) {
-    setEvaluationStatus(`Could not load question templates: ${error.message}`, true);
-  }
-}
-
-async function loadEvaluationQuestionGenerators(owner = state.userId) {
-  try {
-    const query = owner ? `?user_id=${encodeURIComponent(owner)}` : "";
-    const response = await fetch(`/api/session-question-generators${query}`);
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
-    state.evaluationQuestionGenerators = data.generators || [];
-    if (!state.evaluationQuestionGenerators.some((item) => item.generator_id === state.activeEvaluationQuestionGeneratorId)) {
-      state.activeEvaluationQuestionGeneratorId = data.selected_generator_id
-        || state.evaluationQuestionGenerators[0]?.generator_id || "";
-    }
-    return state.evaluationQuestionGenerators;
-  } catch (error) {
-    setEvaluationStatus(`Could not load question generators: ${error.message}`, true);
-    return [];
-  }
-}
-
-async function fetchEvaluationQuestionTemplate(templateId) {
-  const response = await fetch(
-    `/api/evaluation-question-templates/${encodeURIComponent(templateId)}?user_id=${encodeURIComponent(state.userId)}`,
-  );
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
-  return data;
-}
-
-function showEvaluationQuestionTemplateModal({ templateId = "", template = {}, copy = false } = {}) {
-  document.querySelector(".evaluation-template-overlay")?.remove();
-  const overlay = document.createElement("div");
-  overlay.className = "evaluation-draft-overlay evaluation-template-overlay";
-  const card = document.createElement("section");
-  card.className = "evaluation-draft-card";
-  card.setAttribute("role", "dialog");
-  card.setAttribute("aria-modal", "true");
-  const header = document.createElement("header");
-  header.className = "evaluation-draft-header";
-  const heading = document.createElement("h2");
-  heading.textContent = templateId && !copy ? "Edit question template" : "New question template";
-  const close = document.createElement("button");
-  close.className = "ghost";
-  close.type = "button";
-  close.textContent = "Close";
-  close.addEventListener("click", () => void removeOverlayWithMotion(overlay));
-  header.append(heading, close);
-  const json = document.createElement("textarea");
-  json.className = "evaluation-draft-yaml";
-  json.value = JSON.stringify(template, null, 2);
-  json.setAttribute("aria-label", "Question template JSON");
-  json.spellcheck = false;
-  const upload = document.createElement("input");
-  upload.type = "file";
-  upload.accept = "application/json,.json";
-  upload.addEventListener("change", async () => {
-    const file = upload.files?.[0];
-    if (!file) return;
-    try {
-      json.value = JSON.stringify(JSON.parse(await file.text()), null, 2);
-    } catch (_error) {
-      status.textContent = "The uploaded file must contain valid JSON.";
-      status.className = "evaluation-draft-action-status is-error";
-    }
-  });
-  const actions = document.createElement("div");
-  actions.className = "evaluation-draft-actions";
-  const save = document.createElement("button");
-  save.className = "evaluation-draft-export";
-  save.type = "button";
-  save.textContent = templateId && !copy ? "Save template" : "Create template";
-  const status = document.createElement("p");
-  status.className = "evaluation-draft-action-status";
-  save.addEventListener("click", async () => {
-    let parsed;
-    try {
-      parsed = JSON.parse(json.value);
-    } catch (_error) {
-      status.textContent = "Template JSON is invalid.";
-      status.className = "evaluation-draft-action-status is-error";
-      return;
-    }
-    if (!parsed.name?.trim()) {
-      status.textContent = "Template JSON needs a non-empty name.";
-      status.className = "evaluation-draft-action-status is-error";
-      return;
-    }
-    save.disabled = true;
-    try {
-      const method = templateId && !copy ? "PUT" : "POST";
-      const path = method === "PUT"
-        ? `/api/evaluation-question-templates/${encodeURIComponent(templateId)}`
-        : "/api/evaluation-question-templates";
-      const response = await fetch(`${path}?user_id=${encodeURIComponent(state.userId)}`, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ template: parsed }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
-      state.activeEvaluationQuestionTemplateId = data.template_id;
-      await loadEvaluationQuestionTemplates();
-      setEvaluationStatus("Question template saved");
-      await removeOverlayWithMotion(overlay);
-    } catch (error) {
-      status.textContent = error.message;
-      status.className = "evaluation-draft-action-status is-error";
-      save.disabled = false;
-    }
-  });
-  actions.append(save);
-  card.append(header, upload, json, actions, status);
-  overlay.appendChild(card);
-  document.body.appendChild(overlay);
-  json.focus();
-  overlay.addEventListener("click", (event) => {
-    if (event.target === overlay) void removeOverlayWithMotion(overlay);
-  });
-}
-
-async function openEvaluationQuestionTemplate(templateId, copy = false) {
-  try {
-    const data = await fetchEvaluationQuestionTemplate(templateId);
-    showEvaluationQuestionTemplateModal({ templateId, template: data.template, copy });
-  } catch (error) {
-    setEvaluationStatus(`Could not open question template: ${error.message}`, true);
-  }
-}
-
-async function deleteEvaluationQuestionTemplate() {
-  const template = questionTemplateById(state.activeEvaluationQuestionTemplateId);
-  if (!template || template.is_default) return;
-  try {
-    const response = await fetch(
-      `/api/evaluation-question-templates/${encodeURIComponent(template.template_id)}?user_id=${encodeURIComponent(state.userId)}`,
-      { method: "DELETE" },
-    );
-    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || `HTTP ${response.status}`);
-    state.activeEvaluationQuestionTemplateId = "default";
-    await loadEvaluationQuestionTemplates();
-    setEvaluationStatus("Question template deleted");
-  } catch (error) {
-    setEvaluationStatus(`Could not delete question template: ${error.message}`, true);
-  }
-}
-
-function renderEvaluationQuestionSets() {
-  const select = document.getElementById("evaluation-question-set-select");
-  const updateButton = document.getElementById("evaluation-update-question-set");
-  const deleteButton = document.getElementById("evaluation-delete-question-set");
-  if (!select) return;
-  const selectedId = state.activeEvaluationQuestionSetId;
-  select.innerHTML = '<option value="">Load a saved set</option>';
-  for (const questionSet of state.evaluationQuestionSets) {
-    const option = document.createElement("option");
-    option.value = questionSet.set_id;
-    option.textContent = `${questionSet.name} (${questionSet.visibility})`;
-    select.appendChild(option);
-  }
-  select.value = selectedId;
-  const active = questionSetById(selectedId);
-  const owned = active?.owner_id === state.userId;
-  updateButton.disabled = !owned;
-  deleteButton.disabled = !owned;
-}
-
-function renderEvaluationGeneratedQuestions() {
-  const list = document.getElementById("evaluation-generated-question-list");
-  if (!list) return;
-  list.innerHTML = "";
-  if (!state.evaluationGeneratedQuestions.length) {
-    const empty = document.createElement("p");
-    empty.className = "empty";
-    empty.textContent = "No generated questions yet";
-    list.appendChild(empty);
-    return;
-  }
-  for (const draft of state.evaluationGeneratedQuestions) {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "evaluation-generated-question";
-    row.title = "Browse generated question YAML";
-    const heading = document.createElement("span");
-    heading.className = "evaluation-generated-question-heading";
-    const questionId = document.createElement("strong");
-    questionId.textContent = draft.question_id || "Untitled question";
-    const status = document.createElement("span");
-    status.className = `evaluation-generated-question-status status-${draft.status}`;
-    status.textContent = draft.status.replaceAll("_", " ");
-    heading.append(questionId, status);
-    const meta = document.createElement("span");
-    meta.className = "evaluation-generated-question-meta";
-    meta.textContent = `Session ${draft.source_session_id || "unknown"} · ${draft.refinement_count || 0} refinements`;
-    row.append(heading, meta);
-    row.addEventListener("click", async () => {
-      try {
-        const response = await fetch(
-          `/api/evaluation-question-drafts/${encodeURIComponent(draft.draft_id)}?user_id=${encodeURIComponent(state.userId)}`,
-        );
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
-        showEvaluationQuestionDraftModal(data);
-      } catch (error) {
-        setEvaluationStatus(`Could not open generated question: ${error.message}`, true);
-      }
-    });
-    list.appendChild(row);
-  }
-}
-
-async function loadEvaluationGeneratedQuestions() {
-  if (!state.userId) return;
-  try {
-    const response = await fetch(
-      `/api/evaluation-question-drafts?user_id=${encodeURIComponent(state.userId)}`,
-    );
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
-    state.evaluationGeneratedQuestions = data.drafts || [];
-    renderEvaluationGeneratedQuestions();
-  } catch (error) {
-    setEvaluationStatus(`Could not load generated questions: ${error.message}`, true);
-  }
-}
-
-async function loadEvaluationQuestionSets() {
-  if (!state.userId) return;
-  try {
-    const response = await fetch(`/api/evaluations/question-sets?user_id=${encodeURIComponent(state.userId)}`);
-    const data = await response.json();
-    if (!response.ok) throw new Error(apiErrorMessage(data, `HTTP ${response.status}`));
-    state.evaluationQuestionSets = data.question_sets || [];
-    if (!questionSetById(state.activeEvaluationQuestionSetId)) state.activeEvaluationQuestionSetId = "";
-    renderEvaluationQuestionSets();
-  } catch (error) {
-    setEvaluationStatus(`Could not load question sets: ${error.message}`, true);
-  }
-}
-
-function loadSelectedQuestionSet(setId) {
-  state.activeEvaluationQuestionSetId = setId;
-  const questionSet = questionSetById(setId);
-  if (questionSet) {
-    state.selectedEvaluationQuestions = new Set(questionSet.question_ids || []);
-    document.getElementById("evaluation-question-set-name").value = questionSet.name;
-    document.getElementById("evaluation-question-set-visibility").value = questionSet.visibility;
-    renderEvaluationQuestions();
-  }
-  renderEvaluationQuestionSets();
-}
-
-async function saveEvaluationQuestionSet(update = false) {
-  const active = questionSetById(state.activeEvaluationQuestionSetId);
-  if (update && active?.owner_id !== state.userId) return;
-  const name = document.getElementById("evaluation-question-set-name")?.value.trim();
-  const visibility = document.getElementById("evaluation-question-set-visibility")?.value || "private";
-  if (!name || !state.selectedEvaluationQuestions.size) {
-    setEvaluationStatus("A set name and at least one selected question are required", true);
-    return;
-  }
-  const path = update ? `/api/evaluations/question-sets/${encodeURIComponent(active.set_id)}` : "/api/evaluations/question-sets";
-  try {
-    const response = await fetch(`${path}?user_id=${encodeURIComponent(state.userId)}`, {
-      method: update ? "PATCH" : "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, visibility, question_ids: [...state.selectedEvaluationQuestions] }),
-    });
-    const questionSet = await response.json();
-    if (!response.ok) throw new Error(apiErrorMessage(questionSet, `HTTP ${response.status}`));
-    state.activeEvaluationQuestionSetId = questionSet.set_id;
-    await loadEvaluationQuestionSets();
-    setEvaluationStatus(update ? "Question set updated" : "Question set saved");
-  } catch (error) {
-    setEvaluationStatus(`Could not save question set: ${error.message}`, true);
-  }
-}
-
-async function deleteEvaluationQuestionSet() {
-  const active = questionSetById(state.activeEvaluationQuestionSetId);
-  if (!active || active.owner_id !== state.userId) return;
-  try {
-    const response = await fetch(
-      `/api/evaluations/question-sets/${encodeURIComponent(active.set_id)}?user_id=${encodeURIComponent(state.userId)}`,
-      { method: "DELETE" },
-    );
-    if (!response.ok) throw new Error(apiErrorMessage(await response.json(), `HTTP ${response.status}`));
-    state.activeEvaluationQuestionSetId = "";
-    await loadEvaluationQuestionSets();
-    setEvaluationStatus("Question set deleted");
-  } catch (error) {
-    setEvaluationStatus(`Could not delete question set: ${error.message}`, true);
-  }
-}
-
-function apiErrorMessage(data, fallback) {
-  const detail = data?.detail;
-  if (typeof detail === "string") return detail;
-  if (Array.isArray(detail)) {
-    return detail.map((item) => {
-      const field = Array.isArray(item?.loc) ? item.loc.filter((part) => part !== "body").join(".") : "request";
-      return `${field || "request"}: ${item?.msg || "invalid value"}`;
-    }).join("; ");
-  }
-  return fallback;
-}
-
-function renderEvaluationQuestions() {
-  if (!evaluationQuestionList) return;
-  evaluationQuestionList.innerHTML = "";
-  const selectedOnly = document.getElementById("evaluation-selected-only")?.checked;
-  const questions = selectedOnly
-    ? state.evaluationCatalog.filter((question) => state.selectedEvaluationQuestions.has(question.id))
-    : state.evaluationCatalog;
-  if (!questions.length) {
-    const empty = document.createElement("p");
-    empty.className = "empty";
-    empty.textContent = "No benchmark questions loaded";
-    evaluationQuestionList.appendChild(empty);
-  }
-  for (const question of questions) {
-    const row = document.createElement("label");
-    row.className = "evaluation-question-row";
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = state.selectedEvaluationQuestions.has(question.id);
-    checkbox.addEventListener("change", () => {
-      if (checkbox.checked) state.selectedEvaluationQuestions.add(question.id);
-      else state.selectedEvaluationQuestions.delete(question.id);
-      renderEvaluationQuestions();
-    });
-    const details = document.createElement("span");
-    details.className = "evaluation-question-details";
-    const title = document.createElement("strong");
-    title.textContent = question.id || "Unnamed question";
-    const meta = document.createElement("span");
-    meta.textContent = [question.domain, question.capability, question.intent].filter(Boolean).join(" · ") || "No metadata";
-    details.append(title, meta);
-    row.append(checkbox, details);
-    evaluationQuestionList.appendChild(row);
-  }
-  if (evaluationSelectionCount) {
-    const count = state.selectedEvaluationQuestions.size;
-    const catalogCount = Number.isInteger(state.evaluationCatalogTotal)
-      ? `${state.evaluationCatalogTotal} total questions`
-      : `${state.evaluationCatalog.length} loaded questions`;
-    evaluationSelectionCount.textContent = `${count} selected · ${catalogCount}`;
-  }
-}
-
-function populateEvaluationSelect(id, values, placeholder) {
-  const select = document.getElementById(id);
-  if (!select) return;
-  const current = select.value;
-  select.innerHTML = "";
-  const empty = document.createElement("option");
-  empty.value = "";
-  empty.textContent = placeholder;
-  select.appendChild(empty);
-  for (const value of [...new Set(values.filter(Boolean))].sort()) {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = value;
-    select.appendChild(option);
-  }
-  select.value = current;
-}
-
-async function loadEvaluationCatalog() {
-  const params = new URLSearchParams({ limit: "500" });
-  const search = document.getElementById("evaluation-search")?.value.trim();
-  const domain = document.getElementById("evaluation-domain")?.value.trim();
-  const capability = document.getElementById("evaluation-capability")?.value.trim();
-  const taskType = document.getElementById("evaluation-task-type")?.value.trim();
-  if (search) params.set("q", search);
-  if (domain) params.set("domain", domain);
-  if (capability) params.set("capability", capability);
-  if (taskType) params.set("task_type", taskType);
-  setEvaluationStatus("Loading catalog");
-  try {
-    if (state.userId) params.set("user_id", state.userId);
-    const response = await fetch(`/api/evaluations/catalog?${params}`);
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
-    state.evaluationCatalog = data.questions || [];
-    state.evaluationCatalogTotal = Number.isInteger(data.total) ? data.total : null;
-    state.evaluationCatalogFacets = data.facets || {};
-    populateEvaluationSelect("evaluation-domain", data.facets?.domain || state.evaluationCatalog.map((item) => item.domain), "All domains");
-    populateEvaluationSelect(
-      "evaluation-capability",
-      data.facets?.capability || state.evaluationCatalog.flatMap((item) => Array.isArray(item.capability) ? item.capability : [item.capability]),
-      "All capabilities",
-    );
-    populateEvaluationSelect(
-      "evaluation-task-type",
-      data.facets?.task_type || state.evaluationCatalog.map((item) => item.task_type),
-      "All task types",
-    );
-    renderEvaluationQuestions();
-    setEvaluationStatus("");
-  } catch (error) {
-    setEvaluationStatus(`Catalog unavailable: ${error.message}`, true);
-  }
-}
-
-function renderEvaluationCampaign(campaign) {
-  if (!evaluationCampaignSummary) return;
-  if (!campaign) {
-    evaluationCampaignSummary.textContent = "Select questions to create an evaluation campaign.";
-    return;
-  }
-  const attempts = campaign.attempts || [];
-  const counts = attempts.reduce((result, attempt) => {
-    result[attempt.status] = (result[attempt.status] || 0) + 1;
-    return result;
-  }, {});
-  const completed = counts.completed || 0;
-  const score = attempts
-    .map((attempt) => Number(attempt.result?.weighted_score))
-    .filter(Number.isFinite);
-  const average = score.length ? (score.reduce((sum, value) => sum + value, 0) / score.length).toFixed(3) : "Pending";
-  evaluationCampaignSummary.innerHTML = "";
-  const status = document.createElement("strong");
-  status.textContent = `${campaign.status} · ${completed}/${attempts.length} completed`;
-  const result = document.createElement("span");
-  result.textContent = `Score: ${average}`;
-  evaluationCampaignSummary.append(status, result);
-  if (["starting", "active", "cancelling"].includes(campaign.status)) {
-    const cancelButton = document.createElement("button");
-    cancelButton.type = "button";
-    cancelButton.className = "evaluation-cancel-btn";
-    cancelButton.textContent = campaign.status === "cancelling" ? "Cancelling" : "Stop evaluation";
-    cancelButton.disabled = campaign.status === "cancelling";
-    cancelButton.addEventListener("click", () => void cancelEvaluationCampaign(campaign));
-    evaluationCampaignSummary.appendChild(cancelButton);
-  }
-  for (const attempt of attempts) {
-    const row = document.createElement("div");
-    row.className = "evaluation-attempt-row";
-    const label = document.createElement("span");
-    label.textContent = `${attempt.question_id} · ${attempt.status}`;
-    const openButton = document.createElement("button");
-    openButton.type = "button";
-    openButton.className = "evaluation-attempt-open";
-    openButton.textContent = "Open session";
-    openButton.disabled = !attempt.runtime_session_id;
-    openButton.addEventListener("click", () => openEvaluationAttempt(campaign, attempt));
-    row.append(label, openButton);
-    evaluationCampaignSummary.appendChild(row);
-    const task = attempt.task_payload || {};
-    if (task.prompt) {
-      const details = document.createElement("details");
-      details.className = "evaluation-task-details";
-      const summary = document.createElement("summary");
-      summary.textContent = "Question sent to agent";
-      const prompt = document.createElement("pre");
-      prompt.textContent = task.prompt;
-      details.append(summary, prompt);
-      if (task.data_files?.length) {
-        const files = document.createElement("p");
-        files.className = "evaluation-task-files";
-        files.textContent = `Input files: ${task.data_files.join(", ")}`;
-        details.appendChild(files);
-      }
-      evaluationCampaignSummary.appendChild(details);
-    }
-  }
-  for (const attempt of attempts.filter((item) => item.error)) {
-    const error = document.createElement("span");
-    error.className = "evaluation-attempt-error";
-    error.textContent = `${attempt.question_id}: ${attempt.error}`;
-    evaluationCampaignSummary.appendChild(error);
-  }
-}
-
-async function loadEvaluationAttemptEvents(campaign) {
-  if (!evaluationLiveFeed) return;
-  const activeAttempts = (campaign?.attempts || []).filter((item) => ["runtime_starting", "running"].includes(item.status));
-  evaluationLiveFeed.textContent = activeAttempts.length
-    ? `${activeAttempts.length} agent session${activeAttempts.length === 1 ? "" : "s"} running. Open an attempt to view its standard session stream.`
-    : "";
-}
-
-function openEvaluationAttempt(campaign, attempt) {
-  if (!attempt.runtime_session_id) return;
-  setApplicationMode("workspace");
-  void switchSession(attempt.runtime_session_id, campaign.owner_id || state.userId);
-}
-
-async function loadEvaluationCampaign(campaignId) {
-  if (!state.userId || !campaignId) return;
-  try {
-    const response = await fetch(`/api/evaluations/campaigns/${encodeURIComponent(campaignId)}?user_id=${encodeURIComponent(state.userId)}`);
-    const campaign = await response.json();
-    if (!response.ok) throw new Error(campaign.detail || `HTTP ${response.status}`);
-    state.activeEvaluationCampaign = campaign;
-    renderEvaluationCampaign(campaign);
-    await loadEvaluationAttemptEvents(campaign);
-    setEvaluationStatus("");
-  } catch (error) {
-    setEvaluationStatus(`Could not load campaign: ${error.message}`, true);
-  }
-}
-
-async function loadEvaluationCampaigns() {
-  if (!state.userId || !evaluationCampaignList) return;
-  try {
-    const response = await fetch(`/api/evaluations/campaigns?user_id=${encodeURIComponent(state.userId)}`);
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
-    evaluationCampaignList.innerHTML = "";
-    for (const campaign of data.campaigns || []) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "evaluation-campaign-row";
-      button.textContent = `${campaign.model_name} · ${campaign.status}`;
-      const isActive = campaign.campaign_id === state.activeEvaluationCampaign?.campaign_id;
-      button.classList.toggle("is-active", isActive);
-      if (isActive) button.setAttribute("aria-current", "true");
-      button.addEventListener("click", () => void loadEvaluationCampaign(campaign.campaign_id));
-      evaluationCampaignList.appendChild(button);
-    }
-    if (!evaluationCampaignList.childElementCount) {
-      evaluationCampaignList.textContent = "No campaigns yet";
-    }
-    setEvaluationStatus("");
-  } catch (error) {
-    setEvaluationStatus(`Could not load campaigns: ${error.message}`, true);
-  }
-}
-
-async function cancelEvaluationCampaign(campaign) {
-  if (!state.userId || !campaign?.campaign_id) return;
-  setEvaluationStatus("Cancelling evaluation");
-  try {
-    const response = await fetch(
-      `/api/evaluations/campaigns/${encodeURIComponent(campaign.campaign_id)}/cancel?user_id=${encodeURIComponent(state.userId)}`,
-      { method: "POST" },
-    );
-    const data = await response.json();
-    if (!response.ok) throw new Error(apiErrorMessage(data, `HTTP ${response.status}`));
-    state.activeEvaluationCampaign = data;
-    renderEvaluationCampaign(data);
-    setEvaluationStatus("Evaluation cancellation requested");
-    await loadEvaluationCampaigns();
-  } catch (error) {
-    setEvaluationStatus(`Could not cancel evaluation: ${error.message}`, true);
-  }
-}
-
-async function createAndStartEvaluation() {
-  if (!state.userId) {
-    setEvaluationStatus("Sign in before starting an evaluation", true);
-    return;
-  }
-  const questionIds = [...state.selectedEvaluationQuestions];
-  if (!questionIds.length) {
-    setEvaluationStatus("Select at least one question", true);
-    return;
-  }
-  if (questionIds.some((questionId) => typeof questionId !== "string" || !questionId.trim())) {
-    setEvaluationStatus("Selected question data is invalid. Refresh the catalog and select again.", true);
-    return;
-  }
-  const valueOf = (id, label) => {
-    const value = Number(document.getElementById(id)?.value);
-    if (!Number.isInteger(value) || value < 1) {
-      throw new Error(`${label} must be a positive integer`);
-    }
-    return value;
-  };
-  let maxParallelism;
-  let maxTurns;
-  let timeoutSeconds;
-  try {
-    maxParallelism = valueOf("evaluation-parallelism", "Parallelism");
-    maxTurns = valueOf("evaluation-turns", "Max turns");
-    timeoutSeconds = valueOf("evaluation-timeout", "Timeout");
-  } catch (error) {
-    setEvaluationStatus(error.message, true);
-    return;
-  }
-  const body = {
-    model_name: document.getElementById("evaluation-model")?.value.trim() || "matcreator",
-    question_ids: questionIds,
-    max_parallelism: maxParallelism,
-    max_turns: maxTurns,
-    timeout_seconds: timeoutSeconds,
-    flash: false,
-  };
-  setEvaluationStatus("Creating campaign");
-  try {
-    const createResponse = await fetch(`/api/evaluations/campaigns?user_id=${encodeURIComponent(state.userId)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const campaign = await createResponse.json();
-    if (!createResponse.ok) throw new Error(apiErrorMessage(campaign, `HTTP ${createResponse.status}`));
-    const startResponse = await fetch(`/api/evaluations/campaigns/${encodeURIComponent(campaign.campaign_id)}/start?user_id=${encodeURIComponent(state.userId)}`, { method: "POST" });
-    const started = await startResponse.json();
-    if (!startResponse.ok) throw new Error(apiErrorMessage(started, `HTTP ${startResponse.status}`));
-    state.activeEvaluationCampaign = { ...started, attempts: [] };
-    renderEvaluationCampaign(state.activeEvaluationCampaign);
-    await loadEvaluationCampaigns();
-    setEvaluationStatus("Evaluation queued");
-  } catch (error) {
-    setEvaluationStatus(`Could not start evaluation: ${error.message}`, true);
-  }
-}
-
-function setApplicationMode(mode) {
-  const evaluation = mode === "evaluation";
-  state.appMode = evaluation ? "evaluation" : "workspace";
-  workspaceModeBtn?.classList.toggle("active", !evaluation);
-  evaluationModeBtn?.classList.toggle("active", evaluation);
-  workspaceModeBtn?.setAttribute("aria-pressed", String(!evaluation));
-  evaluationModeBtn?.setAttribute("aria-pressed", String(evaluation));
-  evaluationPane?.classList.toggle("hidden", !evaluation);
-  evaluationTab?.classList.toggle("hidden", !evaluation);
-  evaluationTabPanel?.classList.toggle("hidden", !evaluation);
-  document.querySelectorAll(".sessions-pane, .remote-jobs-pane, .file-explorer-col").forEach((element) => {
-    element.classList.toggle("hidden", evaluation);
-  });
-  if (evaluation) {
-    activateCenterTab("evaluation");
-    void loadEvaluationCatalog();
-    void loadEvaluationCampaigns();
-    void loadEvaluationQuestionSets();
-    void loadEvaluationGeneratedQuestions();
-    void loadEvaluationQuestionTemplates();
-    void loadEvaluationQuestionGenerators();
-    if (!evaluationPoll) {
-      evaluationPoll = setInterval(() => {
-        if (state.activeEvaluationCampaign?.campaign_id && ["draft", "starting", "active", "cancelling"].includes(state.activeEvaluationCampaign.status)) {
-          void loadEvaluationCampaign(state.activeEvaluationCampaign.campaign_id);
-        }
-        void loadEvaluationCampaigns();
-      }, 2000);
-    }
-  } else {
-    activateCenterTab("chat");
-    if (evaluationPoll) {
-      clearInterval(evaluationPoll);
-      evaluationPoll = null;
-    }
-  }
-}
-
-workspaceModeBtn?.addEventListener("click", () => setApplicationMode("workspace"));
-evaluationModeBtn?.addEventListener("click", () => setApplicationMode("evaluation"));
-document.getElementById("evaluation-refresh-catalog")?.addEventListener("click", () => void loadEvaluationCatalog());
-document.getElementById("evaluation-refresh-campaigns")?.addEventListener("click", () => void loadEvaluationCampaigns());
-document.getElementById("evaluation-refresh-question-sets")?.addEventListener("click", () => void loadEvaluationQuestionSets());
-document.getElementById("evaluation-refresh-generated-questions")?.addEventListener("click", () => void loadEvaluationGeneratedQuestions());
-document.getElementById("evaluation-refresh-question-templates")?.addEventListener("click", () => void loadEvaluationQuestionTemplates());
-document.getElementById("evaluation-create-start")?.addEventListener("click", () => void createAndStartEvaluation());
-document.getElementById("evaluation-question-set-select")?.addEventListener("change", (event) => loadSelectedQuestionSet(event.target.value));
-document.getElementById("evaluation-save-question-set")?.addEventListener("click", () => void saveEvaluationQuestionSet());
-document.getElementById("evaluation-update-question-set")?.addEventListener("click", () => void saveEvaluationQuestionSet(true));
-document.getElementById("evaluation-delete-question-set")?.addEventListener("click", () => void deleteEvaluationQuestionSet());
-document.getElementById("evaluation-clear-selection")?.addEventListener("click", () => {
-  state.selectedEvaluationQuestions.clear();
-  state.activeEvaluationQuestionSetId = "";
-  renderEvaluationQuestions();
-  renderEvaluationQuestionSets();
+const evaluationController = createEvaluationController({
+  state,
+  activateCenterTab,
+  switchSession,
+  removeOverlayWithMotion,
 });
-["evaluation-search", "evaluation-domain", "evaluation-capability", "evaluation-task-type"].forEach((id) => {
-  document.getElementById(id)?.addEventListener("change", () => void loadEvaluationCatalog());
-});
-document.getElementById("evaluation-selected-only")?.addEventListener("change", renderEvaluationQuestions);
-document.getElementById("evaluation-question-template-select")?.addEventListener("change", (event) => {
-  state.activeEvaluationQuestionTemplateId = event.target.value;
-  renderEvaluationQuestionTemplates();
-});
-document.getElementById("evaluation-template-new")?.addEventListener("click", () => {
-  showEvaluationQuestionTemplateModal();
-});
-document.getElementById("evaluation-template-copy")?.addEventListener("click", () => {
-  void openEvaluationQuestionTemplate(state.activeEvaluationQuestionTemplateId, true);
-});
-document.getElementById("evaluation-template-edit")?.addEventListener("click", () => {
-  void openEvaluationQuestionTemplate(state.activeEvaluationQuestionTemplateId);
-});
-document.getElementById("evaluation-template-delete")?.addEventListener("click", () => {
-  void deleteEvaluationQuestionTemplate();
+
+const sessionDetailsController = createSessionDetailsController({
+  getStatus: sessionDisplayStatus,
 });
 
 // ---------------------------------------------------------------------------
@@ -1292,6 +540,7 @@ async function logout() {
   sessionListEl.innerHTML = '<li class="empty">Sign in to see sessions</li>';
   renderSessionFilesTree([]);
   clearCurrentUploads();
+  remoteJobsController.reset();
   agentGraph.reset();
   planGraph.reset();
   hidePlanGraph();
@@ -1360,6 +609,7 @@ function _applySession(result) {
   stepExecutionFeed.reset();
   renderSessionFilesTree([]);
   clearCurrentUploads();
+  remoteJobsController.reset();
   agentGraph.reset();
   planGraph.reset();
   hidePlanGraph();
@@ -1590,7 +840,14 @@ const { loadSessions, rerender: rerenderSessionList } = createSessionListControl
   deleteSession,
   downloadSessionLog,
   sessionDisplayStatus,
-  showDraft: showSessionQuestionGeneratorPicker,
+  showDraft: evaluationController.showSessionQuestionGeneratorPicker,
+  showSessionDetails: (session, owner) => sessionDetailsController.open(session, owner),
+});
+
+const remoteJobsController = createRemoteJobsController({
+  state,
+  dummyMode: import.meta.env.VITE_DUMMY_REMOTE_JOBS === "true",
+  onJobsChanged: rerenderSessionList,
 });
 
 function sessionDisplayStatus(session, owner) {
@@ -1615,14 +872,15 @@ async function switchSession(sessionId, owner = state.userId) {
   if (cachedView) renderSessionSnapshot(cachedView);
   else renderSessionFilesTree([]);
   clearCurrentUploads();
+  remoteJobsController.reset();
   agentGraph.reset();
   planGraph.reset();
   hidePlanGraph();
-  startRemoteJobsPolling(sessionId, owner);
+  remoteJobsController.startPolling(sessionId, owner);
   const [activeRun] = await Promise.all([
     sessionRuntime.discoverManagedRun(sessionId, owner),
     sessionRuntime.loadSession(sessionId, owner),
-    loadRemoteJobs(sessionId, owner),
+    remoteJobsController.load(sessionId, owner),
   ]);
   if (activeRun) sessionRuntime.startManagedRunReconnect(activeRun, sessionId, owner);
   void loadSessions();
@@ -1630,261 +888,6 @@ async function switchSession(sessionId, owner = state.userId) {
   planGraph.startPolling(sessionId);
 }
 
-function remoteJobsUrl(sessionId, owner) {
-  return `/api/sessions/${encodeURIComponent(sessionId)}/remote-jobs?user_id=${encodeURIComponent(owner)}`;
-}
-
-function startRemoteJobsPolling(sessionId, owner) {
-  if (remoteJobsPoll) clearInterval(remoteJobsPoll);
-  remoteJobsPoll = setInterval(() => void loadRemoteJobs(sessionId, owner), 15000);
-}
-
-async function loadRemoteJobs(sessionId = state.sessionId, owner = state.activeSessionUserId || state.userId) {
-  if (!sessionId || !owner) return;
-  if (DUMMY_REMOTE_JOBS) {
-    state.remoteJobs = getDummyRemoteJobs(sessionId, owner);
-    remoteJobsDemoBadge?.classList.remove("hidden");
-    renderRemoteJobs();
-    rerenderSessionList();
-    return;
-  }
-  try {
-    const response = await fetch(remoteJobsUrl(sessionId, owner));
-    if (!response.ok) return;
-    const data = await response.json();
-    if (sessionId !== state.sessionId || owner !== state.activeSessionUserId) return;
-    state.remoteJobs = Array.isArray(data.jobs) ? data.jobs : [];
-    renderRemoteJobs();
-    rerenderSessionList();
-  } catch (_) {
-    // The control plane may be restarting; retain the last visible snapshot.
-  }
-}
-
-function getDummyRemoteJobs(sessionId, owner) {
-  const key = `${owner}:${sessionId}`;
-  if (!dummyRemoteJobsBySession.has(key)) {
-    dummyRemoteJobsBySession.set(key, [
-      {
-        job_id: "demo-running-job",
-        external_id: "sandbox-demo-running",
-        provider: "e2b",
-        status: "running",
-        snapshot: { provider_status: "running" },
-      },
-      {
-        job_id: "demo-paused-job",
-        external_id: "sandbox-demo-paused",
-        provider: "e2b",
-        status: "paused",
-        snapshot: { provider_status: "paused" },
-      },
-      {
-        job_id: "demo-complete-job",
-        external_id: "sandbox-demo-complete",
-        provider: "e2b",
-        status: "collected",
-        snapshot: { provider_status: "completed" },
-      },
-    ]);
-  }
-  return dummyRemoteJobsBySession.get(key);
-}
-
-function renderRemoteJobs() {
-  if (!remoteJobListEl) return;
-  hideRemoteJobPopover();
-  remoteJobListEl.innerHTML = "";
-  if (!state.remoteJobs.length) {
-    remoteJobListEl.innerHTML = '<li class="empty">No remote jobs in this session</li>';
-    return;
-  }
-  for (const job of state.remoteJobs) {
-    const item = document.createElement("li");
-    const providerStatus = job.snapshot?.provider_status;
-    const lifecycle = remoteJobLifecycle(job.status);
-    item.className = `remote-job status-${lifecycle.key}`;
-    item.tabIndex = 0;
-    item.title = "Hover for job details";
-    const header = document.createElement("div");
-    header.className = "remote-job-header";
-    const provider = document.createElement("span");
-    provider.className = "remote-job-provider";
-    provider.textContent = job.provider || "remote";
-    const status = document.createElement("span");
-    status.className = "remote-job-status";
-    status.textContent = lifecycle.label;
-    header.append(provider, status, createRemoteJobActions(job));
-    const identifier = document.createElement("div");
-    identifier.className = "remote-job-id";
-    identifier.textContent = job.external_id || job.job_id;
-    item.append(header, identifier);
-    if (job.error) {
-      const error = document.createElement("div");
-      error.className = "remote-job-error";
-      error.textContent = job.error;
-      item.appendChild(error);
-    }
-    const showDetails = () => showRemoteJobPopover(item, job, providerStatus);
-    item.addEventListener("mouseenter", showDetails);
-    item.addEventListener("mouseleave", scheduleRemoteJobPopoverHide);
-    item.addEventListener("focusin", showDetails);
-    item.addEventListener("focusout", scheduleRemoteJobPopoverHide);
-    remoteJobListEl.appendChild(item);
-  }
-}
-
-function showRemoteJobPopover(card, job, providerStatus) {
-  clearTimeout(remoteJobPopoverHideTimer);
-  if (visibleRemoteJobCard && visibleRemoteJobCard !== card) {
-    visibleRemoteJobCard.classList.remove("is-detail-open");
-  }
-  visibleRemoteJobCard = card;
-  card.classList.add("is-detail-open");
-  remoteJobPopover.replaceChildren(createRemoteJobDetail(job, providerStatus));
-  remoteJobPopover.classList.add("is-visible");
-  const rect = card.getBoundingClientRect();
-  const width = Math.min(280, window.innerWidth - 16);
-  const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
-  const top = Math.min(rect.bottom + 8, window.innerHeight - 150);
-  remoteJobPopover.style.left = `${left}px`;
-  remoteJobPopover.style.top = `${Math.max(8, top)}px`;
-}
-
-function scheduleRemoteJobPopoverHide() {
-  clearTimeout(remoteJobPopoverHideTimer);
-  remoteJobPopoverHideTimer = setTimeout(hideRemoteJobPopover, 150);
-}
-
-function hideRemoteJobPopover() {
-  clearTimeout(remoteJobPopoverHideTimer);
-  if (visibleRemoteJobCard) {
-    visibleRemoteJobCard.classList.remove("is-detail-open");
-  }
-  remoteJobPopover.classList.remove("is-visible");
-  visibleRemoteJobCard = null;
-}
-
-function createRemoteJobDetail(job, providerStatus) {
-  const detail = document.createDocumentFragment();
-  const fields = [
-    ["Provider", job.provider || "remote"],
-    ["Status", remoteJobLifecycle(job.status).label],
-    ["Sandbox", job.external_id || "—"],
-    ["Job ID", job.job_id || "—"],
-  ];
-  if (providerStatus) fields.splice(2, 0, ["Provider status", providerStatus]);
-  for (const [label, value] of fields) {
-    const row = document.createElement("div");
-    const key = document.createElement("span");
-    key.textContent = label;
-    const content = document.createElement("code");
-    content.textContent = String(value);
-    row.append(key, content);
-    detail.appendChild(row);
-  }
-  return detail;
-}
-
-remoteJobPopover.addEventListener("mouseenter", () => clearTimeout(remoteJobPopoverHideTimer));
-remoteJobPopover.addEventListener("mouseleave", scheduleRemoteJobPopoverHide);
-document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") hideRemoteJobPopover();
-});
-
-function remoteJobLifecycle(status) {
-  const normalized = String(status || "unknown").toLowerCase();
-  const labels = {
-    created: "Created",
-    submitting: "Submitting",
-    queued: "Queued",
-    running: "Running",
-    pause_requested: "Pausing",
-    paused: "Paused",
-    resume_requested: "Resuming",
-    resuming: "Resuming",
-    succeeded: "Completed",
-    collecting: "Collecting results",
-    collected: "Completed",
-    terminate_requested: "Terminating",
-    terminated: "Terminated",
-    failed: "Failed",
-    cancelled: "Cancelled",
-    lost: "Lost",
-  };
-  return { key: normalized, label: labels[normalized] || "Unknown" };
-}
-
-function setRemoteJobsExpanded(expanded) {
-  state.remoteJobsExpanded = Boolean(expanded);
-  remoteJobListEl?.classList.toggle("hidden", !state.remoteJobsExpanded);
-  remoteJobsToggleBtn?.setAttribute("aria-expanded", String(state.remoteJobsExpanded));
-  remoteJobsToggleBtn?.classList.toggle("is-expanded", state.remoteJobsExpanded);
-  remoteJobsPane?.classList.toggle("is-expanded", state.remoteJobsExpanded);
-  graphRail?.classList.toggle("remote-jobs-expanded", state.remoteJobsExpanded);
-}
-
-function createRemoteJobActions(job) {
-  const actions = document.createElement("div");
-  actions.className = "remote-job-actions";
-  const active = ["queued", "running", "submitting", "resuming"].includes(job.status);
-  const refresh = document.createElement("button");
-  refresh.className = "remote-job-action refresh-button";
-  refresh.innerHTML = '<svg class="refresh-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M18.5 9A7 7 0 1 0 19 15"></path><path d="M18.5 5v4h-4"></path></svg>';
-  refresh.title = "Refresh sandbox status";
-  refresh.setAttribute("aria-label", "Refresh sandbox status");
-  refresh.addEventListener("click", (event) => {
-    event.stopPropagation();
-    void controlRemoteJob(job, "refresh", refresh);
-  });
-  const pause = document.createElement("button");
-  pause.className = "remote-job-action";
-  pause.textContent = "Ⅱ";
-  pause.title = "Pause sandbox";
-  pause.disabled = !active;
-  pause.addEventListener("click", (event) => {
-    event.stopPropagation();
-    void controlRemoteJob(job, "pause", pause);
-  });
-  const terminate = document.createElement("button");
-  terminate.className = "remote-job-action terminate";
-  terminate.textContent = "■";
-  terminate.title = "Terminate sandbox";
-  terminate.disabled = !active && job.status !== "paused";
-  terminate.addEventListener("click", (event) => {
-    event.stopPropagation();
-    void controlRemoteJob(job, "terminate", terminate);
-  });
-  actions.append(refresh, pause, terminate);
-  return actions;
-}
-
-async function controlRemoteJob(job, action, button) {
-  const owner = state.activeSessionUserId || state.userId;
-  if (!owner || !job?.job_id) return;
-  button.disabled = true;
-  try {
-    if (DUMMY_REMOTE_JOBS) {
-      if (action === "pause") {
-        job.status = "paused";
-        job.snapshot = { ...job.snapshot, provider_status: "paused" };
-      } else if (action === "terminate") {
-        job.status = "terminated";
-        job.snapshot = { ...job.snapshot, provider_status: "terminated" };
-      }
-      await loadRemoteJobs(state.sessionId, owner);
-      return;
-    }
-    const url = `/api/sessions/${encodeURIComponent(state.sessionId)}/remote-jobs/${encodeURIComponent(job.job_id)}/${action}?user_id=${encodeURIComponent(owner)}`;
-    const response = await fetch(url, { method: "POST" });
-    if (response.ok) await loadRemoteJobs(state.sessionId, owner);
-  } finally {
-    button.disabled = false;
-  }
-}
-
-refreshRemoteJobsBtn?.addEventListener("click", () => void loadRemoteJobs());
-remoteJobsToggleBtn?.addEventListener("click", () => setRemoteJobsExpanded(!state.remoteJobsExpanded));
 
 // ---------------------------------------------------------------------------
 // Confirm dialog & session delete
@@ -1906,7 +909,7 @@ function showConfirmDialog(message) {
     overlay.className = "confirm-overlay";
     const msg = document.createElement("p");
     msg.className = "confirm-message";
-    msg.innerHTML = message;
+    msg.textContent = message;
 
     const actions = document.createElement("div");
     actions.className = "confirm-actions";
@@ -1949,6 +952,7 @@ async function deleteSession(sessionId) {
       stepExecutionFeed.reset();
       renderSessionFilesTree([]);
       clearCurrentUploads();
+      remoteJobsController.reset();
       agentGraph.reset();
       planGraph.reset();
       hidePlanGraph();
@@ -1984,579 +988,6 @@ async function downloadSessionLog(sessionId, owner = state.userId) {
   }
 }
 
-function showEvaluationQuestionDraftModal(draft, actionMessage = "") {
-  const existing = document.querySelector(".evaluation-draft-overlay");
-  if (existing) existing.remove();
-
-  const overlay = document.createElement("div");
-  overlay.className = "evaluation-draft-overlay";
-  const card = document.createElement("section");
-  card.className = "evaluation-draft-card";
-  card.setAttribute("role", "dialog");
-  card.setAttribute("aria-modal", "true");
-  card.setAttribute("aria-label", "Evaluation question draft");
-
-  const header = document.createElement("header");
-  header.className = "evaluation-draft-header";
-  const heading = document.createElement("div");
-  const eyebrow = document.createElement("div");
-  eyebrow.className = "eyebrow";
-  eyebrow.textContent = "Staged benchmark question";
-  const title = document.createElement("h2");
-  title.textContent = draft.question.id || "Generated question";
-  heading.append(eyebrow, title);
-  const close = document.createElement("button");
-  close.className = "ghost";
-  close.type = "button";
-  close.textContent = "Close";
-  close.addEventListener("click", () => void removeOverlayWithMotion(overlay));
-  header.append(heading, close);
-
-  const isLocked = draft.status === "exported" || draft.status === "published";
-  const notice = document.createElement("p");
-  notice.className = "evaluation-draft-notice";
-  const statusNotices = {
-    ready_for_review: "This draft is saved and ready for review. Approve it when the YAML is final.",
-    invalid: "This saved draft has validation issues. Edit it manually or refine it with MatCreator feedback.",
-    approved: "This draft is approved and saved. Export it to add it to the configured benchmark bank.",
-    exported: "This draft has been exported to the configured benchmark bank and is now read-only.",
-    published: "This draft has been published to your custom benchmark bank and is now read-only.",
-  };
-  notice.textContent = statusNotices[draft.status] || "This question draft is saved for review.";
-  const validation = document.createElement("div");
-  const isValid = ["ready_for_review", "approved", "exported", "published"].includes(draft.status);
-  validation.className = `evaluation-draft-validation ${isValid ? "is-valid" : "is-invalid"}`;
-  validation.textContent = isValid
-    ? "Schema and executable-verifier checks passed"
-    : "Validation issues";
-  if (draft.validation_errors?.length) {
-    const errors = document.createElement("ul");
-    for (const message of draft.validation_errors) {
-      const item = document.createElement("li");
-      item.textContent = message;
-      errors.appendChild(item);
-    }
-    validation.appendChild(errors);
-  }
-  const yamlHeading = document.createElement("h3");
-  yamlHeading.textContent = "Generated question YAML";
-  const yaml = document.createElement("textarea");
-  yaml.className = "evaluation-draft-yaml";
-  yaml.textContent = draft.question_yaml || "No YAML was returned.";
-  yaml.value = draft.question_yaml || "";
-  yaml.setAttribute("aria-label", "Generated question YAML");
-  yaml.spellcheck = false;
-  const actions = document.createElement("div");
-  actions.className = "evaluation-draft-actions";
-  const instruction = document.createElement("textarea");
-  instruction.className = "evaluation-draft-instruction";
-  instruction.rows = 2;
-  instruction.maxLength = 2000;
-  instruction.placeholder = "Optional refinement instruction";
-  instruction.setAttribute("aria-label", "Optional refinement instruction");
-  instruction.disabled = isLocked;
-  const templateSelect = document.createElement("select");
-  templateSelect.className = "evaluation-input";
-  templateSelect.setAttribute("aria-label", "Refinement question template");
-  for (const template of state.evaluationQuestionTemplates) {
-    const option = document.createElement("option");
-    option.value = template.template_id;
-    option.textContent = `${template.name}${template.is_default ? " (default)" : ""}`;
-    templateSelect.appendChild(option);
-  }
-  templateSelect.value = draft.template?.template_id || state.activeEvaluationQuestionTemplateId || "default";
-  templateSelect.disabled = isLocked;
-  const actionStatus = document.createElement("p");
-  actionStatus.className = actionMessage
-    ? "evaluation-draft-action-status is-success"
-    : "evaluation-draft-action-status";
-  actionStatus.setAttribute("role", "status");
-  actionStatus.textContent = actionMessage;
-  const buttons = [];
-  const declaredDataFiles = Array.isArray(draft.question?.data_files) ? draft.question.data_files : [];
-  let dataFilesSection = null;
-  if (declaredDataFiles.length) {
-    dataFilesSection = document.createElement("section");
-    dataFilesSection.className = "evaluation-draft-data-files";
-    const dataFilesHeading = document.createElement("h3");
-    dataFilesHeading.textContent = "Question input files";
-    dataFilesSection.appendChild(dataFilesHeading);
-    const dataFilesList = document.createElement("ul");
-    for (const dataFile of declaredDataFiles) {
-      const path = typeof dataFile?.path === "string" ? dataFile.path : "";
-      const item = document.createElement("li");
-      const label = document.createElement("code");
-      label.textContent = path || "Invalid declared path";
-      const picker = document.createElement("input");
-      picker.type = "file";
-      picker.disabled = isLocked || !path;
-      picker.setAttribute("aria-label", `Upload ${path}`);
-      const upload = document.createElement("button");
-      upload.type = "button";
-      upload.className = "ghost";
-      upload.textContent = "Upload";
-      upload.disabled = picker.disabled;
-      upload.addEventListener("click", () => void (async () => {
-        const selectedFile = picker.files?.[0];
-        if (!selectedFile) {
-          actionStatus.className = "evaluation-draft-action-status is-error";
-          actionStatus.textContent = `Choose a file for ${path}.`;
-          actionStatus.focus();
-          return;
-        }
-        picker.disabled = true;
-        upload.disabled = true;
-        upload.textContent = "Uploading...";
-        try {
-          const formData = new FormData();
-          formData.append("path", path);
-          formData.append("file", selectedFile);
-          const response = await fetch(
-            `/api/evaluation-question-drafts/${encodeURIComponent(draft.draft_id)}/data-files?user_id=${encodeURIComponent(draft.evidence?.source?.owner_id || state.userId)}`,
-            { method: "POST", body: formData },
-          );
-          const data = await response.json().catch(() => ({}));
-          if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
-          showEvaluationQuestionDraftModal(data, `Staged ${path}.`);
-        } catch (error) {
-          picker.disabled = false;
-          upload.disabled = false;
-          upload.textContent = "Upload";
-          actionStatus.className = "evaluation-draft-action-status is-error";
-          actionStatus.textContent = error.message || `Could not stage ${path}.`;
-          actionStatus.focus();
-        }
-      })());
-      item.append(label, picker, upload);
-      dataFilesList.appendChild(item);
-    }
-    dataFilesSection.appendChild(dataFilesList);
-  }
-  const runDraftAction = async (path, options = {}, activeButton, pendingLabel, successLabel) => {
-    actionStatus.className = "evaluation-draft-action-status";
-    actionStatus.textContent = "";
-    const originalLabel = activeButton.textContent;
-    buttons.forEach((button) => { button.disabled = true; });
-    instruction.disabled = true;
-    card.setAttribute("aria-busy", "true");
-    activeButton.textContent = pendingLabel;
-    try {
-      const response = await fetch(
-        `/api/evaluation-question-drafts/${encodeURIComponent(draft.draft_id)}${path}?user_id=${encodeURIComponent(draft.evidence?.source?.owner_id || state.userId)}`,
-        options,
-      );
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
-      const savedPath = data.staging_path ? `${data.staging_path}/question.yaml` : "draft storage";
-      if (state.appMode === "evaluation") void loadEvaluationGeneratedQuestions();
-      showEvaluationQuestionDraftModal(data, `${successLabel} ${savedPath}`);
-      return data;
-    } catch (error) {
-      activeButton.textContent = originalLabel;
-      buttons.forEach((button) => { button.disabled = false; });
-      save.disabled = isLocked;
-      refine.disabled = isLocked;
-      approve.disabled = isLocked;
-      exportButton.disabled = draft.status !== "approved";
-      publishButton.disabled = draft.status !== "approved";
-      instruction.disabled = isLocked;
-      card.removeAttribute("aria-busy");
-      actionStatus.className = "evaluation-draft-action-status is-error";
-      actionStatus.textContent = error.message || "The action failed.";
-      actionStatus.focus();
-      return null;
-    }
-  };
-  const save = document.createElement("button");
-  save.type = "button";
-  save.className = "ghost";
-  save.textContent = "Save YAML";
-  save.disabled = isLocked;
-  save.addEventListener("click", () => void runDraftAction("", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question_yaml: yaml.value }),
-  }, save, "Saving...", "Saved to"));
-  actions.appendChild(save);
-  const refine = document.createElement("button");
-  refine.type = "button";
-  refine.className = "ghost";
-  refine.textContent = "Refine with feedback";
-  refine.disabled = isLocked;
-  refine.addEventListener("click", () => void (async () => {
-    try {
-      let current = draft;
-      if (yaml.value !== draft.question_yaml) {
-        current = await runDraftAction("", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question_yaml: yaml.value }),
-        }, refine, "Saving...", "Saved to");
-      }
-      if (!current) return;
-      await runDraftAction("/refine", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ instruction: instruction.value, template_id: templateSelect.value }),
-      }, refine, "Refining...", "Refined and saved to");
-    } catch (_error) {
-      // runDraftAction renders the actionable error in the dialog.
-    }
-  })());
-  actions.appendChild(refine);
-  const approve = document.createElement("button");
-  approve.type = "button";
-  approve.className = "ghost";
-  approve.textContent = draft.status === "approved" ? "Approved" : "Approve";
-  approve.disabled = isLocked;
-  approve.title = draft.status === "invalid"
-    ? "Validate this saved YAML and show why it cannot be approved"
-    : "Approve this saved YAML";
-  approve.addEventListener("click", () => void runDraftAction(
-    "/approve", { method: "POST" }, approve, "Approving...", "Approved and saved at",
-  ));
-  actions.appendChild(approve);
-  const exportButton = document.createElement("button");
-  exportButton.type = "button";
-  exportButton.className = "evaluation-draft-export";
-  exportButton.textContent = draft.status === "exported" ? "Exported" : "Export to benchmark bank";
-  exportButton.disabled = draft.status !== "approved";
-  exportButton.addEventListener("click", () => void runDraftAction(
-    "/export", { method: "POST" }, exportButton, "Exporting...", "Exported from",
-  ));
-  actions.appendChild(exportButton);
-  const publishButton = document.createElement("button");
-  publishButton.type = "button";
-  publishButton.className = "evaluation-draft-publish";
-  publishButton.textContent = draft.status === "published" ? "Published" : "Publish to my bank";
-  publishButton.title = "Publish this approved question to your own custom benchmark bank";
-  publishButton.disabled = draft.status !== "approved";
-  publishButton.addEventListener("click", () => void runDraftAction(
-    "/publish", { method: "POST" }, publishButton, "Publishing...", "Published from",
-  ));
-  actions.appendChild(publishButton);
-  buttons.push(save, refine, approve, exportButton, publishButton);
-  const evidence = document.createElement("div");
-  evidence.className = "evaluation-draft-evidence";
-  const stepsHeading = document.createElement("h3");
-  stepsHeading.textContent = "Observable session steps";
-  evidence.appendChild(stepsHeading);
-  const stepList = document.createElement("ol");
-  for (const step of draft.evidence?.steps || []) {
-    const item = document.createElement("li");
-    item.textContent = `${step.action}${step.status ? ` [${step.status}]` : ""}${step.summary ? `: ${step.summary}` : ""}`;
-    stepList.appendChild(item);
-  }
-  evidence.appendChild(stepList);
-  const artifacts = document.createElement("p");
-  artifacts.className = "evaluation-draft-artifacts";
-  const artifactCount = draft.evidence?.artifacts?.length || 0;
-  artifacts.textContent = `${artifactCount} source artifact${artifactCount === 1 ? "" : "s"} available for review.`;
-  evidence.appendChild(artifacts);
-  card.append(
-    header,
-    notice,
-    validation,
-    yamlHeading,
-    yaml,
-    ...(dataFilesSection ? [dataFilesSection] : []),
-    templateSelect,
-    instruction,
-    actions,
-    actionStatus,
-    evidence,
-  );
-  overlay.appendChild(card);
-  document.body.appendChild(overlay);
-  close.focus();
-  overlay.addEventListener("click", (event) => {
-    if (event.target === overlay) void removeOverlayWithMotion(overlay);
-  });
-}
-
-function showEvaluationQuestionDraftError(error) {
-  const message = typeof error === "string" ? error : error?.message;
-  const diagnostics = typeof error === "object" ? error?.diagnostics : null;
-  const existing = document.querySelector(".evaluation-draft-overlay");
-  if (existing) existing.remove();
-
-  const overlay = document.createElement("div");
-  overlay.className = "evaluation-draft-overlay";
-  const card = document.createElement("section");
-  card.className = "evaluation-draft-card";
-  card.setAttribute("role", "alertdialog");
-  card.setAttribute("aria-modal", "true");
-  card.setAttribute("aria-label", "Question generation failed");
-  const heading = document.createElement("h2");
-  heading.textContent = "Question generation failed";
-  const detail = document.createElement("p");
-  detail.className = "evaluation-draft-notice";
-  detail.textContent = message || "The server did not return a reason.";
-  card.append(heading, detail);
-  if (diagnostics && typeof diagnostics === "object") {
-    const diagnosticsPanel = document.createElement("details");
-    diagnosticsPanel.className = "evaluation-generation-diagnostics";
-    diagnosticsPanel.open = true;
-    const summary = document.createElement("summary");
-    summary.textContent = "Generation details";
-    const metadata = document.createElement("p");
-    metadata.textContent = [
-      diagnostics.generator && `Generator: ${diagnostics.generator}`,
-      diagnostics.stage && `Stage: ${diagnostics.stage}`,
-      Number.isFinite(diagnostics.response_length) && `Response: ${diagnostics.response_length} characters`,
-    ].filter(Boolean).join(" · ");
-    const expected = document.createElement("p");
-    expected.textContent = diagnostics.expected_format || "";
-    const preview = document.createElement("pre");
-    preview.className = "evaluation-generation-response-preview";
-    preview.textContent = diagnostics.response_preview || "No response preview is available.";
-    diagnosticsPanel.append(summary, metadata, expected, preview);
-    card.appendChild(diagnosticsPanel);
-  }
-  const close = document.createElement("button");
-  close.className = "ghost";
-  close.type = "button";
-  close.textContent = "Close";
-  close.addEventListener("click", () => void removeOverlayWithMotion(overlay));
-  card.appendChild(close);
-  overlay.appendChild(card);
-  document.body.appendChild(overlay);
-  close.focus();
-  overlay.addEventListener("click", (event) => {
-    if (event.target === overlay) void removeOverlayWithMotion(overlay);
-  });
-}
-
-function showNoEvaluationQuestionExtracted(result) {
-  const existing = document.querySelector(".evaluation-draft-overlay");
-  if (existing) existing.remove();
-
-  const overlay = document.createElement("div");
-  overlay.className = "evaluation-draft-overlay";
-  const card = document.createElement("section");
-  card.className = "evaluation-draft-card";
-  card.setAttribute("role", "dialog");
-  card.setAttribute("aria-modal", "true");
-  card.setAttribute("aria-label", "No benchmark question extracted");
-  const heading = document.createElement("h2");
-  heading.textContent = "No benchmark question extracted";
-  const detail = document.createElement("p");
-  detail.className = "evaluation-draft-notice";
-  detail.textContent = result.reason || "The generator found no grounded benchmark task in this session.";
-  const close = document.createElement("button");
-  close.className = "ghost";
-  close.type = "button";
-  close.textContent = "Close";
-  close.addEventListener("click", () => void removeOverlayWithMotion(overlay));
-  card.append(heading, detail, close);
-  overlay.appendChild(card);
-  document.body.appendChild(overlay);
-  close.focus();
-  overlay.addEventListener("click", (event) => {
-    if (event.target === overlay) void removeOverlayWithMotion(overlay);
-  });
-}
-
-function showEvaluationQuestionDraftGenerating(generatorLabel = "selected generator") {
-  const existing = document.querySelector(".evaluation-draft-overlay");
-  if (existing) existing.remove();
-
-  const overlay = document.createElement("div");
-  overlay.className = "evaluation-draft-overlay";
-  const card = document.createElement("section");
-  card.className = "evaluation-draft-card evaluation-draft-generating";
-  card.setAttribute("role", "dialog");
-  card.setAttribute("aria-modal", "true");
-  card.setAttribute("aria-label", "Generating benchmark question");
-  card.setAttribute("aria-busy", "true");
-  const spinner = document.createElement("div");
-  spinner.className = "evaluation-draft-spinner";
-  spinner.setAttribute("aria-hidden", "true");
-  const content = document.createElement("div");
-  const heading = document.createElement("h2");
-  heading.textContent = "Generating benchmark question";
-  const detail = document.createElement("p");
-  detail.className = "evaluation-draft-notice";
-  detail.setAttribute("role", "status");
-  detail.textContent = `Preparing session evidence and asking ${generatorLabel} for a reviewable draft.`;
-  content.append(heading, detail);
-  card.append(spinner, content);
-  overlay.appendChild(card);
-  document.body.appendChild(overlay);
-}
-
-async function showEvaluationQuestionDraft(
-  sessionId, owner = state.userId, generatorId = "", templateId = state.activeEvaluationQuestionTemplateId,
-) {
-  const query = owner ? `?user_id=${encodeURIComponent(owner)}` : "";
-  const generator = state.evaluationQuestionGenerators.find((item) => item.generator_id === generatorId);
-  showEvaluationQuestionDraftGenerating(generator?.label || "the selected generator");
-  try {
-    const response = await fetch(
-      `/api/sessions/${encodeURIComponent(sessionId)}/evaluation-question-drafts${query}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ template_id: templateId, generator_id: generatorId }),
-      },
-    );
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      if (payload.detail && typeof payload.detail === "object") {
-        const error = new Error(payload.detail.message || `HTTP ${response.status}`);
-        error.diagnostics = payload.detail.diagnostics;
-        throw error;
-      }
-      throw new Error(payload.detail || `HTTP ${response.status}`);
-    }
-    const draft = await response.json();
-    if (draft.status === "no_qa_extracted") {
-      showNoEvaluationQuestionExtracted(draft);
-      return;
-    }
-    showEvaluationQuestionDraftModal(draft);
-  } catch (error) {
-    console.warn("Failed to generate staged benchmark question", error);
-    showEvaluationQuestionDraftError(error);
-  }
-}
-
-async function showSessionQuestionGeneratorPicker(sessionId, owner = state.userId) {
-  const generators = await loadEvaluationQuestionGenerators(owner);
-  if (!generators.length) {
-    showEvaluationQuestionDraftError("No session question generators are configured.");
-    return;
-  }
-  const existing = document.querySelector(".evaluation-draft-overlay");
-  if (existing) existing.remove();
-
-  const overlay = document.createElement("div");
-  overlay.className = "evaluation-draft-overlay";
-  const card = document.createElement("section");
-  card.className = "evaluation-draft-card evaluation-generator-picker";
-  card.setAttribute("role", "dialog");
-  card.setAttribute("aria-modal", "true");
-  card.setAttribute("aria-label", "Select question generator");
-  const heading = document.createElement("h2");
-  heading.textContent = "Generate benchmark question";
-  const detail = document.createElement("p");
-  detail.className = "evaluation-draft-notice";
-  const label = document.createElement("label");
-  label.className = "evaluation-label";
-  label.textContent = "Question generator";
-  const select = document.createElement("select");
-  select.className = "evaluation-input";
-  select.setAttribute("aria-label", "Question generator");
-  for (const generator of generators) {
-    const option = document.createElement("option");
-    option.value = generator.generator_id;
-    option.textContent = generator.label;
-    select.appendChild(option);
-  }
-  select.value = state.activeEvaluationQuestionGeneratorId || generators[0].generator_id;
-  label.appendChild(select);
-  const updateDescription = () => {
-    const generator = generators.find((item) => item.generator_id === select.value);
-    detail.textContent = generator?.description || "Generate a reviewable question from this session.";
-  };
-  select.addEventListener("change", updateDescription);
-  updateDescription();
-  const actions = document.createElement("div");
-  actions.className = "evaluation-draft-actions";
-  const cancel = document.createElement("button");
-  cancel.className = "ghost";
-  cancel.type = "button";
-  cancel.textContent = "Cancel";
-  cancel.addEventListener("click", () => void removeOverlayWithMotion(overlay));
-  const generate = document.createElement("button");
-  generate.className = "evaluation-draft-export";
-  generate.type = "button";
-  generate.textContent = "Generate";
-  generate.addEventListener("click", () => {
-    state.activeEvaluationQuestionGeneratorId = select.value;
-    overlay.remove();
-    void showEvaluationQuestionDraft(sessionId, owner, select.value);
-  });
-  actions.append(cancel, generate);
-  card.append(heading, detail, label, actions);
-  overlay.appendChild(card);
-  document.body.appendChild(overlay);
-  select.focus();
-  overlay.addEventListener("click", (event) => {
-    if (event.target === overlay) void removeOverlayWithMotion(overlay);
-  });
-}
-
-async function showSavedQuestionDrafts() {
-  try {
-    const response = await fetch(
-      `/api/evaluation-question-drafts?user_id=${encodeURIComponent(state.userId)}`,
-    );
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
-    const overlay = document.createElement("div");
-    overlay.className = "evaluation-draft-overlay";
-    const card = document.createElement("section");
-    card.className = "evaluation-draft-card evaluation-draft-list-card";
-    card.setAttribute("role", "dialog");
-    card.setAttribute("aria-modal", "true");
-    card.setAttribute("aria-label", "Saved evaluation question drafts");
-    const header = document.createElement("header");
-    header.className = "evaluation-draft-header";
-    const heading = document.createElement("h2");
-    heading.textContent = "Saved question drafts";
-    const close = document.createElement("button");
-    close.type = "button";
-    close.className = "ghost";
-    close.textContent = "Close";
-    close.addEventListener("click", () => void removeOverlayWithMotion(overlay));
-    header.append(heading, close);
-    const list = document.createElement("div");
-    list.className = "evaluation-draft-list";
-    const drafts = payload.drafts || [];
-    if (!drafts.length) {
-      const empty = document.createElement("p");
-      empty.className = "evaluation-draft-notice";
-      empty.textContent = "No saved question drafts yet.";
-      list.appendChild(empty);
-    }
-    for (const draft of drafts) {
-      const row = document.createElement("button");
-      row.type = "button";
-      row.className = "evaluation-draft-list-item";
-      const title = document.createElement("strong");
-      title.textContent = draft.question_id || "Untitled question";
-      const meta = document.createElement("span");
-      meta.textContent = `${draft.status} · session ${draft.source_session_id || "unknown"}`;
-      row.append(title, meta);
-      row.addEventListener("click", async () => {
-        const loaded = await fetch(
-          `/api/evaluation-question-drafts/${encodeURIComponent(draft.draft_id)}?user_id=${encodeURIComponent(state.userId)}`,
-        );
-        const data = await loaded.json().catch(() => ({}));
-        if (!loaded.ok) {
-          showEvaluationQuestionDraftError(data.detail || `HTTP ${loaded.status}`);
-          return;
-        }
-        showEvaluationQuestionDraftModal(data);
-      });
-      list.appendChild(row);
-    }
-    card.append(header, list);
-    overlay.appendChild(card);
-    document.body.appendChild(overlay);
-    close.focus();
-    overlay.addEventListener("click", (event) => {
-      if (event.target === overlay) void removeOverlayWithMotion(overlay);
-    });
-  } catch (error) {
-    showEvaluationQuestionDraftError(error.message || "Saved drafts could not be loaded.");
-  }
-}
-
-document.getElementById("saved-question-drafts")?.addEventListener("click", () => {
-  void showSavedQuestionDrafts();
-});
 
 document.getElementById("refresh-files").addEventListener("click", (e) => { e.stopPropagation(); refreshSessionFiles(); });
 
@@ -2629,16 +1060,44 @@ function getStructurePaths(payload) {
 function createStructureViewButton(path) {
   const btn = document.createElement("button");
   btn.className = "ghost structure-view-btn";
-  btn.textContent = `🔬 View: ${path.split("/").pop()}`;
+  btn.type = "button";
+  btn.title = path;
+  const filename = path.split("/").pop();
+  btn.setAttribute("aria-label", `View structure ${filename}`);
+
+  const icon = document.createElement("span");
+  icon.className = "structure-view-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.innerHTML = `
+    <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="m16 4 9 5.2v10.6L16 25l-9-5.2V9.2L16 4Z" />
+      <path d="m7 9.2 9 5.3 9-5.3M16 14.5V25" />
+      <circle cx="16" cy="14.5" r="2.2" />
+      <circle cx="7" cy="9.2" r="1.5" />
+      <circle cx="25" cy="9.2" r="1.5" />
+      <circle cx="16" cy="25" r="1.5" />
+    </svg>`;
+
+  const label = document.createElement("span");
+  label.className = "structure-view-label";
+  label.textContent = filename;
+  btn.append(icon, label);
   btn.addEventListener("click", () => openViewer({ path, url: pathToApiUrl(path) }));
   return btn;
+}
+
+function createStructureViewButtonGroup(paths) {
+  const group = document.createElement("div");
+  group.className = "structure-view-button-group";
+  paths.forEach((path) => group.appendChild(createStructureViewButton(path)));
+  return group;
 }
 
 function createArtifactListItem(path) {
   const li = document.createElement("li");
   li.title = path;
   if (classifyPath(path) === "structure") {
-    li.appendChild(createStructureViewButton(path));
+    li.appendChild(createStructureViewButtonGroup([path]));
   } else {
     li.textContent = path.split("/").pop();
   }
@@ -2716,6 +1175,56 @@ function toolStatusIcon(toolCall) {
   return toolCall.status === "running" ? "◌" : "✓";
 }
 
+function createPayloadView(payload) {
+  if (payload === null || payload === undefined) {
+    const empty = document.createElement("span");
+    empty.className = "payload-value payload-value-empty";
+    empty.textContent = payload === null ? "null" : "Not available";
+    return empty;
+  }
+
+  if (Array.isArray(payload)) {
+    const list = document.createElement("div");
+    list.className = "payload-list";
+    payload.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "payload-list-item";
+      row.appendChild(createPayloadView(item));
+      list.appendChild(row);
+    });
+    if (!payload.length) list.textContent = "Empty list";
+    return list;
+  }
+
+  if (typeof payload === "object") {
+    const fields = document.createElement("div");
+    fields.className = "payload-fields";
+    Object.entries(payload).forEach(([key, value]) => {
+      const row = document.createElement("div");
+      row.className = "payload-field";
+      const label = document.createElement("span");
+      label.className = "payload-key";
+      label.textContent = key;
+      row.append(label, createPayloadView(value));
+      fields.appendChild(row);
+    });
+    if (!fields.childElementCount) fields.textContent = "Empty object";
+    return fields;
+  }
+
+  const value = document.createElement("span");
+  value.className = `payload-value payload-value-${typeof payload}`;
+  value.textContent = typeof payload === "string" ? payload : String(payload);
+  return value;
+}
+
+function createPayloadBlock(payload, empty = "Not available") {
+  const block = document.createElement("div");
+  block.className = "payload-block";
+  block.appendChild(createPayloadView(payload === undefined ? empty : payload));
+  return block;
+}
+
 function createToolCallRawView(toolCall) {
   const body = document.createElement("div");
   body.className = "tool-call-raw";
@@ -2725,9 +1234,7 @@ function createToolCallRawView(toolCall) {
     heading.className = "tool-call-raw-label";
     heading.textContent = label;
     section.appendChild(heading);
-    section.appendChild(createJsonBlock(payload === null || payload === undefined
-      ? empty
-      : JSON.stringify(payload, null, 2)));
+    section.appendChild(createPayloadBlock(payload === null || payload === undefined ? empty : payload));
     body.appendChild(section);
   };
   if (toolCall.error) addPayload("Error", toolCall.error);
@@ -2812,8 +1319,8 @@ function createTimelineReasoning(entry, wireTimelineDetails, collapsed = false, 
   return section;
 }
 
-function createActivityAction(action, wireTimelineDetails, { isNew = false } = {}) {
-  const toolCalls = activityToolCalls(action);
+function createActivityAction(action, wireTimelineDetails, { isNew = false, includeExecutorTools = false } = {}) {
+  const toolCalls = includeExecutorTools ? (action.toolCalls || []) : activityToolCalls(action);
   if (!toolCalls.length) return null;
   const displayAction = {
     ...action,
@@ -2849,7 +1356,16 @@ function createActivityAction(action, wireTimelineDetails, { isNew = false } = {
     if (displayAction.toolCalls.length > 1) {
       const row = document.createElement("div");
       row.className = `activity-action-tool is-${call.status}`;
-      row.innerHTML = `<span class="tool-call-status">${toolStatusIcon(call)}</span><span class="tool-call-name">${call.name}</span><span class="tool-call-duration">${formatToolDuration(call)}</span>`;
+      const status = document.createElement("span");
+      status.className = "tool-call-status";
+      status.textContent = toolStatusIcon(call);
+      const name = document.createElement("span");
+      name.className = "tool-call-name";
+      name.textContent = call.name;
+      const callDuration = document.createElement("span");
+      callDuration.className = "tool-call-duration";
+      callDuration.textContent = formatToolDuration(call);
+      row.append(status, name, callDuration);
       body.appendChild(row);
     }
     body.appendChild(result);
@@ -3005,6 +1521,7 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
       const calls = activityItems
         .filter((item) => item.type === "activity_action")
         .flatMap((action) => action.toolCalls || []);
+      const structurePaths = [];
       for (const call of calls) {
         for (const plotPath of getPlotPaths(call.output)) {
         if (
@@ -3016,9 +1533,11 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
         visiblePlotPaths.add(plotPath);
         container.appendChild(createTimelineImage(plotPath));
       }
-        getStructurePaths(call.output).forEach((path) => {
-        container.appendChild(createStructureViewButton(path));
-      });
+        structurePaths.push(...getStructurePaths(call.output));
+      }
+      const uniqueStructurePaths = [...new Set(structurePaths)];
+      if (uniqueStructurePaths.length) {
+        container.appendChild(createStructureViewButtonGroup(uniqueStructurePaths));
       }
       activityItems = [];
       activityCount += 1;
@@ -3170,41 +1689,60 @@ function renderStepInput(input) {
   const summary = document.createElement("summary");
   summary.textContent = "Input";
   details.appendChild(summary);
-  details.appendChild(createJsonBlock(JSON.stringify(input, null, 2)));
+  details.appendChild(createPayloadBlock(input));
   return details;
 }
 
-function renderStepConversationEvent(evt) {
+function renderStepConversationEvent(evt, { collapsed = false, timelineId } = {}) {
+  if (["thought", "text"].includes(evt.type)) {
+    return createTimelineReasoning({
+      timelineId: timelineId || `step-conversation:${evt.timestamp || ""}:${evt.author || ""}:${evt.type}`,
+      text: String(evt.content || ""),
+    }, () => {}, collapsed);
+  }
   const details = document.createElement("details");
-  details.className = `timeline-${evt.type} step-feed-nested`;
+  details.className = "agent-activity-action step-feed-conversation";
   const summary = document.createElement("summary");
   const icon = evt.type === "thought" ? "💭" : evt.type === "text" ? "💬" : evt.type === "function_call" ? "🔧" : "↩";
-  summary.textContent = `${icon} [${evt.author || "step_executor"}] ${evt.type || "event"}`;
+  const status = document.createElement("span");
+  status.className = "agent-activity-status";
+  status.textContent = icon;
+  const heading = document.createElement("span");
+  heading.className = "activity-action-heading";
+  const title = document.createElement("span");
+  title.className = "activity-action-title";
+  title.textContent = `[${evt.author || "step_executor"}] ${evt.type || "event"}`;
+  heading.appendChild(title);
+  summary.append(status, heading);
   details.appendChild(summary);
-  details.appendChild(createJsonBlock(evt.content));
+  const body = document.createElement("div");
+  body.className = "activity-action-body";
+  body.appendChild(createPayloadBlock(evt.content));
+  details.appendChild(body);
   return details;
 }
 
 function renderStepToolCall(tc) {
-  const details = document.createElement("details");
-  details.className = "timeline-function-call step-feed-nested";
-  const dur = tc.start_time && tc.end_time
-    ? ` (${((new Date(tc.end_time) - new Date(tc.start_time)) / 1000).toFixed(1)}s)`
-    : "";
-  const summary = document.createElement("summary");
-  summary.textContent = `🔧 ${tc.name || "tool"}${dur}`;
-  details.appendChild(summary);
-  if (tc.args_summary) {
-    details.appendChild(createJsonBlock(tc.args_summary));
-  }
-  if (tc.result_summary) {
-    const pre = createJsonBlock(`→ ${tc.result_summary}`);
-    pre.style.borderTop = "1px solid rgba(255,255,255,0.06)";
-    details.appendChild(pre);
-  }
-  getStructurePaths(tc).forEach((path) => {
-    details.appendChild(createStructureViewButton(path));
-  });
+  const status = tc.status || (tc.error ? "failed" : tc.end_time || tc.result_summary ? "success" : "running");
+  const startedAt = tc.start_time ? new Date(tc.start_time).getTime() : null;
+  const endedAt = tc.end_time ? new Date(tc.end_time).getTime() : null;
+  const durationMs = Number.isFinite(startedAt) && Number.isFinite(endedAt) ? Math.max(0, endedAt - startedAt) : null;
+  const toolCall = {
+    ...tc,
+    status,
+    startedAt: Number.isFinite(startedAt) ? startedAt : null,
+    durationMs,
+    input: tc.input ?? tc.args ?? tc.args_summary,
+    output: tc.output ?? tc.result ?? tc.result_summary,
+    semanticSummary: tc.result_summary || tc.error || (status === "running" ? "Running…" : "Completed"),
+  };
+  const details = createActivityAction({
+    timelineId: `step-tool:${tc.id || `${tc.name || "tool"}:${tc.start_time || ""}`}`,
+    toolCalls: [toolCall],
+  }, () => {}, { includeExecutorTools: true });
+  const raw = details?.querySelector(".tool-call-raw");
+  const structurePaths = getStructurePaths(tc);
+  if (structurePaths.length) raw?.appendChild(createStructureViewButtonGroup(structurePaths));
   return details;
 }
 
@@ -3624,7 +2162,6 @@ async function createSession() {
     }
     state.sessionReady = true;
     storeSessionSelection(sessionId, state.activeSessionUserId);
-    if (resp.status !== 409) await startKnowledgeReview(sessionId);
     await loadSessions();
   } catch (err) {
     console.error("Failed to create session:", err);
@@ -3935,8 +2472,10 @@ async function openViewer(item) {
 
     tab.meta.textContent = `${structureMeta}  ·  Select an atom to edit it`;
   } catch (err) {
-    tab.canvas.innerHTML =
-      `<div style="color:#f87171;padding:16px;font-size:13px">Failed to load structure: ${err}</div>`;
+    const error = document.createElement("div");
+    error.className = "viewer-load-error";
+    error.textContent = `Failed to load structure: ${String(err?.message || err)}`;
+    tab.canvas.replaceChildren(error);
   }
 }
 
@@ -3985,7 +2524,10 @@ async function openFileViewer(file) {
     content.innerHTML = "";
     content.appendChild(pre);
   } catch (err) {
-    content.innerHTML = `<p style="color:#f87171;padding:16px 20px">Failed to load: ${err.message}</p>`;
+    const error = document.createElement("p");
+    error.className = "file-viewer-error";
+    error.textContent = `Failed to load: ${err.message}`;
+    content.replaceChildren(error);
   }
 }
 
@@ -4163,6 +2705,7 @@ async function _doNewSession(customWorkdir) {
   renderSessionBanner("");
   renderSessionFilesTree([]);
   clearCurrentUploads();
+  remoteJobsController.reset();
   agentGraph.reset();
   planGraph.reset();
   hidePlanGraph();

@@ -62,6 +62,41 @@ def test_search_skills_returns_only_clipped_skill_previews(
     assert "..." in result
 
 
+def test_query_knowledge_graph_is_compact_discovery_with_native_sidecar_hints(
+    tmp_path, monkeypatch
+) -> None:
+    graph = KnowDoGraph(tmp_path / "know-do.db")
+    full_body = "Overview. " + "Detailed planning instruction. " * 40
+    selected = _add(
+        graph,
+        "Verbose planning capability",
+        EntryType.capability,
+        SkillLevel.L1,
+        content=full_body,
+    )
+    heuristic = _add(
+        graph,
+        "Selected heuristic",
+        EntryType.heuristic,
+        SkillLevel.L3,
+    )
+    graph.connect(heuristic.id, selected.id, relation=EdgeRelation.heuristic_for)
+    monkeypatch.setattr(query, "_get_kg", lambda: graph)
+    monkeypatch.setattr(query, "increment_usage", lambda _graph, _entry: None)
+
+    result = query.query_knowledge_graph("verbose planning", top_k=1)
+
+    assert selected.id in result
+    assert "1 L3 heuristic(s)" in result
+    assert "Select one `id`, then call `read_knowledge_node`" in result
+    assert len(result) < len(full_body)
+    assert "..." in result
+
+    expanded = query.read_knowledge_node(selected.id)
+    assert full_body in expanded
+    assert "Selected heuristic" in expanded
+
+
 def test_search_skill_context_only_returns_attached_sidecars(
     tmp_path, monkeypatch
 ) -> None:

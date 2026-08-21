@@ -89,7 +89,11 @@ _get_skill_kg = _get_kg
 _get_memory_kg = _get_kg
 
 
+# Discovery is deliberately cheap: the agent first chooses a node, then reads
+# its body and attached context through ``read_knowledge_node``.
 _DISCOVERY_CONTENT_CHARS = 240
+_DISCOVERY_TOP_K = 8
+_MEMORY_DISCOVERY_TOP_K = 3
 
 
 def _clip_content(content: str, limit: int) -> str:
@@ -136,6 +140,52 @@ def _format_memory(entries: list[Entry]) -> str:
         success = memory.get("success")
         status = "success" if success is True else "failed" if success is False else "unchecked"
         lines.append(f"- [{memory.get('session_id', 'default')}; {status}] {entry.content}")
+    return "\n".join(lines)
+
+
+def _format_discovery(entries: list[Entry]) -> str:
+    """Format L1/L2 candidates without eagerly placing their bodies in context."""
+    lines = []
+    graph = _get_kg()
+    for entry in entries:
+        level = entry.metadata.skill_level
+        if hasattr(level, "value"):
+            level = level.value
+        if level is None:
+            level = {
+                EntryType.capability: "L1",
+                EntryType.workflow: "L1",
+                EntryType.procedure: "L2",
+            }.get(entry.entry_type)
+        label = f"{level} {entry.entry_type.value}" if level else entry.entry_type.value
+        preview = _clip_content(entry.content, _DISCOVERY_CONTENT_CHARS)
+        line = f"- **{entry.title}** [{label}; id=`{entry.id}`]"
+        if preview:
+            line += f": {preview}"
+
+        attached = graph.count_attached(entry.id)
+        hints = []
+        if attached.get("heuristics", 0):
+            hints.append(f"{attached['heuristics']} L3 heuristic(s)")
+        if attached.get("constraints", 0):
+            hints.append(f"{attached['constraints']} L4 constraint(s)")
+        if hints:
+            line += " — attached context: " + ", ".join(hints)
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _format_memory_discovery(entries: list[Entry]) -> str:
+    """Format memory hits as compact, selectable search results."""
+    lines = []
+    for entry in entries:
+        memory = entry.metadata.custom.get("memory", {})
+        success = memory.get("success")
+        status = "success" if success is True else "failed" if success is False else "unchecked"
+        preview = _clip_content(entry.content, _DISCOVERY_CONTENT_CHARS)
+        lines.append(
+            f"- [{memory.get('session_id', 'default')}; {status}; id=`{entry.id}`] {preview}"
+        )
     return "\n".join(lines)
 
 
@@ -201,12 +251,14 @@ def _format_node_attachments(entry: Entry, *, query: str = "", top_k: int = 5) -
     return sections
 
 
-def query_knowledge_graph(query: str, depth: int = 2, top_k: int = 15) -> str:
-    """Retrieve L1/L2 planning context and relevant working memory.
+def query_knowledge_graph(query: str, depth: int = 2, top_k: int = _DISCOVERY_TOP_K) -> str:
+    """Discover compact L1/L2 candidates and relevant memory.
 
-    ``depth`` is retained for compatibility with older callers. L3/L4 entries
-    are intentionally not expanded here; use ``search_skill_context`` after
-    selecting an L1/L2 node.
+    ``depth`` is retained for compatibility with older callers but is unused.
+    L3/L4 entries
+    are intentionally not expanded here. Select a returned ID and use
+    ``read_knowledge_node`` (or the compatibility alias
+    ``search_skill_context``) to read one node and its scoped sidecars.
     """
     del depth
     graph = _get_kg()
@@ -231,7 +283,7 @@ def query_knowledge_graph(query: str, depth: int = 2, top_k: int = 15) -> str:
             for entry in graph.search(
                 query,
                 entry_type=EntryType.memory,
-                limit=top_k,
+                limit=min(top_k, _MEMORY_DISCOVERY_TOP_K),
                 mode="hybrid",
             )
             if not entry.metadata.custom.get("memory", {}).get("promoted", False)
@@ -242,13 +294,13 @@ def query_knowledge_graph(query: str, depth: int = 2, top_k: int = 15) -> str:
 
         sections = []
         if durable:
-            sections.append("### L1/L2 Planning Knowledge\n" + _format_durable(durable))
+            sections.append("### L1/L2 Knowledge Candidates\n" + _format_discovery(durable))
         if memory_entries:
-            sections.append("### Working Memory\n" + _format_memory(memory_entries))
+            sections.append("### Working-Memory Candidates\n" + _format_memory_discovery(memory_entries))
         if durable:
             sections.append(
-                "Select a planning node, then call `search_skill_context` to "
-                "conditionally retrieve its attached L3/L4 knowledge."
+                "Select one `id`, then call `read_knowledge_node` to retrieve its "
+                "full body and conditionally scoped L3/L4 knowledge."
             )
         return "\n\n".join(sections) or f"No knowledge graph entries found for '{query}'."
     except Exception as exc:
@@ -318,32 +370,33 @@ def search_skills(query: str, top_k: int = 5) -> str:
         return f"Skill search failed: {exc}"
 
 
-def search_skill_context(
-    skill: str,
+def read_knowledge_node(
+    node_id: str,
     query: str = "",
     include_heuristics: bool = True,
     include_constraints: bool = True,
     top_k: int = 5,
 ) -> str:
-    """Conditionally search L3/L4 nodes attached to a selected L1/L2 node.
+    """Read one selected node and conditionally search its L3/L4 sidecars.
 
-    The candidate pool is scoped by ``heuristic_for``, ``constraint_on``, and
-    ``warning_about`` edges before ranking, so unrelated L3/L4 nodes cannot leak
-    into the result.
+    ``node_id`` accepts the stable ID returned by ``query_knowledge_graph`` as
+    well as a slug or alias. The sidecar candidate pool is scoped by
+    ``heuristic_for``, ``constraint_on``, and ``warning_about`` edges, so
+    unrelated L3/L4 nodes cannot leak into the result.
     """
     graph = _get_kg()
     try:
-        start = graph.get(skill)
+        start = graph.get(node_id)
         if start is None:
             matches = graph.plan(
-                skill,
+                node_id,
                 limit=1,
                 mode="hybrid",
                 include_procedures=True,
             )
             start = matches[0] if matches else None
         if start is None:
-            return f"No L1/L2 node found matching '{skill}'."
+            return f"No L1/L2 node found matching '{node_id}'."
         if is_entry_disabled(start):
             return f"Skill '{start.title}' is disabled."
         if _is_virtual(start):
@@ -393,8 +446,29 @@ def search_skill_context(
             sections.append("No attached L3/L4 context matched the requested scope.")
         return "\n\n".join(sections)
     except Exception as exc:
-        logger.warning("search_skill_context failed: %s", exc)
-        return f"Conditional skill context search failed: {exc}"
+        logger.warning("read_knowledge_node failed: %s", exc)
+        return f"Knowledge-node read failed: {exc}"
+
+
+def search_skill_context(
+    skill: str,
+    query: str = "",
+    include_heuristics: bool = True,
+    include_constraints: bool = True,
+    top_k: int = 5,
+) -> str:
+    """Compatibility alias for :func:`read_knowledge_node`.
+
+    Prefer ``read_knowledge_node`` for new agent prompts because it makes the
+    selected-node step explicit.
+    """
+    return read_knowledge_node(
+        skill,
+        query=query,
+        include_heuristics=include_heuristics,
+        include_constraints=include_constraints,
+        top_k=top_k,
+    )
 
 
 def get_related_skills(start_node: str, top_k: int = 5, depth: int = 2) -> str:

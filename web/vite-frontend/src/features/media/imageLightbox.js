@@ -1,4 +1,7 @@
+import { createDialogController } from "../../shared/ui/dialog.js";
+
 export function createImageLightbox() {
+  let dialog;
   const lightbox = {
     el: document.getElementById("image-lightbox"),
     img: document.getElementById("lightbox-img"),
@@ -26,35 +29,12 @@ export function createImageLightbox() {
       this.translateY = 0;
       this.img.src = src;
       this.img.style.transform = "";
-      this.el.classList.remove("hidden");
       this.updateLabel();
+      dialog.open();
     },
 
     close() {
-      window.clearTimeout(this.closeTimer);
-      if (this.closeTransitionHandler) {
-        this.el.removeEventListener("transitionend", this.closeTransitionHandler);
-        this.closeTransitionHandler = null;
-      }
-      this.el.classList.add("hidden");
-      if (window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
-        this.img.removeAttribute("src");
-        return;
-      }
-
-      const releaseImage = () => {
-        window.clearTimeout(this.closeTimer);
-        if (this.closeTransitionHandler) {
-          this.el.removeEventListener("transitionend", this.closeTransitionHandler);
-          this.closeTransitionHandler = null;
-        }
-        if (this.el.classList.contains("hidden")) this.img.removeAttribute("src");
-      };
-      this.closeTransitionHandler = (event) => {
-        if (event.target === this.el && event.propertyName === "opacity") releaseImage();
-      };
-      this.el.addEventListener("transitionend", this.closeTransitionHandler);
-      this.closeTimer = window.setTimeout(releaseImage, 250);
+      dialog.close();
     },
 
     applyTransform() {
@@ -88,6 +68,37 @@ export function createImageLightbox() {
       this.applyTransform();
     },
   };
+
+  dialog = createDialogController({
+    element: lightbox.el,
+    label: "Image preview",
+    initialFocus: "#lightbox-close",
+    onClose: () => {
+      window.clearTimeout(lightbox.closeTimer);
+      if (lightbox.closeTransitionHandler) {
+        lightbox.el.removeEventListener("transitionend", lightbox.closeTransitionHandler);
+        lightbox.closeTransitionHandler = null;
+      }
+      if (window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+        lightbox.img.removeAttribute("src");
+        return;
+      }
+
+      const releaseImage = () => {
+        window.clearTimeout(lightbox.closeTimer);
+        if (lightbox.closeTransitionHandler) {
+          lightbox.el.removeEventListener("transitionend", lightbox.closeTransitionHandler);
+          lightbox.closeTransitionHandler = null;
+        }
+        if (!dialog.isOpen()) lightbox.img.removeAttribute("src");
+      };
+      lightbox.closeTransitionHandler = (event) => {
+        if (event.target === lightbox.el && event.propertyName === "opacity") releaseImage();
+      };
+      lightbox.el.addEventListener("transitionend", lightbox.closeTransitionHandler);
+      lightbox.closeTimer = window.setTimeout(releaseImage, 250);
+    },
+  });
 
   lightbox.viewport?.addEventListener("wheel", (event) => {
     event.preventDefault();
@@ -124,9 +135,5 @@ export function createImageLightbox() {
   document.getElementById("lightbox-zoom-in")?.addEventListener("click", () => lightbox.zoomIn());
   document.getElementById("lightbox-zoom-out")?.addEventListener("click", () => lightbox.zoomOut());
   document.getElementById("lightbox-zoom-reset")?.addEventListener("click", () => lightbox.resetZoom());
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !lightbox.el.classList.contains("hidden")) lightbox.close();
-  });
-
   return lightbox;
 }

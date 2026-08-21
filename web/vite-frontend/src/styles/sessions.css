@@ -50,11 +50,14 @@ details.panel-block:not([open]) > summary.block-header::after { transform: rotat
 }
 
 .session-status-filter {
-  width: 100%;
-  margin-top: 10px;
-  padding: 6px 28px 6px 12px;
+  flex: 0 0 auto;
+  width: 68px;
+  height: 24px;
+  margin-top: 0;
+  padding: 4px 24px 4px 10px;
+  box-sizing: border-box;
   font-family: inherit;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--text);
   background: var(--subtle-surface);
@@ -62,7 +65,7 @@ details.panel-block:not([open]) > summary.block-header::after { transform: rotat
   background-repeat: no-repeat;
   background-position: right 10px center;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 999px;
   appearance: none;
   -webkit-appearance: none;
   cursor: pointer;
@@ -105,7 +108,9 @@ body[data-theme="light"] .session-status-filter:focus {
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
-  right: 0;
+  width: max-content;
+  min-width: 100%;
+  box-sizing: border-box;
   z-index: 100;
   list-style: none;
   padding: 6px;
@@ -303,7 +308,7 @@ body[data-theme="light"] .custom-select-options li[aria-selected="true"] {
   border-radius: 12px; padding: 10px 12px; font-size: 13px; color: var(--muted);
 }
 .side-panel .artifact-list {
-  gap: 2px;
+  gap: 0;
 }
 .side-panel .artifact-list li {
   background: transparent;

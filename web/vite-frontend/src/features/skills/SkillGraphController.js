@@ -17,6 +17,7 @@ export function createSkillGraphController({
     workflow: { background: "#14B8A6", border: "#0F766E", highlight: { background: "#2DD4BF", border: "#5EEAD4" } },
     procedure: { background: "#14B8A6", border: "#0F766E", highlight: { background: "#2DD4BF", border: "#5EEAD4" } },
     heuristic: { background: "#F59E0B", border: "#D97706", highlight: { background: "#FBBF24", border: "#FDE68A" } },
+    memory: { background: "#a8a7a9", border: "#525152", highlight: { background: "#dfdfdf", border: "#9d9d9d" } },
     limitation: { background: "#EF4444", border: "#DC2626", highlight: { background: "#F87171", border: "#FCA5A5" } },
     constraint: { background: "#EF4444", border: "#DC2626", highlight: { background: "#F87171", border: "#FCA5A5" } },
     tool: { background: "#06B6D4", border: "#0891B2", highlight: { background: "#22D3EE", border: "#67E8F9" } },
@@ -64,6 +65,16 @@ export function createSkillGraphController({
     return disabled
       ? { color: "rgba(140, 160, 194, 0.16)", highlight: "rgba(125, 211, 252, 0.38)" }
       : { color: "rgba(140, 160, 194, 0.45)", highlight: "#7dd3fc" };
+  }
+
+  function skillGraphNodeFontColor(node) {
+    if (node.virtual) {
+      return state.theme === "light" ? "rgba(153, 27, 27, 0.62)" : "rgba(254, 202, 202, 0.66)";
+    }
+    if (node.enabled === false) {
+      return state.theme === "light" ? "rgba(19, 32, 51, 0.42)" : "rgba(231, 237, 247, 0.42)";
+    }
+    return state.theme === "light" ? "#132033" : "#e7edf7";
   }
 
   function isEmptyDetailValue(value) {
@@ -361,6 +372,7 @@ export function createSkillGraphController({
   ];
 
   function skillGraphNodeKindFor(entryType, skillLevel) {
+    if (entryType === "memory") return { value: "memory", label: "Working memory" };
     if (entryType === "procedure") return SKILL_GRAPH_NODE_KINDS.find((kind) => kind.value === "workflow");
     if (entryType === "constraint") return SKILL_GRAPH_NODE_KINDS.find((kind) => kind.value === "limitation");
     if (entryType === "heuristic") return SKILL_GRAPH_NODE_KINDS.find((kind) => kind.value === "heuristic");
@@ -1064,7 +1076,7 @@ export function createSkillGraphController({
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       renderSkillGraphNodeEditor(host, node, await resp.json());
     } catch (err) {
-      host.innerHTML = `<h4>Edit Node</h4><div class="skill-graph-editor-status error">Editor unavailable: ${String(err.message || err)}</div>`;
+      renderSkillGraphEditorError(host, "Edit Node", err);
     }
   }
 
@@ -1108,8 +1120,17 @@ export function createSkillGraphController({
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       renderSkillGraphEditor(host, node, await resp.json());
     } catch (err) {
-      host.innerHTML = `<h4>Edit Skill</h4><div class="skill-graph-editor-status error">Editor unavailable: ${String(err.message || err)}</div>`;
+      renderSkillGraphEditorError(host, "Edit Skill", err);
     }
+  }
+
+  function renderSkillGraphEditorError(host, title, error) {
+    const heading = document.createElement("h4");
+    heading.textContent = title;
+    const status = document.createElement("div");
+    status.className = "skill-graph-editor-status error";
+    status.textContent = `Editor unavailable: ${String(error?.message || error)}`;
+    host.replaceChildren(heading, status);
   }
 
   async function saveSkillGraphEditor(host) {
@@ -1364,7 +1385,20 @@ export function createSkillGraphController({
       nodeData: new Map(),
       edges: [],
       loaded: false,
+      themeChangeHandler: null,
     };
+    skillGraphTab.themeChangeHandler = () => {
+      const tab = skillGraphTab;
+      if (!tab?.nodesDataSet) return;
+      tab.nodesDataSet.update(
+        Array.from(tab.nodeData.values()).map((node) => ({
+          id: node.id,
+          font: { color: skillGraphNodeFontColor(node), size: 13, face: "Manrope" },
+        })),
+      );
+      tab.network?.redraw();
+    };
+    window.addEventListener("matcreator-theme-change", skillGraphTab.themeChangeHandler);
     activateCenterTab(tabId);
     return skillGraphTab;
   }
@@ -1383,11 +1417,7 @@ export function createSkillGraphController({
         node.virtual,
       ),
       font: {
-        color: node.virtual
-          ? (state.theme === "light" ? "rgba(153, 27, 27, 0.62)" : "rgba(254, 202, 202, 0.66)")
-          : node.enabled === false
-          ? (state.theme === "light" ? "rgba(19, 32, 51, 0.42)" : "rgba(231, 237, 247, 0.42)")
-          : (state.theme === "light" ? "#132033" : "#e7edf7"),
+        color: skillGraphNodeFontColor(node),
         size: 13,
         face: "Manrope",
       },
@@ -1552,6 +1582,9 @@ export function createSkillGraphController({
 
   function close(tabId) {
     if (tabId !== "skill-graph" || !skillGraphTab) return false;
+    if (skillGraphTab.themeChangeHandler) {
+      window.removeEventListener("matcreator-theme-change", skillGraphTab.themeChangeHandler);
+    }
     skillGraphTab.removeWheelZoom?.();
     skillGraphTab.network?.destroy();
     skillGraphTab.button.remove();

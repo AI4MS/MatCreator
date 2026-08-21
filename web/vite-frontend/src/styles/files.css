@@ -110,8 +110,4 @@
 .detail-artifacts .structure-view-btn {
   max-width: 100%;
   margin-top: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: left;
 }

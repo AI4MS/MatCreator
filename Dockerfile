@@ -27,7 +27,7 @@ FROM node:24-bookworm-slim AS frontend-build
 WORKDIR /app/web/vite-frontend
 
 COPY web/vite-frontend/package*.json ./
-RUN npm install
+RUN npm ci
 
 COPY web/vite-frontend/ ./
 RUN npm run build
@@ -58,7 +58,7 @@ RUN sed -i \
     && rm -rf /var/lib/apt/lists/*
 
 COPY web/vite-frontend/package*.json web/vite-frontend/
-RUN cd web/vite-frontend && npm install
+RUN cd web/vite-frontend && npm ci
 
 COPY . .
 
