@@ -253,10 +253,11 @@ def test_all_chat_disclosures_share_the_reading_position_controller() -> None:
     render_card = graph[graph.index("_createCard(node)"):graph.index("// ---------------------------------------------------------------------------\n// Execution Plan Graph")]
     assert 'this._disclosures.wire(details, `step:${node.id}:card`' in render_card
     assert 'this._wireNested(node.id, "input"' in render_card
-    assert 'this._wireNested(node.id, "section:conversation"' in render_card
-    assert 'this._wireNested(node.id, "section:toolcalls"' in render_card
-    assert "this._wireNested(node.id, key, this._renderStepConversationEvent(evt))" in render_card
-    assert "this._wireNested(node.id, key, this._renderStepToolCall(tc))" in render_card
+    assert 'activity.className = "step-feed-activity-list agent-activity-action-list";' in render_card
+    assert "const activityItems = this._activityStream(node);" in render_card
+    assert "this._wireNested(node.id, key, this._renderStepConversationEvent(event, {" in render_card
+    assert 'collapsed: node.status !== "running"' in render_card
+    assert "this._wireNested(node.id, key, this._renderStepToolCall(toolCall))" in render_card
 
     assert "beginScrollTransaction();" in runtime
     assert "endScrollTransaction();" in runtime

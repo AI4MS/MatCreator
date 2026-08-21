@@ -1059,7 +1059,7 @@ export class AgentGraphView {
       toolCalls.forEach((tc, index) => {
         const d = this._renderStepToolCall(tc);
         const disclosureKey = `detail:${nodeId}:tool:${tc.id || `${index}:${tc.name}:${tc.start_time || ""}`}`;
-        this._detailDisclosures.wire(d, disclosureKey);
+        if (d?.tagName === "DETAILS") this._detailDisclosures.wire(d, disclosureKey);
         this._detailToolcalls.appendChild(d);
       });
       document.getElementById("detail-toolcalls-row").style.display = "";
@@ -1074,7 +1074,9 @@ export class AgentGraphView {
     if (conversation.length) {
       conversation.forEach((evt, index) => {
         const d = this._renderStepConversationEvent(evt);
-        this._detailDisclosures.wire(d, `detail:${nodeId}:conversation:${index}:${evt.timestamp || ""}:${evt.type || ""}`);
+        if (d?.tagName === "DETAILS") {
+          this._detailDisclosures.wire(d, `detail:${nodeId}:conversation:${index}:${evt.timestamp || ""}:${evt.type || ""}`);
+        }
         this._detailConversation.appendChild(d);
       });
       document.getElementById("detail-conversation-row").style.display = "";
@@ -1463,10 +1465,11 @@ export class StepExecutionFeed {
     return outer;
   }
 
-  _wireNested(nodeId, key, details) {
-    details.dataset.stepNestedKey = key;
-    this._disclosures.wire(details, `step:${nodeId}:nested:${key}`);
-    return details;
+  _wireNested(nodeId, key, element) {
+    if (element?.tagName !== "DETAILS") return element;
+    element.dataset.stepNestedKey = key;
+    this._disclosures.wire(element, `step:${nodeId}:nested:${key}`);
+    return element;
   }
 
   _renderCard(outer, node, ancestors = new Set([node.id])) {
@@ -1539,18 +1542,6 @@ export class StepExecutionFeed {
       body.appendChild(p);
     }
 
-    const liveResponse = this._latestStreamedResponse(node);
-    if (node.status === "running" && liveResponse) {
-      const response = document.createElement("div");
-      response.className = "step-feed-live-response";
-      const label = document.createElement("span");
-      label.textContent = "Live response";
-      const content = document.createElement("span");
-      content.textContent = liveResponse;
-      response.append(label, content);
-      body.appendChild(response);
-    }
-
     if (node.input && Object.keys(node.input).length) {
       body.appendChild(this._wireNested(node.id, "input", this._renderStepInput(node.input)));
     }
@@ -1576,44 +1567,25 @@ export class StepExecutionFeed {
       bubble?.appendChild(section);
     }
 
-    const conversation = node.conversation || [];
-    if (conversation.length) {
-      const section = document.createElement("div");
-      section.className = "step-feed-section";
-      const sectionDetails = document.createElement("details");
-      sectionDetails.className = "step-feed-section-details";
-      const sectionSummary = document.createElement("summary");
-      sectionSummary.className = "step-feed-section-title";
-      sectionSummary.textContent = `Conversations (${conversation.length})`;
-      sectionDetails.appendChild(sectionSummary);
-      conversation.forEach((evt, idx) => {
-        const key = `conversation:${idx}:${evt.timestamp || ""}:${evt.type || ""}:${evt.author || ""}`;
-        sectionDetails.appendChild(this._wireNested(node.id, key, this._renderStepConversationEvent(evt)));
+    const activityItems = this._activityStream(node);
+    if (activityItems.length) {
+      const activity = document.createElement("div");
+      activity.className = "step-feed-activity-list agent-activity-action-list";
+      activityItems.forEach((item) => {
+        if (item.kind === "conversation") {
+          const { event, index } = item;
+          const key = `conversation:${index}:${event.timestamp || ""}:${event.type || ""}:${event.author || ""}`;
+          activity.appendChild(this._wireNested(node.id, key, this._renderStepConversationEvent(event, {
+            collapsed: node.status !== "running",
+            timelineId: `step:${node.id}:${key}`,
+          })));
+          return;
+        }
+        const { toolCall, index } = item;
+        const key = `tool:${index}:${toolCall.name || ""}:${toolCall.start_time || ""}`;
+        activity.appendChild(this._wireNested(node.id, key, this._renderStepToolCall(toolCall)));
       });
-      section.appendChild(this._wireNested(node.id, "section:conversation", sectionDetails));
-      sectionSummary.classList.toggle("open", sectionDetails.open);
-      sectionDetails.addEventListener("toggle", () => sectionSummary.classList.toggle("open", sectionDetails.open));
-      body.appendChild(section);
-    }
-
-    const toolCalls = node.tool_calls || [];
-    if (toolCalls.length) {
-      const section = document.createElement("div");
-      section.className = "step-feed-section";
-      const sectionDetails = document.createElement("details");
-      sectionDetails.className = "step-feed-section-details";
-      const sectionSummary = document.createElement("summary");
-      sectionSummary.className = "step-feed-section-title";
-      sectionSummary.textContent = `Tool calls (${toolCalls.length})`;
-      sectionDetails.appendChild(sectionSummary);
-      toolCalls.forEach((tc, idx) => {
-        const key = `tool:${idx}:${tc.name || ""}:${tc.start_time || ""}`;
-        sectionDetails.appendChild(this._wireNested(node.id, key, this._renderStepToolCall(tc)));
-      });
-      section.appendChild(this._wireNested(node.id, "section:toolcalls", sectionDetails));
-      sectionSummary.classList.toggle("open", sectionDetails.open);
-      sectionDetails.addEventListener("toggle", () => sectionSummary.classList.toggle("open", sectionDetails.open));
-      body.appendChild(section);
+      body.appendChild(activity);
     }
 
     const artifacts = node.artifacts || [];
@@ -1642,13 +1614,38 @@ export class StepExecutionFeed {
     details.appendChild(body);
   }
 
-  _latestStreamedResponse(node) {
-    const conversation = node.conversation || [];
-    for (let index = conversation.length - 1; index >= 0; index -= 1) {
-      const event = conversation[index];
-      if (["text", "thought"].includes(event.type) && event.content) return String(event.content);
-    }
-    return "";
+  _activityStream(node) {
+    const toolCalls = node.tool_calls || [];
+    const toolMatchesConversationEvent = (event) => {
+      if (!["function_call", "function_response"].includes(event.type)) return false;
+      const content = String(event.content || "");
+      return toolCalls.some((toolCall) => {
+        const name = toolCall.name || "";
+        return name && (content.startsWith(`${name}(`) || content.startsWith(`${name} →`));
+      });
+    };
+    const timeValue = (value) => {
+      const time = new Date(value || "").getTime();
+      return Number.isFinite(time) ? time : null;
+    };
+    const items = [
+      ...(node.conversation || [])
+        .filter((event) => !toolMatchesConversationEvent(event))
+        .map((event, index) => ({ kind: "conversation", event, index, time: timeValue(event.timestamp), sequence: index })),
+      ...toolCalls.map((toolCall, index) => ({
+        kind: "tool",
+        toolCall,
+        index,
+        time: timeValue(toolCall.start_time || toolCall.end_time),
+        sequence: (node.conversation || []).length + index,
+      })),
+    ];
+    return items.sort((a, b) => {
+      if (a.time !== null && b.time !== null && a.time !== b.time) return a.time - b.time;
+      if (a.time !== null && b.time === null) return -1;
+      if (a.time === null && b.time !== null) return 1;
+      return a.sequence - b.sequence;
+    });
   }
 }
 

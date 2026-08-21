@@ -20,7 +20,7 @@ Schema
       "summary": "<str|null>",
       "artifacts": ["<str>", ...],
       "input": {"step_number": int, "action": str, ...} | null,
-      "tool_calls": [{"name": str, "args_summary": str, "result_summary": str,
+      "tool_calls": [{"name": str, "input": dict, "output": dict, "args_summary": str, "result_summary": str,
                        "start_time": str, "end_time": str}, ...],
       "state_delta": {"<key>": "<value>", ...}
     }

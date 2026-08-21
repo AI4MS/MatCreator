@@ -1285,8 +1285,8 @@ function createTimelineReasoning(entry, wireTimelineDetails, collapsed = false, 
   return section;
 }
 
-function createActivityAction(action, wireTimelineDetails, { isNew = false } = {}) {
-  const toolCalls = activityToolCalls(action);
+function createActivityAction(action, wireTimelineDetails, { isNew = false, includeExecutorTools = false } = {}) {
+  const toolCalls = includeExecutorTools ? (action.toolCalls || []) : activityToolCalls(action);
   if (!toolCalls.length) return null;
   const displayAction = {
     ...action,
@@ -1656,58 +1656,57 @@ function renderStepInput(input) {
   return details;
 }
 
-function renderStepConversationEvent(evt) {
+function renderStepConversationEvent(evt, { collapsed = false, timelineId } = {}) {
+  if (["thought", "text"].includes(evt.type)) {
+    return createTimelineReasoning({
+      timelineId: timelineId || `step-conversation:${evt.timestamp || ""}:${evt.author || ""}:${evt.type}`,
+      text: String(evt.content || ""),
+    }, () => {}, collapsed);
+  }
   const details = document.createElement("details");
-  details.className = `timeline-${evt.type} step-feed-nested`;
+  details.className = "agent-activity-action step-feed-conversation";
   const summary = document.createElement("summary");
   const icon = evt.type === "thought" ? "💭" : evt.type === "text" ? "💬" : evt.type === "function_call" ? "🔧" : "↩";
-  summary.textContent = `${icon} [${evt.author || "step_executor"}] ${evt.type || "event"}`;
+  const status = document.createElement("span");
+  status.className = "agent-activity-status";
+  status.textContent = icon;
+  const heading = document.createElement("span");
+  heading.className = "activity-action-heading";
+  const title = document.createElement("span");
+  title.className = "activity-action-title";
+  title.textContent = `[${evt.author || "step_executor"}] ${evt.type || "event"}`;
+  heading.appendChild(title);
+  summary.append(status, heading);
   details.appendChild(summary);
-  details.appendChild(createJsonBlock(evt.content));
+  const body = document.createElement("div");
+  body.className = "activity-action-body";
+  body.appendChild(createPayloadBlock(evt.content));
+  details.appendChild(body);
   return details;
 }
 
 function renderStepToolCall(tc) {
-  const details = document.createElement("details");
   const status = tc.status || (tc.error ? "failed" : tc.end_time || tc.result_summary ? "success" : "running");
-  details.className = `timeline-tool-call step-feed-nested is-${status}`;
-  const dur = tc.start_time && tc.end_time
-    ? ` (${((new Date(tc.end_time) - new Date(tc.start_time)) / 1000).toFixed(1)}s)`
-    : "";
-  const summary = document.createElement("summary");
-  const statusIcon = document.createElement("span");
-  statusIcon.className = "tool-call-status";
-  statusIcon.textContent = toolStatusIcon({ ...tc, status });
-  const name = document.createElement("span");
-  name.className = "tool-call-name";
-  name.textContent = tc.name || "tool";
-  const duration = document.createElement("span");
-  duration.className = "tool-call-duration";
-  duration.textContent = dur.slice(2, -1);
-  summary.append(statusIcon, name, duration);
-  details.appendChild(summary);
-  const body = document.createElement("div");
-  body.className = "tool-call-raw";
-  if (tc.args_summary) {
-    const args = document.createElement("section");
-    const argsLabel = document.createElement("div");
-    argsLabel.className = "tool-call-raw-label";
-    argsLabel.textContent = "Input";
-    args.append(argsLabel, createPayloadBlock(tc.args_summary));
-    body.appendChild(args);
-  }
-  if (tc.result_summary) {
-    const result = document.createElement("section");
-    const resultLabel = document.createElement("div");
-    resultLabel.className = "tool-call-raw-label";
-    resultLabel.textContent = "Output";
-    result.append(resultLabel, createPayloadBlock(`→ ${tc.result_summary}`));
-    body.appendChild(result);
-  }
+  const startedAt = tc.start_time ? new Date(tc.start_time).getTime() : null;
+  const endedAt = tc.end_time ? new Date(tc.end_time).getTime() : null;
+  const durationMs = Number.isFinite(startedAt) && Number.isFinite(endedAt) ? Math.max(0, endedAt - startedAt) : null;
+  const toolCall = {
+    ...tc,
+    status,
+    startedAt: Number.isFinite(startedAt) ? startedAt : null,
+    durationMs,
+    input: tc.input ?? tc.args ?? tc.args_summary,
+    output: tc.output ?? tc.result ?? tc.result_summary,
+    semanticSummary: tc.result_summary || tc.error || (status === "running" ? "Running…" : "Completed"),
+  };
+  const details = createActivityAction({
+    timelineId: `step-tool:${tc.id || `${tc.name || "tool"}:${tc.start_time || ""}`}`,
+    toolCalls: [toolCall],
+  }, () => {}, { includeExecutorTools: true });
+  const raw = details?.querySelector(".tool-call-raw");
   getStructurePaths(tc).forEach((path) => {
-    body.appendChild(createStructureViewButton(path));
+    raw?.appendChild(createStructureViewButton(path));
   });
-  details.appendChild(body);
   return details;
 }
 
