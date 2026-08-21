@@ -308,7 +308,7 @@ body[data-theme="light"] .custom-select-options li[aria-selected="true"] {
   border-radius: 12px; padding: 10px 12px; font-size: 13px; color: var(--muted);
 }
 .side-panel .artifact-list {
-  gap: 2px;
+  gap: 0;
 }
 .side-panel .artifact-list li {
   background: transparent;

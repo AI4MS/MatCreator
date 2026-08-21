@@ -87,7 +87,11 @@ export function createSessionListController({
     item.append(content, ...buttons);
     item.title = `${summary || "Unnamed session"}\nRight-click for session details`;
     if (isActive) content.setAttribute("aria-current", "page");
-    content.addEventListener("click", () => switchSession(session.id, owner));
+    item.addEventListener("click", (event) => {
+      const button = event.target.closest("button");
+      if (button && button !== content) return;
+      switchSession(session.id, owner);
+    });
     item.addEventListener("contextmenu", (event) => {
       if (event.target.closest("button") && !event.target.closest(".session-item-content")) return;
       event.preventDefault();
