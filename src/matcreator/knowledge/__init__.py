@@ -4,6 +4,7 @@ from .query import (
     get_migration_result,
     get_related_skills,
     query_knowledge_graph,
+    read_knowledge_node,
     save_to_knowledge_graph,
     search_skill_context,
     search_skills,
@@ -16,6 +17,7 @@ from .kg_state import increment_exec_count, record_synthesizer_run, get_exec_cou
 
 __all__ = [
     "query_knowledge_graph",
+    "read_knowledge_node",
     "save_to_knowledge_graph",
     "search_skills",
     "search_skill_context",
