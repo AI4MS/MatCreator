@@ -77,8 +77,13 @@ body[data-theme="dark"] {
   --scrollbar-track: rgba(18, 22, 22, 0.72);
   --scrollbar-thumb: rgba(195, 100, 77, 0.22);
   --scrollbar-thumb-hover: rgba(195, 100, 77, 0.38);
-  /* Coding font stack: prefer modern VS Code-style fonts, then platform fallbacks. */
-  --mono: 'Cascadia Code', 'Cascadia Mono', 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', 'Roboto Mono', 'Consolas', 'Menlo', 'Monaco', 'Liberation Mono', 'DejaVu Sans Mono', monospace;
+  /* Keep UI copy and structured payloads visually distinct across platforms. */
+  --mono: 'SFMono-Regular', 'Cascadia Mono', 'Cascadia Code', 'JetBrains Mono', 'Roboto Mono', 'Consolas', 'Menlo', 'Monaco', 'Liberation Mono', 'DejaVu Sans Mono', monospace;
+  --font-size-ui: 0.8125rem;
+  --font-size-meta: 0.75rem;
+  --font-size-code: 0.8125rem;
+  --line-height-ui: 1.45;
+  --line-height-code: 1.55;
   /* Manrope has no CJK glyphs, so keep an explicit sans-serif CJK fallback. */
   --font-sans: 'Manrope', 'Noto Sans SC', 'Noto Sans CJK SC', 'Source Han Sans SC', 'Microsoft YaHei', 'PingFang SC', system-ui, -apple-system, sans-serif;
   --composer-height: 68px;

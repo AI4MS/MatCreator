@@ -1621,24 +1621,47 @@ function renderStepConversationEvent(evt) {
 
 function renderStepToolCall(tc) {
   const details = document.createElement("details");
-  details.className = "timeline-function-call step-feed-nested";
+  const status = tc.status || (tc.error ? "failed" : tc.end_time || tc.result_summary ? "success" : "running");
+  details.className = `timeline-tool-call step-feed-nested is-${status}`;
   const dur = tc.start_time && tc.end_time
     ? ` (${((new Date(tc.end_time) - new Date(tc.start_time)) / 1000).toFixed(1)}s)`
     : "";
   const summary = document.createElement("summary");
-  summary.textContent = `🔧 ${tc.name || "tool"}${dur}`;
+  const statusIcon = document.createElement("span");
+  statusIcon.className = "tool-call-status";
+  statusIcon.textContent = toolStatusIcon({ ...tc, status });
+  const name = document.createElement("span");
+  name.className = "tool-call-name";
+  name.textContent = tc.name || "tool";
+  const duration = document.createElement("span");
+  duration.className = "tool-call-duration";
+  duration.textContent = dur.slice(2, -1);
+  summary.append(statusIcon, name, duration);
   details.appendChild(summary);
+  const body = document.createElement("div");
+  body.className = "tool-call-raw";
   if (tc.args_summary) {
-    details.appendChild(createJsonBlock(tc.args_summary));
+    const args = document.createElement("section");
+    const argsLabel = document.createElement("div");
+    argsLabel.className = "tool-call-raw-label";
+    argsLabel.textContent = "Input";
+    args.append(argsLabel, createJsonBlock(tc.args_summary));
+    body.appendChild(args);
   }
   if (tc.result_summary) {
     const pre = createJsonBlock(`→ ${tc.result_summary}`);
     pre.style.borderTop = "1px solid rgba(255,255,255,0.06)";
-    details.appendChild(pre);
+    const result = document.createElement("section");
+    const resultLabel = document.createElement("div");
+    resultLabel.className = "tool-call-raw-label";
+    resultLabel.textContent = "Output";
+    result.append(resultLabel, pre);
+    body.appendChild(result);
   }
   getStructurePaths(tc).forEach((path) => {
-    details.appendChild(createStructureViewButton(path));
+    body.appendChild(createStructureViewButton(path));
   });
+  details.appendChild(body);
   return details;
 }
 

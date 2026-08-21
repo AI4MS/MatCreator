@@ -66,6 +66,16 @@ export function createSkillGraphController({
       : { color: "rgba(140, 160, 194, 0.45)", highlight: "#7dd3fc" };
   }
 
+  function skillGraphNodeFontColor(node) {
+    if (node.virtual) {
+      return state.theme === "light" ? "rgba(153, 27, 27, 0.62)" : "rgba(254, 202, 202, 0.66)";
+    }
+    if (node.enabled === false) {
+      return state.theme === "light" ? "rgba(19, 32, 51, 0.42)" : "rgba(231, 237, 247, 0.42)";
+    }
+    return state.theme === "light" ? "#132033" : "#e7edf7";
+  }
+
   function isEmptyDetailValue(value) {
     if (value === undefined || value === null || value === "") return true;
     if (Array.isArray(value)) return value.length === 0;
@@ -1373,7 +1383,20 @@ export function createSkillGraphController({
       nodeData: new Map(),
       edges: [],
       loaded: false,
+      themeChangeHandler: null,
     };
+    skillGraphTab.themeChangeHandler = () => {
+      const tab = skillGraphTab;
+      if (!tab?.nodesDataSet) return;
+      tab.nodesDataSet.update(
+        Array.from(tab.nodeData.values()).map((node) => ({
+          id: node.id,
+          font: { color: skillGraphNodeFontColor(node), size: 13, face: "Manrope" },
+        })),
+      );
+      tab.network?.redraw();
+    };
+    window.addEventListener("matcreator-theme-change", skillGraphTab.themeChangeHandler);
     activateCenterTab(tabId);
     return skillGraphTab;
   }
@@ -1392,11 +1415,7 @@ export function createSkillGraphController({
         node.virtual,
       ),
       font: {
-        color: node.virtual
-          ? (state.theme === "light" ? "rgba(153, 27, 27, 0.62)" : "rgba(254, 202, 202, 0.66)")
-          : node.enabled === false
-          ? (state.theme === "light" ? "rgba(19, 32, 51, 0.42)" : "rgba(231, 237, 247, 0.42)")
-          : (state.theme === "light" ? "#132033" : "#e7edf7"),
+        color: skillGraphNodeFontColor(node),
         size: 13,
         face: "Manrope",
       },
@@ -1561,6 +1580,9 @@ export function createSkillGraphController({
 
   function close(tabId) {
     if (tabId !== "skill-graph" || !skillGraphTab) return false;
+    if (skillGraphTab.themeChangeHandler) {
+      window.removeEventListener("matcreator-theme-change", skillGraphTab.themeChangeHandler);
+    }
     skillGraphTab.removeWheelZoom?.();
     skillGraphTab.network?.destroy();
     skillGraphTab.button.remove();
