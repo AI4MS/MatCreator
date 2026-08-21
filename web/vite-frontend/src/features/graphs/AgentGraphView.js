@@ -1502,12 +1502,6 @@ export class StepExecutionFeed {
       identity.textContent = `Sub-agent · ${titleInfo.identifier}`;
       title.appendChild(identity);
     }
-    if (node.summary) {
-      const result = document.createElement("span");
-      result.className = "step-feed-result-preview";
-      result.textContent = node.summary;
-      title.appendChild(result);
-    }
     const status = document.createElement("span");
     status.className = `step-feed-status step-feed-status-${node.status || "idle"}`;
     status.textContent = ["failed", "cancelled", "blocked"].includes(node.status) ? "!" : node.status === "running" ? "◌" : "✓";

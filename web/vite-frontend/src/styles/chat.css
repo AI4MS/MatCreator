@@ -1116,6 +1116,14 @@
   align-items: flex-start;
 }
 
+/* Keep the disclosure and status controls anchored to the header's visual
+   centre when the title wraps after opening the card. */
+.step-feed-details[open] > .step-feed-summary::before,
+.step-feed-details[open] > .step-feed-summary .step-feed-status,
+.step-feed-details[open] > .step-feed-summary .step-feed-meta {
+  align-self: center;
+}
+
 .step-feed-details[open] > .step-feed-summary .step-feed-title {
   white-space: normal;
   text-overflow: clip;
