@@ -74,6 +74,7 @@ body[data-theme="dark"] {
   --popup-shadow: 0 18px 70px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(195, 100, 77, 0.06);
   --modal-overlay: rgba(18, 22, 22, 0.88);
   --subtle-surface: rgba(235, 238, 236, 0.03);
+  --inline-code-bg: #3A4545;
   --scrollbar-track: rgba(18, 22, 22, 0.72);
   --scrollbar-thumb: rgba(195, 100, 77, 0.22);
   --scrollbar-thumb-hover: rgba(195, 100, 77, 0.38);
@@ -173,6 +174,7 @@ body[data-theme="light"] {
   --popup-shadow: 0 18px 44px rgba(34, 38, 44, 0.18), 0 0 0 1px rgba(34, 38, 44, 0.08);
   --modal-overlay: rgba(34, 38, 44, 0.28);
   --subtle-surface: rgba(34, 38, 44, 0.035);
+  --inline-code-bg: #DCE1E5;
   --scrollbar-track: rgba(236, 237, 239, 0.9);
   --scrollbar-thumb: rgba(49, 92, 154, 0.28);
   --scrollbar-thumb-hover: rgba(49, 92, 154, 0.46);
