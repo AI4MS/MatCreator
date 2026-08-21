@@ -126,6 +126,18 @@
   display: none;
 }
 
+.app-mode-icon-evaluation {
+  display: none;
+}
+
+.app-mode-toggle[data-app-mode="evaluation"] .app-mode-icon-workspace {
+  display: none;
+}
+
+.app-mode-toggle[data-app-mode="evaluation"] .app-mode-icon-evaluation {
+  display: block;
+}
+
 body[data-theme="light"] .theme-icon-moon {
   display: none;
 }

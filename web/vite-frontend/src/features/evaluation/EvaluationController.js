@@ -10,6 +10,9 @@ export function createEvaluationController({
   FormData: FormDataCtor = globalThis.FormData,
   URLSearchParams: URLSearchParamsCtor = globalThis.URLSearchParams,
 }) {
+  const appModeToggle = documentRef.getElementById("app-mode-toggle");
+  // Keep the legacy references for embedders that still render the old
+  // two-button mode switch.
   const workspaceModeBtn = documentRef.getElementById("workspace-mode-btn");
   const evaluationModeBtn = documentRef.getElementById("evaluation-mode-btn");
   const evaluationPane = documentRef.getElementById("evaluation-pane");
@@ -683,6 +686,13 @@ export function createEvaluationController({
   function setApplicationMode(mode) {
     const evaluation = mode === "evaluation";
     state.appMode = evaluation ? "evaluation" : "workspace";
+    if (appModeToggle) {
+      const nextMode = evaluation ? "Workspace" : "Evaluation";
+      appModeToggle.dataset.appMode = state.appMode;
+      appModeToggle.title = `Switch to ${nextMode} mode`;
+      appModeToggle.setAttribute("aria-label", `Switch to ${nextMode} mode`);
+      appModeToggle.setAttribute("aria-pressed", String(evaluation));
+    }
     workspaceModeBtn?.classList.toggle("active", !evaluation);
     evaluationModeBtn?.classList.toggle("active", evaluation);
     workspaceModeBtn?.setAttribute("aria-pressed", String(!evaluation));
@@ -690,7 +700,7 @@ export function createEvaluationController({
     evaluationPane?.classList.toggle("hidden", !evaluation);
     evaluationTab?.classList.toggle("hidden", !evaluation);
     evaluationTabPanel?.classList.toggle("hidden", !evaluation);
-    documentRef.querySelectorAll(".sessions-pane, .remote-jobs-pane, .file-explorer-col").forEach((element) => {
+    documentRef.querySelectorAll(".sessions-pane, .remote-jobs-slot, .file-explorer-col").forEach((element) => {
       element.classList.toggle("hidden", evaluation);
     });
     if (evaluation) {
@@ -718,6 +728,9 @@ export function createEvaluationController({
     }
   }
 
+  appModeToggle?.addEventListener("click", () => {
+    setApplicationMode(state.appMode === "evaluation" ? "workspace" : "evaluation");
+  });
   workspaceModeBtn?.addEventListener("click", () => setApplicationMode("workspace"));
   evaluationModeBtn?.addEventListener("click", () => setApplicationMode("evaluation"));
   documentRef.getElementById("evaluation-refresh-catalog")?.addEventListener("click", () => void loadEvaluationCatalog());

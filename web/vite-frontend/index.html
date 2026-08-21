@@ -113,6 +113,15 @@
                   <line x1="12" y1="19" x2="20" y2="19"></line>
                 </svg>
               </button>
+              <button class="ghost icon-action-btn app-mode-toggle" id="app-mode-toggle" type="button" title="Switch to Evaluation mode" aria-label="Switch to Evaluation mode" aria-pressed="false" data-app-mode="workspace">
+                <svg class="app-mode-icon app-mode-icon-workspace" viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+                  <path d="M4 9h16M9 9v11"></path>
+                </svg>
+                <svg class="app-mode-icon app-mode-icon-evaluation" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3M8 16h8"></path>
+                </svg>
+              </button>
               <button class="ghost icon-action-btn" id="theme-toggle" type="button" title="Toggle light mode" aria-label="Toggle light mode" aria-pressed="false">
                 <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a6.5 6.5 0 0 0 9.8 9.8z"></path>
@@ -312,10 +321,6 @@
 
         <!-- Right: Sessions + Files -->
         <aside class="card side-panel" id="side-panel">
-          <div class="app-mode-switch" role="group" aria-label="Application mode">
-            <button class="app-mode-btn active" id="workspace-mode-btn" type="button" aria-pressed="true">Workspace</button>
-            <button class="app-mode-btn" id="evaluation-mode-btn" type="button" aria-pressed="false">Evaluation</button>
-          </div>
           <section class="evaluation-pane hidden" id="evaluation-pane" aria-live="polite">
             <details class="panel-block evaluation-disclosure evaluation-runs-pane" aria-label="Evaluation runs">
               <summary class="block-header">Evaluation runs</summary>
