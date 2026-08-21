@@ -1328,15 +1328,6 @@ details.step-feed-nested {
   transform: scale(1.08);
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
 }
-.avatar-upload-btn::after {
-  content: "✏️";
-  position: absolute; bottom: -2px; right: -2px;
-  font-size: 10px; line-height: 1;
-  background: var(--panel); border-radius: 50%;
-  width: 14px; height: 14px;
-  display: flex; align-items: center; justify-content: center;
-}
-
 .markdown-content {
   min-width: 0;
   max-width: 100%;

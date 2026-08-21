@@ -53,8 +53,19 @@
   min-width: 0;
 }
 
-.left-user-row .chip {
+.user-identity-chip {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+}
+
+.user-identity-chip #user-display {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

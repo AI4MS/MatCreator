@@ -137,8 +137,10 @@
               </button>
             </div>
             <div class="left-user-row">
-              <button id="avatar-upload-btn" class="message-avatar user-avatar avatar-upload-btn" type="button" title="Upload your avatar" aria-label="Upload your avatar"></button>
-              <span class="chip">User: <span id="user-display">—</span></span>
+              <div class="user-identity-chip">
+                <button id="avatar-upload-btn" class="message-avatar user-avatar avatar-upload-btn" type="button" title="Upload your avatar" aria-label="Upload your avatar"></button>
+                <span id="user-display">—</span>
+              </div>
               <button class="ghost icon-ghost" id="edit-user" type="button" title="Switch user" aria-label="Switch user">✎</button>
               <button class="ghost icon-ghost" id="logout-btn" type="button" title="Log out" aria-label="Log out">⏏</button>
               <input type="file" id="avatar-upload-input" accept="image/*" style="display:none">
