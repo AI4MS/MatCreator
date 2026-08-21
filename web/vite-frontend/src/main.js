@@ -1141,6 +1141,56 @@ function toolStatusIcon(toolCall) {
   return toolCall.status === "running" ? "◌" : "✓";
 }
 
+function createPayloadView(payload) {
+  if (payload === null || payload === undefined) {
+    const empty = document.createElement("span");
+    empty.className = "payload-value payload-value-empty";
+    empty.textContent = payload === null ? "null" : "Not available";
+    return empty;
+  }
+
+  if (Array.isArray(payload)) {
+    const list = document.createElement("div");
+    list.className = "payload-list";
+    payload.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "payload-list-item";
+      row.appendChild(createPayloadView(item));
+      list.appendChild(row);
+    });
+    if (!payload.length) list.textContent = "Empty list";
+    return list;
+  }
+
+  if (typeof payload === "object") {
+    const fields = document.createElement("div");
+    fields.className = "payload-fields";
+    Object.entries(payload).forEach(([key, value]) => {
+      const row = document.createElement("div");
+      row.className = "payload-field";
+      const label = document.createElement("span");
+      label.className = "payload-key";
+      label.textContent = key;
+      row.append(label, createPayloadView(value));
+      fields.appendChild(row);
+    });
+    if (!fields.childElementCount) fields.textContent = "Empty object";
+    return fields;
+  }
+
+  const value = document.createElement("span");
+  value.className = `payload-value payload-value-${typeof payload}`;
+  value.textContent = typeof payload === "string" ? payload : String(payload);
+  return value;
+}
+
+function createPayloadBlock(payload, empty = "Not available") {
+  const block = document.createElement("div");
+  block.className = "payload-block";
+  block.appendChild(createPayloadView(payload === undefined ? empty : payload));
+  return block;
+}
+
 function createToolCallRawView(toolCall) {
   const body = document.createElement("div");
   body.className = "tool-call-raw";
@@ -1150,9 +1200,7 @@ function createToolCallRawView(toolCall) {
     heading.className = "tool-call-raw-label";
     heading.textContent = label;
     section.appendChild(heading);
-    section.appendChild(createJsonBlock(payload === null || payload === undefined
-      ? empty
-      : JSON.stringify(payload, null, 2)));
+    section.appendChild(createPayloadBlock(payload === null || payload === undefined ? empty : payload));
     body.appendChild(section);
   };
   if (toolCall.error) addPayload("Error", toolCall.error);
@@ -1604,7 +1652,7 @@ function renderStepInput(input) {
   const summary = document.createElement("summary");
   summary.textContent = "Input";
   details.appendChild(summary);
-  details.appendChild(createJsonBlock(JSON.stringify(input, null, 2)));
+  details.appendChild(createPayloadBlock(input));
   return details;
 }
 
@@ -1645,17 +1693,15 @@ function renderStepToolCall(tc) {
     const argsLabel = document.createElement("div");
     argsLabel.className = "tool-call-raw-label";
     argsLabel.textContent = "Input";
-    args.append(argsLabel, createJsonBlock(tc.args_summary));
+    args.append(argsLabel, createPayloadBlock(tc.args_summary));
     body.appendChild(args);
   }
   if (tc.result_summary) {
-    const pre = createJsonBlock(`→ ${tc.result_summary}`);
-    pre.style.borderTop = "1px solid rgba(255,255,255,0.06)";
     const result = document.createElement("section");
     const resultLabel = document.createElement("div");
     resultLabel.className = "tool-call-raw-label";
     resultLabel.textContent = "Output";
-    result.append(resultLabel, pre);
+    result.append(resultLabel, createPayloadBlock(`→ ${tc.result_summary}`));
     body.appendChild(result);
   }
   getStructurePaths(tc).forEach((path) => {
