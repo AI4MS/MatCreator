@@ -15,8 +15,6 @@ const USER_AVATAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24
 const BOTTOM_ATTACH_THRESHOLD = 80;
 
 export function createChatRenderer({ chatArea, bottomOverlay = null }) {
-  let asciiWidth = 0;
-  let cjkWidth = 0;
   let userScrollIntent = 0;
   let pendingScrollFrame = null;
   let pendingRestoreFrame = null;
@@ -234,7 +232,8 @@ export function createChatRenderer({ chatArea, bottomOverlay = null }) {
     pre.className = "json-block";
     pre.dataset.raw = unescapeText(content).replace(/^\{\s*/, "").replace(/\s*\}$/, "");
     applyWrapMarkers(pre);
-    new ResizeObserver(() => updatePreservingReadingPosition(() => applyWrapMarkers(pre))).observe(pre);
+    // This helper is not currently used by the timeline. Keep it synchronous
+    // so a future caller cannot leave one ResizeObserver per transient block.
     return pre;
   }
 

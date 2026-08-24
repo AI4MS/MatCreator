@@ -171,7 +171,6 @@ const {
   beginScrollTransaction,
   captureScrollPosition,
   createAgentAvatarEl,
-  createJsonBlock,
   endScrollTransaction,
   markReadingAnchors,
   protectAsyncContentLayout,
@@ -537,6 +536,8 @@ async function logout() {
   userDisplay.textContent = "—";
   chatArea.innerHTML = "";
   stepExecutionFeed.reset();
+  chatDisclosureController.clear();
+  state.sessionViewCache.clear();
   sessionListEl.innerHTML = '<li class="empty">Sign in to see sessions</li>';
   renderSessionFilesTree([]);
   clearCurrentUploads();
@@ -1789,6 +1790,7 @@ const sessionRuntime = createSessionRuntime({
   addPlanApprovalActions,
   beginScrollTransaction,
   endScrollTransaction,
+  clearChatDisclosures: () => chatDisclosureController.clear(),
   renderSessionBanner,
   renderSessionFilesTree,
   refreshSessionFiles,
@@ -2702,6 +2704,7 @@ async function _doNewSession(customWorkdir) {
   stepExecutionFeed.reset();
   state.sessionSummaries = {};
   state.summaryGeneratedFor = new Set();
+  chatDisclosureController.clear();
   renderSessionBanner("");
   renderSessionFilesTree([]);
   clearCurrentUploads();
