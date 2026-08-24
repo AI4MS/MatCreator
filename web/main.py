@@ -96,6 +96,7 @@ from matcreator.skill import (  # noqa: E402
     get_skill_source,
     official_skills_dir,
     refresh_skills,
+    seed_skills_to_graph,
     get_default_skill_names,
 )
 from matcreator.config import load_config, save_config, get_disabled_skills  # noqa: E402
@@ -228,6 +229,8 @@ _PROTECTED_USER_ENV_KEYS = frozenset({
 _adk_process: subprocess.Popen | None = None
 _knowledge_review_lock = threading.Lock()
 _knowledge_review_task: asyncio.Task | None = None
+_skill_graph_sync_task: asyncio.Task | None = None
+_evaluation_recovery_task: asyncio.Task | None = None
 _knowledge_review_state = {
     "status": "idle",
     "trigger_session_id": None,
@@ -474,6 +477,54 @@ async def _run_remote_job_monitor() -> None:
             await asyncio.wait_for(_remote_job_monitor_stop.wait(), timeout=15)
         except TimeoutError:
             pass
+
+
+async def _sync_skill_graph_after_startup() -> None:
+    """Seed the graph without delaying HTTP readiness.
+
+    ``matcreator.skill`` has already loaded the in-process skill registry while
+    this module was imported. Reloading every SKILL.md here used to duplicate
+    that work and kept the whole web API unavailable until graph maintenance
+    completed.
+    """
+    try:
+        await asyncio.to_thread(seed_skills_to_graph)
+    except Exception:
+        logger.exception("Failed to synchronize skill graph after web startup")
+
+
+async def _recover_local_evaluations_after_startup() -> None:
+    """Resume local evaluation campaigns after the API is already available."""
+    try:
+        client = _benchmark_client()
+    except HTTPException:
+        logger.warning("Skipping evaluation recovery because benchmark service is not configured")
+        return
+
+    for campaign in _evaluation_store.list_active_campaigns():
+        service = EvaluationService(
+            _evaluation_store,
+            _evaluation_workspace_for_owner(campaign["owner_id"]),
+            launcher=_ManagedAdkEvaluationRuntime(campaign["owner_id"]),
+        )
+        await _evaluation_manager.start(campaign["campaign_id"], service, client)
+    for campaign in _evaluation_store.list_campaigns(owner_id="user"):
+        service = EvaluationService(
+            _evaluation_store,
+            _evaluation_workspace_for_owner(campaign["owner_id"]),
+            launcher=_ManagedAdkEvaluationRuntime(campaign["owner_id"]),
+        )
+        if campaign["status"] == "failed":
+            for attempt in _evaluation_store.list_attempts(campaign["campaign_id"]):
+                if attempt["status"] in {"runtime_starting", "running", "submitting"}:
+                    _evaluation_store.transition_attempt(
+                        attempt["attempt_id"],
+                        "interrupted",
+                        error="Local evaluation runtime was interrupted before benchmark submission.",
+                    )
+        await _evaluation_manager.recover_missing_result_campaign(
+            campaign["campaign_id"], service, client
+        )
 
 
 def _config_path_for_user(user_id: str = "") -> Path | None:
@@ -2320,50 +2371,21 @@ async def get_skill_graph_data(
 
 @app.on_event("startup")
 async def _on_startup() -> None:
-    global _remote_job_monitor_task
+    global _remote_job_monitor_task, _skill_graph_sync_task, _evaluation_recovery_task
     users_db.init_db()
     if _MATCREATOR_MODE != "server":
         users_db.migrate_legacy_adk_sessions(SESSION_DB_PATH, APP_NAME)
-    # Reconcile repository-managed skills before the graph UI can read stale
-    # nodes or edges.  Agent initialization also seeds the graph, but it may
-    # happen later or in a different worker process than the web frontend.
-    try:
-        await asyncio.to_thread(refresh_skills)
-    except Exception:
-        logger.exception("Failed to reconcile skill graph during web startup")
+    # Do not block the API on graph synchronization. Session browsing and
+    # authentication only need the local SQLite databases; the graph can catch
+    # up immediately afterwards. This also avoids re-parsing every skill at
+    # startup because ``matcreator.skill`` already populated ALL_SKILLS during
+    # module import.
+    _skill_graph_sync_task = asyncio.create_task(_sync_skill_graph_after_startup())
     if _MATCREATOR_MODE == "server" and _WORKER_IDLE_TIMEOUT_SECONDS > 0:
         asyncio.create_task(_idle_worker_reaper())
     _remote_job_monitor_task = asyncio.create_task(_run_remote_job_monitor())
     if _MATCREATOR_MODE == "local":
-        try:
-            client = _benchmark_client()
-        except HTTPException:
-            logger.warning("Skipping evaluation recovery because benchmark service is not configured")
-        else:
-            for campaign in _evaluation_store.list_active_campaigns():
-                service = EvaluationService(
-                    _evaluation_store,
-                    _evaluation_workspace_for_owner(campaign["owner_id"]),
-                    launcher=_ManagedAdkEvaluationRuntime(campaign["owner_id"]),
-                )
-                await _evaluation_manager.start(campaign["campaign_id"], service, client)
-            for campaign in _evaluation_store.list_campaigns(owner_id="user"):
-                service = EvaluationService(
-                    _evaluation_store,
-                    _evaluation_workspace_for_owner(campaign["owner_id"]),
-                    launcher=_ManagedAdkEvaluationRuntime(campaign["owner_id"]),
-                )
-                if campaign["status"] == "failed":
-                    for attempt in _evaluation_store.list_attempts(campaign["campaign_id"]):
-                        if attempt["status"] in {"runtime_starting", "running", "submitting"}:
-                            _evaluation_store.transition_attempt(
-                                attempt["attempt_id"],
-                                "interrupted",
-                                error="Local evaluation runtime was interrupted before benchmark submission.",
-                            )
-                await _evaluation_manager.recover_missing_result_campaign(
-                    campaign["campaign_id"], service, client
-                )
+        _evaluation_recovery_task = asyncio.create_task(_recover_local_evaluations_after_startup())
 
 
 @app.on_event("shutdown")
@@ -2372,6 +2394,13 @@ async def _on_shutdown() -> None:
     _remote_job_monitor_stop.set()
     if _remote_job_monitor_task is not None:
         await _remote_job_monitor_task
+    for task in (_skill_graph_sync_task, _evaluation_recovery_task):
+        if task is not None and not task.done():
+            task.cancel()
+    await asyncio.gather(
+        *(task for task in (_skill_graph_sync_task, _evaluation_recovery_task) if task is not None),
+        return_exceptions=True,
+    )
     await _run_registry.shutdown()
 
 

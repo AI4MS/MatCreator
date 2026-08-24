@@ -22,19 +22,24 @@ export function createSessionListController({
 }) {
   let lastSessions = [];
 
-  async function loadSessions() {
-    if (!state.userId) return null;
-    try {
-      const sessions = state.isAdmin
-        ? await httpClient.getJson("/api/admin/sessions", { query: { user_id: state.userId } })
-        : await httpClient.getJson(`/api/users/${encodeURIComponent(state.userId)}/sessions`);
-      if (sessions === null) return null;
-      render(sessions);
-      return Array.isArray(sessions) ? sessions : [];
-    } catch (_) {
-      // The API may be unavailable while the frontend is starting.
-      return null;
+  async function loadSessions({ retries = 0, retryDelayMs = 250 } = {}) {
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      if (!state.userId) return null;
+      try {
+        const sessions = state.isAdmin
+          ? await httpClient.getJson("/api/admin/sessions", { query: { user_id: state.userId } })
+          : await httpClient.getJson(`/api/users/${encodeURIComponent(state.userId)}/sessions`);
+        if (sessions === null) return null;
+        render(sessions);
+        return Array.isArray(sessions) ? sessions : [];
+      } catch (_) {
+        // Vite can become available a moment before the API proxy. Retry only
+        // during initial bootstrap; user-triggered refreshes remain immediate.
+        if (attempt === retries) return null;
+        await new Promise((resolve) => window.setTimeout(resolve, retryDelayMs * (attempt + 1)));
+      }
     }
+    return null;
   }
 
   function defaultSessionDisplayStatus(session, owner) {

@@ -796,16 +796,28 @@ function hideLocalAuthControls() {
   if (settingsPasswordSection) settingsPasswordSection.style.display = "none";
 }
 
+async function getStartupHealth() {
+  // The development server may render before its API proxy is listening. Do
+  // not permanently select local mode or abandon the saved-session restore
+  // because of that short startup race.
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      const response = await fetch("/api/health");
+      if (response.ok) return response.json();
+    } catch (_) {
+      // Retry below.
+    }
+    if (attempt < 7) {
+      await new Promise((resolve) => window.setTimeout(resolve, 250 * (attempt + 1)));
+    }
+  }
+  return null;
+}
+
 // On load: in local mode force passwordless "user"; in server mode require server auth.
 (async () => {
-  let serverMode = "local";
-  try {
-    const healthResp = await fetch("/api/health");
-    if (healthResp.ok) {
-      const health = await healthResp.json();
-      serverMode = health.mode || "local";
-    }
-  } catch (_) { /* server not up yet — assume local */ }
+  const health = await getStartupHealth();
+  const serverMode = health?.mode || "local";
 
   state.deploymentMode = serverMode === "server" ? "server" : "local";
   const storedMode = localStorage.getItem("mat_deploymentMode") || "";
@@ -833,7 +845,8 @@ function hideLocalAuthControls() {
   sessionIdEl.textContent = state.sessionId;
   await refreshAccess();
   renderUserDisplay();
-  const sessions = await loadSessions();
+  sessionListEl.innerHTML = '<li class="empty">Loading saved sessions…</li>';
+  const sessions = await loadSessions({ retries: 7 });
   const storedSession = validatedStoredSession(sessions, storedSessionId, storedSessionOwner);
   if (storedSession) {
     await switchSession(storedSession.sessionId, storedSession.owner);

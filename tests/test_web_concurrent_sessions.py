@@ -13,6 +13,7 @@ EVALUATION_CONTROLLER_JS = Path(__file__).parents[1] / "web" / "vite-frontend" /
 REMOTE_JOBS_CONTROLLER_JS = Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "remoteJobs" / "RemoteJobsController.js"
 SESSIONS_CSS = Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "styles" / "sessions.css"
 INDEX_HTML = Path(__file__).parents[1] / "web" / "vite-frontend" / "index.html"
+WEB_MAIN_PY = Path(__file__).parents[1] / "web" / "main.py"
 
 
 def _main_js() -> str:
@@ -473,13 +474,28 @@ def test_startup_restores_only_an_accessible_session_owner_tuple() -> None:
 
     assert 'const SESSION_OWNER_KEY = "mat_sessionOwnerId";' in main
     assert "storeSessionSelection(sessionId, owner);" in main
-    assert "const sessions = await loadSessions();" in main
+    assert "const sessions = await loadSessions({ retries: 7 });" in main
     assert "validatedStoredSession(sessions, storedSessionId, storedSessionOwner)" in main
     assert "state.deploymentMode === \"server\" && state.isAdmin" in main
     assert "storedOwner !== state.userId" in main
     assert "await switchSession(storedSession.sessionId, storedSession.owner);" in main
     assert "clearStoredSessionSelection();" in main
     assert "return Array.isArray(sessions) ? sessions : [];" in session_list
+
+
+def test_startup_keeps_session_api_ready_while_maintenance_runs_in_background() -> None:
+    main = _main_js()
+    session_list = SESSION_LIST_JS.read_text(encoding="utf-8")
+    web_main = WEB_MAIN_PY.read_text(encoding="utf-8")
+    startup = web_main[web_main.index('async def _on_startup()'):web_main.index('async def _on_shutdown()')]
+
+    assert "asyncio.create_task(_sync_skill_graph_after_startup())" in startup
+    assert "asyncio.create_task(_recover_local_evaluations_after_startup())" in startup
+    assert "await asyncio.to_thread(refresh_skills)" not in startup
+    assert "async function getStartupHealth()" in main
+    assert "const sessions = await loadSessions({ retries: 7 });" in main
+    assert "async function loadSessions({ retries = 0, retryDelayMs = 250 } = {})" in session_list
+    assert "window.setTimeout(resolve, retryDelayMs * (attempt + 1))" in session_list
 
 
 def test_evaluation_sidebar_prioritizes_runs_and_collapses_configuration() -> None:
