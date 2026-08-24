@@ -326,6 +326,8 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
   Independent nodes (no shared data, no ordering constraint) need no edge and will execute in parallel.
 - **Keep graphs small**: 2–4 nodes for simple tasks, 5–7 for complex ones.
   Merge operations that belong to the same skill or logical unit into a single node.
+- **Suggested skills**: include only exact names returned by `search_skills`. Use `[]`
+  when no installed skill is specifically needed; do not invent a skill name.
 - **validate_graph input shape**:
   ```json
   {{
@@ -334,13 +336,13 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
         "node_id": "step_download_data",
         "label": "Download Data",
         "action": "Download VASP output files from the remote server.",
-        "suggested_skills": ["filesystem"]
+        "suggested_skills": ["utility"]
       }},
       "step_relax": {{
         "node_id": "step_relax",
         "label": "Relax Geometry",
         "action": "Run VASP geometry relaxation in the workspace.",
-        "suggested_skills": ["vasp"]
+        "suggested_skills": ["vasp-pymatgen"]
       }}
     }},
     "edges": [["step_download_data", "step_relax"]],

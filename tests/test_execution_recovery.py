@@ -49,6 +49,26 @@ def test_validate_graph_assigns_a_new_recovery_identity_each_time():
     assert second["execution_graph"]["graph_id"] != first["execution_graph"]["graph_id"]
 
 
+def test_validate_graph_allows_nodes_without_suggested_skills():
+    context = SimpleNamespace(state={})
+    graph = {
+        "nodes": {
+            "node-a": {
+                "node_id": "node-a",
+                "label": "Do generic work",
+                "action": "Inspect the workspace and report the findings.",
+                "suggested_skills": [],
+            },
+        },
+        "edges": [],
+    }
+
+    result = validate_graph(graph, context)
+
+    assert result["status"] == "ok"
+    assert result["execution_graph"]["nodes"]["node-a"]["suggested_skills"] == []
+
+
 def test_confirmation_is_idempotent_and_does_not_reset_started_graph():
     state = {
         "session_id": "confirmation-idempotency-test",
