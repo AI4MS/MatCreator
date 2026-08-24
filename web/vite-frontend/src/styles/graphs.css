@@ -372,7 +372,7 @@ body[data-theme="light"] .plan-graph-thumbnail-label {
 }
 
 .graph-status {
-  font-size: 11px; font-weight: 600; letter-spacing: 1px;
+  font-size: var(--font-size-caption); font-weight: var(--font-weight-semibold); letter-spacing: var(--letter-spacing-label);
   text-transform: uppercase; padding: 4px 10px; border-radius: 999px;
   border: 1px solid var(--border); color: var(--muted);
   background: rgba(255,255,255,0.03);
@@ -420,7 +420,7 @@ body[data-theme="light"] .plan-graph-thumbnail-label {
   padding: 7px 10px;
   color: var(--text);
   font-size: var(--font-size-ui);
-  font-weight: 650;
+  font-weight: var(--font-weight-semibold);
   letter-spacing: normal;
   text-transform: none;
   list-style: none;

@@ -27,6 +27,21 @@ const AGENT_MODE_KEY = "mat_agentMode";
 const SESSION_ID_KEY = "mat_sessionId";
 const SESSION_OWNER_KEY = "mat_sessionOwnerId";
 const THEME_KEY = "mat_theme";
+const FONT_SCALE_KEY = "mat_fontScale";
+const FONT_SCALE_PRESETS = [90, 100, 110, 125, 150];
+
+function getFontScale() {
+  const stored = Number(localStorage.getItem(FONT_SCALE_KEY));
+  if (stored > 150) return 150;
+  return FONT_SCALE_PRESETS.includes(stored) ? stored : 100;
+}
+
+function applyFontScale(scale, { persist = true } = {}) {
+  const nextScale = FONT_SCALE_PRESETS.includes(Number(scale)) ? Number(scale) : 100;
+  document.documentElement.style.setProperty("--font-scale", `${nextScale}%`);
+  if (persist) localStorage.setItem(FONT_SCALE_KEY, String(nextScale));
+  return nextScale;
+}
 
 function removeOverlayWithMotion(overlay) {
   if (!overlay?.isConnected) return Promise.resolve();
@@ -187,7 +202,12 @@ const createChatDisclosureController = () => createDisclosureController({
 });
 const chatDisclosureController = createChatDisclosureController();
 
-const settingsController = createSettingsController({ state, applyLogin });
+const settingsController = createSettingsController({
+  state,
+  applyLogin,
+  getFontScale,
+  applyFontScale,
+});
 
 const skillGraphController = createSkillGraphController({
   state,
@@ -245,6 +265,7 @@ function applyTheme(theme) {
 }
 
 applyTheme(state.theme);
+applyFontScale(getFontScale());
 themeToggle?.addEventListener("click", () => {
   const nextTheme = state.theme === "light" ? "dark" : "light";
   localStorage.setItem(THEME_KEY, nextTheme);
@@ -2436,7 +2457,7 @@ async function openViewer(item) {
   if (tab.destroyViewer) await tab.destroyViewer();
   tab.viewer = null;
   tab.destroyViewer = null;
-  tab.canvas.innerHTML = '<div style="color:var(--muted);padding:16px;font-size:13px">Loading…</div>';
+  tab.canvas.innerHTML = '<div style="color:var(--muted);padding:16px;font-size:var(--font-size-ui)">Loading…</div>';
   tab.meta.textContent = "";
 
   try {
