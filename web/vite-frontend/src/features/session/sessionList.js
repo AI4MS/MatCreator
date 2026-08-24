@@ -84,7 +84,10 @@ export function createSessionListController({
     const buttons = [createLogButton(session.id, owner)];
     if (showDraft) buttons.push(createDraftButton(session.id, owner, status));
     buttons.push(createDeleteButton(session.id));
-    item.append(content, ...buttons);
+    const actions = document.createElement("span");
+    actions.className = "session-item-actions";
+    actions.append(...buttons);
+    item.append(content, actions);
     item.title = `${summary || "Unnamed session"}\nRight-click for session details`;
     if (isActive) content.setAttribute("aria-current", "page");
     item.addEventListener("click", (event) => {
