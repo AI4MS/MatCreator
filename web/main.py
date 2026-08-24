@@ -874,16 +874,22 @@ def _load_skill_graph_payload(*, limit: int = 400) -> dict:
     unofficial_enabled = 0
     official_disabled = 0
     for entry in iter_entries_including_disabled(graph):
+        entry_type = _entry_value(entry.entry_type)
+        # Working memory is useful context in the graph until it has been
+        # distilled into durable knowledge.  Promoted memories remain hidden
+        # because their refinement target is the durable node to inspect.
+        if (
+            entry_type == "memory"
+            and (entry.metadata.custom or {}).get("memory", {}).get("promoted", False)
+        ):
+            continue
         if is_official_skill_entry(entry):
             official_disabled += int(is_entry_disabled(entry))
         else:
             unofficial_total += 1
             unofficial_enabled += int(not is_entry_disabled(entry))
-        if _entry_value(entry.entry_type) == "memory":
-            continue
         if len(nodes) >= limit:
             continue
-        entry_type = _entry_value(entry.entry_type)
         metadata = entry.metadata
         metadata_payload = _json_ready(metadata)
         skill_name = entry.title if "matcreator-skill" in entry.tags else None

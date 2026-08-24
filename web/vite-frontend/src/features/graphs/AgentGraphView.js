@@ -1,23 +1,49 @@
 import { Network, DataSet } from "vis-network/standalone";
 import { createDisclosureController } from "../ui/disclosureState.js";
 import { installNetworkWheelZoom } from "./networkWheelZoom.js";
+import { httpClient } from "../../shared/api/http.js";
 
-const NODE_COLORS = {
-  orchestrator: { core: "124, 58, 237", edge: "196, 181, 253", font: "#f5f3ff" },
-  planning:     { core: "59, 130, 246", edge: "147, 197, 253", font: "#eff6ff" },
-  execution:    { core: "16, 185, 129", edge: "110, 231, 183", font: "#ecfdf5" },
-  tester:       { core: "245, 158, 11", edge: "253, 224, 71", font: "#fffbeb" },
-  step:         { core: "100, 116, 139", edge: "203, 213, 225", font: "#f8fafc" },
+// Node identity and execution state intentionally live in separate visual
+// vocabularies. Type owns the face and its letter; state only owns a compact
+// badge or the running orbit below.
+const NODE_TYPE_VISUALS = {
+  orchestrator: {
+    fill: "224, 231, 255", border: "129, 140, 248", text: "#1e1b4b",
+    dark: { fill: "99, 102, 241", border: "165, 180, 252", text: "#eef2ff" },
+  },
+  planning: {
+    fill: "219, 234, 254", border: "96, 165, 250", text: "#172554",
+    dark: { fill: "14, 165, 233", border: "125, 211, 252", text: "#ecfeff" },
+  },
+  execution: {
+    fill: "209, 250, 229", border: "52, 211, 153", text: "#064e3b",
+    dark: { fill: "16, 185, 129", border: "110, 231, 183", text: "#ecfdf5" },
+  },
+  tester: {
+    fill: "254, 243, 199", border: "245, 158, 11", text: "#713f12",
+    dark: { fill: "217, 119, 6", border: "252, 211, 77", text: "#fffbeb" },
+  },
+  step: {
+    fill: "226, 232, 240", border: "148, 163, 184", text: "#1e293b",
+    dark: { fill: "71, 85, 105", border: "148, 163, 184", text: "#f8fafc" },
+  },
 };
 
-const STATUS_COLORS = {
-  running:          { core: "251, 191, 36", edge: "254, 240, 138", font: "#fffbeb" },
-  success:          { core: "34, 197, 94", edge: "134, 239, 172", font: "#f0fdf4" },
-  failed:           { core: "239, 68, 68", edge: "252, 165, 165", font: "#fff1f2" },
-  cancelled:        { core: "100, 116, 139", edge: "203, 213, 225", font: "#f8fafc" },
-  needs_replanning: { core: "249, 115, 22", edge: "253, 186, 116", font: "#fff7ed" },
-  idle:             { core: "71, 85, 105", edge: "148, 163, 184", font: "#cbd5e1" },
+// These names mirror the graph logger / execution-plan lifecycle values.
+// Symbols provide a non-colour status cue even at a glance or in grayscale.
+const STATUS_VISUALS = {
+  running:          { color: "251, 191, 36", edge: "254, 240, 138", symbol: null, label: "Running" },
+  success:          { color: "34, 197, 94", symbol: "✓", label: "Completed" },
+  failed:           { color: "239, 68, 68", symbol: "!", label: "Failed" },
+  needs_replanning: { color: "245, 158, 11", symbol: "?", label: "Needs replanning" },
+  blocked:          { color: "245, 158, 11", symbol: "?", label: "Blocked" },
+  waiting:          { color: "100, 116, 139", symbol: "…", label: "Waiting" },
+  pending:          { color: "100, 116, 139", symbol: "…", label: "Pending" },
+  idle:             { color: "100, 116, 139", symbol: "…", label: "Idle" },
+  cancelled:        { color: "100, 116, 139", symbol: "×", label: "Cancelled" },
 };
+
+const STATUS_TRANSITION_MS = 360;
 
 const rgba = (rgb, alpha) => `rgba(${rgb}, ${alpha})`;
 
@@ -39,9 +65,6 @@ const STATUS_ALIASES = {
   cancelled: "cancelled",
   canceled: "cancelled",
   terminated: "cancelled",
-  pending: "idle",
-  waiting: "idle",
-  blocked: "needs_replanning",
 };
 
 export class AgentGraphView {
@@ -68,6 +91,8 @@ export class AgentGraphView {
     this._activeEdges = [];
     this._vineEdges = [];
     this._hasRunningNodes = false;
+    this._nodeTransitions = new Map();
+    this._lastNodeStatuses = new Map();
     this._reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
     this._detailEl = document.getElementById("graph-detail");
     this._detailClose = document.getElementById("graph-detail-close");
@@ -115,6 +140,7 @@ export class AgentGraphView {
       },
       interaction: {
         hover: true,
+        hoverConnectedEdges: true,
         tooltipDelay: 200,
         dragNodes: true,
         dragView: true,
@@ -164,9 +190,11 @@ export class AgentGraphView {
   }
 
   _nodeTooltip(raw) {
+    const status = raw.status || "idle";
+    const statusVisual = STATUS_VISUALS[status];
     const lines = [
       raw.label || raw.id,
-      `Status: ${raw.status || "unknown"}`,
+      `Status: ${statusVisual?.label || status}`,
       `Type: ${raw.type || "step"}`,
     ];
     if (raw.summary) lines.push(`Summary: ${raw.summary}`);
@@ -202,7 +230,174 @@ export class AgentGraphView {
     return 13;
   }
 
-  _nodeRenderer(raw, typeColors, statusColors, badge, radius) {
+  _nodeTransition(nodeId) {
+    const transition = this._nodeTransitions.get(nodeId);
+    if (!transition) return null;
+    const elapsed = performance.now() - transition.startedAt;
+    if (elapsed >= STATUS_TRANSITION_MS) return null;
+    return { ...transition, progress: Math.max(0, elapsed / STATUS_TRANSITION_MS) };
+  }
+
+  _hasLiveTransitions() {
+    const now = performance.now();
+    let hasLiveTransition = false;
+    this._nodeTransitions.forEach((transition, nodeId) => {
+      if (now - transition.startedAt < STATUS_TRANSITION_MS) {
+        hasLiveTransition = true;
+      } else {
+        this._nodeTransitions.delete(nodeId);
+      }
+    });
+    return hasLiveTransition;
+  }
+
+  _drawRunningAura(ctx, x, y, radius, isLight) {
+    const pulse = this._reduceMotion
+      ? 0.35
+      : (Math.sin(this._motionTime / 330 + x * 0.015) + 1) / 2;
+    const glowStrength = this._reduceMotion ? 0.78 : 0.55 + pulse * 0.45;
+    const haloGap = 4.2;
+    const gapBoundary = radius + haloGap;
+    // Radius breathing is intentionally subtle; the pulse is primarily an
+    // intensity change so the halo feels alive without wobbling like a loader.
+    const radiusBreath = this._reduceMotion ? 0 : (pulse - 0.5) * 1.1;
+    const coreRadius = radius + haloGap + 3.1 + radiusBreath;
+    const outerRadius = coreRadius + 8.5;
+    const haloCore = "245, 158, 11";
+    const haloHighlight = "251, 191, 36";
+    const alpha = glowStrength * (isLight ? 0.8 : 1);
+    const drawLayer = (outer, stops) => {
+      const gradient = ctx.createRadialGradient(x, y, gapBoundary, x, y, outer);
+      stops.forEach(([offset, color, opacity]) => {
+        gradient.addColorStop(offset, rgba(color, alpha * opacity));
+      });
+      ctx.beginPath();
+      ctx.arc(x, y, outer, 0, Math.PI * 2);
+      ctx.fillStyle = gradient;
+      ctx.fill();
+    };
+
+    // The wide outer field carries most of the breathing light, while its
+    // first stop keeps the node-facing gap visibly dark.
+    drawLayer(outerRadius, [
+      [0, haloCore, 0],
+      [0.16, haloCore, 0.12],
+      [0.4, haloCore, 0.46],
+      [0.64, haloHighlight, 0.28],
+      [1, haloCore, 0],
+    ]);
+    // A narrower inward falloff gives the ring a soft inner lip without
+    // painting into the dark clearance around the node.
+    drawLayer(coreRadius + 1.4, [
+      [0, haloCore, 0],
+      [0.34, haloCore, 0.35],
+      [0.78, haloHighlight, 0.82],
+      [1, haloHighlight, 0.32],
+    ]);
+    // The running state is intentionally glow-only: the layered falloff
+    // provides the shape while preserving the dark clearance around the node.
+  }
+
+  _drawStatusGlyph(ctx, symbol, x, y, radius, color) {
+    const unit = radius / 5.4;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(unit, unit);
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 1.45;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    if (symbol === "✓") {
+      ctx.beginPath();
+      ctx.moveTo(-3.1, -0.1);
+      ctx.lineTo(-0.8, 2.35);
+      ctx.lineTo(3.5, -2.65);
+      ctx.stroke();
+    } else if (symbol === "!") {
+      ctx.beginPath();
+      ctx.moveTo(0, -3.25);
+      ctx.lineTo(0, 0.75);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(0, 3.05, 0.78, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (symbol === "?") {
+        ctx.beginPath();
+
+        // compact upper hook
+        ctx.moveTo(-1.65, -1.65);
+        ctx.bezierCurveTo(
+            -1.35, -2.75,
+            0.05, -3.15,
+            1.25, -2.55
+        );
+        ctx.bezierCurveTo(
+            2.15, -2.05,
+            2.05, -0.85,
+            1.05, -0.20
+        );
+        ctx.bezierCurveTo(
+            0.30, 0.30,
+            0.00, 0.65,
+            0.00, 1.25
+        );
+        ctx.stroke();
+
+        // clearly separated dot
+        ctx.beginPath();
+        ctx.arc(0, 3.65, 0.85, 0, Math.PI * 2);
+        ctx.fill();
+    } else if (symbol === "…") {
+      [-2.4, 0, 2.4].forEach((offset) => {
+        ctx.beginPath();
+        ctx.arc(offset, 0.4, 0.75, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    } else if (symbol === "×") {
+      ctx.beginPath();
+      ctx.moveTo(-2.55, -2.55);
+      ctx.lineTo(2.55, 2.55);
+      ctx.moveTo(2.55, -2.55);
+      ctx.lineTo(-2.55, 2.55);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  _drawStatusBadge(ctx, x, y, radius, status, transition) {
+    const visual = STATUS_VISUALS[status] || STATUS_VISUALS.idle;
+    if (!visual.symbol) return;
+
+    const arrival = transition?.to === status ? Math.min(1, transition.progress / 0.62) : 1;
+    const easedArrival = 1 - (1 - arrival) ** 3;
+    const failurePulse = status === "failed" && transition?.to === status
+      ? 1 + Math.sin(Math.min(1, transition.progress) * Math.PI) * 0.16
+      : 1;
+    const badgeRadius = Math.max(5, radius * 0.34) * (0.72 + easedArrival * 0.28) * failurePulse;
+    const badgeX = x + radius * 0.73;
+    const badgeY = y - radius * 0.73;
+
+    ctx.save();
+    ctx.globalAlpha = 0.78 + easedArrival * 0.22;
+    ctx.beginPath();
+    ctx.arc(badgeX, badgeY, badgeRadius, 0, Math.PI * 2);
+    ctx.fillStyle = rgba(visual.color, 1);
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = document.body.dataset.theme === "light"
+      ? "rgba(15, 23, 42, 0.16)"
+      : "rgba(255, 255, 255, 0.42)";
+    ctx.stroke();
+    const glyphColor = status === "waiting" || status === "pending" || status === "idle" || status === "cancelled"
+      ? "#f8fafc"
+      : "#172033";
+    this._drawStatusGlyph(ctx, visual.symbol, badgeX, badgeY, badgeRadius, glyphColor);
+    ctx.restore();
+  }
+
+  _nodeRenderer(raw, typeVisual, badge, radius) {
     return ({ ctx, x, y, state }) => {
       const selected = Boolean(state?.selected);
       const hover = Boolean(state?.hover);
@@ -210,68 +405,31 @@ export class AgentGraphView {
       const isRunning = status === "running";
       const isCancelled = status === "cancelled";
       const drawRadius = radius + (selected ? 2 : hover ? 1 : 0);
-      const borderWidth = isRunning ? 1.8 : selected ? 2.4 : 1.4;
+      const borderWidth = selected ? 2.4 : hover ? 2.1 : 1.55;
 
       return {
         drawNode: () => {
           // vis-network calls custom renderers once with NaN coordinates while
-          // measuring a new hierarchical node. Canvas gradients reject those
-          // values, so leave that sizing pass blank; nodeDimensions below are
+          // measuring a new hierarchical node. Canvas drawing APIs reject
+          // those values, so leave that sizing pass blank; nodeDimensions below are
           // still returned and the following positioned redraw paints it.
           if (!Number.isFinite(x) || !Number.isFinite(y)) return;
           ctx.save();
-
-          const pulse = isRunning && !this._reduceMotion
-            ? (Math.sin(this._motionTime / 330 + x * 0.015) + 1) / 2
-            : 0.35;
           const isLight = document.body.dataset.theme === "light";
+          const transition = this._reduceMotion ? null : this._nodeTransition(raw.id);
 
-          // Use an explicit radial aura instead of relying on canvas shadow
-          // blur. The latter becomes nearly invisible once the opaque node
-          // face is painted over it, particularly at normal graph zoom.
-          const drawGlow = (color, extent, alpha) => {
-            const innerRadius = Math.max(1, drawRadius - 2);
-            const outerRadius = drawRadius + extent;
-            const aura = ctx.createRadialGradient(
-              x, y, innerRadius,
-              x, y, outerRadius,
-            );
-            aura.addColorStop(0, rgba(color, alpha));
-            aura.addColorStop(0.28, rgba(color, alpha * 0.9));
-            aura.addColorStop(0.68, rgba(color, alpha * 0.34));
-            aura.addColorStop(1, rgba(color, 0));
-            ctx.beginPath();
-            ctx.arc(x, y, outerRadius, 0, Math.PI * 2);
-            ctx.fillStyle = aura;
-            ctx.fill();
-          };
+          // Preserve the established active-node treatment: a warm, breathing
+          // aura that is distinct from the quiet static status badges.
+          if (isRunning) this._drawRunningAura(ctx, x, y, drawRadius, isLight);
 
-          if (isRunning) {
-            const glowStrength = this._reduceMotion ? 0.72 : 0.56 + pulse * 0.34;
-            drawGlow(
-              statusColors.core,
-              8 + pulse * 6,
-              glowStrength * (isLight ? 0.5 : 0.68),
-            );
-            drawGlow(
-              statusColors.edge,
-              4 + pulse * 2,
-              glowStrength * (isLight ? 0.3 : 0.42),
-            );
-          } else if (status === "success") {
-            drawGlow(statusColors.core, isLight ? 8 : 10, isLight ? 0.34 : 0.46);
-          } else if (status === "failed") {
-            drawGlow(statusColors.core, isLight ? 11 : 14, isLight ? 0.48 : 0.64);
-            drawGlow(statusColors.edge, 5, isLight ? 0.28 : 0.38);
-          } else if (status === "needs_replanning") {
-            drawGlow(statusColors.core, isLight ? 9 : 12, isLight ? 0.4 : 0.54);
-          }
-
-          // Selection is deliberately tighter and neutral, so it reads as an
-          // interaction highlight rather than another lifecycle color.
+          // Selection is neutral and deliberately tight so it cannot be
+          // mistaken for a lifecycle state.
           if (selected) {
-            const selectionColor = isLight ? "15, 23, 42" : "248, 250, 252";
-            drawGlow(selectionColor, 6, isLight ? 0.28 : 0.4);
+            ctx.beginPath();
+            ctx.arc(x, y, drawRadius + 3.4, 0, Math.PI * 2);
+            ctx.lineWidth = 1.45;
+            ctx.strokeStyle = isLight ? "rgba(15, 23, 42, 0.72)" : "rgba(248, 250, 252, 0.78)";
+            ctx.stroke();
           }
 
           // First paint an opaque backing plate. Edges are rendered on the
@@ -279,28 +437,30 @@ export class AgentGraphView {
           // the badge boundary instead of showing through its colored face.
           ctx.beginPath();
           ctx.arc(x, y, drawRadius, 0, Math.PI * 2);
-          ctx.fillStyle = isLight ? "#f5f7fb" : "#111827";
+          ctx.fillStyle = isLight ? "#f8fafc" : "#172033";
           ctx.fill();
 
-          // A restrained, nearly-flat tint keeps the type hue legible while
-          // preserving a diagram-sharp badge and label.
+          // A flat type face keeps the identity legible without making
+          // lifecycle state compete through the same colour channel. Dark
+          // mode uses a more saturated palette and an opaque face; blending
+          // the light pastel colors into the backing plate made every node
+          // look like the same grey, translucent chip.
           ctx.beginPath();
           ctx.arc(x, y, drawRadius - 0.7, 0, Math.PI * 2);
+          const palette = isLight ? typeVisual : typeVisual.dark || typeVisual;
           const faceAlpha = isCancelled ? 0.55 : 1;
-          ctx.fillStyle = rgba(typeColors.core, faceAlpha * (isLight
-            ? (hover || selected ? 0.3 : 0.2)
-            : (hover || selected ? 0.54 : 0.4)));
+          ctx.fillStyle = rgba(palette.fill, faceAlpha * (isLight
+            ? (hover || selected ? 0.9 : 0.78)
+            : 1));
           ctx.fill();
           ctx.lineWidth = borderWidth;
           ctx.strokeStyle = rgba(
-            typeColors.core,
-            faceAlpha * (selected ? 1 : hover ? 0.9 : 0.76),
+            palette.border,
+            faceAlpha * (isLight ? (selected ? 1 : hover ? 0.96 : 0.82) : 1),
           );
           ctx.stroke();
 
-          ctx.fillStyle = isLight
-            ? "#172033"
-            : typeColors.font;
+          ctx.fillStyle = palette.text;
           if (isCancelled) ctx.globalAlpha = 0.72;
           ctx.font = `800 ${badge.length > 1 ? 11 : 12.5}px Manrope, system-ui, sans-serif`;
           ctx.textAlign = "center";
@@ -310,18 +470,22 @@ export class AgentGraphView {
             ? (metrics.actualBoundingBoxLeft - metrics.actualBoundingBoxRight) / 2
             : 0;
           ctx.fillText(badge, x + opticalOffset, y);
+          this._drawStatusBadge(ctx, x, y, drawRadius, status, transition);
           ctx.restore();
         },
         nodeDimensions: {
-          width: (drawRadius + borderWidth) * 2,
-          height: (drawRadius + borderWidth) * 2,
+          width: (radius + 7) * 2,
+          height: (radius + 7) * 2,
         },
       };
     };
   }
 
   _visNode(raw) {
-    const typeColors = NODE_COLORS[raw.type] || NODE_COLORS.step;
+    const typeVisual = NODE_TYPE_VISUALS[raw.type] || NODE_TYPE_VISUALS.step;
+    const palette = document.body.dataset.theme === "light"
+      ? typeVisual
+      : typeVisual.dark || typeVisual;
     const badge = this._nodeBadge(raw);
     const radius = this._nodeRadius(raw);
     return {
@@ -329,21 +493,19 @@ export class AgentGraphView {
       label: "",
       shape: "custom",
       color: {
-        background: rgba(typeColors.core, 0.28),
-        border: rgba(typeColors.edge, 0.64),
-        highlight: { background: rgba(typeColors.core, 0.48), border: rgba(typeColors.edge, 0.9) },
+        background: rgba(palette.fill, 1),
+        border: rgba(palette.border, 1),
+        highlight: { background: rgba(palette.fill, 1), border: rgba(palette.border, 1) },
       },
       // vis-network may retain a custom renderer between DataSet updates.
       // Resolve the current node data while painting so a completed node can
       // never keep the renderer closure from its earlier running state.
       ctxRenderer: (params) => {
         const current = this._nodeData[raw.id] || raw;
-        const currentTypeColors = NODE_COLORS[current.type] || NODE_COLORS.step;
-        const currentStatusColors = STATUS_COLORS[current.status] || STATUS_COLORS.idle;
+        const currentTypeVisual = NODE_TYPE_VISUALS[current.type] || NODE_TYPE_VISUALS.step;
         return this._nodeRenderer(
           current,
-          currentTypeColors,
-          currentStatusColors,
+          currentTypeVisual,
           this._nodeBadge(current),
           this._nodeRadius(current),
         )(params);
@@ -354,7 +516,7 @@ export class AgentGraphView {
 
   _normalizeNodeStatus(status) {
     const normalized = String(status || "idle").toLowerCase();
-    return STATUS_ALIASES[normalized] || (STATUS_COLORS[normalized] ? normalized : "idle");
+    return STATUS_ALIASES[normalized] || (STATUS_VISUALS[normalized] ? normalized : "idle");
   }
 
   _drawActiveFlow(ctx) {
@@ -372,13 +534,11 @@ export class AgentGraphView {
         !Number.isFinite(from.x) || !Number.isFinite(from.y) ||
         !Number.isFinite(to.x) || !Number.isFinite(to.y)
       ) continue;
-      const color = edge.color || NODE_COLORS.step;
+      const color = edge.color || STATUS_VISUALS.running;
+      const midY = (from.y + to.y) / 2;
 
-      // Match vis-network's vertically constrained cubic curve closely enough
-      // that the particles read as energy travelling inside the connection.
       const pointOnCurve = (progress) => {
         const inverse = 1 - progress;
-        const midY = (from.y + to.y) / 2;
         return {
           x: inverse ** 3 * from.x
             + 3 * inverse ** 2 * progress * from.x
@@ -401,7 +561,7 @@ export class AgentGraphView {
         ctx.beginPath();
         ctx.arc(point.x, point.y, 2.1, 0, Math.PI * 2);
         ctx.fillStyle = rgba(color.edge, 0.28 + fade * 0.62);
-        ctx.shadowColor = rgba(color.core, 0.9);
+        ctx.shadowColor = rgba(color.color, 0.9);
         ctx.shadowBlur = 9;
         ctx.fill();
       }
@@ -410,7 +570,9 @@ export class AgentGraphView {
   }
 
   _syncAnimation() {
-    if (!this._hasRunningNodes || this._reduceMotion) {
+    if (this._reduceMotion) this._nodeTransitions.clear();
+    const needsAnimation = !this._reduceMotion && (this._hasRunningNodes || this._hasLiveTransitions());
+    if (!needsAnimation) {
       if (this._animationFrame !== null) cancelAnimationFrame(this._animationFrame);
       this._animationFrame = null;
       this._network?.redraw();
@@ -426,9 +588,12 @@ export class AgentGraphView {
         this._network?.redraw();
         this._lastAnimationPaint = time;
       }
-      if (this._hasRunningNodes) {
+      if (!this._reduceMotion && (this._hasRunningNodes || this._hasLiveTransitions())) {
         this._animationFrame = requestAnimationFrame(animate);
       } else {
+        // The final redraw commits the static badge/orbit after a short
+        // transition has ended, even if the last throttled paint was early.
+        this._network?.redraw();
         this._animationFrame = null;
       }
     };
@@ -823,18 +988,32 @@ export class AgentGraphView {
       ...node,
       status: this._normalizeNodeStatus(node.status),
     }));
+    const transitionStartedAt = performance.now();
+    const nextNodeStatuses = new Map();
+    rawNodes.forEach((node) => {
+      const previousStatus = this._lastNodeStatuses.get(node.id);
+      if (!this._reduceMotion && previousStatus && previousStatus !== node.status) {
+        this._nodeTransitions.set(node.id, {
+          from: previousStatus,
+          to: node.status,
+          startedAt: transitionStartedAt,
+        });
+      }
+      nextNodeStatuses.set(node.id, node.status);
+    });
+    this._lastNodeStatuses = nextNodeStatuses;
     this._nodeData = Object.fromEntries(rawNodes.map((node) => [node.id, node]));
     this._stepExecutionFeed.update(graphData);
     const displayEdges = this._buildDisplayEdges(rawNodes, graphData.edges || []);
     const rawNodeMap = Object.fromEntries(rawNodes.map((node) => [node.id, node]));
     this._hasRunningNodes = rawNodes.some((node) => node.status === "running");
     this._activeEdges = displayEdges
-      // A transfer is only live while both sides are active. This prevents
-      // particles on completed edges when another, unrelated node is running.
+      // A transfer is live only while both ends are active. This retains the
+      // original running-flow treatment and keeps completed edges quiet.
       .filter((edge) => rawNodeMap[edge.from]?.status === "running" && rawNodeMap[edge.to]?.status === "running")
       .map((edge, index) => ({
         ...edge,
-        color: STATUS_COLORS.running,
+        color: STATUS_VISUALS.running,
         phase: (index * 0.173) % 1,
       }));
     const positions = this._computeVineLayout(rawNodes, displayEdges);
@@ -955,6 +1134,8 @@ export class AgentGraphView {
     // without clearing that stale flag the canvas redraw loop never ends.
     this._hasRunningNodes = false;
     this._activeEdges = [];
+    this._nodeTransitions.clear();
+    this._lastNodeStatuses.clear();
     if (this._animationFrame !== null) cancelAnimationFrame(this._animationFrame);
     this._animationFrame = null;
     this._network?.redraw();
@@ -962,9 +1143,8 @@ export class AgentGraphView {
 
   async _poll(sessionId) {
     try {
-      const resp = await fetch(`/api/agent-graph/${sessionId}`);
-      if (!resp.ok) return;
-      const data = await resp.json();
+      const data = await httpClient.getJson(`/api/agent-graph/${encodeURIComponent(sessionId)}`);
+      if (data === null) return;
       if (sessionId !== this._currentSessionId) return;
       this.update(data);
     } catch (_) {
@@ -1059,7 +1239,7 @@ export class AgentGraphView {
       toolCalls.forEach((tc, index) => {
         const d = this._renderStepToolCall(tc);
         const disclosureKey = `detail:${nodeId}:tool:${tc.id || `${index}:${tc.name}:${tc.start_time || ""}`}`;
-        this._detailDisclosures.wire(d, disclosureKey);
+        if (d?.tagName === "DETAILS") this._detailDisclosures.wire(d, disclosureKey);
         this._detailToolcalls.appendChild(d);
       });
       document.getElementById("detail-toolcalls-row").style.display = "";
@@ -1074,7 +1254,9 @@ export class AgentGraphView {
     if (conversation.length) {
       conversation.forEach((evt, index) => {
         const d = this._renderStepConversationEvent(evt);
-        this._detailDisclosures.wire(d, `detail:${nodeId}:conversation:${index}:${evt.timestamp || ""}:${evt.type || ""}`);
+        if (d?.tagName === "DETAILS") {
+          this._detailDisclosures.wire(d, `detail:${nodeId}:conversation:${index}:${evt.timestamp || ""}:${evt.type || ""}`);
+        }
         this._detailConversation.appendChild(d);
       });
       document.getElementById("detail-conversation-row").style.display = "";
@@ -1463,10 +1645,11 @@ export class StepExecutionFeed {
     return outer;
   }
 
-  _wireNested(nodeId, key, details) {
-    details.dataset.stepNestedKey = key;
-    this._disclosures.wire(details, `step:${nodeId}:nested:${key}`);
-    return details;
+  _wireNested(nodeId, key, element) {
+    if (element?.tagName !== "DETAILS") return element;
+    element.dataset.stepNestedKey = key;
+    this._disclosures.wire(element, `step:${nodeId}:nested:${key}`);
+    return element;
   }
 
   _renderCard(outer, node, ancestors = new Set([node.id])) {
@@ -1501,12 +1684,6 @@ export class StepExecutionFeed {
       identity.className = "step-feed-identity";
       identity.textContent = `Sub-agent · ${titleInfo.identifier}`;
       title.appendChild(identity);
-    }
-    if (node.summary) {
-      const result = document.createElement("span");
-      result.className = "step-feed-result-preview";
-      result.textContent = node.summary;
-      title.appendChild(result);
     }
     const status = document.createElement("span");
     status.className = `step-feed-status step-feed-status-${node.status || "idle"}`;
@@ -1545,18 +1722,6 @@ export class StepExecutionFeed {
       body.appendChild(p);
     }
 
-    const liveResponse = this._latestStreamedResponse(node);
-    if (node.status === "running" && liveResponse) {
-      const response = document.createElement("div");
-      response.className = "step-feed-live-response";
-      const label = document.createElement("span");
-      label.textContent = "Live response";
-      const content = document.createElement("span");
-      content.textContent = liveResponse;
-      response.append(label, content);
-      body.appendChild(response);
-    }
-
     if (node.input && Object.keys(node.input).length) {
       body.appendChild(this._wireNested(node.id, "input", this._renderStepInput(node.input)));
     }
@@ -1582,44 +1747,25 @@ export class StepExecutionFeed {
       bubble?.appendChild(section);
     }
 
-    const conversation = node.conversation || [];
-    if (conversation.length) {
-      const section = document.createElement("div");
-      section.className = "step-feed-section";
-      const sectionDetails = document.createElement("details");
-      sectionDetails.className = "step-feed-section-details";
-      const sectionSummary = document.createElement("summary");
-      sectionSummary.className = "step-feed-section-title";
-      sectionSummary.textContent = `Conversations (${conversation.length})`;
-      sectionDetails.appendChild(sectionSummary);
-      conversation.forEach((evt, idx) => {
-        const key = `conversation:${idx}:${evt.timestamp || ""}:${evt.type || ""}:${evt.author || ""}`;
-        sectionDetails.appendChild(this._wireNested(node.id, key, this._renderStepConversationEvent(evt)));
+    const activityItems = this._activityStream(node);
+    if (activityItems.length) {
+      const activity = document.createElement("div");
+      activity.className = "step-feed-activity-list agent-activity-action-list";
+      activityItems.forEach((item) => {
+        if (item.kind === "conversation") {
+          const { event, index } = item;
+          const key = `conversation:${index}:${event.timestamp || ""}:${event.type || ""}:${event.author || ""}`;
+          activity.appendChild(this._wireNested(node.id, key, this._renderStepConversationEvent(event, {
+            collapsed: node.status !== "running",
+            timelineId: `step:${node.id}:${key}`,
+          })));
+          return;
+        }
+        const { toolCall, index } = item;
+        const key = `tool:${index}:${toolCall.name || ""}:${toolCall.start_time || ""}`;
+        activity.appendChild(this._wireNested(node.id, key, this._renderStepToolCall(toolCall)));
       });
-      section.appendChild(this._wireNested(node.id, "section:conversation", sectionDetails));
-      sectionSummary.classList.toggle("open", sectionDetails.open);
-      sectionDetails.addEventListener("toggle", () => sectionSummary.classList.toggle("open", sectionDetails.open));
-      body.appendChild(section);
-    }
-
-    const toolCalls = node.tool_calls || [];
-    if (toolCalls.length) {
-      const section = document.createElement("div");
-      section.className = "step-feed-section";
-      const sectionDetails = document.createElement("details");
-      sectionDetails.className = "step-feed-section-details";
-      const sectionSummary = document.createElement("summary");
-      sectionSummary.className = "step-feed-section-title";
-      sectionSummary.textContent = `Tool calls (${toolCalls.length})`;
-      sectionDetails.appendChild(sectionSummary);
-      toolCalls.forEach((tc, idx) => {
-        const key = `tool:${idx}:${tc.name || ""}:${tc.start_time || ""}`;
-        sectionDetails.appendChild(this._wireNested(node.id, key, this._renderStepToolCall(tc)));
-      });
-      section.appendChild(this._wireNested(node.id, "section:toolcalls", sectionDetails));
-      sectionSummary.classList.toggle("open", sectionDetails.open);
-      sectionDetails.addEventListener("toggle", () => sectionSummary.classList.toggle("open", sectionDetails.open));
-      body.appendChild(section);
+      body.appendChild(activity);
     }
 
     const artifacts = node.artifacts || [];
@@ -1648,13 +1794,38 @@ export class StepExecutionFeed {
     details.appendChild(body);
   }
 
-  _latestStreamedResponse(node) {
-    const conversation = node.conversation || [];
-    for (let index = conversation.length - 1; index >= 0; index -= 1) {
-      const event = conversation[index];
-      if (["text", "thought"].includes(event.type) && event.content) return String(event.content);
-    }
-    return "";
+  _activityStream(node) {
+    const toolCalls = node.tool_calls || [];
+    const toolMatchesConversationEvent = (event) => {
+      if (!["function_call", "function_response"].includes(event.type)) return false;
+      const content = String(event.content || "");
+      return toolCalls.some((toolCall) => {
+        const name = toolCall.name || "";
+        return name && (content.startsWith(`${name}(`) || content.startsWith(`${name} →`));
+      });
+    };
+    const timeValue = (value) => {
+      const time = new Date(value || "").getTime();
+      return Number.isFinite(time) ? time : null;
+    };
+    const items = [
+      ...(node.conversation || [])
+        .filter((event) => !toolMatchesConversationEvent(event))
+        .map((event, index) => ({ kind: "conversation", event, index, time: timeValue(event.timestamp), sequence: index })),
+      ...toolCalls.map((toolCall, index) => ({
+        kind: "tool",
+        toolCall,
+        index,
+        time: timeValue(toolCall.start_time || toolCall.end_time),
+        sequence: (node.conversation || []).length + index,
+      })),
+    ];
+    return items.sort((a, b) => {
+      if (a.time !== null && b.time !== null && a.time !== b.time) return a.time - b.time;
+      if (a.time !== null && b.time === null) return -1;
+      if (a.time === null && b.time !== null) return 1;
+      return a.sequence - b.sequence;
+    });
   }
 }
 

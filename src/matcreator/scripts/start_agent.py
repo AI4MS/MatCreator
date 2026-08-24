@@ -861,18 +861,18 @@ def _ensure_workspace(workspace: str | None) -> None:
 
 @knowledge_group.command("query")
 @click.argument("text", metavar="TEXT")
-@click.option("--top-k", default=15, show_default=True, type=int,
+@click.option("--top-k", default=5, show_default=True, type=int,
               help="Maximum number of nodes to return.")
 @click.option("--depth", default=2, show_default=True, type=int,
               help="BFS expansion depth from seed nodes.")
 @click.option("--workspace", default=None, metavar="DIR",
               help="Override the workspace root directory.")
 def knowledge_query(text, top_k, depth, workspace):
-    """Query the memory knowledge graph for nodes matching TEXT.
+    """Discover compact L1/L2 and memory candidates matching TEXT.
 
     TEXT is a free-form query string that is matched against node content
-    using semantic similarity.  Increase --depth to explore further from
-    the initial matches.
+    using semantic similarity. Use a returned node ID with the agent's
+    ``read_knowledge_node`` tool to load one selected result in detail.
     """
     _ensure_workspace(workspace)
     from matcreator.knowledge.query import query_knowledge_graph

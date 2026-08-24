@@ -17,6 +17,7 @@ from ...workspace import workspace_memory_path
 
 from ...knowledge.query import (
     query_knowledge_graph as _query_knowledge_graph,
+    read_knowledge_node,
     save_to_knowledge_graph as _save_to_knowledge_graph,
     search_skills,
     search_skill_context,
@@ -29,18 +30,18 @@ from ...knowledge.synthesizer import run_knowledge_synthesizer as _run_synthesiz
 def query_knowledge_graph(
     query: str,
     depth: int = 2,
-    top_k: int = 15,
+    top_k: int = 5,
 ) -> str:
-    """Query the memory knowledge graph for lessons and past findings relevant to *query*.
+    """Discover compact knowledge-graph candidates relevant to *query*.
 
-    Returns user-generated memory nodes from past sessions. Memory nodes may
-    reference skill names in their content to express skill associations.
-    To discover available skills, use `search_skills` instead.
+    Returns clipped L1/L2 and working-memory candidates with stable IDs. Select
+    one ID, then call ``read_knowledge_node`` for its full content and attached
+    L3/L4 context. To discover runnable installed skills, use ``search_skills``.
 
     Args:
         query: Free-text search string.
-        depth: BFS expansion depth (default 2).
-        top_k: Maximum nodes to return (default 15).
+        depth: Retained for compatibility; currently unused.
+        top_k: Maximum L1/L2 candidates to return (default 5).
     """
     return _query_knowledge_graph(query, depth=depth, top_k=top_k)
 
