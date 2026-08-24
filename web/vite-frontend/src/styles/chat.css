@@ -950,13 +950,28 @@
   min-height: 0;
 }
 
-.message { flex: 0 0 auto; margin-bottom: 12px; display: flex; gap: 10px; align-items: flex-start; }
+.message {
+  flex: 0 0 auto;
+  /* The row reserves an avatar slot on both sides. This makes the agent
+     bubble's maximum right edge line up with the user bubble's right edge. */
+  width: min(100%, 968px);
+  margin: 0 auto 12px;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
 .user-message { flex-direction: row-reverse; }
 
 .message-bubble { flex: 1; min-width: 0; border-radius: var(--msg-radius); }
 
 /* message styling uses shared tokens; theme blocks override only color tokens */
 .agent-message .message-bubble {
+  /* Keep long replies at a comfortable reading width. The zero grow factor
+     leaves the remaining room open on wide panels, while flex-shrink keeps
+     the bubble usable when the chat pane becomes narrow. */
+  flex: 0 1 880px;
+  width: min(880px, max(0px, calc(100% - 88px)));
+  max-width: min(880px, max(0px, calc(100% - 88px)));
   background: var(--agent-bg-1);
   border: 1px solid var(--agent-border);
   box-shadow: var(--msg-box-shadow-offset) var(--agent-box-shadow-color);
@@ -1333,20 +1348,84 @@ details.step-feed-nested {
   max-width: 100%;
   padding: 12px 14px;
   border-radius: 12px;
-  line-height: 1.6;
+  line-height: 1.68;
   font-size: var(--font-size-body);
   overflow-wrap: anywhere;
 }
 .markdown-content a { color: var(--accent); text-decoration: none; font-weight: 600; }
+
+/* Markdown has no browser defaults here because base.css resets all margins.
+   Re-introduce a deliberate vertical rhythm so headings, paragraphs, and
+   supporting blocks read as separate units inside a chat bubble. */
+.markdown-content > :first-child { margin-top: 0; }
+.markdown-content > :last-child { margin-bottom: 0; }
+
+.markdown-content :is(h1, h2, h3, h4, h5, h6) {
+  color: var(--text-primary);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: -0.01em;
+  line-height: 1.28;
+  text-wrap: balance;
+}
+.markdown-content h1 {
+  margin: 0.15em 0 0.7em;
+  font-size: 1.55em;
+  line-height: 1.2;
+}
+.markdown-content h2 {
+  margin: 1.55em 0 0.6em;
+  padding-bottom: 0.28em;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-default) 72%, transparent);
+  font-size: 1.3em;
+  line-height: 1.24;
+}
+.markdown-content h3 {
+  margin: 1.3em 0 0.48em;
+  font-size: 1.12em;
+}
+.markdown-content h4 {
+  margin: 1.1em 0 0.4em;
+  font-size: 1.04em;
+}
+.markdown-content h5,
+.markdown-content h6 {
+  margin: 0.95em 0 0.35em;
+  font-size: 0.96em;
+}
+.markdown-content h6 {
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.markdown-content :is(h1, h2, h3, h4, h5, h6) + :is(h1, h2, h3, h4, h5, h6) {
+  margin-top: 0.72em;
+}
+
+.markdown-content p {
+  margin: 0 0 0.92em;
+  line-height: 1.68;
+}
+.markdown-content p + p {
+  margin-top: 0.18em;
+}
 .markdown-content :is(ul, ol) {
   box-sizing: border-box;
   max-width: 100%;
-  margin: 0.5em 0;
+  margin: 0.72em 0 0.95em;
+  line-height: 1.58;
+}
+.markdown-content p + :is(ul, ol),
+.markdown-content :is(ul, ol) + p {
+  margin-top: 0.35em;
 }
 .markdown-content ul { padding-inline-start: 1.5em; }
 .markdown-content ol { padding-inline-start: 2.15em; }
 .markdown-content :is(ul, ol) :is(ul, ol) { padding-inline-start: 1.35em; }
-.markdown-content li { overflow-wrap: anywhere; }
+.markdown-content li {
+  overflow-wrap: anywhere;
+  padding-inline-start: 0.18em;
+}
+.markdown-content li + li { margin-top: 0.28em; }
 .markdown-content code {
   font-family: var(--mono, monospace);
 }
@@ -1406,7 +1485,7 @@ details.step-feed-nested {
   color: var(--terminal-text);
   border-radius: 8px;
   padding: 10px 12px;
-  margin: 4px 0;
+  margin: 1em 0;
   overflow-x: auto;
 }
 .markdown-content pre code {
@@ -1436,10 +1515,12 @@ details.step-feed-nested {
 
 .input-area {
   position: absolute;
-  left: 0;
-  right: 0;
+  left: 50%;
+  right: auto;
   bottom: 0;
-  margin: 0 16px 16px;
+  width: min(calc(100% - 32px), 980px);
+  margin: 0 0 16px;
+  transform: translateX(-50%);
   padding: 0;
   border-top: none;
   background: transparent;
