@@ -223,6 +223,7 @@
 
 .side-panel .artifact-list li.session-item {
   background: transparent;
+  border-bottom: 1px solid var(--border);
 }
 .side-panel .artifact-list li.session-item:last-child {
   border-bottom-color: transparent;
