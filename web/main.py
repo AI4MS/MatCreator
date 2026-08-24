@@ -11,6 +11,8 @@ GET /api/agent-graph/{session_id}
     Returns the JSON graph file for the session, or an empty graph if not found.
 GET /api/agent-graph/{session_id}/events
     Streams graph snapshots whenever an agent node emits a new event.
+GET /api/execution-graph/{session_id}/events
+    Streams roadmap snapshots whenever an execution node changes state.
 GET /api/workspace/files?path=<path>
     Serves any file from the workspace root (absolute or relative path).
     Returns 403 if the path escapes the workspace root.
@@ -2990,6 +2992,31 @@ async def get_execution_graph(session_id: str) -> JSONResponse:
     """Return the execution graph (plan DAG) from session state for frontend visualization."""
     data = _load_execution_graph(session_id)
     return JSONResponse(data)
+
+
+@app.get("/api/execution-graph/{session_id}/events")
+async def stream_execution_graph(session_id: str, request: Request) -> StreamingResponse:
+    """Push roadmap snapshots whenever persisted execution state changes.
+
+    Step executors can run in a worker process, so an in-memory notification
+    would not reliably reach this web process.  Watching the durable session
+    graph here keeps the SSE stream correct in both local and server modes.
+    """
+    async def stream():
+        last_snapshot = None
+        while not await request.is_disconnected():
+            data = _load_execution_graph(session_id)
+            snapshot = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            if snapshot != last_snapshot:
+                yield f"data: {snapshot}\n\n"
+                last_snapshot = snapshot
+            await asyncio.sleep(0.2)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/sessions/{session_id}/session-log")

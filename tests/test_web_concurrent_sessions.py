@@ -313,6 +313,18 @@ def test_agent_graph_stops_animation_and_uses_one_update_transport() -> None:
     assert "cancelAnimationFrame(this._animationFrame);" in start_polling
 
 
+def test_roadmap_receives_execution_graph_status_updates_over_sse() -> None:
+    graph = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "graphs" / "ExecutionPlanView.js").read_text(encoding="utf-8")
+    start_polling = graph[graph.index("  startPolling(sessionId)"):graph.index("  refresh(sessionId)")]
+    stop_polling = graph[graph.index("  stopPolling()"):graph.index("  async _poll(sessionId)")]
+
+    assert 'new EventSource(`/api/execution-graph/${encodeURIComponent(sessionId)}/events`)' in start_polling
+    assert "this.update(JSON.parse(event.data));" in start_polling
+    assert "eventStream.close();" in start_polling
+    assert "setInterval(() => this._poll(sessionId), 2000)" in start_polling
+    assert "this._eventStream?.close();" in stop_polling
+
+
 def test_orbital_indicator_skips_duplicate_state_renders() -> None:
     indicator = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "components" / "OrbitalAgentIndicator.js").read_text(encoding="utf-8")
 

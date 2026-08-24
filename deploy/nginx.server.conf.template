@@ -22,7 +22,7 @@ server {
     # Managed chat runs are relayed through /api/runs/<id>/events.  Keep this
     # route here as well: otherwise nginx's default proxy buffering holds both
     # agent activity and assistant text until the run finishes.
-    location ~ ^/(run_sse|apps|list-apps|api/runs/[^/]+/events)$ {
+    location ~ ^/(run_sse|apps|list-apps|api/runs/[^/]+/events|api/(agent|execution)-graph/[^/]+/events)$ {
         proxy_pass http://control_plane;
         proxy_http_version 1.1;
         proxy_set_header Connection "";
