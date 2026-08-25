@@ -9,8 +9,11 @@ MAIN_JS = Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "main.js
 MESSAGE_STREAM_JS = Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "chat" / "messageStream.js"
 RUNTIME_JS = Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "session" / "runtime.js"
 SESSION_LIST_JS = Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "session" / "sessionList.js"
+EVALUATION_CONTROLLER_JS = Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "evaluation" / "EvaluationController.js"
+REMOTE_JOBS_CONTROLLER_JS = Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "remoteJobs" / "RemoteJobsController.js"
 SESSIONS_CSS = Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "styles" / "sessions.css"
 INDEX_HTML = Path(__file__).parents[1] / "web" / "vite-frontend" / "index.html"
+WEB_MAIN_PY = Path(__file__).parents[1] / "web" / "main.py"
 
 
 def _main_js() -> str:
@@ -23,6 +26,14 @@ def _message_stream_js() -> str:
 
 def _runtime_js() -> str:
     return RUNTIME_JS.read_text(encoding="utf-8")
+
+
+def _evaluation_controller_js() -> str:
+    return EVALUATION_CONTROLLER_JS.read_text(encoding="utf-8")
+
+
+def _remote_jobs_controller_js() -> str:
+    return REMOTE_JOBS_CONTROLLER_JS.read_text(encoding="utf-8")
 
 
 def test_plan_approval_uses_live_validation_and_consumes_stale_prompt() -> None:
@@ -192,7 +203,8 @@ def test_stop_and_plan_refreshes_preserve_open_node_dialogs() -> None:
     assert "if (preserveDisclosures) stepExecutionFeed.captureDisclosureState();" in runtime
     assert "openState.set(details.dataset.disclosureKey, details.open);" in disclosures
     assert "captureDisclosureState()" in graph
-    assert '? details.open || node.status === "running"' in graph
+    assert 'defaultOpen: node.status === "running"' in graph
+    assert "details.open = isRunning && (userChoice === undefined ? true : userChoice);" in graph
 
 
 def test_bottom_attachment_and_node_toggle_use_one_scroll_policy() -> None:
@@ -232,19 +244,21 @@ def test_all_chat_disclosures_share_the_reading_position_controller() -> None:
     runtime = _runtime_js()
 
     render_timeline = main[main.index("function renderTimeline("):main.index("function addAgentTimelineMessage(")]
-    assert 'details.className = "timeline-thought";' in render_timeline
-    assert 'details.className = "timeline-function-call";' in render_timeline
-    assert 'details.className = "timeline-function-response";' in render_timeline
-    assert render_timeline.count("wireTimelineDetails(details,") == 3
+    create_activity = main[main.index("function createAgentActivity("):main.index("function renderTimeline(")]
+    assert 'activity.className = "agent-activity";' in create_activity
+    assert "wireTimelineDetails(activity," in create_activity
+    assert "createTimelineReasoning(" in create_activity
+    assert "createActivityAction(" in create_activity
     assert "updatePreservingReadingPosition(() => {" in render_timeline
 
     render_card = graph[graph.index("_createCard(node)"):graph.index("// ---------------------------------------------------------------------------\n// Execution Plan Graph")]
     assert 'this._disclosures.wire(details, `step:${node.id}:card`' in render_card
     assert 'this._wireNested(node.id, "input"' in render_card
-    assert 'this._wireNested(node.id, "section:conversation"' in render_card
-    assert 'this._wireNested(node.id, "section:toolcalls"' in render_card
-    assert "this._wireNested(node.id, key, this._renderStepConversationEvent(evt))" in render_card
-    assert "this._wireNested(node.id, key, this._renderStepToolCall(tc))" in render_card
+    assert 'activity.className = "step-feed-activity-list agent-activity-action-list";' in render_card
+    assert "const activityItems = this._activityStream(node);" in render_card
+    assert "this._wireNested(node.id, key, this._renderStepConversationEvent(event, {" in render_card
+    assert 'collapsed: node.status !== "running"' in render_card
+    assert "this._wireNested(node.id, key, this._renderStepToolCall(toolCall))" in render_card
 
     assert "beginScrollTransaction();" in runtime
     assert "endScrollTransaction();" in runtime
@@ -265,7 +279,6 @@ def test_image_and_all_timeline_updates_preserve_node_disclosures() -> None:
     assert 'anchorKeyType: anchorEl?.dataset.readingAnchor ? "reading"' in rendering
     assert "function protectAsyncContentLayout(root)" in rendering
     assert 'img:not([data-layout-protected])' in rendering
-    assert "protectAsyncContentLayout(body);" in render_timeline
     assert "protectAsyncContentLayout(div);" in render_timeline
     assert create_image.count("updatePreservingReadingPosition(() => {") == 2
     assert "prepareAsyncReadingPositionUpdate" not in create_image
@@ -277,7 +290,7 @@ def test_plain_text_blocks_keep_history_order_and_stable_identity() -> None:
     runtime = _runtime_js()
     main = _main_js()
 
-    text_upsert = timeline[timeline.index("export function upsertTimelineText"):timeline.index("function timelineEventKey")]
+    text_upsert = timeline[timeline.index("export function upsertTimelineText"):timeline.index("function titleizeToolName")]
     assert 'const last = timeline[timeline.length - 1];' in text_upsert
     assert 'if (last?.type === "text")' in text_upsert
     assert 'timelineId: nextTimelineItemId(timeline, "text")' in text_upsert
@@ -301,12 +314,24 @@ def test_agent_graph_stops_animation_and_uses_one_update_transport() -> None:
     assert "cancelAnimationFrame(this._animationFrame);" in start_polling
 
 
-def test_orbital_indicator_skips_duplicate_state_renders() -> None:
-    indicator = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "components" / "mountOrbitalAgentIndicator.js").read_text(encoding="utf-8")
+def test_roadmap_receives_execution_graph_status_updates_over_sse() -> None:
+    graph = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "graphs" / "ExecutionPlanView.js").read_text(encoding="utf-8")
+    start_polling = graph[graph.index("  startPolling(sessionId)"):graph.index("  refresh(sessionId)")]
+    stop_polling = graph[graph.index("  stopPolling()"):graph.index("  async _poll(sessionId)")]
 
-    assert "let renderedState = null;" in indicator
-    assert "if (state === renderedState) return;" in indicator
-    assert "renderedState = state;" in indicator
+    assert 'new EventSource(`/api/execution-graph/${encodeURIComponent(sessionId)}/events`)' in start_polling
+    assert "this.update(JSON.parse(event.data));" in start_polling
+    assert "eventStream.close();" in start_polling
+    assert "setInterval(() => this._poll(sessionId), 2000)" in start_polling
+    assert "this._eventStream?.close();" in stop_polling
+
+
+def test_orbital_indicator_skips_duplicate_state_renders() -> None:
+    indicator = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "components" / "OrbitalAgentIndicator.js").read_text(encoding="utf-8")
+
+    assert "let renderedState;" in indicator
+    assert "if (destroyed || nextState === renderedState) return;" in indicator
+    assert "renderedState = nextState;" in indicator
 
 
 def test_step_cancellation_identifies_the_active_session_owner() -> None:
@@ -329,25 +354,26 @@ def test_server_mode_cancellation_uses_the_worker_workspace() -> None:
 
 
 def test_remote_job_polling_is_scoped_to_the_active_session() -> None:
-    content = _main_js()
+    main = _main_js()
+    content = _remote_jobs_controller_js()
 
-    assert "startRemoteJobsPolling(sessionId, owner)" in content
-    assert "remoteJobsUrl(sessionId, owner)" in content
+    assert "remoteJobsController.startPolling(sessionId, owner)" in main
+    assert "pollTimer = windowRef.setInterval(() => void load(sessionId, owner), pollIntervalMs);" in content
     assert "sessionId !== state.sessionId || owner !== state.activeSessionUserId" in content
     assert "remote-jobs/${encodeURIComponent(job.job_id)}/${action}" in content
 
 
 def test_remote_jobs_are_collapsed_and_keep_lifecycle_status_visible() -> None:
-    content = _main_js()
+    content = _remote_jobs_controller_js()
     index = INDEX_HTML.read_text(encoding="utf-8")
     styles = SESSIONS_CSS.read_text(encoding="utf-8")
 
     assert 'id="remote-jobs-toggle"' in index
     assert 'aria-expanded="false"' in index
     assert 'id="remote-job-list"' in index and 'remote-job-list hidden' in index
-    assert "remoteJobsExpanded: false" in content
-    assert "remoteJobsPane?.classList.toggle(\"is-expanded\", state.remoteJobsExpanded);" in content
-    assert "function remoteJobLifecycle(status)" in content
+    assert "let expanded = false;" in content
+    assert 'pane?.classList.toggle("is-expanded", expanded);' in content
+    assert "export function remoteJobLifecycle(status)" in content
     assert 'succeeded: "Completed"' in content
     assert 'collected: "Completed"' in content
     assert '["Provider status", providerStatus]' in content
@@ -369,7 +395,7 @@ def test_session_switch_parallelizes_independent_requests() -> None:
     runtime = _runtime_js()
     switch_session = main[
         main.index("async function switchSession("):
-        main.index("function remoteJobsUrl(")
+        main.index("function showConfirmDialog(")
     ]
     load_session = runtime[
         runtime.index("async function loadSession("):
@@ -389,7 +415,7 @@ def test_session_switch_renders_cached_snapshot_immediately() -> None:
     content = _main_js()
     switch_session = content[
         content.index("async function switchSession("):
-        content.index("function remoteJobsUrl(")
+        content.index("function showConfirmDialog(")
     ]
 
     assert "sessionViewCache: new Map()" in content
@@ -431,7 +457,7 @@ def test_session_list_supports_status_indicators_and_filtering() -> None:
 
 def test_active_session_transitions_recompute_composer_state() -> None:
     content = _main_js()
-    switch_session = content[content.index("async function switchSession("):content.index("function remoteJobsUrl(")]
+    switch_session = content[content.index("async function switchSession("):content.index("function showConfirmDialog(")]
     new_session = content[content.index("async function _doNewSession("):]
     apply_session = content[content.index("function _applySession("):content.index("async function applyLogin(")]
     delete_session = content[content.index("async function deleteSession("):content.index("async function downloadSessionLog(")]
@@ -448,7 +474,7 @@ def test_startup_restores_only_an_accessible_session_owner_tuple() -> None:
 
     assert 'const SESSION_OWNER_KEY = "mat_sessionOwnerId";' in main
     assert "storeSessionSelection(sessionId, owner);" in main
-    assert "const sessions = await loadSessions();" in main
+    assert "const sessions = await loadSessions({ retries: 7 });" in main
     assert "validatedStoredSession(sessions, storedSessionId, storedSessionOwner)" in main
     assert "state.deploymentMode === \"server\" && state.isAdmin" in main
     assert "storedOwner !== state.userId" in main
@@ -457,15 +483,30 @@ def test_startup_restores_only_an_accessible_session_owner_tuple() -> None:
     assert "return Array.isArray(sessions) ? sessions : [];" in session_list
 
 
+def test_startup_keeps_session_api_ready_while_maintenance_runs_in_background() -> None:
+    main = _main_js()
+    session_list = SESSION_LIST_JS.read_text(encoding="utf-8")
+    web_main = WEB_MAIN_PY.read_text(encoding="utf-8")
+    startup = web_main[web_main.index('async def _on_startup()'):web_main.index('async def _on_shutdown()')]
+
+    assert "asyncio.create_task(_sync_skill_graph_after_startup())" in startup
+    assert "asyncio.create_task(_recover_local_evaluations_after_startup())" in startup
+    assert "await asyncio.to_thread(refresh_skills)" not in startup
+    assert "async function getStartupHealth()" in main
+    assert "const sessions = await loadSessions({ retries: 7 });" in main
+    assert "async function loadSessions({ retries = 0, retryDelayMs = 250 } = {})" in session_list
+    assert "window.setTimeout(resolve, retryDelayMs * (attempt + 1))" in session_list
+
+
 def test_evaluation_sidebar_prioritizes_runs_and_collapses_configuration() -> None:
-    content = _main_js()
+    content = _evaluation_controller_js()
     index = INDEX_HTML.read_text(encoding="utf-8")
     styles = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "styles" / "evaluation.css").read_text(encoding="utf-8")
 
     question_sets_start = index.index('<details class="panel-block evaluation-disclosure evaluation-question-sets"')
     generated_questions_start = index.index('<details class="panel-block evaluation-disclosure evaluation-generated-questions"')
 
-    assert '<section class="evaluation-runs-pane" aria-label="Evaluation runs">' in index
+    assert '<details class="panel-block evaluation-disclosure evaluation-runs-pane" aria-label="Evaluation runs">' in index
     assert 'class="evaluation-runs-list-body"' in index
     assert 'class="evaluation-start-area"' in index
     assert 'id="evaluation-campaign-list"' in index

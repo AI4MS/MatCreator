@@ -1,6 +1,7 @@
 :root,
 :root[data-theme="dark"],
 body[data-theme="dark"] {
+  --font-scale: 100%;
   --bg-canvas: #121616;
   --bg-surface: #191E1E;
   --bg-elevated: #222828;
@@ -74,11 +75,31 @@ body[data-theme="dark"] {
   --popup-shadow: 0 18px 70px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(195, 100, 77, 0.06);
   --modal-overlay: rgba(18, 22, 22, 0.88);
   --subtle-surface: rgba(235, 238, 236, 0.03);
+  --inline-code-bg: #3A4545;
   --scrollbar-track: rgba(18, 22, 22, 0.72);
   --scrollbar-thumb: rgba(195, 100, 77, 0.22);
   --scrollbar-thumb-hover: rgba(195, 100, 77, 0.38);
-  /* Coding font stack: prefer modern VS Code-style fonts, then platform fallbacks. */
-  --mono: 'Cascadia Code', 'Cascadia Mono', 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', 'Roboto Mono', 'Consolas', 'Menlo', 'Monaco', 'Liberation Mono', 'DejaVu Sans Mono', monospace;
+  /* Keep UI copy and structured payloads visually distinct across platforms. */
+  /* Keep Latin code glyphs monospaced, but do not let CJK fall back to a
+     platform-dependent serif font (Edge commonly uses SimSun here). */
+  --mono: 'SFMono-Regular', 'Cascadia Mono', 'Cascadia Code', 'JetBrains Mono', 'Roboto Mono', 'Consolas', 'Menlo', 'Monaco', 'Liberation Mono', 'DejaVu Sans Mono', 'Noto Sans SC', 'Noto Sans CJK SC', 'Source Han Sans SC', 'Microsoft YaHei', 'PingFang SC', monospace;
+  /* Typography scale: keep UI hierarchy deliberate and legible. */
+  --font-size-micro: 0.75rem;
+  --font-size-caption: 0.75rem;
+  --font-size-meta: 0.875rem;
+  --font-size-ui: 0.875rem;
+  --font-size-body: 1rem;
+  --font-size-title: 1.25rem;
+  --font-size-code: var(--font-size-ui);
+  --font-size-panel: var(--font-size-ui);
+  --font-size-panel-meta: var(--font-size-meta);
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --letter-spacing-label: 0.04em;
+  --line-height-ui: 1.45;
+  --line-height-code: 1.55;
   /* Manrope has no CJK glyphs, so keep an explicit sans-serif CJK fallback. */
   --font-sans: 'Manrope', 'Noto Sans SC', 'Noto Sans CJK SC', 'Source Han Sans SC', 'Microsoft YaHei', 'PingFang SC', system-ui, -apple-system, sans-serif;
   --composer-height: 68px;
@@ -166,6 +187,7 @@ body[data-theme="light"] {
   --popup-shadow: 0 18px 44px rgba(34, 38, 44, 0.18), 0 0 0 1px rgba(34, 38, 44, 0.08);
   --modal-overlay: rgba(34, 38, 44, 0.28);
   --subtle-surface: rgba(34, 38, 44, 0.035);
+  --inline-code-bg: #DCE1E5;
   --scrollbar-track: rgba(236, 237, 239, 0.9);
   --scrollbar-thumb: rgba(49, 92, 154, 0.28);
   --scrollbar-thumb-hover: rgba(49, 92, 154, 0.46);
@@ -222,6 +244,10 @@ body {
   padding: 16px;
 }
 
+html {
+  font-size: var(--font-scale);
+}
+
 button,
 input,
 textarea,
@@ -253,8 +279,8 @@ select {
   object-fit: contain;
   flex: 0 0 auto;
 }
-.brand-title { font-size: 20px; font-weight: 700; letter-spacing: 0.3px; }
-.brand-sub { font-size: 14px; color: var(--muted); }
+.brand-title { font-size: var(--font-size-title); font-weight: var(--font-weight-bold); letter-spacing: normal; }
+.brand-sub { font-size: var(--font-size-ui); color: var(--muted); }
 
 .knowledge-review-banner {
   display: flex;
@@ -266,8 +292,8 @@ select {
   border-radius: 999px;
   background: rgba(251, 191, 36, 0.09);
   color: #fcd34d;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
   font-family: inherit;
   cursor: pointer;
   transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
@@ -328,7 +354,7 @@ select {
 .chip {
   padding: 8px 12px; border-radius: 999px;
   background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border);
-  color: var(--muted); font-size: 13px;
+  color: var(--muted); font-size: var(--font-size-meta);
 }
 
 .ghost {
@@ -409,5 +435,5 @@ select {
   padding: 18px 20px 12px; display: flex;
   justify-content: space-between; align-items: flex-start;
 }
-.eyebrow { text-transform: uppercase; letter-spacing: 2px; font-size: 11px; color: var(--muted); margin-bottom: 6px; }
-.card h2 { font-size: 20px; font-weight: 700; }
+.eyebrow { text-transform: uppercase; letter-spacing: var(--letter-spacing-label); font-size: var(--font-size-caption); color: var(--muted); margin-bottom: 6px; }
+.card h2 { font-size: var(--font-size-title); font-weight: var(--font-weight-bold); }

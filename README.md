@@ -88,7 +88,7 @@ the frontend dependencies with:
 
 ```bash
 cd web/vite-frontend
-npm install
+npm ci
 ```
 
 Check the installed versions with:

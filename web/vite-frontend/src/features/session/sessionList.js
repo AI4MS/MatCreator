@@ -1,3 +1,5 @@
+import { httpClient } from "../../shared/api/http.js";
+
 /**
  * Owns session sidebar rendering and filtering.
  *
@@ -16,23 +18,28 @@ export function createSessionListController({
   downloadSessionLog,
   sessionDisplayStatus: getSessionDisplayStatus,
   showDraft,
+  showSessionDetails,
 }) {
   let lastSessions = [];
 
-  async function loadSessions() {
-    if (!state.userId) return null;
-    try {
-      const response = state.isAdmin
-        ? await fetch(`/api/admin/sessions?user_id=${encodeURIComponent(state.userId)}`)
-        : await fetch(`/api/users/${encodeURIComponent(state.userId)}/sessions`);
-      if (!response.ok) return null;
-      const sessions = await response.json();
-      render(sessions);
-      return Array.isArray(sessions) ? sessions : [];
-    } catch (_) {
-      // The API may be unavailable while the frontend is starting.
-      return null;
+  async function loadSessions({ retries = 0, retryDelayMs = 250 } = {}) {
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      if (!state.userId) return null;
+      try {
+        const sessions = state.isAdmin
+          ? await httpClient.getJson("/api/admin/sessions", { query: { user_id: state.userId } })
+          : await httpClient.getJson(`/api/users/${encodeURIComponent(state.userId)}/sessions`);
+        if (sessions === null) return null;
+        render(sessions);
+        return Array.isArray(sessions) ? sessions : [];
+      } catch (_) {
+        // Vite can become available a moment before the API proxy. Retry only
+        // during initial bootstrap; user-triggered refreshes remain immediate.
+        if (attempt === retries) return null;
+        await new Promise((resolve) => window.setTimeout(resolve, retryDelayMs * (attempt + 1)));
+      }
     }
+    return null;
   }
 
   function defaultSessionDisplayStatus(session, owner) {
@@ -67,38 +74,43 @@ export function createSessionListController({
     item.className = `session-item${isActive ? " active" : ""}`;
     item.dataset.owner = owner;
 
-    const content = document.createElement("div");
+    const content = document.createElement("button");
+    content.type = "button";
     content.className = "session-item-content";
-    const label = state.isAdmin ? `${owner} / ${session.id}` : session.id;
-    const summary = session.summary || state.sessionSummaries[session.id];
-    const idLine = document.createElement("div");
-    idLine.className = "session-item-id";
-    idLine.textContent = label;
-    const statusIndicator = document.createElement("span");
-    statusIndicator.className = `session-status-indicator status-${status}`;
-    statusIndicator.title = status;
-    idLine.prepend(statusIndicator);
-
-    if (summary) {
-      item.classList.add("has-summary");
-      const summaryLine = document.createElement("div");
-      summaryLine.className = "session-item-summary";
-      summaryLine.textContent = summary;
-      content.append(summaryLine, idLine);
-    } else {
-      content.append(idLine);
-    }
+    const rawSummary = session.summary || state.sessionSummaries[session.id] || "";
+    const summary = typeof rawSummary === "string" ? rawSummary.trim() : "";
+    const nameLine = document.createElement("span");
+    nameLine.className = "session-item-name";
+    const nameText = document.createElement("span");
+    nameText.className = "session-item-name-text";
+    nameText.textContent = summary || "Unnamed session";
+    nameLine.appendChild(nameText);
+    content.append(nameLine);
     const buttons = [createLogButton(session.id, owner)];
     if (showDraft) buttons.push(createDraftButton(session.id, owner, status));
     buttons.push(createDeleteButton(session.id));
-    item.append(content, ...buttons);
-    item.title = summary ? `${summary}\n${label}` : label;
-    item.addEventListener("click", () => switchSession(session.id, owner));
+    const actions = document.createElement("span");
+    actions.className = "session-item-actions";
+    actions.append(...buttons);
+    item.append(content, actions);
+    item.title = `${summary || "Unnamed session"}\nRight-click for session details`;
+    if (isActive) content.setAttribute("aria-current", "page");
+    item.addEventListener("click", (event) => {
+      const button = event.target.closest("button");
+      if (button && button !== content) return;
+      switchSession(session.id, owner);
+    });
+    item.addEventListener("contextmenu", (event) => {
+      if (event.target.closest("button") && !event.target.closest(".session-item-content")) return;
+      event.preventDefault();
+      showSessionDetails?.({ ...session, summary }, owner);
+    });
     sessionListEl.appendChild(item);
   }
 
   function createLogButton(sessionId, owner) {
     const button = document.createElement("button");
+    button.type = "button";
     button.className = "session-item-log";
     button.textContent = "LOG JSON";
     button.title = "Download full session log";
@@ -111,6 +123,7 @@ export function createSessionListController({
 
   function createDraftButton(sessionId, owner, status) {
     const button = document.createElement("button");
+    button.type = "button";
     button.className = "session-item-draft";
     button.textContent = "GENERATE";
     button.title = "Generate a staged benchmark question from this session";
@@ -124,6 +137,7 @@ export function createSessionListController({
 
   function createDeleteButton(sessionId) {
     const button = document.createElement("button");
+    button.type = "button";
     button.className = "session-item-delete";
     button.textContent = "×";
     button.title = "Delete session";

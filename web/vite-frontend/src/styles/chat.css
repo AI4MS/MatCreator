@@ -45,8 +45,8 @@
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-size: 11px;
-  font-weight: 650;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
   cursor: pointer;
   flex: 0 0 auto;
 }
@@ -83,7 +83,7 @@
 .session-tab-title {
   display: block;
   max-width: 100%;
-  font-size: 12px;
+  font-size: var(--font-size-caption);
   letter-spacing: 0;
   opacity: 1;
   transition: color 0.2s ease;
@@ -96,8 +96,8 @@
 .center-tab .session-summary-input {
   max-width: 100%;
   height: 24px;
-  font-size: 12px;
-  font-weight: 650;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
   letter-spacing: 0;
   color: var(--accent);
   background: rgba(var(--accent-rgb, 125, 211, 252), 0.04);
@@ -116,7 +116,7 @@
   align-items: center;
   justify-content: center;
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--font-size-meta);
   line-height: 1;
   flex: 0 0 auto;
 }
@@ -166,7 +166,7 @@
 }
 
 .skill-graph-header strong {
-  font-size: 14px;
+  font-size: var(--font-size-ui);
 }
 
 .skill-graph-header .knowledge-review-banner {
@@ -182,7 +182,7 @@
   background: var(--bg-elevated);
   color: var(--text);
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   font-weight: 700;
   transition: border-color 160ms ease, background 160ms ease, color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
@@ -195,7 +195,7 @@
   content: "↻";
   flex: 0 0 auto;
   color: currentColor;
-  font-size: 16px;
+  font-size: var(--font-size-body);
   font-weight: 500;
   line-height: 1;
 }
@@ -303,7 +303,7 @@
 }
 
 .skill-graph-detail h3 {
-  font-size: 15px;
+  font-size: var(--font-size-body);
   line-height: 1.25;
   margin-bottom: 8px;
 }
@@ -311,7 +311,7 @@
 .skill-graph-detail-meta,
 .skill-graph-loading {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--font-size-caption);
 }
 
 .skill-graph-loading {
@@ -334,15 +334,15 @@
   border: 1px solid color-mix(in srgb, var(--accent-primary) 38%, var(--border-default));
   border-radius: 999px;
   color: var(--accent-primary);
-  font-size: 11px;
-  font-weight: 650;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
   padding: 4px 8px;
   background: var(--accent-primary-soft);
 }
 
 .skill-graph-detail-content {
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--font-size-meta);
   line-height: 1.55;
   margin: 12px 0;
   overflow-wrap: anywhere;
@@ -350,13 +350,13 @@
 
 .skill-graph-markdown {
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--font-size-caption);
   line-height: 1.55;
   overflow-wrap: anywhere;
 }
 
 .skill-graph-detail-content.skill-graph-markdown {
-  font-size: 13px;
+  font-size: var(--font-size-meta);
 }
 
 .skill-graph-markdown h1,
@@ -364,7 +364,7 @@
 .skill-graph-markdown h3,
 .skill-graph-markdown h4 {
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--font-size-meta);
   line-height: 1.3;
   margin: 10px 0 6px;
 }
@@ -413,7 +413,7 @@
 .skill-graph-markdown table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 11px;
+  font-size: var(--font-size-caption);
 }
 
 .skill-graph-markdown th,
@@ -439,9 +439,9 @@
 
 .skill-graph-detail-section h4 {
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 750;
-  letter-spacing: 0.08em;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--letter-spacing-label);
   margin-bottom: 8px;
   text-transform: uppercase;
 }
@@ -474,9 +474,9 @@
   color: var(--text);
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   font-weight: 700;
-  letter-spacing: 0.01em;
+  letter-spacing: normal;
   line-height: 1;
   cursor: pointer;
   transition: border-color 160ms ease, background 160ms ease, color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
@@ -574,8 +574,8 @@
   min-height: 32px !important;
   padding: 0 !important;
   border-radius: 50% !important;
-  font-size: 20px !important;
-  font-weight: 450 !important;
+  font-size: var(--font-size-title) !important;
+  font-weight: var(--font-weight-regular) !important;
   line-height: 1 !important;
 }
 
@@ -591,8 +591,8 @@
   background: var(--bg-elevated);
   box-shadow: var(--popup-shadow);
   color: var(--text);
-  font-size: 11px;
-  font-weight: 650;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
   line-height: 1;
   white-space: nowrap;
   opacity: 0;
@@ -619,8 +619,8 @@
   flex-direction: column;
   gap: 5px;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 650;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
 }
 
 .skill-graph-editor-field input,
@@ -634,7 +634,7 @@
   background: var(--bg-elevated);
   color: var(--text);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-size-caption);
   padding: 7px 8px;
   outline: none;
 }
@@ -654,7 +654,7 @@
 
 .skill-graph-field-hint {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   font-weight: 500;
   line-height: 1.35;
 }
@@ -664,7 +664,7 @@
   flex-direction: column;
   gap: 8px;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--font-size-caption);
 }
 
 .skill-graph-dependency-list {
@@ -686,7 +686,7 @@
   align-items: center;
   min-height: 24px;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--font-size-caption);
   font-weight: 500;
 }
 
@@ -737,7 +737,7 @@
   white-space: nowrap;
   color: var(--text);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
 }
 
 .skill-graph-folder-add {
@@ -768,7 +768,7 @@
   border-radius: 6px;
   color: var(--accent-primary);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   overflow-wrap: anywhere;
   padding: 5px 7px;
   background: var(--accent-primary-soft);
@@ -787,7 +787,7 @@
   min-width: 0;
   overflow-wrap: anywhere;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
 }
 
 .skill-graph-attachment-row.pending-remove {
@@ -800,7 +800,7 @@
 
 .skill-graph-editor-status {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--font-size-caption);
   min-height: 16px;
   overflow-wrap: anywhere;
 }
@@ -811,7 +811,7 @@
 
 .skill-graph-editor-empty {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--font-size-caption);
   padding: 4px;
 }
 
@@ -819,7 +819,7 @@
   display: grid;
   grid-template-columns: 92px minmax(0, 1fr);
   gap: 7px 10px;
-  font-size: 12px;
+  font-size: var(--font-size-caption);
 }
 
 .skill-graph-facts dt {
@@ -842,7 +842,7 @@
   background: rgba(0, 0, 0, 0.16);
   color: var(--text);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   line-height: 1.45;
   white-space: pre-wrap;
 }
@@ -853,7 +853,7 @@
   gap: 6px;
   margin-left: 16px;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--font-size-caption);
 }
 
 .skill-graph-list li {
@@ -876,7 +876,7 @@
   cursor: pointer;
   padding: 8px;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--font-size-caption);
 }
 
 .skill-graph-object-list pre {
@@ -902,7 +902,7 @@
   background: var(--bg-elevated);
   color: var(--text);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-size-caption);
   text-align: left;
   cursor: pointer;
   transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
@@ -916,7 +916,7 @@
 
 .skill-graph-link-direction {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
 }
 
 .skill-graph-link-main {
@@ -930,7 +930,7 @@
   grid-column: 2;
   color: var(--accent);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
 }
 
 .chat-area {
@@ -950,13 +950,28 @@
   min-height: 0;
 }
 
-.message { flex: 0 0 auto; margin-bottom: 12px; display: flex; gap: 10px; align-items: flex-start; }
+.message {
+  flex: 0 0 auto;
+  /* The row reserves an avatar slot on both sides. This makes the agent
+     bubble's maximum right edge line up with the user bubble's right edge. */
+  width: min(100%, 968px);
+  margin: 0 auto 12px;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
 .user-message { flex-direction: row-reverse; }
 
 .message-bubble { flex: 1; min-width: 0; border-radius: var(--msg-radius); }
 
 /* message styling uses shared tokens; theme blocks override only color tokens */
 .agent-message .message-bubble {
+  /* Keep long replies at a comfortable reading width. The zero grow factor
+     leaves the remaining room open on wide panels, while flex-shrink keeps
+     the bubble usable when the chat pane becomes narrow. */
+  flex: 0 1 880px;
+  width: min(880px, max(0px, calc(100% - 88px)));
+  max-width: min(880px, max(0px, calc(100% - 88px)));
   background: var(--agent-bg-1);
   border: 1px solid var(--agent-border);
   box-shadow: var(--msg-box-shadow-offset) var(--agent-box-shadow-color);
@@ -1035,13 +1050,13 @@
 
 .delegation-group-title {
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--font-size-caption);
   font-weight: 700;
 }
 
 .delegation-group-meta {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
 }
 
 .delegation-group-list {
@@ -1116,6 +1131,14 @@
   align-items: flex-start;
 }
 
+/* Keep the disclosure and status controls anchored to the header's visual
+   centre when the title wraps after opening the card. */
+.step-feed-details[open] > .step-feed-summary::before,
+.step-feed-details[open] > .step-feed-summary .step-feed-status,
+.step-feed-details[open] > .step-feed-summary .step-feed-meta {
+  align-self: center;
+}
+
 .step-feed-details[open] > .step-feed-summary .step-feed-title {
   white-space: normal;
   text-overflow: clip;
@@ -1127,7 +1150,7 @@
   flex: 1;
   min-width: 0;
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--font-size-meta);
   font-weight: 700;
   overflow: hidden;
   display: flex;
@@ -1147,19 +1170,19 @@
 .step-feed-identity,
 .step-feed-result-preview {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   font-weight: 500;
 }
 
 .step-feed-result-preview {
-  font-size: 12px;
+  font-size: var(--font-size-caption);
 }
 
 .step-feed-status {
   width: 12px;
   flex: 0 0 12px;
   color: var(--muted);
-  font-weight: 800;
+  font-weight: var(--font-weight-bold);
   text-align: center;
 }
 .step-feed-status-running { color: #d6a95b; }
@@ -1169,7 +1192,7 @@
 
 .step-feed-meta {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   white-space: nowrap;
 }
 
@@ -1179,7 +1202,7 @@
   color: #fff;
   border-radius: 6px;
   padding: 4px 8px;
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   font-weight: 700;
   cursor: pointer;
   white-space: nowrap;
@@ -1208,7 +1231,7 @@
 
 .step-feed-node-summary {
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--font-size-meta);
   line-height: 1.5;
   padding: 0 0 0 18px;
   border: 0;
@@ -1225,7 +1248,7 @@
   border-radius: 0 8px 8px 0;
   background: rgba(251, 191, 36, 0.08);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--font-size-caption);
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1233,9 +1256,9 @@
 
 .step-feed-live-response > span:first-child {
   color: #fbbf24;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
+  font-size: var(--font-size-micro);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--letter-spacing-label);
   text-transform: uppercase;
 }
 
@@ -1247,9 +1270,9 @@
 
 .step-feed-section-title {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: var(--letter-spacing-label);
   text-transform: uppercase;
 }
 
@@ -1280,7 +1303,7 @@ details[open] > summary.step-feed-section-title::before {
 
 .step-feed-empty {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--font-size-caption);
   font-style: italic;
 }
 
@@ -1311,6 +1334,8 @@ details.step-feed-nested {
 }
 
 .avatar-upload-btn {
+  appearance: none;
+  padding: 0;
   cursor: pointer; transition: transform 0.15s, box-shadow 0.15s;
   position: relative;
 }
@@ -1318,25 +1343,101 @@ details.step-feed-nested {
   transform: scale(1.08);
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
 }
-.avatar-upload-btn::after {
-  content: "✏️";
-  position: absolute; bottom: -2px; right: -2px;
-  font-size: 10px; line-height: 1;
-  background: var(--panel); border-radius: 50%;
-  width: 14px; height: 14px;
-  display: flex; align-items: center; justify-content: center;
-}
-
 .markdown-content {
   min-width: 0;
   max-width: 100%;
   padding: 12px 14px;
   border-radius: 12px;
-  line-height: 1.6;
-  font-size: 14px;
+  line-height: 1.68;
+  font-size: var(--font-size-body);
   overflow-wrap: anywhere;
 }
 .markdown-content a { color: var(--accent); text-decoration: none; font-weight: 600; }
+
+/* Markdown has no browser defaults here because base.css resets all margins.
+   Re-introduce a deliberate vertical rhythm so headings, paragraphs, and
+   supporting blocks read as separate units inside a chat bubble. */
+.markdown-content > :first-child { margin-top: 0; }
+.markdown-content > :last-child { margin-bottom: 0; }
+
+.markdown-content :is(h1, h2, h3, h4, h5, h6) {
+  color: var(--text-primary);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: -0.01em;
+  line-height: 1.28;
+  text-wrap: balance;
+}
+.markdown-content h1 {
+  margin: 0.15em 0 0.7em;
+  font-size: 1.55em;
+  line-height: 1.2;
+}
+.markdown-content h2 {
+  margin: 1.55em 0 0.6em;
+  padding-bottom: 0.28em;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-default) 72%, transparent);
+  font-size: 1.3em;
+  line-height: 1.24;
+}
+.markdown-content h3 {
+  margin: 1.3em 0 0.48em;
+  font-size: 1.12em;
+}
+.markdown-content h4 {
+  margin: 1.1em 0 0.4em;
+  font-size: 1.04em;
+}
+.markdown-content h5,
+.markdown-content h6 {
+  margin: 0.95em 0 0.35em;
+  font-size: 0.96em;
+}
+.markdown-content h6 {
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.markdown-content :is(h1, h2, h3, h4, h5, h6) + :is(h1, h2, h3, h4, h5, h6) {
+  margin-top: 0.72em;
+}
+
+.markdown-content p {
+  margin: 0 0 0.92em;
+  line-height: 1.68;
+}
+.markdown-content p + p {
+  margin-top: 0.18em;
+}
+.markdown-content :is(ul, ol) {
+  box-sizing: border-box;
+  max-width: 100%;
+  margin: 0.72em 0 0.95em;
+  line-height: 1.58;
+}
+.markdown-content p + :is(ul, ol),
+.markdown-content :is(ul, ol) + p {
+  margin-top: 0.35em;
+}
+.markdown-content ul { padding-inline-start: 1.5em; }
+.markdown-content ol { padding-inline-start: 2.15em; }
+.markdown-content :is(ul, ol) :is(ul, ol) { padding-inline-start: 1.35em; }
+.markdown-content li {
+  overflow-wrap: anywhere;
+  padding-inline-start: 0.18em;
+}
+.markdown-content li + li { margin-top: 0.28em; }
+.markdown-content code {
+  font-family: var(--mono, monospace);
+}
+.markdown-content :not(pre) > code {
+  padding: 0.16em 0.38em;
+  border-radius: 4px;
+  background: var(--inline-code-bg);
+  color: var(--text);
+  font-size: 0.9em;
+  line-height: 1.35;
+  font-variant-ligatures: none;
+}
 .markdown-content .markdown-table-scroll {
   max-width: 100%;
   margin: 8px 0;
@@ -1354,7 +1455,7 @@ details.step-feed-nested {
   min-width: 100%;
   border-collapse: collapse;
   margin: 0;
-  font-size: 13px;
+  font-size: var(--font-size-ui);
 }
 .markdown-content thead {
   background: rgba(125, 211, 252, 0.08);
@@ -1384,12 +1485,12 @@ details.step-feed-nested {
   color: var(--terminal-text);
   border-radius: 8px;
   padding: 10px 12px;
-  margin: 4px 0;
+  margin: 1em 0;
   overflow-x: auto;
 }
 .markdown-content pre code {
   font-family: var(--mono, monospace);
-  font-size: 13px;
+  font-size: var(--font-size-ui);
   line-height: 1;
   white-space: pre;
   background: none;
@@ -1397,7 +1498,7 @@ details.step-feed-nested {
 }
 .markdown-content .ascii-art {
   font-family: var(--mono, monospace);
-  font-size: 13px;
+  font-size: var(--font-size-ui);
   line-height: 1;
   white-space: pre;
   background: var(--terminal-bg);
@@ -1414,10 +1515,12 @@ details.step-feed-nested {
 
 .input-area {
   position: absolute;
-  left: 0;
-  right: 0;
+  left: 50%;
+  right: auto;
   bottom: 0;
-  margin: 0 16px 16px;
+  width: min(calc(100% - 32px), 980px);
+  margin: 0 0 16px;
+  transform: translateX(-50%);
   padding: 0;
   border-top: none;
   background: transparent;
@@ -1444,7 +1547,7 @@ details.step-feed-nested {
   min-height: 18px;
   margin: 0 4px 6px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--font-size-caption);
 }
 .upload-status:empty { display: none; }
 .upload-status-busy { color: var(--accent); }
@@ -1690,7 +1793,7 @@ body[data-theme="dark"] .input-container[data-agent-mode="bench"] {
   gap: 8px;
   margin: 10px 0 0;
   color: var(--accent);
-  font-size: 12px;
+  font-size: var(--font-size-caption);
   font-weight: 600;
   line-height: 1.2;
 }
@@ -1745,8 +1848,8 @@ body[data-theme="dark"] .input-container[data-agent-mode="bench"] {
   align-items: center;
   gap: 8px;
   color: var(--text-primary);
-  font-size: 14px;
-  font-weight: 750;
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-bold);
   letter-spacing: -0.01em;
 }
 
@@ -1775,8 +1878,8 @@ body[data-theme="dark"] .input-container[data-agent-mode="bench"] {
   gap: 6px;
   min-width: 0;
   color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 650;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
 }
 
 .plan-feedback-input {
@@ -1788,7 +1891,7 @@ body[data-theme="dark"] .input-container[data-agent-mode="bench"] {
   background: var(--bg-surface);
   color: var(--text-primary);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--font-size-meta);
   padding: 8px 11px;
   transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
 }
@@ -1821,7 +1924,7 @@ body[data-theme="dark"] .input-container[data-agent-mode="bench"] {
   border-radius: 8px;
   padding: 8px 12px;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--font-size-meta);
   font-weight: 700;
   cursor: pointer;
   transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
@@ -1927,7 +2030,7 @@ body[data-theme="light"] .composer-icon-btn {
 body[data-theme="light"] .composer-icon-btn:hover {
   background: rgba(14, 116, 144, 0.08);
 }
-.text-input { flex: 1; width: 100%; background: transparent; border: none; color: var(--text); font-size: 15px; resize: none; line-height: 1.5; }
+.text-input { flex: 1; width: 100%; background: transparent; border: none; color: var(--text); font-size: var(--font-size-body); resize: none; line-height: 1.5; }
 .input-container .text-input { min-height: calc(1.5em * 1); max-height: calc(1.5em * 3); overflow-y: auto; }
 .text-input:focus { outline: none; }
 .send-btn,
@@ -1940,6 +2043,12 @@ body[data-theme="light"] .composer-icon-btn:hover {
   border-radius: 12px;
   cursor: pointer;
   flex: 0 0 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 1;
+  text-align: center;
 }
 .composer-toolbar .send-btn { margin-left: auto; }
 .composer-toolbar .tool-btn,
@@ -1948,7 +2057,7 @@ body[data-theme="light"] .composer-icon-btn:hover {
   height: 32px;
   flex-basis: 32px;
   border-radius: 8px;
-  font-size: 16px;
+  font-size: var(--font-size-body);
 }
 .composer-toolbar .send-btn {
   background: var(--accent);
@@ -1960,19 +2069,39 @@ body[data-theme="light"] .composer-icon-btn:hover {
 .tool-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-primary-soft, var(--subtle-surface)); }
 .composer-toolbar .send-btn:hover { background: var(--accent-2); border-color: var(--accent-2); color: var(--bg-elevated); }
 .send-btn.is-stopping {
-  background: #F87171;
-  border-color: #F87171;
-  color: #fff;
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--bg-elevated);
 }
 .send-btn.is-stopping:hover {
-  background: #EF4444;
-  border-color: #EF4444;
-  color: #fff;
+  background: color-mix(in srgb, var(--danger) 84%, black);
+  border-color: color-mix(in srgb, var(--danger) 84%, black);
+  color: var(--bg-elevated);
+}
+body[data-theme="dark"] .composer-toolbar .send-btn:not(.is-stopping) {
+  background: var(--text-secondary);
+  border-color: var(--text-secondary);
+  color: var(--bg-canvas);
+}
+body[data-theme="dark"] .composer-toolbar .send-btn:not(.is-stopping):hover {
+  background: var(--text-primary);
+  border-color: var(--text-primary);
+  color: var(--bg-canvas);
+}
+body[data-theme="light"] .composer-toolbar .send-btn:not(.is-stopping) {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+  color: var(--bg-elevated);
+}
+body[data-theme="light"] .composer-toolbar .send-btn:not(.is-stopping):hover {
+  background: var(--accent-primary-hover);
+  border-color: var(--accent-primary-hover);
+  color: var(--bg-elevated);
 }
 .agent-message.is-pending { display: none; }
 .tool-btn:disabled { cursor: progress; opacity: 0.55; }
 #detail-stop-step-btn.stop-step-btn {
-  font-size: 12px; font-weight: 600; padding: 4px 12px; border-radius: 6px;
+  font-size: var(--font-size-caption); font-weight: 600; padding: 4px 12px; border-radius: 6px;
   background: #B91C1C; border: 1px solid #B91C1C; color: #fff;
   cursor: pointer; transition: background 0.15s, border-color 0.15s;
 }

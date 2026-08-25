@@ -1,4 +1,6 @@
-export function createSettingsController({ state, applyLogin }) {
+import { createDialogController } from "../../shared/ui/dialog.js";
+
+export function createSettingsController({ state, applyLogin, getFontScale, applyFontScale }) {
 
   const settingsModal = document.getElementById("settings-modal");
   const settingsBtn = document.getElementById("settings-btn");
@@ -14,7 +16,13 @@ export function createSettingsController({ state, applyLogin }) {
   const settingsLlmExecutorDefault = document.getElementById("settings-llm-executor-default");
   const settingsLlmCards = document.getElementById("settings-llm-cards");
   const settingsLlmCardAdd = document.getElementById("settings-llm-card-add");
+  const fontScaleOptions = document.getElementById("settings-font-scale-options");
   const CUSTOM_ENV_CONFIG_KEY = "CUSTOM_ENV";
+  const settingsDialog = createDialogController({
+    element: settingsModal,
+    labelledBy: "settings-dialog-title",
+    initialFocus: settingsClose,
+  });
 
   // Env config input refs
   const envInputs = {
@@ -246,6 +254,13 @@ export function createSettingsController({ state, applyLogin }) {
     row.querySelector(".settings-env-key")?.focus();
   });
 
+  fontScaleOptions?.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-font-scale]");
+    if (!option) return;
+    applyFontScale?.(Number(option.dataset.fontScale));
+    updateFontScaleOptions();
+  });
+
   function activeSettingsTabName() {
     return document.querySelector(".settings-tab.active")?.dataset.tab || "profile";
   }
@@ -255,14 +270,24 @@ export function createSettingsController({ state, applyLogin }) {
   }
 
   function openSettingsModal() {
-    settingsModal.classList.remove("hidden");
+    if (!settingsDialog.open()) return;
     settingsUsername.value = state.displayName || "";
     settingsUuid.value = state.userId || "";
     loadSettingsData();
+    updateFontScaleOptions();
+  }
+
+  function updateFontScaleOptions() {
+    const currentScale = getFontScale?.() ?? 100;
+    fontScaleOptions?.querySelectorAll("[data-font-scale]").forEach((option) => {
+      const selected = Number(option.dataset.fontScale) === currentScale;
+      option.classList.toggle("active", selected);
+      option.setAttribute("aria-pressed", String(selected));
+    });
   }
 
   function closeSettingsModal() {
-    settingsModal.classList.add("hidden");
+    settingsDialog.close();
   }
 
   // ---- tree helpers ----------------------------------------------------------
@@ -556,7 +581,10 @@ export function createSettingsController({ state, applyLogin }) {
       renderExecutorCards(llmCfg.executor_cards || {});
       renderEnvPairs(envCfg[CUSTOM_ENV_CONFIG_KEY] || {});
     } catch (err) {
-      skillsChecklist.innerHTML = `<p class="settings-hint" style="color:#f87171">Failed to load: ${err.message}</p>`;
+      const error = document.createElement("p");
+      error.className = "settings-hint settings-error";
+      error.textContent = `Failed to load: ${err.message}`;
+      skillsChecklist.replaceChildren(error);
     }
   }
 
@@ -707,9 +735,10 @@ export function createSettingsController({ state, applyLogin }) {
     const wdInput = document.getElementById("settings-default-workdir");
     if (wdInput) wdInput.value = "";
   });
-  settingsModal?.addEventListener("click", (e) => {
-    if (e.target === settingsModal) closeSettingsModal();
-  });
+  // Settings contain a multi-field draft. Do not dismiss it when the user
+  // clicks the backdrop: an imprecise click should never force them to
+  // re-enter values. Closing remains an explicit action (close button or
+  // Escape), and saving is handled by the Save button.
 
   return { open: openSettingsModal, close: closeSettingsModal, reload: loadSettingsData };
 }

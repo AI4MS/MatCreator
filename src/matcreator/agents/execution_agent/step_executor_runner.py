@@ -530,6 +530,7 @@ async def _stream_step_events(
                     elif fc and not is_thought:
                         pending_tool_calls[fc.name] = {
                             "name": fc.name,
+                            "input": dict(fc.args or {}),
                             "args_summary": str(dict(fc.args or {}))[:300],
                             "start_time": _now(),
                         }
@@ -548,6 +549,7 @@ async def _stream_step_events(
                             _append_unique(artifact_paths, artifact_path)
 
                         record = pending_tool_calls.pop(fr.name, {"name": fr.name, "start_time": _now()})
+                        record["output"] = response
                         record["result_summary"] = str(fr.response)[:300]
                         record["end_time"] = _now()
                         record["artifacts"] = collect_artifact_paths(response)

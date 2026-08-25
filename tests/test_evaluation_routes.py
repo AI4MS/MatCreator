@@ -5,6 +5,7 @@ from pathlib import Path
 
 import asyncio
 from collections import deque
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -14,6 +15,54 @@ if str(WEB_DIR) not in sys.path:
     sys.path.insert(0, str(WEB_DIR))
 
 import main
+
+
+def test_skill_graph_payload_includes_only_undistilled_memory(monkeypatch) -> None:
+    def entry(node_id: str, *, promoted: bool):
+        return SimpleNamespace(
+            id=node_id,
+            title=node_id,
+            slug=node_id,
+            entry_type="memory",
+            content=f"{node_id} content",
+            tags=[],
+            aliases=[],
+            internal_refs=[],
+            scripts=[],
+            assets=[],
+            metadata=SimpleNamespace(
+                custom={"memory": {"promoted": promoted}},
+                disabled=False,
+                skill_level="L1",
+                verification_status="unverified",
+                refinement_status="unrefined",
+                usage_count=0,
+                source_provenance=None,
+                trust_score=None,
+            ),
+        )
+
+    class FakeGraph:
+        def list(self, limit=200, offset=0):
+            if offset:
+                return []
+            return [
+                entry("working-memory", promoted=False),
+                entry("distilled-memory", promoted=True),
+            ]
+
+        def stats(self):
+            return {"nodes": 2, "edges": 0}
+
+    monkeypatch.setattr(main, "_get_kg", FakeGraph)
+    monkeypatch.setattr(main, "get_disabled_skills", lambda: [])
+    monkeypatch.setattr(main, "get_default_skill_names", lambda: set())
+    monkeypatch.setattr(main, "_skill_dir_map", lambda: {})
+
+    payload = main._load_skill_graph_payload()
+
+    assert [node["id"] for node in payload["nodes"]] == ["working-memory"]
+    assert payload["nodes"][0]["entry_type"] == "memory"
 
 
 def test_toggle_skill_graph_node_updates_and_reports_graph_state(monkeypatch) -> None:

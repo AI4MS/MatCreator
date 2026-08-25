@@ -7,7 +7,7 @@
     <link rel="icon" type="image/png" href="/favicon.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script type="module" src="/src/main.js"></script>
     <script>
       // Generate rounded favicon via Canvas
@@ -107,13 +107,22 @@
                   <path d="M8.5 7h7"></path>
                 </svg>
               </button>
-              <button class="ghost icon-action-btn" id="workspace-cli-toggle" title="Toggle workspace terminal" aria-label="Toggle workspace terminal">
+              <button class="ghost icon-action-btn" id="workspace-cli-toggle" type="button" title="Toggle workspace terminal" aria-label="Toggle workspace terminal">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <polyline points="4 17 10 11 4 5"></polyline>
                   <line x1="12" y1="19" x2="20" y2="19"></line>
                 </svg>
               </button>
-              <button class="ghost icon-action-btn" id="theme-toggle" title="Toggle light mode" aria-label="Toggle light mode" aria-pressed="false">
+              <button class="ghost icon-action-btn app-mode-toggle" id="app-mode-toggle" type="button" title="Switch to Evaluation mode" aria-label="Switch to Evaluation mode" aria-pressed="false" data-app-mode="workspace">
+                <svg class="app-mode-icon app-mode-icon-workspace" viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+                  <path d="M4 9h16M9 9v11"></path>
+                </svg>
+                <svg class="app-mode-icon app-mode-icon-evaluation" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3M8 16h8"></path>
+                </svg>
+              </button>
+              <button class="ghost icon-action-btn" id="theme-toggle" type="button" title="Toggle light mode" aria-label="Toggle light mode" aria-pressed="false">
                 <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a6.5 6.5 0 0 0 9.8 9.8z"></path>
                 </svg>
@@ -129,7 +138,7 @@
                   <path d="m19.07 4.93-1.41 1.41"></path>
                 </svg>
               </button>
-              <button class="ghost icon-action-btn" id="settings-btn" title="Settings" aria-label="Settings">
+              <button class="ghost icon-action-btn" id="settings-btn" type="button" title="Settings" aria-label="Settings">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <circle cx="12" cy="12" r="3"></circle>
                   <path d="M12 3.5h0a1.35 1.35 0 0 1 1.35 1.19l.14 1.17a6.7 6.7 0 0 1 1.22.5l.92-.73a1.35 1.35 0 0 1 1.8.1h0a1.35 1.35 0 0 1 .1 1.8l-.73.92c.2.39.37.8.5 1.22l1.17.14A1.35 1.35 0 0 1 19.66 11h0v2h0a1.35 1.35 0 0 1-1.19 1.35l-1.17.14a6.7 6.7 0 0 1-.5 1.22l.73.92a1.35 1.35 0 0 1-.1 1.8h0a1.35 1.35 0 0 1-1.8.1l-.92-.73c-.39.2-.8.37-1.22.5l-.14 1.17A1.35 1.35 0 0 1 12 20.66h0a1.35 1.35 0 0 1-1.35-1.19l-.14-1.17a6.7 6.7 0 0 1-1.22-.5l-.92.73a1.35 1.35 0 0 1-1.8-.1h0a1.35 1.35 0 0 1-.1-1.8l.73-.92a6.7 6.7 0 0 1-.5-1.22l-1.17-.14A1.35 1.35 0 0 1 4.34 13h0v-2h0a1.35 1.35 0 0 1 1.19-1.35l1.17-.14c.13-.42.3-.83.5-1.22l-.73-.92a1.35 1.35 0 0 1 .1-1.8h0a1.35 1.35 0 0 1 1.8-.1l.92.73c.39-.2.8-.37 1.22-.5l.14-1.17A1.35 1.35 0 0 1 12 3.5Z"></path>
@@ -137,10 +146,12 @@
               </button>
             </div>
             <div class="left-user-row">
-              <div id="avatar-upload-btn" class="message-avatar user-avatar avatar-upload-btn" title="Upload your avatar"></div>
-              <span class="chip">User: <span id="user-display">—</span></span>
-              <button class="ghost icon-ghost" id="edit-user" title="Switch user">✎</button>
-              <button class="ghost icon-ghost" id="logout-btn" title="Log out">⏏</button>
+              <div class="user-identity-chip">
+                <button id="avatar-upload-btn" class="message-avatar user-avatar avatar-upload-btn" type="button" title="Upload your avatar" aria-label="Upload your avatar"></button>
+                <span id="user-display">—</span>
+              </div>
+              <button class="ghost icon-ghost" id="edit-user" type="button" title="Switch user" aria-label="Switch user">✎</button>
+              <button class="ghost icon-ghost" id="logout-btn" type="button" title="Log out" aria-label="Log out">⏏</button>
               <input type="file" id="avatar-upload-input" accept="image/*" style="display:none">
             </div>
           </section>
@@ -190,10 +201,10 @@
                 </div>
                 <div class="input-container">
                   <div class="composer-input-row">
-                    <textarea class="text-input" id="text-input" placeholder="Ask for a plan, run, or assessment…" rows="1"></textarea>
+                    <textarea class="text-input" id="text-input" aria-label="Message MatCreator" placeholder="Ask for a plan, run, or assessment…" rows="1"></textarea>
                   </div>
                   <div class="composer-toolbar">
-                    <button class="tool-btn" id="file-upload-btn" title="Upload file">+</button>
+                    <button class="tool-btn" id="file-upload-btn" type="button" title="Upload file" aria-label="Upload files">+</button>
                     <input type="file" id="file-upload-input" multiple style="display:none">
                     <div class="mode-selector" id="mode-selector">
                       <button class="mode-trigger" id="mode-trigger" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="mode-menu" title="Choose agent mode">
@@ -207,7 +218,7 @@
                         <button class="mode-btn" type="button" role="menuitemradio" data-mode="bench" aria-checked="false" title="Plan first, then auto-confirm without waiting"><span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3M8 16h8"/></svg></span><span>Bench</span><span class="mode-check" aria-hidden="true">✓</span></button>
                       </div>
                     </div>
-                    <button class="send-btn" id="send-btn" title="Send">➜</button>
+                    <button class="send-btn" id="send-btn" type="button" title="Send" aria-label="Send message">➜</button>
                   </div>
                 </div>
               </div>
@@ -245,7 +256,7 @@
                 <span id="detail-label">Node</span>
                 <span class="badge" id="detail-status">—</span>
               </div>
-              <button class="ghost graph-detail-close" id="graph-detail-close" title="Close node detail">✕</button>
+              <button class="ghost graph-detail-close" id="graph-detail-close" type="button" title="Close node detail" aria-label="Close node detail">✕</button>
             </div>
             <div class="detail-body">
               <div class="detail-row" id="detail-summary-row">
@@ -257,7 +268,7 @@
                 <span class="detail-val" id="detail-timing">—</span>
               </div>
               <div id="detail-actions-row" style="display:none; padding: 6px 0;">
-                <button id="detail-stop-step-btn" class="stop-step-btn">Stop step</button>
+                <button id="detail-stop-step-btn" class="stop-step-btn" type="button">Stop step</button>
               </div>
               <div class="detail-row" id="detail-artifacts-row">
                 <span class="detail-key">Artifacts</span>
@@ -271,13 +282,13 @@
               </div>
               <div class="detail-section" id="detail-toolcalls-row">
                 <details class="step-feed-section-details graph-detail-activity-section">
-                  <summary class="detail-key step-feed-section-title">Tool calls (<span id="detail-toolcalls-count">0</span>)</summary>
+                  <summary class="detail-key step-feed-section-title"><span>Tool calls</span> <span class="step-feed-section-count">(<span id="detail-toolcalls-count">0</span>)</span></summary>
                   <div id="detail-toolcalls"></div>
                 </details>
               </div>
               <div class="detail-section" id="detail-conversation-row">
                 <details class="step-feed-section-details graph-detail-activity-section">
-                  <summary class="detail-key step-feed-section-title">Conversations (<span id="detail-conversation-count">0</span>)</summary>
+                  <summary class="detail-key step-feed-section-title"><span>Conversations</span> <span class="step-feed-section-count">(<span id="detail-conversation-count">0</span>)</span></summary>
                   <div id="detail-conversation"></div>
                 </details>
               </div>
@@ -289,16 +300,16 @@
             <div class="plan-graph-popup-header">
               <span class="plan-graph-popup-title">Roadmap</span>
               <div class="plan-graph-zoom-controls">
-                <button class="ghost plan-graph-zoom-btn" id="plan-graph-zoom-in" title="Zoom in">＋</button>
-                <button class="ghost plan-graph-zoom-btn" id="plan-graph-zoom-out" title="Zoom out">－</button>
-                <button class="ghost plan-graph-zoom-btn" id="plan-graph-fit" title="Reset view">⊡</button>
+                <button class="ghost plan-graph-zoom-btn" id="plan-graph-zoom-in" type="button" title="Zoom in" aria-label="Zoom in">＋</button>
+                <button class="ghost plan-graph-zoom-btn" id="plan-graph-zoom-out" type="button" title="Zoom out" aria-label="Zoom out">－</button>
+                <button class="ghost plan-graph-zoom-btn" id="plan-graph-fit" type="button" title="Reset view" aria-label="Fit roadmap to view">⊡</button>
               </div>
               <span class="plan-graph-counter" id="plan-graph-counter"></span>
               <div class="plan-graph-nav-controls">
-                <button class="ghost plan-graph-nav-btn" id="plan-graph-prev" title="Previous graph">◀</button>
-                <button class="ghost plan-graph-nav-btn" id="plan-graph-next" title="Next graph">▶</button>
+                <button class="ghost plan-graph-nav-btn" id="plan-graph-prev" type="button" title="Previous graph" aria-label="Previous roadmap">◀</button>
+                <button class="ghost plan-graph-nav-btn" id="plan-graph-next" type="button" title="Next graph" aria-label="Next roadmap">▶</button>
               </div>
-              <button class="ghost plan-graph-close-btn" id="plan-graph-close" title="Close">✕</button>
+              <button class="ghost plan-graph-close-btn" id="plan-graph-close" type="button" title="Close" aria-label="Close roadmap">✕</button>
             </div>
             <div id="plan-graph-canvas" class="plan-graph-canvas"></div>
           </div>
@@ -310,10 +321,6 @@
 
         <!-- Right: Sessions + Files -->
         <aside class="card side-panel" id="side-panel">
-          <div class="app-mode-switch" role="group" aria-label="Application mode">
-            <button class="app-mode-btn active" id="workspace-mode-btn" type="button" aria-pressed="true">Workspace</button>
-            <button class="app-mode-btn" id="evaluation-mode-btn" type="button" aria-pressed="false">Evaluation</button>
-          </div>
           <section class="evaluation-pane hidden" id="evaluation-pane" aria-live="polite">
             <details class="panel-block evaluation-disclosure evaluation-runs-pane" aria-label="Evaluation runs">
               <summary class="block-header">Evaluation runs</summary>
@@ -396,21 +403,21 @@
           <section class="panel-block sessions-pane">
             <div class="block-header">Sessions
               <div class="session-header-actions">
-                <button class="ghost new-session-button" id="reset-session" title="New session" aria-label="New session">+</button>
-                <button class="ghost" id="saved-question-drafts" title="Saved question drafts">Drafts</button>
-                <button class="ghost refresh-button" id="refresh-sessions" title="Refresh session list" aria-label="Refresh session list"><svg class="refresh-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M18.5 9A7 7 0 1 0 19 15"></path><path d="M18.5 5v4h-4"></path></svg></button>
+                <div class="custom-select session-status-filter" id="session-status-filter" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-label="Filter sessions by status" tabindex="0">
+                  <span class="custom-select-trigger" data-value="all">All</span>
+                  <ul class="custom-select-options" role="listbox">
+                    <li role="option" data-value="all" aria-selected="true">All</li>
+                    <li role="option" data-value="running">Running</li>
+                    <li role="option" data-value="idle">Idle</li>
+                  </ul>
+                </div>
+                <button class="ghost new-session-button" id="reset-session" type="button" title="New session" aria-label="New session">+</button>
+                <button class="ghost" id="saved-question-drafts" type="button" title="Saved question drafts">Drafts</button>
+                <button class="ghost refresh-button" id="refresh-sessions" type="button" title="Refresh session list" aria-label="Refresh session list"><svg class="refresh-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M18.5 9A7 7 0 1 0 19 15"></path><path d="M18.5 5v4h-4"></path></svg></button>
               </div>
             </div>
-            <div class="right-session-meta">
+            <div class="right-session-meta hidden" aria-hidden="true">
               <span>Session: <span id="session-id">-</span></span>
-            </div>
-            <div class="custom-select session-status-filter" id="session-status-filter" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-label="Filter sessions by status" tabindex="0">
-              <span class="custom-select-trigger" data-value="all">All</span>
-              <ul class="custom-select-options" role="listbox">
-                <li role="option" data-value="all" aria-selected="true">All</li>
-                <li role="option" data-value="running">Running</li>
-                <li role="option" data-value="idle">Idle</li>
-              </ul>
             </div>
             <div class="panel-block-body">
               <ul class="artifact-list" id="session-list">
@@ -421,7 +428,7 @@
           <section class="file-explorer-col is-open" id="file-explorer-col">
             <div class="file-explorer-header">
               <div class="block-header">Files
-                <button class="ghost refresh-button" id="refresh-files" title="Refresh files" aria-label="Refresh files"><svg class="refresh-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M18.5 9A7 7 0 1 0 19 15"></path><path d="M18.5 5v4h-4"></path></svg></button>
+                <button class="ghost refresh-button" id="refresh-files" type="button" title="Refresh files" aria-label="Refresh files"><svg class="refresh-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M18.5 9A7 7 0 1 0 19 15"></path><path d="M18.5 5v4h-4"></path></svg></button>
               </div>
             </div>
             <div class="file-explorer-body">
@@ -449,9 +456,9 @@
           <input id="login-password" type="password" class="text-input" placeholder="Password" style="width:100%;box-sizing:border-box;margin-top:8px" autocomplete="current-password" />
           <p id="login-error" style="color:#f87171;font-size:0.8rem;margin:4px 0 0;min-height:1.2em"></p>
           <p id="login-uuid-display" style="color:var(--muted);font-size:0.75rem;font-family:var(--mono);margin:2px 0 0;min-height:1.1em;word-break:break-all"></p>
-          <button id="login-submit" class="send-btn" style="width:100%;justify-content:center;margin-top:4px">Sign in →</button>
+          <button id="login-submit" class="send-btn" type="button" style="width:100%;justify-content:center;margin-top:4px">Sign in →</button>
           <p style="text-align:center;margin:10px 0 0;font-size:0.8rem;color:var(--muted)">
-            No account? <button id="switch-to-register" class="ghost" style="padding:0;font-size:0.8rem;color:var(--accent)">Register</button>
+            No account? <button id="switch-to-register" class="ghost" type="button" style="padding:0;font-size:0.8rem;color:var(--accent)">Register</button>
           </p>
         </div>
         <!-- Register view -->
@@ -461,30 +468,42 @@
           <input id="reg-password" type="password" class="text-input" placeholder="Password" style="width:100%;box-sizing:border-box;margin-top:8px" autocomplete="new-password" />
           <input id="reg-confirm" type="password" class="text-input" placeholder="Confirm password" style="width:100%;box-sizing:border-box;margin-top:8px" autocomplete="new-password" />
           <p id="reg-error" style="color:#f87171;font-size:0.8rem;margin:4px 0 0;min-height:1.2em"></p>
-          <button id="reg-submit" class="send-btn" style="width:100%;justify-content:center;margin-top:4px">Register →</button>
+          <button id="reg-submit" class="send-btn" type="button" style="width:100%;justify-content:center;margin-top:4px">Register →</button>
           <p style="text-align:center;margin:10px 0 0;font-size:0.8rem;color:var(--muted)">
-            Have an account? <button id="switch-to-login" class="ghost" style="padding:0;font-size:0.8rem;color:var(--accent)">Sign in</button>
+            Have an account? <button id="switch-to-login" class="ghost" type="button" style="padding:0;font-size:0.8rem;color:var(--accent)">Sign in</button>
           </p>
         </div>
       </div>
     </div>
 
     <!-- Settings modal -->
-    <div id="settings-modal" class="settings-overlay hidden">
+    <div id="settings-modal" class="settings-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="settings-dialog-title" aria-hidden="true">
       <div class="settings-card">
         <div class="settings-header">
-          <span class="brand-title" style="font-size:1.1rem">Settings</span>
-          <button class="ghost" id="settings-close" style="padding:4px 10px;font-size:13px">✕</button>
+          <span class="brand-title" id="settings-dialog-title" style="font-size:1.1rem">Settings</span>
+          <button class="ghost" id="settings-close" type="button" aria-label="Close settings" style="padding:4px 10px;font-size:var(--font-size-ui)">✕</button>
         </div>
         <div class="settings-tabs">
-          <button class="settings-tab active" data-tab="profile">Profile</button>
-          <button class="settings-tab" data-tab="skills">Skills</button>
-          <button class="settings-tab" data-tab="llm">LLM Settings</button>
-          <button class="settings-tab" data-tab="runtime">MatCreator</button>
-          <button class="settings-tab" data-tab="compute">Compute</button>
-          <button class="settings-tab" data-tab="env">Environment</button>
+          <button class="settings-tab" type="button" data-tab="appearance">Appearance</button>
+          <button class="settings-tab active" type="button" data-tab="profile">Profile</button>
+          <button class="settings-tab" type="button" data-tab="skills">Skills</button>
+          <button class="settings-tab" type="button" data-tab="llm">LLM Settings</button>
+          <button class="settings-tab" type="button" data-tab="runtime">MatCreator</button>
+          <button class="settings-tab" type="button" data-tab="compute">Compute</button>
+          <button class="settings-tab" type="button" data-tab="env">Environment</button>
         </div>
         <div class="settings-body">
+          <div class="settings-pane hidden" id="tab-appearance">
+            <label class="settings-label">Interface Scale</label>
+            <p class="settings-hint">Scales the interface text while preserving the typography hierarchy. Applies immediately and is saved on this device.</p>
+            <div id="settings-font-scale-options" class="settings-font-scale-options" role="group" aria-label="Interface scale">
+              <button class="ghost settings-font-scale-option" type="button" data-font-scale="90" aria-pressed="false">90%</button>
+              <button class="ghost settings-font-scale-option" type="button" data-font-scale="100" aria-pressed="true">100%</button>
+              <button class="ghost settings-font-scale-option" type="button" data-font-scale="110" aria-pressed="false">110%</button>
+              <button class="ghost settings-font-scale-option" type="button" data-font-scale="125" aria-pressed="false">125%</button>
+              <button class="ghost settings-font-scale-option" type="button" data-font-scale="150" aria-pressed="false">150%</button>
+            </div>
+          </div>
           <div class="settings-pane" id="tab-profile">
             <label class="settings-label">Username</label>
             <input id="settings-username" class="text-input" placeholder="your username" style="width:100%;box-sizing:border-box" />
@@ -495,10 +514,10 @@
               <input type="password" id="settings-current-password" class="text-input" aria-label="Current password" placeholder="Current password (leave blank if none)" style="width:100%;box-sizing:border-box;margin-top:6px" />
               <input type="password" id="settings-new-password" class="text-input" aria-label="New password" placeholder="New password" style="width:100%;box-sizing:border-box;margin-top:6px" />
               <input type="password" id="settings-confirm-password" class="text-input" aria-label="Confirm new password" placeholder="Confirm new password" style="width:100%;box-sizing:border-box;margin-top:6px" />
-              <button id="settings-save-password-btn" class="ghost" style="margin-top:8px;width:100%;justify-content:center">Save Password</button>
+              <button id="settings-save-password-btn" class="ghost" type="button" style="margin-top:8px;width:100%;justify-content:center">Save Password</button>
               <span id="settings-password-msg" role="status" style="display:block;margin-top:6px;font-size:0.8rem;min-height:1.2em"></span>
             </div>
-            <button id="settings-logout-btn" class="ghost" style="margin-top:16px;width:100%;justify-content:center;color:#f87171;border:1px solid #f8717144">Log out</button>
+            <button id="settings-logout-btn" class="ghost" type="button" style="margin-top:16px;width:100%;justify-content:center;color:#f87171;border:1px solid #f8717144">Log out</button>
             <div style="margin-top:20px;border-top:1px solid #ffffff18;padding-top:16px">
               <label class="settings-label">Default Workdir</label>
               <p class="settings-hint">Used as the working directory for every new session. Leave empty to use the global workspace default.</p>
@@ -506,7 +525,7 @@
                 <input id="settings-default-workdir" class="text-input"
                        placeholder="(leave empty for workspace default)"
                        style="flex:1;font-family:var(--mono);font-size:0.85rem" />
-                <button id="settings-workdir-reset" class="ghost" style="white-space:nowrap;padding:6px 10px;font-size:0.8rem" title="Reset to workspace default">Reset</button>
+                <button id="settings-workdir-reset" class="ghost" type="button" style="white-space:nowrap;padding:6px 10px;font-size:0.8rem" title="Reset to workspace default">Reset</button>
               </div>
             </div>
           </div>
@@ -593,7 +612,7 @@
         </div>
         <div class="settings-footer">
           <span id="settings-status" class="settings-status"></span>
-          <button class="send-btn" id="settings-save" style="justify-content:center">Save</button>
+          <button class="send-btn" id="settings-save" type="button" style="justify-content:center">Save</button>
         </div>
       </div>
     </div>
@@ -606,20 +625,20 @@
             <div class="eyebrow">File Viewer</div>
             <div id="fv-filename" style="font-size:0.85rem;font-family:var(--mono);color:var(--text);word-break:break-all"></div>
           </div>
-          <button class="ghost" id="fv-close" style="padding:4px 10px;font-size:13px">✕</button>
+          <button class="ghost" id="fv-close" type="button" aria-label="Close file viewer" style="padding:4px 10px;font-size:var(--font-size-ui)">✕</button>
         </div>
         <div id="fv-content" class="fv-content"></div>
       </div>
     </div>
 
     <!-- Image lightbox -->
-    <div id="image-lightbox" class="lightbox-overlay hidden">
-      <div class="lightbox-toolbar">
+    <div id="image-lightbox" class="lightbox-overlay hidden" role="dialog" aria-modal="true" aria-label="Image preview" aria-hidden="true">
+      <div class="lightbox-toolbar" role="toolbar" aria-label="Image zoom controls">
         <span class="lightbox-zoom-label" id="lightbox-zoom-label">100%</span>
-        <button class="ghost lightbox-zoom-btn" id="lightbox-zoom-out" title="Zoom out">−</button>
-        <button class="ghost lightbox-zoom-btn" id="lightbox-zoom-reset" title="Reset zoom">⊡</button>
-        <button class="ghost lightbox-zoom-btn" id="lightbox-zoom-in" title="Zoom in">＋</button>
-        <button class="ghost lightbox-close-btn" id="lightbox-close" title="Close">✕</button>
+        <button class="ghost lightbox-zoom-btn" id="lightbox-zoom-out" type="button" title="Zoom out" aria-label="Zoom out">−</button>
+        <button class="ghost lightbox-zoom-btn" id="lightbox-zoom-reset" type="button" title="Reset zoom" aria-label="Reset zoom">⊡</button>
+        <button class="ghost lightbox-zoom-btn" id="lightbox-zoom-in" type="button" title="Zoom in" aria-label="Zoom in">＋</button>
+        <button class="ghost lightbox-close-btn" id="lightbox-close" type="button" title="Close" aria-label="Close image preview">✕</button>
       </div>
       <div class="lightbox-viewport" id="lightbox-viewport">
         <img id="lightbox-img" class="lightbox-img" src="" alt="">

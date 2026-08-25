@@ -1,5 +1,6 @@
 import { Network, DataSet } from "vis-network/standalone";
 import { installNetworkWheelZoom } from "./networkWheelZoom.js";
+import { httpClient } from "../../shared/api/http.js";
 
 function clamp(number, min, max) {
   return Math.max(min, Math.min(max, number));
@@ -34,6 +35,7 @@ export class ExecutionPlanView {
     this._planEdges = new DataSet([]);
     this._network = null;
     this._pollInterval = null;
+    this._eventStream = null;
     this._didInitialFit = false;
     this._structureKey = null;
     this._subgraphs = [];
@@ -510,7 +512,27 @@ export class ExecutionPlanView {
 
   startPolling(sessionId) {
     this.stopPolling();
-    this.refresh(sessionId);
+    this._currentSessionId = sessionId;
+    void this._poll(sessionId);
+    const eventStream = new EventSource(`/api/execution-graph/${encodeURIComponent(sessionId)}/events`);
+    this._eventStream = eventStream;
+    eventStream.onmessage = (event) => {
+      try {
+        if (sessionId !== this._currentSessionId) return;
+        this.update(JSON.parse(event.data));
+      } catch (_) {
+        // Ignore a malformed snapshot; EventSource will deliver the next one.
+      }
+    };
+    // Use polling only when connected to a deployment that predates the SSE
+    // endpoint. Keeping the normal update path event-driven avoids stale
+    // roadmap node statuses while a step is running.
+    eventStream.onerror = () => {
+      if (this._eventStream !== eventStream) return;
+      eventStream.close();
+      this._eventStream = null;
+      if (!this._pollInterval) this._pollInterval = setInterval(() => this._poll(sessionId), 2000);
+    };
   }
 
   refresh(sessionId) {
@@ -519,6 +541,8 @@ export class ExecutionPlanView {
   }
 
   stopPolling() {
+    this._eventStream?.close();
+    this._eventStream = null;
     if (this._pollInterval) {
       clearInterval(this._pollInterval);
       this._pollInterval = null;
@@ -527,9 +551,8 @@ export class ExecutionPlanView {
 
   async _poll(sessionId) {
     try {
-      const resp = await fetch(`/api/execution-graph/${sessionId}`);
-      if (!resp.ok) return;
-      const data = await resp.json();
+      const data = await httpClient.getJson(`/api/execution-graph/${encodeURIComponent(sessionId)}`);
+      if (data === null) return;
       if (sessionId !== this._currentSessionId) return;
       this.update(data);
     } catch (_) {}

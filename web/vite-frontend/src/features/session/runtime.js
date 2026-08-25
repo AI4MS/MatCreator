@@ -22,12 +22,14 @@ export function createSessionRuntime({
   addPlanApprovalActions,
   beginScrollTransaction,
   endScrollTransaction,
+  clearChatDisclosures,
   renderSessionBanner,
   renderSessionFilesTree,
   refreshSessionFiles,
   generateSessionSummary,
   workdirDisplay,
 }) {
+  const sessionViewCacheLimit = 3;
   let renderedSessionKey = null;
   // Plan approval is UI-derived from persisted events. A cancelled turn can
   // still contain a successful validation event, so remember that its prompt
@@ -186,6 +188,9 @@ export function createSessionRuntime({
   function renderSessionTimeline(events, stepNodes, awaitingPlanApproval = false, preserveDisclosures = false) {
     beginScrollTransaction();
     try {
+      // Disclosure keys belong to one rendered transcript. Once the DOM is
+      // replaced for another session, retaining them provides no UI benefit.
+      if (!preserveDisclosures) clearChatDisclosures?.();
       // Running cards are initially open by default, so their state is not in
       // the user-choice map yet. Snapshot the actual DOM before an in-place
       // refresh changes running nodes to completed/cancelled and changes that
@@ -293,8 +298,20 @@ export function createSessionRuntime({
           preserveDisclosures,
         );
       }
-      state.sessionViewCache.set(viewKey, { sessionData, events, graphNodes, files: [], summary });
-      if (state.sessionViewCache.size > 10) state.sessionViewCache.delete(state.sessionViewCache.keys().next().value);
+      // Complete transcripts and tool payloads can be large. Keep only a
+      // small LRU cache for responsive switching instead of retaining ten
+      // session histories for the life of the browser tab.
+      state.sessionViewCache.delete(viewKey);
+      state.sessionViewCache.set(viewKey, {
+        sessionData: { state: sessionData.state },
+        events,
+        graphNodes,
+        files: [],
+        summary,
+      });
+      while (state.sessionViewCache.size > sessionViewCacheLimit) {
+        state.sessionViewCache.delete(state.sessionViewCache.keys().next().value);
+      }
       if (render && events.some((event) => event?.author === "user") && !summary && !state.summaryGeneratedFor.has(sessionId)) {
         generateSessionSummary(sessionId);
       }

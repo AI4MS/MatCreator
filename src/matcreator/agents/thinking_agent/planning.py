@@ -180,7 +180,13 @@ class GraphNode(BaseModel):
         max_length=500,
         description="1-2 sentence description of what this node does",
     )
-    suggested_skills: List[str] = Field(..., min_items=1)
+    suggested_skills: List[str] = Field(
+        ...,
+        description=(
+            "Ordered skill names to preload for this node. Use an empty list when "
+            "no installed skill is specifically needed."
+        ),
+    )
     status: NodeStatus = Field(default=NodeStatus.pending)
     result: Optional[str] = Field(default=None, description="Brief summary after completion or failure reason")
 

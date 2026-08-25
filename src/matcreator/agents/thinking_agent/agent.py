@@ -24,6 +24,7 @@ from .memory import (
     chat_with_knowledge_graph,
     get_related_skills,
     query_knowledge_graph,
+    read_knowledge_node,
     read_memory,
     run_synthesizer,
     save_to_knowledge_graph,
@@ -268,8 +269,9 @@ You are MatCreator, an AI assistant for computational materials science.
 - Call `run_flash_step` for computation, or skill execution.
   Multiple independent calls in one response turn run concurrently.
 - Call `search_skills` / `load_skill` to discover or load a skill.
-- Use `query_knowledge_graph` to retrieve L1/L2 planning knowledge and past memory.
-- After selecting a skill, call `search_skill_context` for its attached L3/L4 details.
+- Use `query_knowledge_graph` to discover clipped L1/L2 and memory candidates.
+- Select a returned node ID, then call `read_knowledge_node` for its full body and attached L3/L4 details.
+- Use `search_skills` only to discover runnable installed skills, then call `load_skill`.
 - For skill creation or evaluation requests, load the `skill-creation` guide and
   call `run_flash_step` with `suggested_skills=["skill-creation"]`.
 - After completing work, call `save_to_knowledge_graph` to persist key findings.
@@ -298,9 +300,9 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
 
 ## Default workflow
 1. Determine the user's goal, then call `validate_intent` with your interpretation.
-   Call `query_knowledge_graph` with the user's goal to retrieve relevant past knowledge and lessons.
+   Call `query_knowledge_graph` with the user's goal to discover relevant past knowledge and lessons.
    Call `search_skills` with the user's goal to discover relevant skills and guides.
-   After selecting an L1/L2 node, call `search_skill_context` to conditionally search
+   After selecting an L1/L2 node ID, call `read_knowledge_node` to conditionally search
    only that node's attached L3 heuristics and L4 constraints.
    Use `get_related_skills` to discover its dependencies or closely related workflows.
 2. Always draft an execution graph, then call `validate_graph` to validate and commit it.
@@ -324,6 +326,8 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
   Independent nodes (no shared data, no ordering constraint) need no edge and will execute in parallel.
 - **Keep graphs small**: 2–4 nodes for simple tasks, 5–7 for complex ones.
   Merge operations that belong to the same skill or logical unit into a single node.
+- **Suggested skills**: include only exact names returned by `search_skills`. Use `[]`
+  when no installed skill is specifically needed; do not invent a skill name.
 - **validate_graph input shape**:
   ```json
   {{
@@ -332,13 +336,13 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
         "node_id": "step_download_data",
         "label": "Download Data",
         "action": "Download VASP output files from the remote server.",
-        "suggested_skills": ["filesystem"]
+        "suggested_skills": ["utility"]
       }},
       "step_relax": {{
         "node_id": "step_relax",
         "label": "Relax Geometry",
         "action": "Run VASP geometry relaxation in the workspace.",
-        "suggested_skills": ["vasp"]
+        "suggested_skills": ["vasp-pymatgen"]
       }}
     }},
     "edges": [["step_download_data", "step_relax"]],
@@ -457,6 +461,7 @@ thinking_agent = LlmAgent(
         FunctionTool(confirm_plan_and_start_execution),
         FunctionTool(resume_execution),
         FunctionTool(search_skills),
+        FunctionTool(read_knowledge_node),
         FunctionTool(search_skill_context),
         FunctionTool(get_related_skills),
         FunctionTool(query_knowledge_graph),

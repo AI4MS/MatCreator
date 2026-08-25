@@ -9,6 +9,7 @@
   border: none;
   box-shadow: none;
   border-radius: 0;
+  font-size: var(--font-size-panel);
 }
 .file-explorer-col.is-open {
   border: 0;
@@ -51,7 +52,7 @@
 .workspace-terminal .xterm-viewport { border-radius: 8px; }
 
 .detail-section {
-  font-size: 13px;
+  font-size: var(--font-size-panel);
   margin-top: 2px;
 }
 .detail-section details summary.detail-key {
@@ -60,13 +61,13 @@
   user-select: none;
   color: var(--muted);
   font-weight: 600;
-  font-size: 13px;
+  font-size: var(--font-size-panel);
 }
 .detail-section details summary.detail-key:hover { color: var(--text); }
 
 .detail-header {
   display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px;
-  font-weight: 600; font-size: 14px;
+  font-weight: 600; font-size: var(--font-size-panel);
 }
 .detail-title-row {
   display: flex;
@@ -76,12 +77,12 @@
 }
 .graph-detail-close {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   padding: 4px 8px;
 }
 
 .badge {
-  font-size: 11px; font-weight: 600; letter-spacing: 0.5px;
+  font-size: var(--font-size-caption); font-weight: 600; letter-spacing: 0.5px;
   text-transform: uppercase; padding: 3px 8px; border-radius: 999px;
   border: 1px solid var(--border); background: rgba(255,255,255,0.04);
 }
@@ -93,13 +94,13 @@
 .badge-idle             { color: var(--muted); }
 
 .detail-body { display: flex; flex-direction: column; gap: 6px; }
-.detail-row { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
+.detail-row { display: flex; gap: 8px; align-items: baseline; font-size: var(--font-size-panel); }
 .detail-key { color: var(--muted); min-width: 60px; font-weight: 600; }
 .detail-val { color: var(--text); }
 
 .detail-artifacts {
   list-style: none; display: flex; flex-direction: column; gap: 3px;
-  color: var(--text); font-size: 12px;
+  color: var(--text); font-size: var(--font-size-panel-meta);
 }
 .detail-artifacts li {
   padding: 2px 6px; border-radius: 4px;
@@ -110,8 +111,4 @@
 .detail-artifacts .structure-view-btn {
   max-width: 100%;
   margin-top: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: left;
 }

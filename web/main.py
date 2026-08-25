@@ -11,6 +11,8 @@ GET /api/agent-graph/{session_id}
     Returns the JSON graph file for the session, or an empty graph if not found.
 GET /api/agent-graph/{session_id}/events
     Streams graph snapshots whenever an agent node emits a new event.
+GET /api/execution-graph/{session_id}/events
+    Streams roadmap snapshots whenever an execution node changes state.
 GET /api/workspace/files?path=<path>
     Serves any file from the workspace root (absolute or relative path).
     Returns 403 if the path escapes the workspace root.
@@ -94,6 +96,7 @@ from matcreator.skill import (  # noqa: E402
     get_skill_source,
     official_skills_dir,
     refresh_skills,
+    seed_skills_to_graph,
     get_default_skill_names,
 )
 from matcreator.config import load_config, save_config, get_disabled_skills  # noqa: E402
@@ -202,7 +205,7 @@ SUMMARIES_PATH = ROOT / "agents" / "MatCreator" / ".adk" / "session_summaries.js
 _SENSITIVE_FIELDS = frozenset({"LLM_API_KEY", "BOHRIUM_PASSWORD", "BOHRIUM_ACCESS_KEY"})
 _ENV_FIELDS = [
     "LLM_MODEL", "LLM_API_KEY", "LLM_BASE_URL", "EMBEDDING_MODEL",
-    "GRAPH_AGENT_MODEL", "REVIEW_AGENT_MODEL",
+    "GRAPH_AGENT_MODEL", "REVIEW_AGENT_MODEL", "SMALL_MODEL",
     "BOHRIUM_USERNAME", "BOHRIUM_PASSWORD", "BOHRIUM_ACCESS_KEY", "BOHRIUM_API_URL", "BOHRIUM_PROJECT_ID",
     "BOHRIUM_VASP_IMAGE", "BOHRIUM_VASP_MACHINE",
     "BOHRIUM_DEEPMD_IMAGE", "BOHRIUM_DEEPMD_MACHINE", "DEEPMD_MODEL_PATH",
@@ -226,6 +229,8 @@ _PROTECTED_USER_ENV_KEYS = frozenset({
 _adk_process: subprocess.Popen | None = None
 _knowledge_review_lock = threading.Lock()
 _knowledge_review_task: asyncio.Task | None = None
+_skill_graph_sync_task: asyncio.Task | None = None
+_evaluation_recovery_task: asyncio.Task | None = None
 _knowledge_review_state = {
     "status": "idle",
     "trigger_session_id": None,
@@ -472,6 +477,54 @@ async def _run_remote_job_monitor() -> None:
             await asyncio.wait_for(_remote_job_monitor_stop.wait(), timeout=15)
         except TimeoutError:
             pass
+
+
+async def _sync_skill_graph_after_startup() -> None:
+    """Seed the graph without delaying HTTP readiness.
+
+    ``matcreator.skill`` has already loaded the in-process skill registry while
+    this module was imported. Reloading every SKILL.md here used to duplicate
+    that work and kept the whole web API unavailable until graph maintenance
+    completed.
+    """
+    try:
+        await asyncio.to_thread(seed_skills_to_graph)
+    except Exception:
+        logger.exception("Failed to synchronize skill graph after web startup")
+
+
+async def _recover_local_evaluations_after_startup() -> None:
+    """Resume local evaluation campaigns after the API is already available."""
+    try:
+        client = _benchmark_client()
+    except HTTPException:
+        logger.warning("Skipping evaluation recovery because benchmark service is not configured")
+        return
+
+    for campaign in _evaluation_store.list_active_campaigns():
+        service = EvaluationService(
+            _evaluation_store,
+            _evaluation_workspace_for_owner(campaign["owner_id"]),
+            launcher=_ManagedAdkEvaluationRuntime(campaign["owner_id"]),
+        )
+        await _evaluation_manager.start(campaign["campaign_id"], service, client)
+    for campaign in _evaluation_store.list_campaigns(owner_id="user"):
+        service = EvaluationService(
+            _evaluation_store,
+            _evaluation_workspace_for_owner(campaign["owner_id"]),
+            launcher=_ManagedAdkEvaluationRuntime(campaign["owner_id"]),
+        )
+        if campaign["status"] == "failed":
+            for attempt in _evaluation_store.list_attempts(campaign["campaign_id"]):
+                if attempt["status"] in {"runtime_starting", "running", "submitting"}:
+                    _evaluation_store.transition_attempt(
+                        attempt["attempt_id"],
+                        "interrupted",
+                        error="Local evaluation runtime was interrupted before benchmark submission.",
+                    )
+        await _evaluation_manager.recover_missing_result_campaign(
+            campaign["campaign_id"], service, client
+        )
 
 
 def _config_path_for_user(user_id: str = "") -> Path | None:
@@ -738,7 +791,7 @@ def _worker_env_vars() -> dict[str, str]:
     """
     keys = [
         "LLM_MODEL", "LLM_API_KEY", "LLM_BASE_URL", "EMBEDDING_MODEL",
-        "GRAPH_AGENT_MODEL", "REVIEW_AGENT_MODEL",
+        "GRAPH_AGENT_MODEL", "REVIEW_AGENT_MODEL", "SMALL_MODEL",
         "BOHRIUM_USERNAME", "BOHRIUM_PASSWORD", "BOHRIUM_ACCESS_KEY", "BOHRIUM_API_URL", "BOHRIUM_PROJECT_ID",
         "BOHRIUM_VASP_IMAGE", "BOHRIUM_VASP_MACHINE",
         "BOHRIUM_DEEPMD_IMAGE", "BOHRIUM_DEEPMD_MACHINE", "DEEPMD_MODEL_PATH",
@@ -874,16 +927,22 @@ def _load_skill_graph_payload(*, limit: int = 400) -> dict:
     unofficial_enabled = 0
     official_disabled = 0
     for entry in iter_entries_including_disabled(graph):
+        entry_type = _entry_value(entry.entry_type)
+        # Working memory is useful context in the graph until it has been
+        # distilled into durable knowledge.  Promoted memories remain hidden
+        # because their refinement target is the durable node to inspect.
+        if (
+            entry_type == "memory"
+            and (entry.metadata.custom or {}).get("memory", {}).get("promoted", False)
+        ):
+            continue
         if is_official_skill_entry(entry):
             official_disabled += int(is_entry_disabled(entry))
         else:
             unofficial_total += 1
             unofficial_enabled += int(not is_entry_disabled(entry))
-        if _entry_value(entry.entry_type) == "memory":
-            continue
         if len(nodes) >= limit:
             continue
-        entry_type = _entry_value(entry.entry_type)
         metadata = entry.metadata
         metadata_payload = _json_ready(metadata)
         skill_name = entry.title if "matcreator-skill" in entry.tags else None
@@ -1550,22 +1609,28 @@ async def summarize_session(
     if cached and isinstance(cached, dict) and cached.get("content_hash") == content_hash:
         return JSONResponse({"summary": cached["summary"]})
 
-    # Call LLM to generate summary
+    # Call LLM to generate summary (uses llm.small_model when set).
     summary = ""
     try:
         from litellm import acompletion
 
         model, api_key, base_url = _llm_config()
+        # Prefer the lightweight ``llm.small_model`` (e.g. qwen3.7-flash or
+        # glm-5.2-fast-preview) for cheap, high-volume session summaries.
+        # When ``small_model`` is unset (None), fall back to the main
+        # ``llm.model`` so summarization still works out of the box.
+        summary_model = _runtime_env_value("SMALL_MODEL") or model
         prompt_template = _SUMMARIZE_PROMPT_EN if _is_primarily_english(first_msg) else _SUMMARIZE_PROMPT
         prompt = prompt_template.format(text=first_msg[:2000])
 
         response = await acompletion(
-            model=model,
+            model=summary_model,
             messages=[{"role": "user", "content": prompt}],
             api_key=api_key or None,
             base_url=base_url or None,
             temperature=0.3,
-            max_tokens=100,
+            # Raised from 100 so longer summaries are not truncated mid-phrase.
+            max_tokens=2000,
         )
         raw = response.choices[0].message.content or ""
         import unicodedata
@@ -2312,50 +2377,21 @@ async def get_skill_graph_data(
 
 @app.on_event("startup")
 async def _on_startup() -> None:
-    global _remote_job_monitor_task
+    global _remote_job_monitor_task, _skill_graph_sync_task, _evaluation_recovery_task
     users_db.init_db()
     if _MATCREATOR_MODE != "server":
         users_db.migrate_legacy_adk_sessions(SESSION_DB_PATH, APP_NAME)
-    # Reconcile repository-managed skills before the graph UI can read stale
-    # nodes or edges.  Agent initialization also seeds the graph, but it may
-    # happen later or in a different worker process than the web frontend.
-    try:
-        await asyncio.to_thread(refresh_skills)
-    except Exception:
-        logger.exception("Failed to reconcile skill graph during web startup")
+    # Do not block the API on graph synchronization. Session browsing and
+    # authentication only need the local SQLite databases; the graph can catch
+    # up immediately afterwards. This also avoids re-parsing every skill at
+    # startup because ``matcreator.skill`` already populated ALL_SKILLS during
+    # module import.
+    _skill_graph_sync_task = asyncio.create_task(_sync_skill_graph_after_startup())
     if _MATCREATOR_MODE == "server" and _WORKER_IDLE_TIMEOUT_SECONDS > 0:
         asyncio.create_task(_idle_worker_reaper())
     _remote_job_monitor_task = asyncio.create_task(_run_remote_job_monitor())
     if _MATCREATOR_MODE == "local":
-        try:
-            client = _benchmark_client()
-        except HTTPException:
-            logger.warning("Skipping evaluation recovery because benchmark service is not configured")
-        else:
-            for campaign in _evaluation_store.list_active_campaigns():
-                service = EvaluationService(
-                    _evaluation_store,
-                    _evaluation_workspace_for_owner(campaign["owner_id"]),
-                    launcher=_ManagedAdkEvaluationRuntime(campaign["owner_id"]),
-                )
-                await _evaluation_manager.start(campaign["campaign_id"], service, client)
-            for campaign in _evaluation_store.list_campaigns(owner_id="user"):
-                service = EvaluationService(
-                    _evaluation_store,
-                    _evaluation_workspace_for_owner(campaign["owner_id"]),
-                    launcher=_ManagedAdkEvaluationRuntime(campaign["owner_id"]),
-                )
-                if campaign["status"] == "failed":
-                    for attempt in _evaluation_store.list_attempts(campaign["campaign_id"]):
-                        if attempt["status"] in {"runtime_starting", "running", "submitting"}:
-                            _evaluation_store.transition_attempt(
-                                attempt["attempt_id"],
-                                "interrupted",
-                                error="Local evaluation runtime was interrupted before benchmark submission.",
-                            )
-                await _evaluation_manager.recover_missing_result_campaign(
-                    campaign["campaign_id"], service, client
-                )
+        _evaluation_recovery_task = asyncio.create_task(_recover_local_evaluations_after_startup())
 
 
 @app.on_event("shutdown")
@@ -2364,6 +2400,13 @@ async def _on_shutdown() -> None:
     _remote_job_monitor_stop.set()
     if _remote_job_monitor_task is not None:
         await _remote_job_monitor_task
+    for task in (_skill_graph_sync_task, _evaluation_recovery_task):
+        if task is not None and not task.done():
+            task.cancel()
+    await asyncio.gather(
+        *(task for task in (_skill_graph_sync_task, _evaluation_recovery_task) if task is not None),
+        return_exceptions=True,
+    )
     await _run_registry.shutdown()
 
 
@@ -2984,6 +3027,31 @@ async def get_execution_graph(session_id: str) -> JSONResponse:
     """Return the execution graph (plan DAG) from session state for frontend visualization."""
     data = _load_execution_graph(session_id)
     return JSONResponse(data)
+
+
+@app.get("/api/execution-graph/{session_id}/events")
+async def stream_execution_graph(session_id: str, request: Request) -> StreamingResponse:
+    """Push roadmap snapshots whenever persisted execution state changes.
+
+    Step executors can run in a worker process, so an in-memory notification
+    would not reliably reach this web process.  Watching the durable session
+    graph here keeps the SSE stream correct in both local and server modes.
+    """
+    async def stream():
+        last_snapshot = None
+        while not await request.is_disconnected():
+            data = _load_execution_graph(session_id)
+            snapshot = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            if snapshot != last_snapshot:
+                yield f"data: {snapshot}\n\n"
+                last_snapshot = snapshot
+            await asyncio.sleep(0.2)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/sessions/{session_id}/session-log")
