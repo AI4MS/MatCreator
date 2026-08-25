@@ -481,9 +481,10 @@
       <div class="settings-card">
         <div class="settings-header">
           <span class="brand-title" id="settings-dialog-title" style="font-size:1.1rem">Settings</span>
-          <button class="ghost" id="settings-close" type="button" aria-label="Close settings" style="padding:4px 10px;font-size:13px">✕</button>
+          <button class="ghost" id="settings-close" type="button" aria-label="Close settings" style="padding:4px 10px;font-size:var(--font-size-ui)">✕</button>
         </div>
         <div class="settings-tabs">
+          <button class="settings-tab" type="button" data-tab="appearance">Appearance</button>
           <button class="settings-tab active" type="button" data-tab="profile">Profile</button>
           <button class="settings-tab" type="button" data-tab="skills">Skills</button>
           <button class="settings-tab" type="button" data-tab="llm">LLM Settings</button>
@@ -492,6 +493,17 @@
           <button class="settings-tab" type="button" data-tab="env">Environment</button>
         </div>
         <div class="settings-body">
+          <div class="settings-pane hidden" id="tab-appearance">
+            <label class="settings-label">Interface Scale</label>
+            <p class="settings-hint">Scales the interface text while preserving the typography hierarchy. Applies immediately and is saved on this device.</p>
+            <div id="settings-font-scale-options" class="settings-font-scale-options" role="group" aria-label="Interface scale">
+              <button class="ghost settings-font-scale-option" type="button" data-font-scale="90" aria-pressed="false">90%</button>
+              <button class="ghost settings-font-scale-option" type="button" data-font-scale="100" aria-pressed="true">100%</button>
+              <button class="ghost settings-font-scale-option" type="button" data-font-scale="110" aria-pressed="false">110%</button>
+              <button class="ghost settings-font-scale-option" type="button" data-font-scale="125" aria-pressed="false">125%</button>
+              <button class="ghost settings-font-scale-option" type="button" data-font-scale="150" aria-pressed="false">150%</button>
+            </div>
+          </div>
           <div class="settings-pane" id="tab-profile">
             <label class="settings-label">Username</label>
             <input id="settings-username" class="text-input" placeholder="your username" style="width:100%;box-sizing:border-box" />
@@ -613,7 +625,7 @@
             <div class="eyebrow">File Viewer</div>
             <div id="fv-filename" style="font-size:0.85rem;font-family:var(--mono);color:var(--text);word-break:break-all"></div>
           </div>
-          <button class="ghost" id="fv-close" type="button" aria-label="Close file viewer" style="padding:4px 10px;font-size:13px">✕</button>
+          <button class="ghost" id="fv-close" type="button" aria-label="Close file viewer" style="padding:4px 10px;font-size:var(--font-size-ui)">✕</button>
         </div>
         <div id="fv-content" class="fv-content"></div>
       </div>

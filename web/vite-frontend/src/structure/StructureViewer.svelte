@@ -839,7 +839,7 @@
     overflow: hidden;
   }
   .structure-renderer-host { position: absolute; inset: 0; min-height: 0; overflow: hidden; }
-  .structure-interaction-hint { position: absolute; z-index: 840; left: 50%; bottom: 12px; transform: translateX(-50%); width: max-content; max-width: calc(100% - 140px); padding: 5px 8px; border: 1px solid color-mix(in srgb, var(--border) 80%, transparent); border-radius: 7px; color: var(--muted); background: rgba(var(--panel-rgb), .72); font: 11px/1.3 var(--font-sans); white-space: nowrap; pointer-events: none; }
+  .structure-interaction-hint { position: absolute; z-index: 840; left: 50%; bottom: 12px; transform: translateX(-50%); width: max-content; max-width: calc(100% - 140px); padding: 5px 8px; border: 1px solid color-mix(in srgb, var(--border) 80%, transparent); border-radius: 7px; color: var(--muted); background: rgba(var(--panel-rgb), .72); font: var(--font-size-caption)/1.3 var(--font-sans); white-space: nowrap; pointer-events: none; }
 
   .structure-viewer-embed :global(button) {
     color: inherit;
@@ -903,23 +903,23 @@
     background: rgba(var(--panel-rgb), 0.97);
     box-shadow: var(--popup-shadow);
     backdrop-filter: blur(16px);
-    font: 12px/1.4 var(--font-sans);
+    font: var(--font-size-caption)/1.4 var(--font-sans);
   }
   .model-workbench.interface-workbench { width: min(560px, calc(100% - 20px)); }
   .model-workbench header { display: flex; justify-content: space-between; align-items: center; margin: -2px 0 11px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
-  .model-workbench header strong { font-size: 13px; color: var(--text); }
-  .atom-inspector { position: absolute; z-index: 900; top: 58px; right: 10px; width: min(280px, calc(100% - 20px)); box-sizing: border-box; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); background: rgba(var(--panel-rgb), 0.97); box-shadow: var(--popup-shadow); backdrop-filter: blur(16px); font: 12px/1.4 var(--font-sans); }
+  .model-workbench header strong { font-size: var(--font-size-meta); color: var(--text); }
+  .atom-inspector { position: absolute; z-index: 900; top: 58px; right: 10px; width: min(280px, calc(100% - 20px)); box-sizing: border-box; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); background: rgba(var(--panel-rgb), 0.97); box-shadow: var(--popup-shadow); backdrop-filter: blur(16px); font: var(--font-size-caption)/1.4 var(--font-sans); }
   .atom-inspector header { display: flex; justify-content: space-between; align-items: flex-start; margin: -2px 0 10px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
-  .atom-inspector header strong { display: block; font-size: 13px; }
-  .atom-inspector header span { color: var(--muted); font-size: 11px; }
-  .atom-inspector label { display: grid; gap: 5px; margin: 9px 0; color: var(--muted); font-weight: 550; }
+  .atom-inspector header strong { display: block; font-size: var(--font-size-meta); }
+  .atom-inspector header span { color: var(--muted); font-size: var(--font-size-caption); }
+  .atom-inspector label { display: grid; gap: 5px; margin: 9px 0; color: var(--muted); font-weight: var(--font-weight-medium); }
   .atom-inspector :is(input, select) { width: 100%; min-width: 0; box-sizing: border-box; padding: 7px 8px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--subtle-surface); font: inherit; font-weight: 400; outline: none; }
   .atom-inspector :is(input, select):focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
-  .element-picker { position: relative; display: grid; gap: 5px; margin: 9px 0; color: var(--muted); font-weight: 550; }
+  .element-picker { position: relative; display: grid; gap: 5px; margin: 9px 0; color: var(--muted); font-weight: var(--font-weight-medium); }
   .element-picker-button { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 7px 8px; border: 1px solid var(--border) !important; border-radius: 8px; color: var(--text); background: var(--subtle-surface); text-align: left; font: inherit; }
   .element-picker-button:hover { border-color: var(--accent) !important; }
-  .element-picker-button strong { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; color: var(--bg); background: var(--accent); font-size: 12px; }
-  .element-picker-button span { margin-left: auto; color: var(--muted); font-size: 11px; font-weight: 400; }
+  .element-picker-button strong { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; color: var(--bg); background: var(--accent); font-size: var(--font-size-caption); }
+  .element-picker-button span { margin-left: auto; color: var(--muted); font-size: var(--font-size-caption); font-weight: var(--font-weight-regular); }
   .periodic-table { position: absolute; z-index: 2; top: calc(100% + 5px); right: 0; display: grid; grid-template-columns: repeat(18, minmax(0, 1fr)); grid-template-rows: repeat(7, 23px) 8px repeat(2, 23px); gap: 2px; width: min(510px, calc(100vw - 42px)); padding: 7px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel); box-shadow: var(--popup-shadow); }
   .periodic-table button { min-width: 0; padding: 0; border: 1px solid transparent !important; border-radius: 4px; color: var(--text); background: var(--subtle-surface); font: 600 8px/1 system-ui, sans-serif; }
   .periodic-table button:hover, .periodic-table button.selected { border-color: var(--accent) !important; color: var(--bg); background: var(--accent); }
@@ -928,18 +928,18 @@
   .coordinate-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
   .coordinate-grid label { min-width: 0; }
   .coordinate-grid input { padding-inline: 4px !important; text-align: center; }
-  .atom-inspector p { margin: 10px 0; color: var(--muted); font-size: 11px; }
+  .atom-inspector p { margin: 10px 0; color: var(--muted); font-size: var(--font-size-caption); }
   .inspector-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
   .inspector-actions .build-button { margin: 0; }
   .atom-selection-summary { top: 58px; }
-  .close-button { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 999px; color: var(--muted); background: transparent; font-size: 18px; line-height: 1; }
+  .close-button { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 999px; color: var(--muted); background: transparent; font-size: var(--font-size-body); line-height: 1; }
   .close-button:hover { color: #f87171; background: rgba(248, 113, 113, 0.14); }
-  .model-workbench label { display: grid; gap: 5px; margin: 9px 0; color: var(--muted); font-weight: 550; }
+  .model-workbench label { display: grid; gap: 5px; margin: 9px 0; color: var(--muted); font-weight: var(--font-weight-medium); }
   .model-workbench :is(input, select, textarea) { width: 100%; box-sizing: border-box; padding: 7px 8px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--subtle-surface); font: inherit; font-weight: 400; outline: none; transition: border-color 0.16s ease, box-shadow 0.16s ease; }
   .model-workbench :is(input, select, textarea):focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
   .model-workbench select option { color: var(--text); background: var(--panel); }
   .matrix-fieldset { margin: 9px 0; padding: 9px; border: 1px solid var(--border); border-radius: 9px; }
-  .matrix-fieldset legend { padding: 0 4px; color: var(--muted); font-weight: 550; }
+  .matrix-fieldset legend { padding: 0 4px; color: var(--muted); font-weight: var(--font-weight-medium); }
   .matrix-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
   .matrix-grid input { min-width: 0; padding: 7px 4px !important; text-align: center; }
   .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -949,17 +949,17 @@
   .model-error { margin-top: 9px; color: #fca5a5; }
   .model-status { margin-top: 9px; color: #86efac; overflow-wrap: anywhere; }
   .model-note, .model-workbench small { color: var(--muted); }
-  .model-note { margin: 11px 0 0; padding-top: 10px; border-top: 1px solid var(--border); font-size: 11px; }
-  .secondary-button { width: 100%; padding: 7px 9px; border: 1px solid var(--border) !important; border-radius: 9px; color: var(--text); background: var(--subtle-surface); font: inherit; font-weight: 650; }
+  .model-note { margin: 11px 0 0; padding-top: 10px; border-top: 1px solid var(--border); font-size: var(--font-size-caption); }
+  .secondary-button { width: 100%; padding: 7px 9px; border: 1px solid var(--border) !important; border-radius: 9px; color: var(--text); background: var(--subtle-surface); font: inherit; font-weight: var(--font-weight-semibold); }
   .secondary-button:hover:not(:disabled) { color: var(--accent); border-color: var(--accent) !important; }
   .secondary-button:disabled { opacity: 0.5; }
   .draw-button { display: flex; align-items: center; justify-content: center; gap: 7px; margin-bottom: 8px; }
   .draw-button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
   .interface-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .interface-columns section { padding: 9px; border: 1px solid var(--border); border-radius: 10px; background: var(--subtle-surface); min-width: 0; }
-  .interface-columns section > strong { color: var(--accent); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .interface-columns section > strong { color: var(--accent); font-size: var(--font-size-caption); text-transform: uppercase; letter-spacing: var(--letter-spacing-label); }
   .advanced-options { margin: 10px 0; padding: 8px 9px; border: 1px solid var(--border); border-radius: 9px; }
-  .advanced-options summary { color: var(--muted); cursor: pointer; font-weight: 650; }
+  .advanced-options summary { color: var(--muted); cursor: pointer; font-weight: var(--font-weight-semibold); }
   .check-label { display: flex !important; grid-template-columns: none !important; flex-direction: row; align-items: center; gap: 7px !important; }
   .check-label input { width: auto !important; accent-color: var(--accent-2); }
   .interface-candidates { display: grid; gap: 5px; max-height: 180px; margin: 10px 0; overflow-y: auto; }
@@ -968,10 +968,10 @@
   .interface-candidates button:hover, .interface-candidates button.selected { border-color: var(--accent) !important; color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
   .sketcher-overlay { position: absolute; z-index: 100000004; inset: 0; display: grid; place-items: center; padding: 14px; background: var(--modal-overlay); }
   .sketcher-dialog { position: relative; display: flex; flex-direction: column; width: min(1000px, 100%); height: min(700px, 100%); overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); box-shadow: var(--popup-shadow); }
-  .sketcher-dialog > header { display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; border-bottom: 1px solid var(--border); color: var(--text); font: 13px/1.4 var(--font-sans); }
+  .sketcher-dialog > header { display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; border-bottom: 1px solid var(--border); color: var(--text); font: var(--font-size-meta)/1.4 var(--font-sans); }
   .sketcher-host { flex: 1; min-height: 0; background: white; }
   .sketcher-host :global(> div) { width: 100%; height: 100%; }
-  .sketcher-loading { position: absolute; inset: 46px 0 48px; display: grid; place-items: center; color: var(--muted); background: var(--panel); font: 12px var(--font-sans); }
+  .sketcher-loading { position: absolute; inset: 46px 0 48px; display: grid; place-items: center; color: var(--muted); background: var(--panel); font: var(--font-size-caption) var(--font-sans); }
   .sketcher-dialog > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); }
   .sketcher-dialog > footer button { width: auto; min-width: 110px; margin: 0; }
   @media (max-width: 620px) {

@@ -1,6 +1,6 @@
 import { createDialogController } from "../../shared/ui/dialog.js";
 
-export function createSettingsController({ state, applyLogin }) {
+export function createSettingsController({ state, applyLogin, getFontScale, applyFontScale }) {
 
   const settingsModal = document.getElementById("settings-modal");
   const settingsBtn = document.getElementById("settings-btn");
@@ -16,6 +16,7 @@ export function createSettingsController({ state, applyLogin }) {
   const settingsLlmExecutorDefault = document.getElementById("settings-llm-executor-default");
   const settingsLlmCards = document.getElementById("settings-llm-cards");
   const settingsLlmCardAdd = document.getElementById("settings-llm-card-add");
+  const fontScaleOptions = document.getElementById("settings-font-scale-options");
   const CUSTOM_ENV_CONFIG_KEY = "CUSTOM_ENV";
   const settingsDialog = createDialogController({
     element: settingsModal,
@@ -253,6 +254,13 @@ export function createSettingsController({ state, applyLogin }) {
     row.querySelector(".settings-env-key")?.focus();
   });
 
+  fontScaleOptions?.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-font-scale]");
+    if (!option) return;
+    applyFontScale?.(Number(option.dataset.fontScale));
+    updateFontScaleOptions();
+  });
+
   function activeSettingsTabName() {
     return document.querySelector(".settings-tab.active")?.dataset.tab || "profile";
   }
@@ -266,6 +274,16 @@ export function createSettingsController({ state, applyLogin }) {
     settingsUsername.value = state.displayName || "";
     settingsUuid.value = state.userId || "";
     loadSettingsData();
+    updateFontScaleOptions();
+  }
+
+  function updateFontScaleOptions() {
+    const currentScale = getFontScale?.() ?? 100;
+    fontScaleOptions?.querySelectorAll("[data-font-scale]").forEach((option) => {
+      const selected = Number(option.dataset.fontScale) === currentScale;
+      option.classList.toggle("active", selected);
+      option.setAttribute("aria-pressed", String(selected));
+    });
   }
 
   function closeSettingsModal() {

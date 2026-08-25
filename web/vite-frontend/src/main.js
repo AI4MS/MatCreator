@@ -27,6 +27,21 @@ const AGENT_MODE_KEY = "mat_agentMode";
 const SESSION_ID_KEY = "mat_sessionId";
 const SESSION_OWNER_KEY = "mat_sessionOwnerId";
 const THEME_KEY = "mat_theme";
+const FONT_SCALE_KEY = "mat_fontScale";
+const FONT_SCALE_PRESETS = [90, 100, 110, 125, 150];
+
+function getFontScale() {
+  const stored = Number(localStorage.getItem(FONT_SCALE_KEY));
+  if (stored > 150) return 150;
+  return FONT_SCALE_PRESETS.includes(stored) ? stored : 100;
+}
+
+function applyFontScale(scale, { persist = true } = {}) {
+  const nextScale = FONT_SCALE_PRESETS.includes(Number(scale)) ? Number(scale) : 100;
+  document.documentElement.style.setProperty("--font-scale", `${nextScale}%`);
+  if (persist) localStorage.setItem(FONT_SCALE_KEY, String(nextScale));
+  return nextScale;
+}
 
 function removeOverlayWithMotion(overlay) {
   if (!overlay?.isConnected) return Promise.resolve();
@@ -171,7 +186,6 @@ const {
   beginScrollTransaction,
   captureScrollPosition,
   createAgentAvatarEl,
-  createJsonBlock,
   endScrollTransaction,
   markReadingAnchors,
   protectAsyncContentLayout,
@@ -188,7 +202,12 @@ const createChatDisclosureController = () => createDisclosureController({
 });
 const chatDisclosureController = createChatDisclosureController();
 
-const settingsController = createSettingsController({ state, applyLogin });
+const settingsController = createSettingsController({
+  state,
+  applyLogin,
+  getFontScale,
+  applyFontScale,
+});
 
 const skillGraphController = createSkillGraphController({
   state,
@@ -246,6 +265,7 @@ function applyTheme(theme) {
 }
 
 applyTheme(state.theme);
+applyFontScale(getFontScale());
 themeToggle?.addEventListener("click", () => {
   const nextTheme = state.theme === "light" ? "dark" : "light";
   localStorage.setItem(THEME_KEY, nextTheme);
@@ -537,6 +557,8 @@ async function logout() {
   userDisplay.textContent = "—";
   chatArea.innerHTML = "";
   stepExecutionFeed.reset();
+  chatDisclosureController.clear();
+  state.sessionViewCache.clear();
   sessionListEl.innerHTML = '<li class="empty">Sign in to see sessions</li>';
   renderSessionFilesTree([]);
   clearCurrentUploads();
@@ -774,16 +796,28 @@ function hideLocalAuthControls() {
   if (settingsPasswordSection) settingsPasswordSection.style.display = "none";
 }
 
+async function getStartupHealth() {
+  // The development server may render before its API proxy is listening. Do
+  // not permanently select local mode or abandon the saved-session restore
+  // because of that short startup race.
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      const response = await fetch("/api/health");
+      if (response.ok) return response.json();
+    } catch (_) {
+      // Retry below.
+    }
+    if (attempt < 7) {
+      await new Promise((resolve) => window.setTimeout(resolve, 250 * (attempt + 1)));
+    }
+  }
+  return null;
+}
+
 // On load: in local mode force passwordless "user"; in server mode require server auth.
 (async () => {
-  let serverMode = "local";
-  try {
-    const healthResp = await fetch("/api/health");
-    if (healthResp.ok) {
-      const health = await healthResp.json();
-      serverMode = health.mode || "local";
-    }
-  } catch (_) { /* server not up yet — assume local */ }
+  const health = await getStartupHealth();
+  const serverMode = health?.mode || "local";
 
   state.deploymentMode = serverMode === "server" ? "server" : "local";
   const storedMode = localStorage.getItem("mat_deploymentMode") || "";
@@ -811,7 +845,8 @@ function hideLocalAuthControls() {
   sessionIdEl.textContent = state.sessionId;
   await refreshAccess();
   renderUserDisplay();
-  const sessions = await loadSessions();
+  sessionListEl.innerHTML = '<li class="empty">Loading saved sessions…</li>';
+  const sessions = await loadSessions({ retries: 7 });
   const storedSession = validatedStoredSession(sessions, storedSessionId, storedSessionOwner);
   if (storedSession) {
     await switchSession(storedSession.sessionId, storedSession.owner);
@@ -1789,6 +1824,7 @@ const sessionRuntime = createSessionRuntime({
   addPlanApprovalActions,
   beginScrollTransaction,
   endScrollTransaction,
+  clearChatDisclosures: () => chatDisclosureController.clear(),
   renderSessionBanner,
   renderSessionFilesTree,
   refreshSessionFiles,
@@ -2434,7 +2470,7 @@ async function openViewer(item) {
   if (tab.destroyViewer) await tab.destroyViewer();
   tab.viewer = null;
   tab.destroyViewer = null;
-  tab.canvas.innerHTML = '<div style="color:var(--muted);padding:16px;font-size:13px">Loading…</div>';
+  tab.canvas.innerHTML = '<div style="color:var(--muted);padding:16px;font-size:var(--font-size-ui)">Loading…</div>';
   tab.meta.textContent = "";
 
   try {
@@ -2702,6 +2738,7 @@ async function _doNewSession(customWorkdir) {
   stepExecutionFeed.reset();
   state.sessionSummaries = {};
   state.summaryGeneratedFor = new Set();
+  chatDisclosureController.clear();
   renderSessionBanner("");
   renderSessionFilesTree([]);
   clearCurrentUploads();
