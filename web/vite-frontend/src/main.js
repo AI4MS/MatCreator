@@ -1383,32 +1383,43 @@ function createActivityAction(action, wireTimelineDetails, { isNew = false, incl
   summary.append(icon, text, duration);
   details.appendChild(summary);
 
-  const body = document.createElement("div");
-  body.className = "activity-action-body";
-  displayAction.toolCalls.forEach((call) => {
-    const result = document.createElement("div");
-    result.className = `activity-action-tool-result${displayAction.toolCalls.length === 1 ? " is-standalone" : ""}`;
-    result.textContent = call.semanticSummary;
-    if (displayAction.toolCalls.length > 1) {
-      const row = document.createElement("div");
-      row.className = `activity-action-tool is-${call.status}`;
-      const status = document.createElement("span");
-      status.className = "tool-call-status";
-      status.textContent = toolStatusIcon(call);
-      const name = document.createElement("span");
-      name.className = "tool-call-name";
-      name.textContent = call.name;
-      const callDuration = document.createElement("span");
-      callDuration.className = "tool-call-duration";
-      callDuration.textContent = formatToolDuration(call);
-      row.append(status, name, callDuration);
-      body.appendChild(row);
-    }
-    body.appendChild(result);
+  let bodyMounted = false;
+  const mountBody = () => {
+    if (bodyMounted) return;
+    bodyMounted = true;
+    const body = document.createElement("div");
+    body.className = "activity-action-body";
+    displayAction.toolCalls.forEach((call) => {
+      const result = document.createElement("div");
+      result.className = `activity-action-tool-result${displayAction.toolCalls.length === 1 ? " is-standalone" : ""}`;
+      result.textContent = call.semanticSummary;
+      if (displayAction.toolCalls.length > 1) {
+        const row = document.createElement("div");
+        row.className = `activity-action-tool is-${call.status}`;
+        const status = document.createElement("span");
+        status.className = "tool-call-status";
+        status.textContent = toolStatusIcon(call);
+        const name = document.createElement("span");
+        name.className = "tool-call-name";
+        name.textContent = call.name;
+        const callDuration = document.createElement("span");
+        callDuration.className = "tool-call-duration";
+        callDuration.textContent = formatToolDuration(call);
+        row.append(status, name, callDuration);
+        body.appendChild(row);
+      }
+      body.appendChild(result);
+    });
+    // Raw tool inputs/outputs can dwarf the visible transcript for delegated
+    // work. Construct them only after this one activity is explicitly opened.
+    body.appendChild(createActionRawView(displayAction));
+    details.appendChild(body);
+  };
+  details.addEventListener("toggle", () => {
+    if (details.open) mountBody();
   });
-  body.appendChild(createActionRawView(displayAction));
-  details.appendChild(body);
   wireTimelineDetails(details, `${action.timelineId}:tool`);
+  if (details.open) mountBody();
   return details;
 }
 

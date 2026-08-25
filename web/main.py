@@ -1421,6 +1421,38 @@ def _session_row_to_summary(row: sqlite3.Row, summaries: dict[str, dict] | None 
     return result
 
 
+def _session_view_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Return only state needed to restore a session view.
+
+    Session state also contains the durable execution log.  Returning that log
+    with every transcript page duplicates potentially large sub-agent payloads
+    before the browser has decided to display them.
+    """
+    if not isinstance(state, dict):
+        return {}
+    view_keys = {"agent_mode", "benchmark_mode", "workdir", "custom_workdir"}
+    return {
+        key: value
+        for key, value in state.items()
+        if key in view_keys
+    }
+
+
+def _parse_session_event_cursor(cursor: str) -> tuple[float, int] | None:
+    """Parse the opaque-enough timestamp,rowid cursor used for event paging."""
+    if not cursor:
+        return None
+    try:
+        timestamp, row_id = cursor.rsplit(",", 1)
+        parsed_timestamp = float(timestamp)
+        parsed_row_id = int(row_id)
+    except (TypeError, ValueError):
+        return None
+    if parsed_row_id <= 0:
+        return None
+    return parsed_timestamp, parsed_row_id
+
+
 def _query_session_summaries(user_id: str | None = None) -> list[dict]:
     if _MATCREATOR_MODE == "server":
         return _query_session_summaries_server(user_id)
@@ -2622,10 +2654,33 @@ async def list_user_sessions(user_id: str) -> JSONResponse:
 
 
 @app.get("/api/users/{user_id}/sessions/{session_id}")
-async def get_user_session(user_id: str, session_id: str) -> JSONResponse:
+async def get_user_session(
+    user_id: str,
+    session_id: str,
+    limit: int = 120,
+    before: str = "",
+    after: str = "",
+    compact: bool = False,
+) -> JSONResponse:
+    """Return the newest page of a session transcript.
+
+    ``before`` and ``after`` are ``timestamp,rowid`` cursors. Pages always
+    arrive in chronological order, so the frontend can prepend or append them
+    without reordering individual events.
+    """
     session_db_path = next((db for _, db in _iter_session_db_paths(user_id)), None)
     if not session_db_path:
         raise HTTPException(status_code=404, detail="Session not found")
+    if not 1 <= limit <= 500:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+    cursor = _parse_session_event_cursor(before)
+    if before and cursor is None:
+        raise HTTPException(status_code=422, detail="before must be a valid event cursor")
+    after_cursor = _parse_session_event_cursor(after)
+    if after and after_cursor is None:
+        raise HTTPException(status_code=422, detail="after must be a valid event cursor")
+    if cursor is not None and after_cursor is not None:
+        raise HTTPException(status_code=422, detail="before and after cannot be used together")
 
     try:
         with sqlite3.connect(session_db_path) as conn:
@@ -2651,39 +2706,65 @@ async def get_user_session(user_id: str, session_id: str) -> JSONResponse:
             if session is None:
                 raise HTTPException(status_code=404, detail="Session not found")
 
+            where_parts = ["app_name = ?", "session_id = ?"]
+            params: list[Any] = [APP_NAME, session_id]
             if _MATCREATOR_MODE == "server":
-                event_rows = conn.execute(
-                    """
-                    SELECT event_data
-                    FROM events
-                    WHERE app_name = ? AND user_id = ? AND session_id = ?
-                    ORDER BY timestamp ASC
-                    """,
-                    (APP_NAME, user_id, session_id),
-                ).fetchall()
-            else:
-                event_rows = conn.execute(
-                    """
-                    SELECT event_data
-                    FROM events
-                    WHERE app_name = ? AND session_id = ?
-                    ORDER BY timestamp ASC
-                    """,
-                    (APP_NAME, session_id),
-                ).fetchall()
+                where_parts.insert(1, "user_id = ?")
+                params.insert(1, user_id)
+            if cursor is not None:
+                where_parts.append(
+                    "(COALESCE(timestamp, 0) < ? OR "
+                    "(COALESCE(timestamp, 0) = ? AND rowid < ?))"
+                )
+                params.extend([cursor[0], cursor[0], cursor[1]])
+            elif after_cursor is not None:
+                where_parts.append(
+                    "(COALESCE(timestamp, 0) > ? OR "
+                    "(COALESCE(timestamp, 0) = ? AND rowid > ?))"
+                )
+                params.extend([after_cursor[0], after_cursor[0], after_cursor[1]])
+            direction = "ASC" if after_cursor is not None else "DESC"
+            event_rows = conn.execute(
+                f"""
+                SELECT rowid AS event_row_id, event_data, COALESCE(timestamp, 0) AS event_timestamp
+                FROM events
+                WHERE {' AND '.join(where_parts)}
+                ORDER BY event_timestamp {direction}, event_row_id {direction}
+                LIMIT ?
+                """,
+                [*params, limit + 1],
+            ).fetchall()
     except sqlite3.Error as exc:
         raise HTTPException(status_code=500, detail=f"Failed to read session: {exc}")
 
     summary = _session_row_to_summary(session)
     summary["summary"] = _get_session_summary(session_id, user_id if _MATCREATOR_MODE == "server" else None)
-    summary["state"] = _load_json_field(session["state"], {})
-    events = [
-        _load_json_field(row["event_data"], {})
-        for row in event_rows
-    ]
-    # Return the canonical session history as-is so the frontend reflects only
-    # what was actually persisted in the session DB.
+    persisted_state = _load_json_field(session["state"], {})
+    # Keep the existing detail endpoint compatible for API/debug consumers.
+    # The conversation UI opts into compact mode because it needs only these
+    # view settings, not the session's duplicated execution-log payloads.
+    summary["state"] = _session_view_state(persisted_state) if compact else persisted_state
+    has_more = len(event_rows) > limit
+    page_rows = event_rows[:limit]
+    chronological_rows = page_rows if after_cursor is not None else list(reversed(page_rows))
+    start_cursor = ""
+    end_cursor = ""
+    if chronological_rows:
+        start_cursor = f"{chronological_rows[0]['event_timestamp']},{chronological_rows[0]['event_row_id']}"
+        end_cursor = f"{chronological_rows[-1]['event_timestamp']},{chronological_rows[-1]['event_row_id']}"
+    events = [_load_json_field(row["event_data"], {}) for row in chronological_rows]
+    # Return canonical persisted events, but only one chronological page. The
+    # graph/log endpoints remain the explicit opt-in path for debug payloads.
     summary["events"] = events
+    summary["pagination"] = {
+        # Keep the first-release names for clients that only page backward.
+        "has_more": has_more if after_cursor is None else False,
+        "next_before": start_cursor if after_cursor is None and has_more else "",
+        "has_more_before": has_more if after_cursor is None else False,
+        "has_more_after": has_more if after_cursor is not None else False,
+        "start_cursor": start_cursor,
+        "end_cursor": end_cursor,
+    }
     return JSONResponse(summary)
 
 

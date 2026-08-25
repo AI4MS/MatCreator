@@ -1031,6 +1031,16 @@
   display: none;
 }
 
+.session-history-load-control {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 14px;
+}
+
+.session-history-load-button {
+  font-size: 12px;
+}
+
 .step-feed-inline-region {
   display: flex;
   flex-direction: column;

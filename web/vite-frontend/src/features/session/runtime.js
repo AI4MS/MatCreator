@@ -30,23 +30,31 @@ export function createSessionRuntime({
   workdirDisplay,
 }) {
   const sessionViewCacheLimit = 3;
+  const sessionHistoryWindowPages = 3;
   let renderedSessionKey = null;
+  let sessionFetchController = null;
+  const sessionHistory = new Map();
   // Plan approval is UI-derived from persisted events. A cancelled turn can
   // still contain a successful validation event, so remember that its prompt
   // was dismissed until the user deliberately starts another turn.
   const suppressedPlanApprovalTurns = new Map();
 
-  async function fetchSessionData(sessionId) {
-    const owner = state.activeSessionUserId || state.userId;
-    const response = await fetch(`/api/users/${encodeURIComponent(owner)}/sessions/${encodeURIComponent(sessionId)}`, {
+  async function fetchSessionData(sessionId, owner, { before = "", after = "", signal } = {}) {
+    const query = new URLSearchParams();
+    query.set("compact", "1");
+    if (before) query.set("before", before);
+    if (after) query.set("after", after);
+    const suffix = query.size ? `?${query}` : "";
+    const response = await fetch(`/api/users/${encodeURIComponent(owner)}/sessions/${encodeURIComponent(sessionId)}${suffix}`, {
       headers: { "Content-Type": "application/json" },
+      signal,
     });
     return response.ok ? response.json() : null;
   }
 
-  async function fetchSessionStepNodes(sessionId) {
+  async function fetchSessionStepNodes(sessionId, signal) {
     try {
-      const response = await fetch(`/api/agent-graph/${encodeURIComponent(sessionId)}`);
+      const response = await fetch(`/api/agent-graph/${encodeURIComponent(sessionId)}`, { signal });
       if (!response.ok) return [];
       const graph = await response.json();
       return Object.values(graph.nodes || {})
@@ -257,6 +265,104 @@ export function createSessionRuntime({
     }
   }
 
+  function historyEvents(history) {
+    return history.pages.flatMap((page) => page.events);
+  }
+
+  function historyPage(response) {
+    const pagination = response.pagination || {};
+    return {
+      events: response.events || [],
+      startCursor: pagination.start_cursor || "",
+      endCursor: pagination.end_cursor || "",
+    };
+  }
+
+  function renderHistoryLoadControls(viewKey) {
+    chatArea.querySelectorAll(".session-history-load-control").forEach((element) => element.remove());
+    const history = sessionHistory.get(viewKey);
+    if (!history) return;
+    const createControl = (direction) => {
+      const control = document.createElement("div");
+      control.className = `session-history-load-control is-${direction}`;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "ghost session-history-load-button";
+      button.textContent = direction === "older" ? "Load earlier messages" : "Load newer messages";
+      button.addEventListener("click", () => { void loadSessionHistoryPage(viewKey, direction, button); });
+      control.appendChild(button);
+      return control;
+    };
+    if (history.hasOlder) chatArea.prepend(createControl("older"));
+    if (history.hasNewer) chatArea.append(createControl("newer"));
+  }
+
+  async function loadSessionHistoryPage(viewKey, direction, button) {
+    const history = sessionHistory.get(viewKey);
+    const isOlder = direction === "older";
+    const canLoad = isOlder ? history?.hasOlder : history?.hasNewer;
+    if (!canLoad || history.loading || sessionRequestKey() !== viewKey) return;
+    const edgePage = isOlder ? history.pages[0] : history.pages.at(-1);
+    const cursor = isOlder ? edgePage?.startCursor : edgePage?.endCursor;
+    if (!cursor) return;
+    history.loading = true;
+    button.disabled = true;
+    button.textContent = isOlder ? "Loading earlier messages…" : "Loading newer messages…";
+    try {
+      const page = await fetchSessionData(history.sessionId, history.owner, isOlder
+        ? { before: cursor }
+        : { after: cursor });
+      if (!page || sessionRequestKey() !== viewKey) return;
+      const received = historyPage(page);
+      if (!received.events.length) {
+        if (isOlder) history.hasOlder = false;
+        else history.hasNewer = false;
+        return;
+      }
+      if (isOlder) {
+        history.pages.unshift(received);
+        history.hasOlder = Boolean(page.pagination?.has_more_before ?? page.pagination?.has_more);
+        if (history.pages.length > sessionHistoryWindowPages) {
+          history.pages.pop();
+          history.hasNewer = true;
+        }
+      } else {
+        history.pages.push(received);
+        history.hasNewer = Boolean(page.pagination?.has_more_after);
+        if (history.pages.length > sessionHistoryWindowPages) {
+          history.pages.shift();
+          history.hasOlder = true;
+        }
+      }
+      history.events = historyEvents(history);
+      renderSessionTimeline(
+        history.events,
+        history.graphNodes,
+        shouldShowPlanApprovalActions(history.sessionId, history.sessionData, history.events),
+        true,
+      );
+      renderHistoryLoadControls(viewKey);
+      requestAnimationFrame(() => {
+        if (sessionRequestKey() !== viewKey) return;
+        if (isOlder) {
+          // The control is reached at the top edge: reveal the just-prepended
+          // chunk rather than preserving a now-unrelated absolute offset
+          // after a far-end chunk has been evicted.
+          chatArea.scrollTop = 0;
+        } else {
+          // Likewise, a bottom-edge control should land on the newly appended
+          // chunk after the oldest page has been released.
+          chatArea.scrollTop = Math.max(0, chatArea.scrollHeight - chatArea.clientHeight);
+        }
+      });
+    } catch (error) {
+      if (error?.name !== "AbortError") console.error("Failed to load session history:", error);
+    } finally {
+      history.loading = false;
+      if (sessionRequestKey() === viewKey) renderHistoryLoadControls(viewKey);
+    }
+  }
+
   function updateSessionWorkdirDisplay(sessionData) {
     if (!workdirDisplay) return;
     const workdir = sessionData.state?.workdir || sessionData.state?.custom_workdir || state.defaultWorkdir || "";
@@ -268,8 +374,17 @@ export function createSessionRuntime({
     const viewKey = sessionRequestKey(sessionId, owner);
     const requestAtStart = activeSessionRequest();
     const isCurrentView = () => sessionRequestKey() === viewKey;
+    // A newer snapshot supersedes both a different-session switch and a
+    // pending refresh of this same session.  Cancelling avoids decoding two
+    // large transcript pages that cannot both be rendered.
+    if (sessionFetchController) sessionFetchController.abort();
+    const controller = new AbortController();
+    sessionFetchController = controller;
     try {
-      const [sessionData, graphNodes] = await Promise.all([fetchSessionData(sessionId), fetchSessionStepNodes(sessionId)]);
+      const [sessionData, graphNodes] = await Promise.all([
+        fetchSessionData(sessionId, owner, { signal: controller.signal }),
+        fetchSessionStepNodes(sessionId, controller.signal),
+      ]);
       if (!sessionData) {
         if (isCurrentView()) state.sessionReady = false;
         return;
@@ -283,6 +398,19 @@ export function createSessionRuntime({
         state.summaryGeneratedFor.add(sessionId);
       }
       const summary = sessionData.summary || state.sessionSummaries[sessionId] || "";
+      const pagination = sessionData.pagination || {};
+      const history = {
+        sessionId,
+        owner,
+        sessionData,
+        graphNodes,
+        pages: [historyPage(sessionData)],
+        events,
+        hasOlder: Boolean(pagination.has_more_before ?? pagination.has_more),
+        hasNewer: false,
+        loading: false,
+      };
+      sessionHistory.set(viewKey, history);
       const preserveDisclosures = renderedSessionKey === viewKey;
       // Snapshot probing (`render: false`) is the first half of the managed
       // stream reload. Remember its view so the following rendered snapshot
@@ -297,6 +425,7 @@ export function createSessionRuntime({
           shouldShowPlanApprovalActions(sessionId, sessionData, events),
           preserveDisclosures,
         );
+        renderHistoryLoadControls(viewKey);
       }
       // Complete transcripts and tool payloads can be large. Keep only a
       // small LRU cache for responsive switching instead of retaining ten
@@ -308,6 +437,7 @@ export function createSessionRuntime({
         graphNodes,
         files: [],
         summary,
+        pagination,
       });
       while (state.sessionViewCache.size > sessionViewCacheLimit) {
         state.sessionViewCache.delete(state.sessionViewCache.keys().next().value);
@@ -322,7 +452,11 @@ export function createSessionRuntime({
       }
       return { sessionData, events, graphNodes, summary };
     } catch (error) {
-      console.error("Failed to load session:", error);
+      if (error?.name !== "AbortError") console.error("Failed to load session:", error);
+    } finally {
+      if (sessionFetchController === controller) {
+        sessionFetchController = null;
+      }
     }
   }
 

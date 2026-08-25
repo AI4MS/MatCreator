@@ -358,6 +358,48 @@ def test_local_mode_reads_session_detail_regardless_of_requested_user(monkeypatc
     assert payload["userId"] == "legacy-display-name"
     assert payload["state"] == {"answer": 42}
     assert payload["events"] == [{"event": "persisted"}]
+    assert payload["pagination"]["has_more"] is False
+    assert payload["pagination"]["next_before"] == ""
+
+    compact = json.loads(asyncio.run(web_main.get_user_session(
+        "current-user", "session-1", compact=True,
+    )).body)
+    assert compact["state"] == {}
+
+
+def test_session_detail_pages_events_in_chronological_order(monkeypatch, tmp_path):
+    web_main = _load_web_main(monkeypatch)
+    db_path = tmp_path / "session.db"
+    _create_session_db(db_path, web_main.APP_NAME)
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            "INSERT INTO events VALUES (?, ?, ?, ?, ?)",
+            [
+                (web_main.APP_NAME, "legacy-display-name", "session-1", json.dumps({"event": "second"}), 2.0),
+                (web_main.APP_NAME, "legacy-display-name", "session-1", json.dumps({"event": "third"}), 3.0),
+                (web_main.APP_NAME, "legacy-display-name", "session-1", json.dumps({"event": "fourth"}), 4.0),
+            ],
+        )
+        conn.commit()
+    monkeypatch.setattr(web_main, "SESSION_DB_PATH", db_path)
+    monkeypatch.setattr(web_main, "_MATCREATOR_MODE", "local")
+
+    latest = json.loads(asyncio.run(web_main.get_user_session("current-user", "session-1", limit=2)).body)
+
+    assert [event["event"] for event in latest["events"]] == ["third", "fourth"]
+    assert latest["pagination"]["has_more"] is True
+    earlier = json.loads(asyncio.run(web_main.get_user_session(
+        "current-user", "session-1", limit=2, before=latest["pagination"]["next_before"],
+    )).body)
+    assert [event["event"] for event in earlier["events"]] == ["persisted", "second"]
+    assert earlier["pagination"]["has_more"] is False
+    assert earlier["pagination"]["next_before"] == ""
+
+    newer = json.loads(asyncio.run(web_main.get_user_session(
+        "current-user", "session-1", limit=2, after=earlier["pagination"]["end_cursor"],
+    )).body)
+    assert [event["event"] for event in newer["events"]] == ["third", "fourth"]
+    assert newer["pagination"]["has_more_after"] is False
 
 
 def test_execution_graph_endpoint_reads_atomic_graph_snapshot(monkeypatch, tmp_path):
