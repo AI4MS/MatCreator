@@ -1316,6 +1316,7 @@ export class StepExecutionFeed {
     this._liveContainerEl = null;
     this._liveStartedAt = null;
     this._liveToolHosts = new Map();
+    this._liveFallbackHost = null;
     this._stepById = new Map();
     this._childNodes = new Map();
   }
@@ -1328,6 +1329,7 @@ export class StepExecutionFeed {
     this._liveContainerEl = null;
     this._liveStartedAt = null;
     this._liveToolHosts.clear();
+    this._liveFallbackHost = null;
     this._stepById = new Map();
     this._childNodes = new Map();
   }
@@ -1343,6 +1345,7 @@ export class StepExecutionFeed {
     this._liveContainerEl.className = "step-feed-live-region";
     this._liveContainerEl.dataset.stepLiveRegion = "true";
     this._liveToolHosts.clear();
+    this._liveFallbackHost = null;
 
     if (hostEl?.isConnected) {
       hostEl.appendChild(this._liveContainerEl);
@@ -1372,11 +1375,31 @@ export class StepExecutionFeed {
     return true;
   }
 
+  attachLiveFallbackHost(hostEl) {
+    if (!hostEl) return false;
+    // One fallback host is enough for a live turn. Keep the first rendered
+    // Delegated tasks group as the stable destination until a timeline redraw
+    // replaces its DOM; exact node-to-tool hosts always take precedence.
+    if (this._liveFallbackHost?.isConnected) return true;
+    this._liveFallbackHost = hostEl;
+
+    // A graph update can arrive before its matching function-call event. Move
+    // cards that were temporarily placed in the outer live region into the
+    // delegation group as soon as that group becomes available.
+    for (const node of this._stepById.values()) {
+      if (!this.isRootStep(node) || this._liveToolHosts.has(this._nodeExecutionKey(node))) continue;
+      const card = this._cards.get(node.id);
+      if (card) this._insertIntoLiveContainer(hostEl, card, node);
+    }
+    return true;
+  }
+
   finishLiveTurn() {
     this._liveAnchorEl = null;
     this._liveContainerEl = null;
     this._liveStartedAt = null;
     this._liveToolHosts.clear();
+    this._liveFallbackHost = null;
   }
 
   update(graphData) {
@@ -1443,6 +1466,10 @@ export class StepExecutionFeed {
     return host?.isConnected ? host : null;
   }
 
+  _liveFallbackContainer() {
+    return this._liveFallbackHost?.isConnected ? this._liveFallbackHost : null;
+  }
+
   _isLiveStep(node) {
     if (!this._liveStartedAt) return true;
     if (!node.start_time) return node.status === "running";
@@ -1489,7 +1516,9 @@ export class StepExecutionFeed {
 
   _placeCard(outer, node) {
     outer.classList.remove("step-feed-child-message");
-    const liveContainer = this._liveHostForNode(node) || this._activeLiveContainer();
+    const liveContainer = this._liveHostForNode(node)
+      || this._liveFallbackContainer()
+      || this._activeLiveContainer();
     if (liveContainer) {
       this._insertIntoLiveContainer(liveContainer, outer, node);
       return;

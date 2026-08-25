@@ -115,7 +115,7 @@ export function createSessionRuntime({
     // first; consuming them one-at-a-time made the remaining cards fall back
     // to the chat root when the session was switched mid-run.
     for (const item of launcherCalls) {
-      const requestedNodeId = item.args?.node_id;
+      const requestedNodeId = item.input?.node_id;
       const matchIndex = pendingStepNodes.findIndex((node) =>
         requestedNodeId && (node.input?.node_id === requestedNodeId || node.id?.endsWith(`__node_${requestedNodeId}`)),
       );

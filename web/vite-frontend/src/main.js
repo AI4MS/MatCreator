@@ -15,6 +15,7 @@ import { createEvaluationController } from "./features/evaluation/EvaluationCont
 import { createRemoteJobsController } from "./features/remoteJobs/RemoteJobsController.js";
 import { mountOrbitalAgentIndicator } from "./components/mountOrbitalAgentIndicator.js";
 import { createDisclosureController } from "./features/ui/disclosureState.js";
+import { deduplicateDelegationToolCalls } from "./features/chat/timeline.js";
 import "./styles/index.css";
 
 // ---------------------------------------------------------------------------
@@ -1193,10 +1194,10 @@ function activityToolCalls(action) {
 }
 
 function delegationToolCalls(items) {
-  return items
+  return deduplicateDelegationToolCalls(items
     .filter((item) => item.type === "activity_action")
     .flatMap((action) => action.toolCalls || [])
-    .filter((call) => isExecutorLauncherTool(call.name));
+    .filter((call) => isExecutorLauncherTool(call.name)));
 }
 
 function formatToolDuration(toolCall) {
@@ -1443,6 +1444,7 @@ function createDelegationGroup(calls, { isNew = false } = {}) {
       stepExecutionFeed.attachLiveToolHost(host, executorNodeId(call));
     }
   });
+  if (activeSessionRequest()) stepExecutionFeed.attachLiveFallbackHost(list);
   group.appendChild(list);
   return group;
 }

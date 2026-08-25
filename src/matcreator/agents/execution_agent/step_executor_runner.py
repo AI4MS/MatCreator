@@ -247,6 +247,35 @@ def _artifact_allowed_roots(
     return roots
 
 
+def _refresh_skill_registry_after_creation(suggested_skills: list[str]) -> dict | None:
+    """Reload skills after a successful skill-authoring step.
+
+    Skill bundles are written to the user skill root by the isolated executor,
+    while the planner validates names against the long-lived in-memory registry.
+    Refreshing here makes a newly created bundle available to later plan nodes
+    in the same agent process.
+    """
+    if "skill-creation" not in suggested_skills:
+        return None
+
+    from ...skill import refresh_skills
+
+    try:
+        result = refresh_skills()
+    except Exception as exc:
+        logger.exception("Failed to refresh skill registry after skill-creation step")
+        return {
+            "status": "error",
+            "message": f"Skill bundle was created, but the skill registry refresh failed: {exc}",
+        }
+
+    return {
+        "status": "ok",
+        "count": result["count"],
+        "skills": result["skills"],
+    }
+
+
 def _split_verified_artifacts(
     artifacts: list[str],
     allowed_roots: Optional[list[Path]] = None,
@@ -962,6 +991,15 @@ async def run_step_executor(
             allowed_roots=allowed_artifact_roots,
             additional_artifacts=[*artifact_paths, *plot_paths],
         )
+        skill_refresh = None
+        if result.status == "success":
+            skill_refresh = _refresh_skill_registry_after_creation(suggested_skills)
+            if skill_refresh and skill_refresh["status"] == "error":
+                refresh_error = skill_refresh["message"]
+                result.status = "needs_replanning"
+                result.replan_reason = refresh_error
+                result.key_results = refresh_error
+                result.concise_summary = refresh_error
         # Do not persist or return unverified tool outputs.  In particular,
         # this prevents a stale plot_path from being rendered as a broken image
         # while the step is being replanned.
@@ -981,6 +1019,8 @@ async def run_step_executor(
             artifacts=result.artifacts,
         )
         payload = result.model_dump(exclude_none=True)
+        if skill_refresh:
+            payload["skill_registry_refresh"] = skill_refresh
         if missing_artifacts:
             payload["missing_artifacts"] = missing_artifacts
             payload["message"] = result.replan_reason

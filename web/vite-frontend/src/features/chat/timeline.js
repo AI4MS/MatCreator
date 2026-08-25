@@ -151,6 +151,35 @@ function durationMs(call) {
   return null;
 }
 
+function isExecutorLauncher(name = "") {
+  return ["run_flash_step", "run_node_executor", "run_sub_agent"].includes(String(name));
+}
+
+function executorTaskKey(name, input = {}) {
+  if (!isExecutorLauncher(name)) return null;
+  const tool = String(name);
+  const nodeId = input?.node_id || input?.step_id;
+  if (nodeId) return `${tool}:node:${nodeId}`;
+
+  // Child executors have no graph-node id. Their step number is unique within
+  // the parent invocation; include the action so an incomplete/malformed
+  // payload cannot collapse unrelated work into the same card.
+  if (tool === "run_sub_agent" && input?.step_number !== undefined && input?.action) {
+    return `${tool}:step:${input.step_number}:action:${input.action}`;
+  }
+  return null;
+}
+
+function mergeExecutorReplay(call, event) {
+  // Stream retries can repeat one logical executor call with a fresh transient
+  // function-call id. Keep the original id (so its normal response still
+  // pairs), but retain any newer input fields from the replay.
+  if (event.args && Object.keys(event.args).length) {
+    call.input = { ...call.input, ...event.args };
+  }
+  return call;
+}
+
 function enrichToolCall(call) {
   call.error = responseError(call.output);
   call.status = call.error ? "failed" : call.output ? "success" : "running";
@@ -163,11 +192,34 @@ function enrichToolCall(call) {
 
 function findToolCall(timeline, event) {
   const actions = timeline.filter((item) => item.type === "activity_action");
-  if (event.id) return actions.flatMap((action) => action.toolCalls).find((call) => call.id === event.id);
-  // Backends occasionally omit an id on the response. Pair it with the most
-  // recent unresolved invocation of the same tool instead of creating IN/OUT
-  // rows that users have to mentally join.
-  return actions.flatMap((action) => action.toolCalls).reverse()
+  const calls = actions.flatMap((action) => action.toolCalls);
+  if (event.id) {
+    const exact = calls.find((call) => call.id === event.id);
+    if (exact) return exact;
+  }
+
+  // `run_node_executor` and `run_sub_agent` represent durable units of work.
+  // Some streaming providers replay an invocation with a new call id while a
+  // connection is live.  The graph node (or child step/action) is the stable
+  // identity, so merge that replay instead of adding a second task row.
+  const taskKey = event.type === "function_call" ? executorTaskKey(event.name, event.args) : null;
+  if (taskKey) {
+    const replayed = calls.find((call) => call.executorTaskKey === taskKey);
+    if (replayed) return mergeExecutorReplay(replayed, event);
+  }
+
+  // Responses with a provider-generated id cannot be matched exactly. Only
+  // infer a pair when there is one unresolved call of that name; choosing the
+  // most recent call here used to create a phantom delegation when a replay
+  // arrived during a live stream.
+  if (event.type === "function_response") {
+    const unresolved = calls.filter((call) => call.name === event.name && !call.output);
+    return unresolved.length === 1 ? unresolved[0] : undefined;
+  }
+
+  // A call without an id or durable executor identity can only be paired by
+  // order. This keeps the existing best-effort behavior for ordinary tools.
+  return calls.slice().reverse()
     .find((call) => call.name === event.name && !call.output);
 }
 
@@ -220,6 +272,7 @@ export function upsertTimelineEvent(timeline, event) {
       output: null,
       startedAt: Date.now(),
       action,
+      executorTaskKey: event.type === "function_call" ? executorTaskKey(event.name, event.args) : null,
     };
     action.toolCalls.push(call);
     if (!timeline.includes(action)) timeline.push(action);
@@ -238,4 +291,26 @@ export function upsertTimelineEvent(timeline, event) {
   action.rawEvents.push(event);
   refreshAction(action);
   return action;
+}
+
+/**
+ * The live stream is allowed to be at-least-once, while a restored session is
+ * reconstructed from durable graph nodes. Keep the Delegated tasks list on
+ * that same stable identity as a final rendering guard.
+ */
+export function deduplicateDelegationToolCalls(calls) {
+  const byTask = new Map();
+  for (const call of calls || []) {
+    const key = call.executorTaskKey || executorTaskKey(call.name, call.input)
+      || `call:${call.id || call.timelineId || byTask.size}`;
+    const previous = byTask.get(key);
+    if (!previous) {
+      byTask.set(key, call);
+      continue;
+    }
+    // A completed record is richer than a repeated "running" invocation;
+    // otherwise retain the original card to prevent visual reordering.
+    if (!previous.output && call.output) byTask.set(key, call);
+  }
+  return [...byTask.values()];
 }

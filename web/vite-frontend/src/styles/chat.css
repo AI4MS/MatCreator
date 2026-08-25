@@ -1065,6 +1065,21 @@
   gap: 8px;
 }
 
+.delegation-group .step-feed-message {
+  /* These cards no longer render an avatar, so the ordinary agent-bubble
+     width (which reserves an 88px avatar lane) makes them terminate early.
+     Fill the group's content width to align with Agent activity on the right. */
+  width: 100%;
+  max-width: none;
+  margin: 0;
+}
+
+.delegation-group .step-feed-message > .message-bubble {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: none;
+}
+
 .delegation-task-host {
   margin: 0;
 }
