@@ -2,6 +2,98 @@
 
 <!-- version list -->
 
+## v2.21.0 (2026-08-25)
+
+### Bug Fixes
+
+- Font style issues in different explorer
+  ([`fc844db`](https://github.com/AI4MS/MatCreator/commit/fc844db5cfd8b7cf703f768f9dfbd883dca40452))
+
+- Pretty long waiting time when the server starting
+  ([`2c0531a`](https://github.com/AI4MS/MatCreator/commit/2c0531a48381fef69e1a64760cd7962864ce3f01))
+
+- Query_knowledge_graph returning full length node info
+  ([`55b5115`](https://github.com/AI4MS/MatCreator/commit/55b5115011cf07325f4581708e715a1ec130d5d7))
+
+- Roadmap node states not updated accordingly
+  ([`3ddee43`](https://github.com/AI4MS/MatCreator/commit/3ddee433296d074d234c00a52a391a4d23bef02c))
+
+- Send-btn's color and centering issue
+  ([`d91e85f`](https://github.com/AI4MS/MatCreator/commit/d91e85f64ac185f91600605c3f2a53636c2227e6))
+
+- Setting window closing when clicking outside
+  ([`07708d6`](https://github.com/AI4MS/MatCreator/commit/07708d640a353a90d89fa94ec33b561bccfef8a3))
+
+- Sub agent card format issues
+  ([`a2c8d93`](https://github.com/AI4MS/MatCreator/commit/a2c8d936738e74e504a9c35dae2edd2ae6e2c38c))
+
+- Ui flaws
+  ([`c78790a`](https://github.com/AI4MS/MatCreator/commit/c78790a8e805892c3d346aad7121b116abd8ff84))
+
+- Validate graph suggested skills not accept []
+  ([`2a98775`](https://github.com/AI4MS/MatCreator/commit/2a98775464487964529b4c6c637aeebde5c6dded))
+
+### Chores
+
+- Update config docs
+  ([`81eb877`](https://github.com/AI4MS/MatCreator/commit/81eb877387393b5525de007864f1d7d9ffdaad92))
+
+### Features
+
+- Add border line to session list elements
+  ([`aaaa183`](https://github.com/AI4MS/MatCreator/commit/aaaa183613c274603566b195e4fc51ef1a72761b))
+
+- Adjustable font size
+  ([`221484d`](https://github.com/AI4MS/MatCreator/commit/221484da1d10823905fa09035e17820c7743e7d6))
+
+- Clear dark mode agent graph color
+  ([`ddde3c6`](https://github.com/AI4MS/MatCreator/commit/ddde3c605740386140f7e2b1062149c974599126))
+
+- Input/output presenting style changed
+  ([`8bcc810`](https://github.com/AI4MS/MatCreator/commit/8bcc81089c329c479245f0a38076184f91ad33c7))
+
+- Remove glowing effect and add icons for agent graph state representation
+  ([`6494f2f`](https://github.com/AI4MS/MatCreator/commit/6494f2f85cdb71f3593c74f2a367a5c333944b96))
+
+- Session info hiding into panels
+  ([`6c4f34a`](https://github.com/AI4MS/MatCreator/commit/6c4f34a2414eaf840341afff4374c00417485e6e))
+
+- Set max width for chat bubbles
+  ([`cc68356`](https://github.com/AI4MS/MatCreator/commit/cc6835623b5e29d5ea18a2d65b4706f74961be55))
+
+- Showing memory nodes in skill graph
+  ([`e16f29d`](https://github.com/AI4MS/MatCreator/commit/e16f29d49199c5c492887e3d7159d221111a1bb4))
+
+- Structure button redesign
+  ([`285bace`](https://github.com/AI4MS/MatCreator/commit/285bace2ab7660d1f1d425aad2156a902856967d))
+
+- Subagent card re-design
+  ([`6563c3c`](https://github.com/AI4MS/MatCreator/commit/6563c3c3cb8653b1531a02152c42d36c13743764))
+
+- User info panel re-design
+  ([`3e354f2`](https://github.com/AI4MS/MatCreator/commit/3e354f28ad10f41274005f7d6457a404b7e5ca42))
+
+### Refactoring
+
+- Evaluation mode entry position changed.
+  ([`a5a0889`](https://github.com/AI4MS/MatCreator/commit/a5a0889b7f5d4c015ac1f17f13b00e6289cbf367))
+
+- Frontend refactoring
+  ([`9452f0b`](https://github.com/AI4MS/MatCreator/commit/9452f0bee2fc255d3735c9f33ccf757855c351fd))
+
+- Frontend’s long-lived memory paths
+  ([`6f3da2b`](https://github.com/AI4MS/MatCreator/commit/6f3da2bf15d59a47e896b78edb113f179c1636e4))
+
+- Session list appearance
+  ([`4e90a32`](https://github.com/AI4MS/MatCreator/commit/4e90a32c6a5b24ca673a64757959d9375f4a0b6e))
+
+- Session list name showing when mouse not hovering
+  ([`dcfd6d9`](https://github.com/AI4MS/MatCreator/commit/dcfd6d99821efde92d3ba9917c12b2c6df67cc6a))
+
+- Session selector position/format changed
+  ([`1c09f99`](https://github.com/AI4MS/MatCreator/commit/1c09f998dd4886803a7b84008f047ab891d84f86))
+
+
 ## v2.20.0 (2026-08-20)
 
 ### Bug Fixes
