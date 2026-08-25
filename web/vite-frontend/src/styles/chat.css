@@ -951,34 +951,39 @@
 }
 
 .message {
+  --chat-avatar-size: 34px;
+  --chat-message-gap: 10px;
   flex: 0 0 auto;
-  /* The row reserves an avatar slot on both sides. This makes the agent
-     bubble's maximum right edge line up with the user bubble's right edge. */
   width: min(100%, 968px);
   margin: 0 auto 12px;
-  display: flex;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: var(--chat-avatar-size) minmax(0, 1fr) var(--chat-avatar-size);
+  column-gap: var(--chat-message-gap);
   align-items: flex-start;
 }
-.user-message { flex-direction: row-reverse; }
 
-.message-bubble { flex: 1; min-width: 0; border-radius: var(--msg-radius); }
+.message-avatar { grid-row: 1; }
+.agent-message > .message-avatar { grid-column: 1; }
+.user-message > .message-avatar { grid-column: 3; }
+
+.message-bubble {
+  grid-column: 2;
+  min-width: 0;
+  border-radius: var(--msg-radius);
+}
 
 /* message styling uses shared tokens; theme blocks override only color tokens */
 .agent-message .message-bubble {
-  /* Keep long replies at a comfortable reading width. The zero grow factor
-     leaves the remaining room open on wide panels, while flex-shrink keeps
-     the bubble usable when the chat pane becomes narrow. */
-  flex: 0 1 880px;
-  width: min(880px, max(0px, calc(100% - 88px)));
-  max-width: min(880px, max(0px, calc(100% - 88px)));
+  justify-self: start;
+  width: 100%;
+  max-width: 880px;
   background: var(--agent-bg-1);
   border: 1px solid var(--agent-border);
   box-shadow: var(--msg-box-shadow-offset) var(--agent-box-shadow-color);
   padding: var(--msg-padding);
 }
 .user-message .message-bubble {
-  flex: 0 1 auto;
+  justify-self: end;
   max-width: min(72%, 760px);
   background: var(--user-bg-1);
   border: 1px solid var(--user-border);
@@ -1018,6 +1023,16 @@
 
 .step-feed-message .message-avatar {
   display: none;
+}
+
+/* Step cards are nested inside a chat bubble and do not participate in the
+   transcript's avatar gutters. */
+.step-feed-message {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.step-feed-message .message-bubble {
+  grid-column: 1;
 }
 
 .step-feed-live-region {
@@ -1834,13 +1849,10 @@ body[data-theme="dark"] .input-container[data-agent-mode="bench"] {
   display: flex;
 }
 
-.agent-message:has(> .agent-running-indicator) {
-  flex-wrap: wrap;
-}
-
 .agent-message > .agent-running-indicator {
-  flex: 0 0 calc(100% - 44px);
-  margin: -4px 0 0 44px;
+  grid-column: 2;
+  grid-row: 2;
+  margin: -4px 0 0;
 }
 
 .agent-message.is-waiting > .message-bubble {
@@ -1866,7 +1878,7 @@ body[data-theme="dark"] .input-container[data-agent-mode="bench"] {
 }
 
 .plan-approval-message .message-bubble {
-  flex: 0 1 500px;
+  justify-self: end;
   width: min(100%, 500px);
   max-width: min(88%, 500px);
   padding: 14px;

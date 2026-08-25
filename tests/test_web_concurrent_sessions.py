@@ -44,12 +44,18 @@ def test_plan_approval_uses_live_validation_and_consumes_stale_prompt() -> None:
     assert "let validatedPlanThisTurn = false;" in content
     assert 'response.name === "validate_graph"' in content
     assert '!validatedPlanThisTurn || executionApprovedThisTurn' in content
+    assert "sessionRuntime.canRevealPlanApproval(request.sessionId, backendMessage)" in content
     assert "sessionRuntime.restorePlanApproval(request.sessionId);" in content
     assert "addPlanApprovalActions(latestTimeline);" in content
+    assert "plan-approval-avatar-spacer" not in _main_js()
+
+    chat_css = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "styles" / "chat.css").read_text(encoding="utf-8")
+    assert "grid-template-columns: var(--chat-avatar-size) minmax(0, 1fr) var(--chat-avatar-size);" in chat_css
 
     runtime = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "session" / "runtime.js").read_text(encoding="utf-8")
     assert "const suppressedPlanApprovalTurns = new Map();" in runtime
     assert "latestUserText === suppressedTurn.userText" in runtime
+    assert "function canRevealPlanApproval(sessionId, userText = \"\")" in runtime
     assert "function latestTurnPendingPlan(events)" in runtime
     assert 'response?.name === "confirm_plan_and_start_execution"' in runtime
     assert "pendingPlan = null;" in runtime

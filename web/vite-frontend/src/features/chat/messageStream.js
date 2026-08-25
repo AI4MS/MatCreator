@@ -166,6 +166,7 @@ export function createMessageStreamController(deps) {
     const revealPlanApproval = () => {
       if (terminalStatus !== "completed" || !validatedPlanThisTurn || executionApprovedThisTurn
         || sessionRequestKey(request.sessionId, request.owner) !== sessionRequestKey()) return;
+      if (!sessionRuntime.canRevealPlanApproval(request.sessionId, backendMessage)) return;
       // The terminal event is the safe handoff boundary: the backend no longer
       // owns this session, so approval can start a new run immediately. Do not
       // make the user wait for graph, file, and persisted-session refreshes.

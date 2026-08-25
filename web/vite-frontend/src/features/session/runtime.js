@@ -189,6 +189,14 @@ export function createSessionRuntime({
     if (sessionId) suppressedPlanApprovalTurns.delete(sessionId);
   }
 
+  function canRevealPlanApproval(sessionId, userText = "") {
+    const suppressedTurn = suppressedPlanApprovalTurns.get(sessionId);
+    // A newer user reply (for example, "yes" from the approval button) has
+    // consumed the previous prompt. Its earlier stream can still finish its
+    // reconciliation work, but must not restore that stale prompt.
+    return !suppressedTurn || suppressedTurn.userText === userText;
+  }
+
   function markSessionRendered(sessionId, owner = state.activeSessionUserId || state.userId) {
     renderedSessionKey = sessionRequestKey(sessionId, owner);
   }
@@ -606,6 +614,7 @@ export function createSessionRuntime({
     loadSession,
     markSessionRendered,
     renderSessionTimeline,
+    canRevealPlanApproval,
     restorePlanApproval,
     startManagedRunReconnect,
     suppressPlanApproval,
