@@ -1412,9 +1412,9 @@ function createActivityAction(action, wireTimelineDetails, { isNew = false, incl
   return details;
 }
 
-function createDelegationGroup(calls, { isNew = false } = {}) {
+function createDelegationGroupShell({ isNew = false, live = false } = {}) {
   const group = document.createElement("section");
-  group.className = `delegation-group${isNew ? " is-entering" : ""}`;
+  group.className = `delegation-group${live ? " step-feed-live-delegation" : ""}${isNew ? " is-entering" : ""}`;
   const header = document.createElement("div");
   header.className = "delegation-group-header";
   const title = document.createElement("span");
@@ -1422,13 +1422,19 @@ function createDelegationGroup(calls, { isNew = false } = {}) {
   title.textContent = "Delegated tasks";
   const meta = document.createElement("span");
   meta.className = "delegation-group-meta";
-  const running = calls.filter((call) => call.status === "running").length;
-  meta.textContent = `${calls.length} task${calls.length === 1 ? "" : "s"}${running ? ` · ${running} running` : ""}`;
   header.append(title, meta);
   group.appendChild(header);
 
   const list = document.createElement("div");
   list.className = "delegation-group-list";
+  group.appendChild(list);
+  return { group, list, meta };
+}
+
+function createDelegationGroup(calls, { isNew = false } = {}) {
+  const { group, list, meta } = createDelegationGroupShell({ isNew });
+  const running = calls.filter((call) => call.status === "running").length;
+  meta.textContent = `${calls.length} task${calls.length === 1 ? "" : "s"}${running ? ` · ${running} running` : ""}`;
   calls.forEach((call) => {
     const task = document.createElement("div");
     task.className = "delegation-task";
@@ -1445,7 +1451,6 @@ function createDelegationGroup(calls, { isNew = false } = {}) {
     }
   });
   if (activeSessionRequest()) stepExecutionFeed.attachLiveFallbackHost(list);
-  group.appendChild(list);
   return group;
 }
 
@@ -1613,11 +1618,22 @@ function addAgentTimelineMessage(timeline, shownPlotPaths = null, msgIndex, cont
   bubble.className = "message-bubble";
   const inner = document.createElement("div");
   inner.className = "timeline-container";
-  bubble.appendChild(inner);
+  // This host exists for the entire lifetime of the assistant message.  The
+  // step feed gets the host directly instead of inferring it from parentElement
+  // or falling back to chatArea during a streamed timeline rebuild.
+  const { group: liveDelegationGroup, list: liveDelegationList } = createDelegationGroupShell({ live: true });
+  liveDelegationList.classList.add("step-feed-live-region");
+  liveDelegationList.dataset.stepLiveRegion = "true";
+  inner._stepFeedLiveHost = liveDelegationList;
+  bubble.append(inner, liveDelegationGroup);
   outer.appendChild(bubble);
   const revealWhenPopulated = () => {
-    const liveRegion = outer.querySelector(".step-feed-live-region");
-    if (!inner.childElementCount && !liveRegion?.childElementCount) return;
+    // The permanent live host contains an initially empty inner region, so
+    // its mere presence must not reveal an otherwise empty assistant shell.
+    const hasLiveContent = Boolean(outer.querySelector(
+      ".step-feed-message, .step-feed-live-region > .message",
+    ));
+    if (!inner.childElementCount && !hasLiveContent) return;
     outer.classList.remove("is-pending", "is-waiting");
     observer.disconnect();
   };

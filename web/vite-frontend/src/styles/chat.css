@@ -1024,6 +1024,13 @@
   display: block;
 }
 
+/* A live assistant message owns a permanent Delegated tasks host.  Keep its
+   empty shell out of view, but never let cards escape to the chat root while
+   timeline DOM is being rebuilt. */
+.step-feed-live-delegation:not(:has(.step-feed-message)) {
+  display: none;
+}
+
 .step-feed-inline-region {
   display: flex;
   flex-direction: column;

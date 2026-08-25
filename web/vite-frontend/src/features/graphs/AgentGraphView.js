@@ -1347,12 +1347,15 @@ export class StepExecutionFeed {
     this._liveToolHosts.clear();
     this._liveFallbackHost = null;
 
-    if (hostEl?.isConnected) {
+    // Step cards belong to an assistant message's Delegated tasks group.  Do
+    // not fall back to chatArea here: a missing or detached host used to turn
+    // these cards into top-level chat rows, visually detaching them from the
+    // assistant turn that owns them.  Appending to a detached explicit host is
+    // safe; it will become visible once its owning message is mounted.
+    if (hostEl) {
       hostEl.appendChild(this._liveContainerEl);
-    } else if (anchorEl && anchorEl.parentNode === this._chatArea) {
-      this._chatArea.insertBefore(this._liveContainerEl, anchorEl.nextSibling);
     } else {
-      this._chatArea.appendChild(this._liveContainerEl);
+      console.warn("StepExecutionFeed started without a delegated-task host; cards will remain detached.");
     }
 
     return this._liveContainerEl;
@@ -1502,7 +1505,11 @@ export class StepExecutionFeed {
     this._renderCardIfChanged(outer, node);
   }
 
-  appendStatic(node, container = this._chatArea) {
+  appendStatic(node, container) {
+    if (!container) {
+      console.warn("StepExecutionFeed received a static card without a delegated-task host.");
+      return null;
+    }
     let outer = this._cards.get(node.id);
     if (!outer || !container.contains(outer)) {
       outer = this._createCard(node);
@@ -1536,7 +1543,10 @@ export class StepExecutionFeed {
       this._insertIntoLiveContainer(existingHost, outer, node);
       return;
     }
-    this._insertSorted(outer, node);
+    // A step card has no valid presentation at the chat root.  Historical
+    // rendering supplies an inline host, while a live turn supplies its
+    // dedicated Delegated tasks host above.  Keeping an orphan detached is
+    // preferable to silently rendering it as a sibling of the chat bubble.
   }
 
   _stepSortTime(node) {

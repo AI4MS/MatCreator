@@ -118,7 +118,7 @@ export function createMessageStreamController(deps) {
 
     agentGraph.reset();
     planGraph.reset();
-    const liveTurn = stepExecutionFeed.startLiveTurn(userMessage, startedAt, timelineContainer.parentElement);
+    const liveTurn = stepExecutionFeed.startLiveTurn(userMessage, startedAt, timelineContainer._stepFeedLiveHost);
     agentGraph.startPolling(state.sessionId);
     planGraph.startPolling(state.sessionId);
     const owner = state.activeSessionUserId || state.userId;
