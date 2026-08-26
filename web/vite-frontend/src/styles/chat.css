@@ -982,6 +982,34 @@
   box-shadow: var(--msg-box-shadow-offset) var(--agent-box-shadow-color);
   padding: var(--msg-padding);
 }
+
+.agent-bubble-meta {
+  grid-column: 2;
+  grid-row: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin: 8px 0 0;
+}
+
+.agent-bubble-meta:not(:has(.agent-bubble-duration:not([hidden]), .agent-running-indicator[aria-hidden="false"])) {
+  display: none;
+}
+
+.agent-bubble-duration {
+  display: flex;
+  margin-left: auto;
+  justify-content: flex-end;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-bubble-duration[hidden] {
+  display: none;
+}
+
 .user-message .message-bubble {
   justify-self: end;
   max-width: min(72%, 760px);
@@ -1241,6 +1269,7 @@
   color: var(--muted);
   font-size: var(--font-size-caption);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .step-feed-stop-btn {
@@ -1849,10 +1878,8 @@ body[data-theme="dark"] .input-container[data-agent-mode="bench"] {
   display: flex;
 }
 
-.agent-message > .agent-running-indicator {
-  grid-column: 2;
-  grid-row: 2;
-  margin: 8px 0 0;
+.agent-message > .agent-bubble-meta > .agent-running-indicator {
+  margin: 0;
 }
 
 .agent-message.is-waiting > .message-bubble {

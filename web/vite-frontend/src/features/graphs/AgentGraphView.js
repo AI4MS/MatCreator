@@ -1319,9 +1319,11 @@ export class StepExecutionFeed {
     this._liveFallbackHost = null;
     this._stepById = new Map();
     this._childNodes = new Map();
+    this._elapsedTimer = null;
   }
 
   reset({ preserveDisclosures = false } = {}) {
+    this._stopElapsedTimer();
     this._cards.clear();
     if (!preserveDisclosures) this._disclosures.clear();
     this._highlightedId = null;
@@ -1430,6 +1432,7 @@ export class StepExecutionFeed {
     this._updatePreservingReadingPosition(() => {
       rootSteps.forEach((node) => this._upsert(node));
     });
+    this._syncElapsedTimer();
   }
 
   setHierarchy(stepNodes) {
@@ -1518,6 +1521,7 @@ export class StepExecutionFeed {
     outer.dataset.stepStartTime = String(this._stepSortTime(node));
     container.appendChild(outer);
     this._renderCardIfChanged(outer, node);
+    this._syncElapsedTimer();
     return outer;
   }
 
@@ -1575,6 +1579,8 @@ export class StepExecutionFeed {
       });
     return JSON.stringify({
       status: node.status,
+      startTime: node.start_time,
+      endTime: node.end_time,
       summary: node.summary,
       input: node.input,
       conversation: node.conversation,
@@ -1677,7 +1683,7 @@ export class StepExecutionFeed {
     const details = document.createElement("details");
     details.className = "step-feed-details";
     this._disclosures.wire(details, `step:${node.id}:card`, {
-      defaultOpen: node.status === "running",
+      defaultOpen: false,
     });
     bubble.appendChild(details);
     outer.appendChild(bubble);
@@ -1694,6 +1700,7 @@ export class StepExecutionFeed {
   _renderCard(outer, node, ancestors = new Set([node.id])) {
     outer.dataset.stepNodeId = node.id;
     outer.dataset.stepStatus = node.status || "idle";
+    outer._stepNode = node;
     outer.classList.toggle("step-feed-highlight", this._highlightedId === node.id);
 
     const bubble = outer.querySelector(".step-feed-bubble");
@@ -1704,9 +1711,9 @@ export class StepExecutionFeed {
     const isRunning = node.status === "running";
     if (!isRunning) this._disclosures.state.delete(cardKey);
     const userChoice = this._disclosures.state.get(cardKey);
-    // A card stays open while work is live, then automatically compacts at
-    // completion. A reader can still opt out of the live default explicitly.
-    details.open = isRunning && (userChoice === undefined ? true : userChoice);
+    // Start compact even while work is live. A reader can explicitly open a
+    // card for its activity stream; completed cards always compact again.
+    details.open = isRunning && userChoice === true;
     details.innerHTML = "";
 
     const summary = document.createElement("summary");
@@ -1731,6 +1738,7 @@ export class StepExecutionFeed {
     const meta = document.createElement("span");
     meta.className = "step-feed-meta";
     meta.textContent = this._formatStepDuration(node);
+    if (isRunning && node.start_time) meta.title = "Elapsed time";
     summary.append(status, title, meta);
 
     const stepNumber = node.input && node.input.step_number;
@@ -1831,6 +1839,39 @@ export class StepExecutionFeed {
     }
 
     details.appendChild(body);
+  }
+
+  _syncElapsedTimer() {
+    const hasTimedRunningCard = [...this._cards.values()].some((outer) => (
+      outer.isConnected
+      && outer.dataset.stepStatus === "running"
+      && Number.isFinite(new Date(outer._stepNode?.start_time || "").getTime())
+    ));
+
+    if (hasTimedRunningCard) {
+      this._refreshRunningDurations();
+      if (this._elapsedTimer === null) {
+        this._elapsedTimer = window.setInterval(() => this._refreshRunningDurations(), 1000);
+      }
+      return;
+    }
+    this._stopElapsedTimer();
+  }
+
+  _refreshRunningDurations() {
+    for (const outer of this._cards.values()) {
+      if (!outer.isConnected || outer.dataset.stepStatus !== "running") continue;
+      const node = outer._stepNode;
+      if (!node?.start_time) continue;
+      const meta = outer.querySelector(".step-feed-meta");
+      if (meta) meta.textContent = this._formatStepDuration(node);
+    }
+  }
+
+  _stopElapsedTimer() {
+    if (this._elapsedTimer === null) return;
+    window.clearInterval(this._elapsedTimer);
+    this._elapsedTimer = null;
   }
 
   _activityStream(node) {

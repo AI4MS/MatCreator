@@ -382,7 +382,8 @@ const orbitalIndicator = mountOrbitalAgentIndicator(agentRunningOrbital);
 function attachAgentRunningIndicator(timelineContainer) {
   const message = timelineContainer?.closest(".agent-message:not(.step-feed-message)");
   if (!message || !agentRunningIndicator) return;
-  message.appendChild(agentRunningIndicator);
+  const meta = message.querySelector(".agent-bubble-meta");
+  (meta || message).prepend(agentRunningIndicator);
   // Before the first streamed item, make the agent's avatar and status row
   // visible without rendering an empty message bubble.
   if (!timelineContainer.childElementCount) message.classList.add("is-waiting");
@@ -392,7 +393,8 @@ function attachAgentRunningIndicator(timelineContainer) {
 function ensureAgentRunningIndicatorAttached() {
   if (!agentRunningIndicator || agentRunningIndicator.isConnected) return;
   const message = [...chatArea.querySelectorAll(".agent-message:not(.step-feed-message)")].at(-1);
-  if (message) message.appendChild(agentRunningIndicator);
+  const meta = message?.querySelector(".agent-bubble-meta");
+  if (meta || message) (meta || message).prepend(agentRunningIndicator);
 }
 
 function updateAgentRunningStatus(phase = "working") {
@@ -1616,9 +1618,25 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
   });
 }
 
+function normalizeAgentTimestamp(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const parsed = new Date(value || "").getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatAgentDuration(elapsedMs) {
+  const elapsedSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+  const hours = Math.floor(elapsedSeconds / 3600);
+  const minutes = Math.floor((elapsedSeconds % 3600) / 60);
+  const seconds = elapsedSeconds % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+    : `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
 // Create an agent message div with an inner timeline container, append to
 // chatArea, and return the inner container for live updates.
-function addAgentTimelineMessage(timeline, shownPlotPaths = null, msgIndex, container = chatArea) {
+function addAgentTimelineMessage(timeline, shownPlotPaths = null, msgIndex, container = chatArea, timing = {}) {
   const outer = document.createElement("div");
   // A live turn starts before the server has sent its first event. Keep its
   // empty shell out of view until it contains a timeline item or step card.
@@ -1636,8 +1654,39 @@ function addAgentTimelineMessage(timeline, shownPlotPaths = null, msgIndex, cont
   liveDelegationList.classList.add("step-feed-live-region");
   liveDelegationList.dataset.stepLiveRegion = "true";
   inner._stepFeedLiveHost = liveDelegationList;
+  const duration = document.createElement("div");
+  duration.className = "agent-bubble-duration";
+  duration.setAttribute("aria-live", "off");
+  const meta = document.createElement("div");
+  meta.className = "agent-bubble-meta";
+  meta.appendChild(duration);
   bubble.append(inner, liveDelegationGroup);
-  outer.appendChild(bubble);
+
+  const startedAt = normalizeAgentTimestamp(timing.startedAt);
+  let timer = null;
+  const renderDuration = (endedAt = null) => {
+    if (!Number.isFinite(startedAt)) {
+      duration.hidden = true;
+      return;
+    }
+    const finishedAt = normalizeAgentTimestamp(endedAt);
+    const elapsedMs = Math.max(0, (finishedAt ?? Date.now()) - startedAt);
+    duration.hidden = false;
+    duration.textContent = `Total time · ${formatAgentDuration(elapsedMs)}`;
+    duration.title = "Total agent runtime";
+  };
+  const finishDuration = (endedAt = Date.now()) => {
+    if (timer !== null) window.clearInterval(timer);
+    timer = null;
+    renderDuration(endedAt);
+  };
+  inner.finishAgentDuration = finishDuration;
+  const endedAt = normalizeAgentTimestamp(timing.endedAt);
+  renderDuration(endedAt);
+  if (timing.live && Number.isFinite(startedAt) && !Number.isFinite(endedAt)) {
+    timer = window.setInterval(renderDuration, 1000);
+  }
+  outer.append(bubble, meta);
   const revealWhenPopulated = () => {
     // The permanent live host contains an initially empty inner region, so
     // its mere presence must not reveal an otherwise empty assistant shell.
@@ -1731,7 +1780,17 @@ function addPlanApprovalActions(timelineContainer) {
 
 function formatStepDuration(node) {
   if (!node.start_time) return "—";
-  if (!node.end_time) return "running…";
+  if (!node.end_time) {
+    const elapsedMs = Date.now() - new Date(node.start_time).getTime();
+    if (!Number.isFinite(elapsedMs)) return "running…";
+    const elapsedSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+    const hours = Math.floor(elapsedSeconds / 3600);
+    const minutes = Math.floor((elapsedSeconds % 3600) / 60);
+    const seconds = elapsedSeconds % 60;
+    return hours > 0
+      ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+      : `${minutes}:${String(seconds).padStart(2, "0")}`;
+  }
   const secs = ((new Date(node.end_time) - new Date(node.start_time)) / 1000).toFixed(1);
   return `${secs}s`;
 }

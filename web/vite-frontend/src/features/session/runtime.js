@@ -207,16 +207,14 @@ export function createSessionRuntime({
       // Disclosure keys belong to one rendered transcript. Once the DOM is
       // replaced for another session, retaining them provides no UI benefit.
       if (!preserveDisclosures) clearChatDisclosures?.();
-      // Running cards are initially open by default, so their state is not in
-      // the user-choice map yet. Snapshot the actual DOM before an in-place
-      // refresh changes running nodes to completed/cancelled and changes that
-      // default to closed.
+      // Snapshot the actual DOM before an in-place refresh replaces the
+      // current transcript, preserving any user-opened cards.
       if (preserveDisclosures) stepExecutionFeed.captureDisclosureState();
       chatArea.innerHTML = "";
       stepExecutionFeed.reset({ preserveDisclosures });
       stepExecutionFeed.setHierarchy(stepNodes || []);
     const sortedEvents = (events || []).map((event, index) => ({ event, timestamp: eventTimestamp(event, index), index }))
-      .sort((left, right) => left.timestamp - right.timestamp || left.index - right.index).map(({ event }) => event);
+      .sort((left, right) => left.timestamp - right.timestamp || left.index - right.index);
     const pendingStepNodes = (stepNodes || []).filter((node) => stepExecutionFeed.isRootStep(node)).slice()
       .sort((left, right) => stepNodeTimestamp(left) - stepNodeTimestamp(right));
     const responsesById = collectFunctionResponsesById(events || []);
@@ -225,16 +223,26 @@ export function createSessionRuntime({
     let messageIndex = 0;
     let lastAgentTimeline = null;
     let pendingAgentTimeline = [];
+    let pendingAgentStartedAt = null;
+    let pendingAgentEndedAt = null;
+    let latestUserMessageAt = null;
     const flushAgentTimeline = () => {
       if (!pendingAgentTimeline.length) return;
       const timeline = attachStepNodes(pendingAgentTimeline, pendingStepNodes);
-      lastAgentTimeline = addAgentTimelineMessage(timeline, shownPlotPaths, messageIndex++);
+      lastAgentTimeline = addAgentTimelineMessage(timeline, shownPlotPaths, messageIndex++, chatArea, {
+        startedAt: pendingAgentStartedAt,
+        endedAt: pendingAgentEndedAt,
+      });
       pendingAgentTimeline = [];
+      pendingAgentStartedAt = null;
+      pendingAgentEndedAt = null;
     };
 
-    for (const event of sortedEvents) {
+    for (const { event } of sortedEvents) {
       if (event.author === "user") {
         flushAgentTimeline();
+        const userTime = eventTimestamp(event, null);
+        latestUserMessageAt = Number.isFinite(userTime) ? userTime : null;
         const text = displayMessageFromStoredUserText((event.content?.parts || []).map((part) => part.text || "").join(""));
         if (text) addMessage("user", text, messageIndex++);
         shownPlotPaths = new Set();
@@ -244,6 +252,13 @@ export function createSessionRuntime({
       // managed SSE stream delivers them as one assistant turn. Accumulating
       // adjacent non-user events gives history and live output identical
       // Thinking / IN / OUT grouping, including the same upsert semantics.
+      const eventTime = eventTimestamp(event, null);
+      if (Number.isFinite(eventTime)) {
+        pendingAgentStartedAt = pendingAgentStartedAt === null
+          ? (latestUserMessageAt ?? eventTime)
+          : Math.min(pendingAgentStartedAt, eventTime);
+        pendingAgentEndedAt = pendingAgentEndedAt === null ? eventTime : Math.max(pendingAgentEndedAt, eventTime);
+      }
       eventToTimelineParts(event, responsesById, pairedResponseIds, pendingAgentTimeline);
     }
     flushAgentTimeline();

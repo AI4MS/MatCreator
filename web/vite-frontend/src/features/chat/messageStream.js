@@ -110,7 +110,10 @@ export function createMessageStreamController(deps) {
 
     const timeline = [];
     const shownPlotPaths = new Set();
-    const timelineContainer = addAgentTimelineMessage(timeline, shownPlotPaths);
+    const timelineContainer = addAgentTimelineMessage(timeline, shownPlotPaths, undefined, chatArea, {
+      startedAt,
+      live: true,
+    });
     // The agent shell is visible immediately while the first SSE event is
     // pending, so the user sees progress in the conversational flow rather
     // than an isolated indicator above the composer.
@@ -297,6 +300,7 @@ export function createMessageStreamController(deps) {
     } catch (error) {
       if (error?.name !== "AbortError") addMessage("agent", `Backend error: ${error}`, undefined, liveTurn);
     } finally {
+      timelineContainer.finishAgentDuration?.();
       // A cancelled browser subscription can finish before the managed run
       // does. Keep the composer locked until cancellation polling observes a
       // terminal run, otherwise a new send would clear the cancellation flag.
