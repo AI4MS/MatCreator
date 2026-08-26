@@ -8,6 +8,34 @@ import {
   upsertTimelineText,
   upsertTimelineThought,
 } from "../src/features/chat/timeline.js";
+import {
+  activityToolCalls,
+  delegationToolCalls,
+  getFunctionResponse,
+  getPlotPaths,
+  getStructurePaths,
+} from "../src/features/chat/timelinePresentation.js";
+
+test("normalizes timeline protocol variants and artifact paths", () => {
+  assert.deepEqual(getFunctionResponse({ function_response: { id: "response-1" } }), { id: "response-1" });
+  assert.deepEqual(getPlotPaths({ plot_path: "plot.png", plot_paths: ["plot.png", "energy.png"] }), ["plot.png", "energy.png"]);
+  assert.deepEqual(getStructurePaths({
+    artifacts: ["plots/energy.png", "structures/optimized.cif"],
+    nested: { structure_paths: ["structures/optimized.cif", "structures/initial.xyz"] },
+  }), ["structures/optimized.cif", "structures/initial.xyz"]);
+});
+
+test("separates delegated executor tools from regular activity tools", () => {
+  const action = {
+    type: "activity_action",
+    toolCalls: [
+      { id: "regular", name: "read_file" },
+      { id: "executor", name: "run_node_executor", input: { node_id: "relax" } },
+    ],
+  };
+  assert.deepEqual(activityToolCalls(action).map((call) => call.id), ["regular"]);
+  assert.deepEqual(delegationToolCalls([action]).map((call) => call.id), ["executor"]);
+});
 
 test("merges streaming snapshots without repeating replayed content", () => {
   assert.equal(mergeReplayedText("hello", "hello world"), "hello world");

@@ -3,6 +3,7 @@ import { createMessageStreamController } from "./features/chat/messageStream.js"
 import { createLayoutController } from "./features/layout/resizers.js";
 import { createImageLightbox } from "./features/media/imageLightbox.js";
 import { classifyPath, createSessionFileTree } from "./features/session/fileTree.js";
+import { createTimelineArtifactRenderer } from "./features/chat/timelineArtifacts.js";
 import { createSessionListController } from "./features/session/sessionList.js";
 import { createSessionDetailsController } from "./features/session/sessionDetails.js";
 import { createSessionRuntime } from "./features/session/runtime.js";
@@ -15,7 +16,19 @@ import { createEvaluationController } from "./features/evaluation/EvaluationCont
 import { createRemoteJobsController } from "./features/remoteJobs/RemoteJobsController.js";
 import { mountOrbitalAgentIndicator } from "./components/mountOrbitalAgentIndicator.js";
 import { createDisclosureController } from "./features/ui/disclosureState.js";
-import { deduplicateDelegationToolCalls } from "./features/chat/timeline.js";
+import {
+  activityToolCalls,
+  delegationToolCalls,
+  executorNodeId,
+  formatAgentDuration,
+  formatToolDuration,
+  getFunctionResponse,
+  getPlotPaths,
+  getStructurePaths,
+  isExecutorLauncherTool,
+  normalizeAgentTimestamp,
+  toolStatusIcon,
+} from "./features/chat/timelinePresentation.js";
 import "./styles/index.css";
 
 // ---------------------------------------------------------------------------
@@ -224,6 +237,16 @@ const { render: renderSessionFilesTree } = createSessionFileTree({
   pathToApiUrl: (path) => pathToApiUrl(path),
   openStructure: (item) => openViewer(item),
   openFile: (file) => openFileViewer(file),
+});
+
+// Graph and timeline views share these artifact renderers. Initialize them
+// before either view is constructed; the callbacks defer access to the
+// viewer and lightbox until a user actually opens an artifact.
+const { createArtifactListItem, createStructureViewButtonGroup, createTimelineImage } = createTimelineArtifactRenderer({
+  pathToApiUrl,
+  openStructure: (item) => openViewer(item),
+  openLightbox: (url) => lightbox.open(url),
+  updatePreservingReadingPosition,
 });
 
 function loadStructureViewerModules() {
@@ -1039,179 +1062,8 @@ function pathToApiUrl(path) {
 }
 
 // ---------------------------------------------------------------------------
-// Chat helpers
+// Chat presentation
 // ---------------------------------------------------------------------------
-
-function getFunctionCall(part) {
-  return part?.functionCall || part?.function_call || null;
-}
-
-function getFunctionResponse(part) {
-  return part?.functionResponse || part?.function_response || null;
-}
-
-function getPlotPaths(response) {
-  const paths = [];
-  const add = (path) => {
-    if (typeof path === "string" && path && !paths.includes(path)) paths.push(path);
-  };
-  add(response?.plot_path);
-  if (Array.isArray(response?.plot_paths)) {
-    response.plot_paths.forEach(add);
-  }
-  return paths;
-}
-
-function getStructurePaths(payload) {
-  const paths = [];
-  const add = (path) => {
-    if (typeof path === "string" && path && !paths.includes(path)) paths.push(path);
-  };
-  const visit = (value, key = "") => {
-    if (!value) return;
-    if (key === "structure_path") {
-      add(value);
-      return;
-    }
-    if (key === "structure_paths" && Array.isArray(value)) {
-      value.forEach(add);
-      return;
-    }
-    if ((key === "artifacts" || key === "artifact_paths") && Array.isArray(value)) {
-      value.forEach((path) => {
-        if (classifyPath(String(path)) === "structure") add(path);
-      });
-      return;
-    }
-    if (Array.isArray(value)) {
-      value.forEach((item) => visit(item, key));
-      return;
-    }
-    if (typeof value === "object") {
-      Object.entries(value).forEach(([childKey, childValue]) => visit(childValue, childKey));
-    }
-  };
-  visit(payload);
-  return paths;
-}
-
-function createStructureViewButton(path) {
-  const btn = document.createElement("button");
-  btn.className = "ghost structure-view-btn";
-  btn.type = "button";
-  btn.title = path;
-  const filename = path.split("/").pop();
-  btn.setAttribute("aria-label", `View structure ${filename}`);
-
-  const icon = document.createElement("span");
-  icon.className = "structure-view-icon";
-  icon.setAttribute("aria-hidden", "true");
-  icon.innerHTML = `
-    <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="m16 4 9 5.2v10.6L16 25l-9-5.2V9.2L16 4Z" />
-      <path d="m7 9.2 9 5.3 9-5.3M16 14.5V25" />
-      <circle cx="16" cy="14.5" r="2.2" />
-      <circle cx="7" cy="9.2" r="1.5" />
-      <circle cx="25" cy="9.2" r="1.5" />
-      <circle cx="16" cy="25" r="1.5" />
-    </svg>`;
-
-  const label = document.createElement("span");
-  label.className = "structure-view-label";
-  label.textContent = filename;
-  btn.append(icon, label);
-  btn.addEventListener("click", () => openViewer({ path, url: pathToApiUrl(path) }));
-  return btn;
-}
-
-function createStructureViewButtonGroup(paths) {
-  const group = document.createElement("div");
-  group.className = "structure-view-button-group";
-  paths.forEach((path) => group.appendChild(createStructureViewButton(path)));
-  return group;
-}
-
-function createArtifactListItem(path) {
-  const li = document.createElement("li");
-  li.title = path;
-  if (classifyPath(path) === "structure") {
-    li.appendChild(createStructureViewButtonGroup([path]));
-  } else {
-    li.textContent = path.split("/").pop();
-  }
-  return li;
-}
-
-function createImageLoadFallback(path) {
-  const fallback = document.createElement("div");
-  fallback.className = "timeline-image-error";
-  fallback.setAttribute("role", "alert");
-  fallback.textContent = `⚠ Image preview unavailable: ${path.split("/").pop()}`;
-  return fallback;
-}
-
-function createTimelineImage(path) {
-  const wrap = document.createElement("div");
-  wrap.className = "timeline-image-wrap";
-  const loading = document.createElement("div");
-  loading.className = "timeline-image-loading";
-  loading.textContent = `Loading image: ${path.split("/").pop()}`;
-  const img = document.createElement("img");
-  img.className = "timeline-image";
-  img.alt = path.split("/").pop();
-  img.hidden = true;
-  img.style.cursor = "zoom-in";
-  img.addEventListener("load", () => {
-    // Image decode changes layout asynchronously, outside the synchronous
-    // timeline update. Capture immediately before the DOM height changes so
-    // the anchor cannot be stale if other streamed events arrived meanwhile.
-    updatePreservingReadingPosition(() => {
-      loading.remove();
-      img.hidden = false;
-    });
-  });
-  img.addEventListener("error", () => {
-    updatePreservingReadingPosition(() => {
-      img.remove();
-      loading.replaceWith(createImageLoadFallback(path));
-    });
-  }, { once: true });
-  img.addEventListener("click", () => lightbox.open(img.src));
-  img.src = pathToApiUrl(path);
-  wrap.append(loading, img);
-  return wrap;
-}
-
-function isExecutorLauncherTool(name) {
-  return ["run_flash_step", "run_node_executor", "run_sub_agent"].includes(name || "");
-}
-
-function executorNodeId(call) {
-  const input = call?.input || {};
-  return input.node_id || input.step_id || input.step_number || "";
-}
-
-function activityToolCalls(action) {
-  return (action.toolCalls || []).filter((call) => !isExecutorLauncherTool(call.name));
-}
-
-function delegationToolCalls(items) {
-  return deduplicateDelegationToolCalls(items
-    .filter((item) => item.type === "activity_action")
-    .flatMap((action) => action.toolCalls || [])
-    .filter((call) => isExecutorLauncherTool(call.name)));
-}
-
-function formatToolDuration(toolCall) {
-  const duration = toolCall.durationMs ?? (toolCall.startedAt ? Date.now() - toolCall.startedAt : null);
-  if (!Number.isFinite(duration)) return toolCall.status === "running" ? "running…" : "";
-  return duration < 1000 ? `${Math.round(duration)} ms` : `${(duration / 1000).toFixed(1)}s`;
-}
-
-function toolStatusIcon(toolCall) {
-  if (toolCall.status === "failed") return "!";
-  return toolCall.status === "running" ? "◌" : "✓";
-}
 
 function createPayloadView(payload) {
   if (payload === null || payload === undefined) {
@@ -1618,22 +1470,6 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
   });
 }
 
-function normalizeAgentTimestamp(value) {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  const parsed = new Date(value || "").getTime();
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function formatAgentDuration(elapsedMs) {
-  const elapsedSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
-  const hours = Math.floor(elapsedSeconds / 3600);
-  const minutes = Math.floor((elapsedSeconds % 3600) / 60);
-  const seconds = elapsedSeconds % 60;
-  return hours > 0
-    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
-    : `${minutes}:${String(seconds).padStart(2, "0")}`;
-}
-
 // Create an agent message div with an inner timeline container, append to
 // chatArea, and return the inner container for live updates.
 function addAgentTimelineMessage(timeline, shownPlotPaths = null, msgIndex, container = chatArea, timing = {}) {
@@ -1896,62 +1732,74 @@ async function refreshSessionFiles(sessionId = state.sessionId, owner = state.ac
 }
 
 const sessionRuntime = createSessionRuntime({
-  state,
-  chatArea,
-  stepExecutionFeed,
-  sessionRequestKey,
-  activeSessionRequest,
-  releaseSessionRequest,
-  updateSendButtonState,
-  managedRunEventsUrl,
-  isExecutorLauncherTool,
-  getFunctionResponse,
-  displayMessageFromStoredUserText,
-  addMessage,
-  addAgentTimelineMessage,
-  addPlanApprovalActions,
-  beginScrollTransaction,
-  endScrollTransaction,
-  clearChatDisclosures: () => chatDisclosureController.clear(),
-  renderSessionBanner,
-  renderSessionFilesTree,
-  refreshSessionFiles,
-  generateSessionSummary,
-  workdirDisplay: document.getElementById("session-workdir-display"),
+  session: {
+    state,
+    requestKey: sessionRequestKey,
+    activeRequest: activeSessionRequest,
+    releaseRequest: releaseSessionRequest,
+  },
+  timeline: {
+    chatArea,
+    stepExecutionFeed,
+    isExecutorLauncherTool,
+    getFunctionResponse,
+    displayStoredUserText: displayMessageFromStoredUserText,
+    addMessage,
+    addAgentTimelineMessage,
+    addPlanApprovalActions,
+    beginScrollTransaction,
+    endScrollTransaction,
+    clearDisclosures: () => chatDisclosureController.clear(),
+  },
+  ui: {
+    updateSendButtonState,
+    renderSessionBanner,
+    renderSessionFilesTree,
+    refreshSessionFiles,
+    generateSessionSummary,
+    workdirDisplay: document.getElementById("session-workdir-display"),
+  },
+  managedRun: { eventsUrl: managedRunEventsUrl },
 });
 
 const messageStreamController = createMessageStreamController({
-  state,
-  appName: APP_NAME,
-  chatArea,
-  textInput,
-  activeSessionRequest,
-  sessionRequestKey,
-  activeSessionBackendUserId,
-  canWriteActiveSession,
-  showLoginModal,
-  createSession,
-  addMessage,
-  addAgentTimelineMessage,
-  addPlanApprovalActions,
-  renderTimeline,
-  messageWithUploadNames,
-  messageWithUploadContext,
-  clearCurrentUploads,
-  autoResizeTextInput,
-  stepExecutionFeed,
-  agentGraph,
-  planGraph,
-  updateSendButtonState,
-  updateAgentRunningStatus,
-  attachAgentRunningIndicator,
-  releaseSessionRequest,
-  managedRunEventsUrl,
-  shouldRefreshPlanGraphForTool,
-  generateSessionSummary,
-  refreshSessionFiles,
-  sessionRuntime,
-  showPlanGraph,
+  session: {
+    state,
+    activeRequest: activeSessionRequest,
+    requestKey: sessionRequestKey,
+    backendUserId: activeSessionBackendUserId,
+    canWrite: canWriteActiveSession,
+    create: createSession,
+    releaseRequest: releaseSessionRequest,
+    runtime: sessionRuntime,
+    refreshFiles: refreshSessionFiles,
+    generateSummary: generateSessionSummary,
+  },
+  composer: {
+    appName: APP_NAME,
+    chatArea,
+    textInput,
+    showLoginModal,
+    addMessage,
+    addAgentTimelineMessage,
+    addPlanApprovalActions,
+    renderTimeline,
+    messageWithUploadNames,
+    messageWithUploadContext,
+    clearCurrentUploads,
+    autoResizeTextInput,
+  },
+  execution: {
+    stepExecutionFeed,
+    agentGraph,
+    planGraph,
+    updateSendButtonState,
+    updateAgentRunningStatus,
+    attachAgentRunningIndicator,
+    managedRunEventsUrl,
+    shouldRefreshPlanGraphForTool,
+    showPlanGraph,
+  },
 });
 
 function setUploadStatus(message, tone = "idle") {

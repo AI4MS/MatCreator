@@ -4,30 +4,42 @@ import {
   upsertTimelineThought,
 } from "../chat/timeline.js";
 
-/** Owns restoring a persisted session and reconnecting to an active managed run. */
+/**
+ * Owns restoring a persisted session and reconnecting to an active managed run.
+ *
+ * Dependencies are grouped by the capability this controller consumes. This
+ * keeps the composition boundary explicit: adding a new UI concern should not
+ * turn the session-runtime API into another flat list of unrelated values.
+ */
 export function createSessionRuntime({
-  state,
-  chatArea,
-  stepExecutionFeed,
-  sessionRequestKey,
-  activeSessionRequest,
-  releaseSessionRequest,
-  updateSendButtonState,
-  managedRunEventsUrl,
-  isExecutorLauncherTool,
-  getFunctionResponse,
-  displayMessageFromStoredUserText,
-  addMessage,
-  addAgentTimelineMessage,
-  addPlanApprovalActions,
-  beginScrollTransaction,
-  endScrollTransaction,
-  clearChatDisclosures,
-  renderSessionBanner,
-  renderSessionFilesTree,
-  refreshSessionFiles,
-  generateSessionSummary,
-  workdirDisplay,
+  session: {
+    state,
+    requestKey: sessionRequestKey,
+    activeRequest: activeSessionRequest,
+    releaseRequest: releaseSessionRequest,
+  },
+  timeline: {
+    chatArea,
+    stepExecutionFeed,
+    isExecutorLauncherTool,
+    getFunctionResponse,
+    displayStoredUserText: displayMessageFromStoredUserText,
+    addMessage,
+    addAgentTimelineMessage,
+    addPlanApprovalActions,
+    beginScrollTransaction,
+    endScrollTransaction,
+    clearDisclosures: clearChatDisclosures,
+  },
+  ui: {
+    updateSendButtonState,
+    renderSessionBanner,
+    renderSessionFilesTree,
+    refreshSessionFiles,
+    generateSessionSummary,
+    workdirDisplay,
+  },
+  managedRun: { eventsUrl: managedRunEventsUrl },
 }) {
   const sessionViewCacheLimit = 3;
   const sessionHistoryWindowPages = 3;

@@ -4,17 +4,52 @@ import {
   upsertTimelineThought,
 } from "./timeline.js";
 
-/** Coordinates a single composer request from optimistic UI through SSE completion. */
-export function createMessageStreamController(deps) {
-  const {
-    state, appName, chatArea, textInput, activeSessionRequest, sessionRequestKey, activeSessionBackendUserId,
-    canWriteActiveSession, showLoginModal, createSession, addMessage, addAgentTimelineMessage,
-    addPlanApprovalActions, renderTimeline, messageWithUploadNames, messageWithUploadContext, clearCurrentUploads,
-    autoResizeTextInput, stepExecutionFeed, agentGraph, planGraph, updateSendButtonState, updateAgentRunningStatus,
+/**
+ * Coordinates a single composer request from optimistic UI through SSE completion.
+ *
+ * Grouping collaborators here makes the controller's responsibilities
+ * (session state, composer UI including uploads, and execution UI) visible at
+ * its API.
+ */
+export function createMessageStreamController({
+  session: {
+    state,
+    activeRequest: activeSessionRequest,
+    requestKey: sessionRequestKey,
+    backendUserId: activeSessionBackendUserId,
+    canWrite: canWriteActiveSession,
+    create: createSession,
+    releaseRequest: releaseSessionRequest,
+    runtime: sessionRuntime,
+    refreshFiles: refreshSessionFiles,
+    generateSummary: generateSessionSummary,
+  },
+  composer: {
+    appName,
+    chatArea,
+    textInput,
+    showLoginModal,
+    addMessage,
+    addAgentTimelineMessage,
+    addPlanApprovalActions,
+    renderTimeline,
+    messageWithUploadNames,
+    messageWithUploadContext,
+    clearCurrentUploads,
+    autoResizeTextInput,
+  },
+  execution: {
+    stepExecutionFeed,
+    agentGraph,
+    planGraph,
+    updateSendButtonState,
+    updateAgentRunningStatus,
     attachAgentRunningIndicator,
-    releaseSessionRequest, managedRunEventsUrl, shouldRefreshPlanGraphForTool,
-    generateSessionSummary, refreshSessionFiles, sessionRuntime, showPlanGraph,
-  } = deps;
+    managedRunEventsUrl,
+    shouldRefreshPlanGraphForTool,
+    showPlanGraph,
+  },
+}) {
 
   function renderStopStatus(request) {
     if (!request.stopStatus || sessionRequestKey(request.sessionId, request.owner) !== sessionRequestKey()) return;
