@@ -98,8 +98,10 @@ from matcreator.skill import (  # noqa: E402
     refresh_skills,
     seed_skills_to_graph,
     get_default_skill_names,
+    get_disabled_skill_names,
+    set_disabled_skill_names,
 )
-from matcreator.config import load_config, save_config, get_disabled_skills  # noqa: E402
+from matcreator.config import load_config, save_config  # noqa: E402
 from matcreator.config import ENV_TO_YAML, YAML_TO_ENV, SENSITIVE_YAML_KEYS  # noqa: E402
 from matcreator.constants import GRAPH_AGENT_MODEL, KNOW_DO_GRAPH_DB  # noqa: E402
 from matcreator.control_plane.remote_job_monitor import RemoteJobMonitor  # noqa: E402
@@ -917,7 +919,6 @@ def _json_ready(value):
 
 def _load_skill_graph_payload(*, limit: int = 400) -> dict:
     graph = _get_kg()
-    disabled_skills = set(get_disabled_skills())
     default_skill_names = get_default_skill_names()
     skill_dirs = _skill_dir_map()
     workspace_skill_root = workspace_skills_dir().resolve()
@@ -953,8 +954,7 @@ def _load_skill_graph_payload(*, limit: int = 400) -> dict:
             and skill_dir is None
         )
         graph_disabled = is_entry_disabled(entry)
-        config_disabled = skill_name in disabled_skills if skill_name else False
-        enabled = not virtual and not graph_disabled and not config_disabled
+        enabled = not virtual and not graph_disabled
         skill_path = str(skill_dir.resolve()) if skill_dir else None
         source = get_skill_source(skill_name) if skill_name else None
         removable = bool(
@@ -982,7 +982,6 @@ def _load_skill_graph_payload(*, limit: int = 400) -> dict:
                 "remove_requires_confirmation": bool(skill_name and source and source.managed),
                 "enabled": enabled,
                 "graph_disabled": graph_disabled,
-                "config_disabled": config_disabled,
                 "virtual": virtual,
                 "entry_type": entry_type,
                 "content": "" if virtual else entry.content,
@@ -3874,18 +3873,28 @@ async def list_modeling_structure_files(
 @app.get("/api/sessions/{session_id}/files")
 async def list_session_files(session_id: str) -> JSONResponse:
     owner_id, _ = _load_session_state(session_id)
-    session_dir = _get_workdir_for_session(session_id)
+    session_dir = _get_workdir_for_session(session_id).resolve()
     if not session_dir.exists():
         return JSONResponse({"files": []})
-    files = [
-        {
-            "name": f.name,
-            "path": _control_plane_path_to_worker(owner_id, f) if owner_id else str(f),
-            "size": f.stat().st_size,
-        }
-        for f in sorted(session_dir.rglob("*"))
-        if f.is_file()
-    ]
+
+    # These folders are runtime bookkeeping kept below the shared workspace,
+    # rather than artifacts generated for a session.  In particular, stopping
+    # a session creates ``cancellation/<session_id>.flag``.  Do not send these
+    # files to the user-facing explorer when a session uses the shared root.
+    internal_roots = {"cancellation", "trajectories"}
+    files = []
+    for file_path in sorted(session_dir.rglob("*")):
+        if not file_path.is_file():
+            continue
+        relative_path = file_path.relative_to(session_dir).as_posix()
+        if relative_path.split("/", 1)[0] in internal_roots:
+            continue
+        files.append({
+            "name": file_path.name,
+            "path": _control_plane_path_to_worker(owner_id, file_path) if owner_id else str(file_path),
+            "relative_path": relative_path,
+            "size": file_path.stat().st_size,
+        })
     return JSONResponse({"files": files})
 
 
@@ -4663,7 +4672,7 @@ async def list_skills(user_id: str = Query(default="")) -> JSONResponse:
     default_skill_names = get_default_skill_names()
     config = _load_config_for_user(user_id)
     planning_skills = set((config.get("planning") or {}).get("extra_skills") or [])
-    disabled_skills = set((config.get("skills") or {}).get("disabled") or [])
+    disabled_skills = get_disabled_skill_names()
     skills = []
     for s in sorted(ALL_SKILLS, key=lambda s: s.name):
         source = get_skill_source(s.name)
@@ -4828,8 +4837,20 @@ async def update_settings(body: SettingsBody, user_id: str = Query(default="")) 
         config.setdefault("planning", {}).update(body.planning)
     if body.user is not None:
         config.setdefault("user", {}).update(body.user)
+    disabled_skill_names: set[str] | None = None
     if body.skills is not None:
-        config.setdefault("skills", {}).update(body.skills)
+        skill_settings = dict(body.skills)
+        if "disabled" in skill_settings:
+            disabled_skill_names = {
+                str(name)
+                for name in skill_settings.pop("disabled") or []
+                if str(name).strip()
+            }
+        if skill_settings:
+            config.setdefault("skills", {}).update(skill_settings)
+        # ``skills.disabled`` used to be persisted in config.yaml.  Graph node
+        # state now owns availability, so retire any legacy copy on save.
+        config.setdefault("skills", {}).pop("disabled", None)
     if body.workspace is not None:
         config.setdefault("workspace", {}).update(body.workspace)
     if body.llm is not None:
@@ -4837,6 +4858,8 @@ async def update_settings(body: SettingsBody, user_id: str = Query(default="")) 
     _save_config_for_user(config, user_id)
     try:
         refresh_skills()
+        if disabled_skill_names is not None:
+            set_disabled_skill_names(disabled_skill_names)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Settings saved but skill registry reload failed: {exc}")
     return JSONResponse({

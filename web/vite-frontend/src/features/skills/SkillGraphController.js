@@ -1192,11 +1192,7 @@ export function createSkillGraphController({
 
     const meta = document.createElement("div");
     meta.className = "skill-graph-detail-meta";
-    const disabledReason = node.graph_disabled
-      ? "disabled (graph)"
-      : node.config_disabled
-        ? "disabled (config)"
-        : null;
+    const disabledReason = node.graph_disabled ? "disabled" : null;
     const metaItems = [
       skillGraphDisplayNodeType(node.entry_type, metadata?.skill_level),
       node.virtual ? "virtual / backing skill missing" : null,
@@ -1222,7 +1218,6 @@ export function createSkillGraphController({
       ["Skill", node.skill_name],
       ["Enabled", node.enabled !== false],
       ["Graph disabled", node.graph_disabled === true],
-      ["Config disabled", node.config_disabled === true],
       ["Virtual", node.virtual === true],
       ["Type", skillGraphDisplayNodeType(node.entry_type, metadata.skill_level)],
       ["Aliases", node.aliases],

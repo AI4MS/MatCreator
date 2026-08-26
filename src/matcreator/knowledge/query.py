@@ -340,10 +340,7 @@ def search_skills(query: str, top_k: int = 5) -> str:
     should call ``load_skill`` or ``search_skill_context`` after choosing a
     result when they need detailed instructions.
     """
-    from ..config import get_disabled_skills
-
     graph = _get_kg()
-    disabled = set(get_disabled_skills())
     try:
         results = [
             entry
@@ -354,7 +351,6 @@ def search_skills(query: str, top_k: int = 5) -> str:
                 include_procedures=True,
             )
             if "matcreator-skill" in entry.tags
-            and entry.title not in disabled
             and not _is_virtual(entry)
             and not is_entry_disabled(entry)
         ][:top_k]

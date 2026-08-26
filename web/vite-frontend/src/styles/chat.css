@@ -1852,7 +1852,7 @@ body[data-theme="dark"] .input-container[data-agent-mode="bench"] {
 .agent-message > .agent-running-indicator {
   grid-column: 2;
   grid-row: 2;
-  margin: -4px 0 0;
+  margin: 8px 0 0;
 }
 
 .agent-message.is-waiting > .message-bubble {

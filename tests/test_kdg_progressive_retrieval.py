@@ -10,6 +10,7 @@ from know_do_graph import (
 )
 
 from matcreator.knowledge import query, review
+from matcreator.knowledge.kdg_memory import set_entry_disabled
 
 
 def _add(
@@ -51,7 +52,6 @@ def test_search_skills_returns_only_clipped_skill_previews(
     )
     monkeypatch.setattr(query, "_get_kg", lambda: graph)
     monkeypatch.setattr(query, "increment_usage", lambda _graph, _entry: None)
-    monkeypatch.setattr("matcreator.config.get_disabled_skills", lambda: [])
 
     result = query.search_skills("verbose skill", top_k=1)
 
@@ -60,6 +60,27 @@ def test_search_skills_returns_only_clipped_skill_previews(
     assert "Detailed instruction B should stay out" not in result
     assert len(result) < len(full_body)
     assert "..." in result
+
+
+def test_graph_disabled_skills_are_hidden_from_discovery_and_reads(
+    tmp_path, monkeypatch
+) -> None:
+    graph = KnowDoGraph(tmp_path / "know-do.db")
+    disabled = _add(
+        graph,
+        "atomic-structure",
+        EntryType.capability,
+        SkillLevel.L1,
+        tags=["matcreator-skill"],
+    )
+    monkeypatch.setattr(query, "_get_kg", lambda: graph)
+    set_entry_disabled(graph, disabled.id, True)
+
+    discovery = query.query_knowledge_graph("atomic structure", top_k=1)
+
+    assert "atomic-structure" not in discovery
+    assert discovery.startswith("No knowledge graph entries found")
+    assert query.read_knowledge_node(disabled.id) == "Skill 'atomic-structure' is disabled."
 
 
 def test_query_knowledge_graph_is_compact_discovery_with_native_sidecar_hints(
