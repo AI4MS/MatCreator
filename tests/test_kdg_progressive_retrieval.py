@@ -31,7 +31,7 @@ def _add(
     )
 
 
-def test_search_skills_returns_only_clipped_skill_previews(
+def test_unified_skill_only_discovery_returns_clipped_skill_previews(
     tmp_path, monkeypatch
 ) -> None:
     graph = KnowDoGraph(tmp_path / "know-do.db")
@@ -53,13 +53,104 @@ def test_search_skills_returns_only_clipped_skill_previews(
     monkeypatch.setattr(query, "_get_kg", lambda: graph)
     monkeypatch.setattr(query, "increment_usage", lambda _graph, _entry: None)
 
-    result = query.search_skills("verbose skill", top_k=1)
+    result = query.query_knowledge_graph(
+        "verbose skill",
+        top_k=1,
+        include_memory=False,
+        skills_only=True,
+    )
 
     assert "Verbose skill" in result
     assert "Short skill overview." in result
     assert "Detailed instruction B should stay out" not in result
     assert len(result) < len(full_body)
     assert "..." in result
+
+
+def test_unified_discovery_can_exclude_memory_and_non_skill_nodes(
+    tmp_path, monkeypatch
+) -> None:
+    graph = KnowDoGraph(tmp_path / "know-do.db")
+    skill_entry = _add(
+        graph,
+        "Installed skill",
+        EntryType.capability,
+        SkillLevel.L1,
+        tags=["matcreator-skill"],
+    )
+    _add(graph, "General knowledge", EntryType.capability, SkillLevel.L1)
+    graph.add(
+        "Installed memory",
+        content="Installed working-memory result.",
+        entry_type=EntryType.memory,
+    )
+    monkeypatch.setattr(query, "_get_kg", lambda: graph)
+    monkeypatch.setattr(query, "increment_usage", lambda _graph, _entry: None)
+
+    result = query.query_knowledge_graph(
+        "installed",
+        top_k=5,
+        include_memory=False,
+        skills_only=True,
+    )
+
+    assert "Installed skill" in result
+    assert skill_entry.id in result
+    assert "General knowledge" not in result
+    assert "Installed memory" not in result
+
+    display_result = query.query_knowledge_graph(
+        "installed",
+        top_k=5,
+        include_memory=False,
+        skills_only=True,
+        include_ids=False,
+    )
+    assert "Installed skill" in display_result
+    assert skill_entry.id not in display_result
+
+
+
+def test_get_related_skills_returns_selectable_descriptions_not_full_bodies(
+    tmp_path, monkeypatch
+) -> None:
+    graph = KnowDoGraph(tmp_path / "know-do.db")
+    start = _add(
+        graph,
+        "Structure generation",
+        EntryType.capability,
+        SkillLevel.L1,
+        tags=["matcreator-skill"],
+    )
+    full_body = "Detailed MatterSim instruction. " * 200
+    related = graph.add(
+        "MatterSim",
+        content=full_body,
+        entry_type=EntryType.capability,
+        tags=["matcreator-skill"],
+        metadata=EntryMetadata(
+            skill_level=SkillLevel.L1,
+            custom={
+                "description": (
+                    "Relax structures. Run molecular dynamics. "
+                    "This sentence must not appear."
+                )
+            },
+        ),
+    )
+    graph.connect(start.id, related.id, relation=EdgeRelation.dependency)
+    monkeypatch.setattr(query, "_get_kg", lambda: graph)
+    monkeypatch.setattr(query, "increment_usage", lambda _graph, _entry: None)
+
+    result = query.get_related_skills(start.id, top_k=1)
+
+    assert "MatterSim" in result
+    assert related.id in result
+    assert "Relax structures. Run molecular dynamics." in result
+    assert "This sentence must not appear." not in result
+    assert "Detailed MatterSim instruction" not in result
+    assert "read_knowledge_node" in result
+    assert len(result) < len(full_body)
 
 
 def test_graph_disabled_skills_are_hidden_from_discovery_and_reads(
@@ -109,16 +200,65 @@ def test_query_knowledge_graph_is_compact_discovery_with_native_sidecar_hints(
 
     assert selected.id in result
     assert "1 L3 heuristic(s)" in result
-    assert "Select one `id`, then call `read_knowledge_node`" in result
+    assert "Load a selected installed skill with `load_skill`" in result
     assert len(result) < len(full_body)
     assert "..." in result
 
     expanded = query.read_knowledge_node(selected.id)
-    assert full_body in expanded
+    assert full_body not in expanded
     assert "Selected heuristic" in expanded
 
 
-def test_search_skill_context_only_returns_attached_sidecars(
+def test_read_knowledge_node_without_sidecars_does_not_repeat_the_node_body(
+    tmp_path, monkeypatch
+) -> None:
+    graph = KnowDoGraph(tmp_path / "know-do.db")
+    selected = _add(
+        graph,
+        "Standalone capability",
+        EntryType.capability,
+        SkillLevel.L1,
+        content="Full SKILL.md instructions that must be loaded separately.",
+    )
+    monkeypatch.setattr(query, "_get_kg", lambda: graph)
+
+    result = query.read_knowledge_node(selected.id)
+
+    assert result == "No attached L3/L4 context found for 'Standalone capability'."
+    assert "Full SKILL.md instructions" not in result
+
+
+def test_node_context_summary_reports_l3_l4_counts_without_loading_content(
+    tmp_path, monkeypatch
+) -> None:
+    graph = KnowDoGraph(tmp_path / "know-do.db")
+    selected = _add(
+        graph,
+        "Selected capability",
+        EntryType.capability,
+        SkillLevel.L1,
+        tags=["matcreator-skill"],
+    )
+    heuristic = _add(graph, "Attached heuristic", EntryType.heuristic, SkillLevel.L3)
+    limitation = _add(graph, "Attached limitation", EntryType.constraint, SkillLevel.L4)
+    graph.connect(heuristic.id, selected.id, relation=EdgeRelation.heuristic_for)
+    graph.connect(limitation.id, selected.id, relation=EdgeRelation.constraint_on)
+    monkeypatch.setattr(query, "_get_kg", lambda: graph)
+
+    summary = query.get_node_context_summary(selected.id)
+
+    assert summary == {
+        "node_id": selected.id,
+        "heuristics": 1,
+        "limitations": 1,
+    }
+    assert query.format_node_context_hint(summary) == (
+        "This skill has 1 attached L3 heuristic(s) and 1 L4 limitation(s). "
+        f"Call read_knowledge_node(node_id='{selected.id}') to read them."
+    )
+
+
+def test_search_skill_context_compatibility_alias_only_returns_attached_sidecars(
     tmp_path, monkeypatch
 ) -> None:
     graph = KnowDoGraph(tmp_path / "know-do.db")

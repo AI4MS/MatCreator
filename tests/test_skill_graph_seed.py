@@ -102,6 +102,7 @@ def test_seed_skills_to_graph_stores_full_skill_body_and_native_attachments(
     skill_entry = next(entry for entry in matches if entry.title == "demo-skill")
     assert "Use the detailed SKILL instructions here." in skill_entry.content
     assert "Short summary only." not in skill_entry.content
+    assert skill_entry.metadata.custom["description"] == "Short summary only."
 
     assert skill_entry.internal_refs == ["references/tips.md", "README.md"]
     assert {(asset.folder, asset.filename) for asset in skill_entry.assets} == {
@@ -112,10 +113,8 @@ def test_seed_skills_to_graph_stores_full_skill_body_and_native_attachments(
     }
     assert [script.filename for script in skill_entry.scripts] == ["tool.py"]
 
-    context = query.search_skill_context(skill_entry.id, query="README", top_k=10)
-    assert "docs/README.md" in context
-    assert "Extra README context for operators." in context
-    assert "scripts/tool.py" not in context
+    context = query.read_knowledge_node(skill_entry.id, query="README", top_k=10)
+    assert context == "No attached L3/L4 context found for 'demo-skill'."
 
 
 def test_seed_reuses_disabled_skill_node_and_merges_legacy_duplicate(

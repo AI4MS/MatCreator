@@ -2,6 +2,8 @@
 
 from .query import (
     get_migration_result,
+    get_node_context_summary,
+    format_node_context_hint,
     get_related_skills,
     query_knowledge_graph,
     read_knowledge_node,
@@ -23,6 +25,8 @@ __all__ = [
     "search_skill_context",
     "get_related_skills",
     "get_migration_result",
+    "get_node_context_summary",
+    "format_node_context_hint",
     "run_legacy_migration",
     "chat_with_knowledge_graph",
     "run_knowledge_extractor",

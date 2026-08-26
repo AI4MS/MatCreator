@@ -348,13 +348,42 @@ def _build_planning_skill_names() -> frozenset[str]:
 PLANNING_SKILL_NAMES: set[str] = set(_build_planning_skill_names())
 
 
+class MatCreatorLoadSkillTool(skill_toolset.LoadSkillTool):
+    """Augment ADK skill loads with metadata-only L3/L4 attachment counts."""
+
+    async def run_async(self, *, args, tool_context):
+        result = await super().run_async(args=args, tool_context=tool_context)
+        if not isinstance(result, dict) or result.get("error"):
+            return result
+
+        skill_name = result.get("skill_name")
+        if not isinstance(skill_name, str):
+            return result
+
+        from .knowledge.query import format_node_context_hint, get_node_context_summary
+
+        context = get_node_context_summary(skill_name)
+        if context is None:
+            return result
+        result["attached_context"] = context
+        hint = format_node_context_hint(context)
+        if hint:
+            result["attached_context_hint"] = hint
+        return result
+
+
 class MatCreatorSkillToolset(skill_toolset.SkillToolset):
     """SkillToolset with workspace-aware list and run tools."""
 
     def __init__(self, skills: list):
         super().__init__(skills=skills)
-        kept = [t for t in self._tools
-                if t.__class__.__name__ in ('LoadSkillTool', 'LoadSkillResourceTool')]
+        kept = [
+            MatCreatorLoadSkillTool(self)
+            if isinstance(t, skill_toolset.LoadSkillTool)
+            else t
+            for t in self._tools
+            if isinstance(t, (skill_toolset.LoadSkillTool, skill_toolset.LoadSkillResourceTool))
+        ]
         self._tools = [
             #FunctionTool(list_workspace_skills),
             *kept,
@@ -372,7 +401,7 @@ class MatCreatorSkillToolset(skill_toolset.SkillToolset):
         return [skill for skill in super()._list_skills() if skill.name not in disabled]
 
     async def process_llm_request(self, *, tool_context, llm_request) -> None:
-        # Suppress the default XML skill-list injection; agents use search_skills instead.
+        # Suppress the default XML skill-list injection; agents use graph discovery instead.
         pass
 
 
@@ -536,6 +565,7 @@ def seed_skills_to_graph() -> dict:
                 custom={
                     "managed_by": "matcreator",
                     "kind": "skill",
+                    "description": (skill.description or "").strip(),
                     "skill_source": source_name,
                     "virtual": False,
                     "virtual_reason": None,

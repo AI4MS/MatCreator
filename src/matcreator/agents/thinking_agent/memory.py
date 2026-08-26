@@ -19,8 +19,6 @@ from ...knowledge.query import (
     query_knowledge_graph as _query_knowledge_graph,
     read_knowledge_node,
     save_to_knowledge_graph as _save_to_knowledge_graph,
-    search_skills,
-    search_skill_context,
     get_related_skills,
 )
 from ...knowledge.review import chat_with_knowledge_graph as _chat_with_knowledge_graph
@@ -31,19 +29,33 @@ def query_knowledge_graph(
     query: str,
     depth: int = 2,
     top_k: int = 5,
+    include_memory: bool = True,
+    skills_only: bool = False,
+    include_ids: bool = True,
 ) -> str:
-    """Discover compact knowledge-graph candidates relevant to *query*.
+    """Discover compact knowledge and installed-skill candidates relevant to *query*.
 
     Returns clipped L1/L2 and working-memory candidates with stable IDs. Select
-    one ID, then call ``read_knowledge_node`` for its full content and attached
-    L3/L4 context. To discover runnable installed skills, use ``search_skills``.
+    one ID, then call ``load_skill`` for its full SKILL.md body and
+    ``read_knowledge_node`` only for attached L3/L4 context. Set
+    ``skills_only=True`` and ``include_memory=False`` for skill-only discovery.
 
     Args:
         query: Free-text search string.
         depth: Retained for compatibility; currently unused.
         top_k: Maximum L1/L2 candidates to return (default 5).
+        include_memory: Include working-memory candidates (default true).
+        skills_only: Limit L1/L2 candidates to installed skills (default false).
+        include_ids: Include stable node IDs for follow-up reads (default true).
     """
-    return _query_knowledge_graph(query, depth=depth, top_k=top_k)
+    return _query_knowledge_graph(
+        query,
+        depth=depth,
+        top_k=top_k,
+        include_memory=include_memory,
+        skills_only=skills_only,
+        include_ids=include_ids,
+    )
 
 
 def save_to_knowledge_graph(
