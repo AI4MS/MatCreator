@@ -197,23 +197,17 @@ const {
   addMessage,
   appendLiveTurnChild,
   applyUserAvatarToEl,
-  beginScrollTransaction,
-  captureScrollPosition,
   createAgentAvatarEl,
-  endScrollTransaction,
   markReadingAnchors,
   protectAsyncContentLayout,
   renderMarkdown,
-  restoreScrollPosition,
   scrollToBottom,
+  setMarkdownContent,
   setUserAvatar,
   updatePreservingReadingPosition,
 } = createChatRenderer({ chatArea, bottomOverlay: inputArea });
 
-const createChatDisclosureController = () => createDisclosureController({
-  captureScrollPosition,
-  restoreScrollPosition,
-});
+const createChatDisclosureController = () => createDisclosureController();
 const chatDisclosureController = createChatDisclosureController();
 
 const settingsController = createSettingsController({
@@ -581,7 +575,7 @@ async function logout() {
   clearStoredSessionSelection();
   localStorage.removeItem("mat_deploymentMode");
   userDisplay.textContent = "—";
-  chatArea.innerHTML = "";
+  sessionRuntime.resetTranscript();
   stepExecutionFeed.reset();
   chatDisclosureController.clear();
   state.sessionViewCache.clear();
@@ -653,7 +647,7 @@ function _applySession(result) {
   localStorage.setItem("mat_displayName", result.display_name);
   clearStoredSessionSelection();
   sessionIdEl.textContent = state.sessionId;
-  chatArea.innerHTML = "";
+  sessionRuntime.resetTranscript();
   stepExecutionFeed.reset();
   renderSessionFilesTree([]);
   clearCurrentUploads();
@@ -923,6 +917,10 @@ function sessionDisplayStatus(session, owner) {
 
 async function switchSession(sessionId, owner = state.userId) {
   const viewKey = sessionRequestKey(sessionId, owner);
+  // The active item remains clickable after the sidebar is rerendered.  It is
+  // not a refresh control, so do not tear down and rebuild the current view
+  // when the user clicks it again.
+  if (state.sessionReady && viewKey === sessionRequestKey()) return;
   state.sessionId = sessionId;
   state.activeSessionUserId = owner;
   state.sessionReady = true;
@@ -1009,7 +1007,7 @@ async function deleteSession(sessionId) {
       updateSendButtonState();
       clearStoredSessionSelection();
       sessionIdEl.textContent = state.sessionId;
-      chatArea.innerHTML = "";
+      sessionRuntime.resetTranscript();
       stepExecutionFeed.reset();
       renderSessionFilesTree([]);
       clearCurrentUploads();
@@ -1124,7 +1122,35 @@ function createToolCallRawView(toolCall) {
     heading.className = "tool-call-raw-label";
     heading.textContent = label;
     section.appendChild(heading);
-    section.appendChild(createPayloadBlock(payload === null || payload === undefined ? empty : payload));
+    const deferred = payload?._matcreator_deferred_detail;
+    if (deferred) {
+      const preview = { ...payload };
+      delete preview._matcreator_deferred_detail;
+      if (Object.keys(preview).length) section.appendChild(createPayloadBlock(preview));
+      const load = document.createElement("button");
+      load.type = "button";
+      load.className = "ghost tool-detail-load";
+      load.textContent = `Load full output (${Math.ceil((deferred.byte_size || 0) / 1024)} KB)`;
+      load.addEventListener("click", async () => {
+        load.disabled = true;
+        load.textContent = "Loading output…";
+        try {
+          const url = `/api/users/${encodeURIComponent(deferred.user_id)}`
+            + `/sessions/${encodeURIComponent(deferred.session_id)}`
+            + `/events/${deferred.row_id}/parts/${deferred.part_index}/detail`;
+          const response = await fetch(url);
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const detail = await response.json();
+          section.replaceChildren(heading, createPayloadBlock(detail.response));
+        } catch (error) {
+          load.disabled = false;
+          load.textContent = `Retry full output (${error.message})`;
+        }
+      });
+      section.appendChild(load);
+    } else {
+      section.appendChild(createPayloadBlock(payload === null || payload === undefined ? empty : payload));
+    }
     body.appendChild(section);
   };
   if (toolCall.error) addPayload("Error", toolCall.error);
@@ -1150,61 +1176,63 @@ function createActionRawView(action) {
   return body;
 }
 
-function createTimelineReasoning(entry, wireTimelineDetails, collapsed = false, isNew = false) {
+function createTimelineReasoning(entry, wireTimelineDetails, collapsed = false, isNew = false, cacheMarkdown = true) {
   if (collapsed) {
     const details = document.createElement("details");
     details.className = "agent-activity-reasoning-entry is-collapsed";
     const summary = document.createElement("summary");
     const preview = document.createElement("span");
     preview.className = "agent-activity-reasoning-preview";
-    preview.textContent = String(entry.text || "").replace(/\s+/g, " ").trim();
+    const reasoningText = String(entry.text || "");
+    preview.textContent = reasoningText.replace(/\s+/g, " ").trim().slice(0, 240);
     const ellipsis = document.createElement("span");
     ellipsis.className = "agent-activity-reasoning-ellipsis";
     ellipsis.textContent = "…";
     const chevron = document.createElement("span");
     chevron.className = "agent-activity-reasoning-chevron";
     chevron.textContent = "›";
-    const content = document.createElement("div");
-    content.className = "agent-activity-reasoning-content";
-    const markdown = document.createElement("div");
-    markdown.className = "markdown-content";
-    markdown.innerHTML = renderMarkdown(entry.text || "");
-    const collapse = document.createElement("button");
-    collapse.type = "button";
-    collapse.className = "agent-activity-reasoning-collapse";
-    // Reuse the same chevron as the collapsed preview, rotated upward to
-    // communicate the reverse action without introducing a new icon style.
-    collapse.textContent = "›";
-    collapse.title = "Collapse reasoning";
-    collapse.setAttribute("aria-label", "Collapse reasoning");
-    collapse.addEventListener("click", () => { details.open = false; });
-    content.append(markdown, collapse);
     summary.append(preview, ellipsis, chevron);
-    details.append(summary, content);
+    details.append(summary);
     wireTimelineDetails(details, `${entry.timelineId}:reasoning`);
-    // Decide from the rendered height rather than character count: CJK text,
-    // narrow panes, lists, and links all wrap differently. Short reasoning
-    // stays fully visible and does not pretend to be a disclosure.
-    requestAnimationFrame(() => {
-      if (!details.isConnected) return;
-      const wasOpen = details.open;
-      details.open = true;
-      const lineHeight = Number.parseFloat(getComputedStyle(markdown).lineHeight) || 17;
-      const isShort = markdown.getBoundingClientRect().height <= lineHeight * 3 + 1;
-      if (isShort) {
-        details.classList.add("is-static");
-        collapse.remove();
-      } else {
-        details.open = wasOpen;
-      }
+    let content = null;
+    const mountContent = () => {
+      if (content) return;
+      content = document.createElement("div");
+      content.className = "agent-activity-reasoning-content";
+      const markdown = document.createElement("div");
+      markdown.className = "markdown-content";
+      setMarkdownContent(markdown, reasoningText, { cache: cacheMarkdown });
+      const collapse = document.createElement("button");
+      collapse.type = "button";
+      collapse.className = "agent-activity-reasoning-collapse";
+      collapse.textContent = "›";
+      collapse.title = "Collapse reasoning";
+      collapse.setAttribute("aria-label", "Collapse reasoning");
+      collapse.addEventListener("click", () => { details.open = false; });
+      content.append(markdown, collapse);
+      details.appendChild(content);
+    };
+    const unmountContent = () => {
+      content?.remove();
+      content = null;
+    };
+    details.addEventListener("toggle", () => {
+      if (details.open) mountContent();
+      else unmountContent();
     });
+    if (reasoningText.length <= 240) {
+      details.classList.add("is-static");
+      details.open = true;
+      mountContent();
+    } else if (details.open) mountContent();
     return details;
   }
   const section = document.createElement("div");
   section.className = `agent-activity-reasoning-entry${isNew ? " is-entering" : ""}`;
   const content = document.createElement("div");
   content.className = "markdown-content";
-  content.innerHTML = renderMarkdown(entry.text || "");
+  // This is the live reasoning path, so keep it mounted while text streams.
+  setMarkdownContent(content, entry.text || "", { cache: cacheMarkdown, defer: false });
   section.appendChild(content);
   return section;
 }
@@ -1237,11 +1265,10 @@ function createActivityAction(action, wireTimelineDetails, { isNew = false, incl
   summary.append(icon, text, duration);
   details.appendChild(summary);
 
-  let bodyMounted = false;
+  let body = null;
   const mountBody = () => {
-    if (bodyMounted) return;
-    bodyMounted = true;
-    const body = document.createElement("div");
+    if (body) return;
+    body = document.createElement("div");
     body.className = "activity-action-body";
     displayAction.toolCalls.forEach((call) => {
       const result = document.createElement("div");
@@ -1269,8 +1296,13 @@ function createActivityAction(action, wireTimelineDetails, { isNew = false, incl
     body.appendChild(createActionRawView(displayAction));
     details.appendChild(body);
   };
+  const unmountBody = () => {
+    body?.remove();
+    body = null;
+  };
   details.addEventListener("toggle", () => {
     if (details.open) mountBody();
+    else unmountBody();
   });
   wireTimelineDetails(details, `${action.timelineId}:tool`);
   if (details.open) mountBody();
@@ -1345,50 +1377,158 @@ function createAgentActivity(items, wireTimelineDetails, options) {
   summary.append(title, meta);
   activity.appendChild(summary);
 
-  const body = document.createElement("div");
-  body.className = "agent-activity-body";
-  const actionList = document.createElement("div");
-  actionList.className = "agent-activity-action-list";
-  items.forEach((item) => {
-    if (item.type === "reasoning") {
-      actionList.appendChild(createTimelineReasoning(
-        item,
-        wireTimelineDetails,
-        completed,
-        !options.previousItemIds?.has(item.timelineId),
-      ));
-    }
-    if (item.type === "activity_action") {
-      const action = createActivityAction(item, wireTimelineDetails, {
-        isNew: !options.previousItemIds?.has(item.timelineId),
-      });
-      if (action) actionList.appendChild(action);
-    }
-  });
-  body.appendChild(actionList);
-  activity.appendChild(body);
   wireTimelineDetails(activity, `${options.activityKey}:container`, !completed);
-  // `capture()` persists the currently open DOM state across streamed
-  // redraws. A finished turn is deliberately compact instead: the reader can
-  // still reopen its Activity, but it no longer occupies the conversation.
   if (completed) activity.open = false;
+  let body = null;
+  const mountBody = () => {
+    if (body) return;
+    body = document.createElement("div");
+    body.className = "agent-activity-body";
+    const actionList = document.createElement("div");
+    actionList.className = "agent-activity-action-list";
+    let rendered = 0;
+    const batchSize = 40;
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "ghost agent-activity-load-more";
+    const appendBatch = () => {
+      const end = Math.min(items.length, rendered + batchSize);
+      for (; rendered < end; rendered += 1) {
+        const item = items[rendered];
+        if (item.type === "reasoning") {
+          actionList.appendChild(createTimelineReasoning(
+            item,
+            wireTimelineDetails,
+            completed,
+            !options.previousItemIds?.has(item.timelineId),
+            options.cacheMarkdown,
+          ));
+        }
+        if (item.type === "activity_action") {
+          const action = createActivityAction(item, wireTimelineDetails, {
+            isNew: !options.previousItemIds?.has(item.timelineId),
+          });
+          if (action) actionList.appendChild(action);
+        }
+      }
+      more.textContent = `Show more activity (${items.length - rendered} remaining)`;
+      more.hidden = rendered >= items.length;
+    };
+    more.addEventListener("click", appendBatch);
+    appendBatch();
+    body.appendChild(actionList);
+    body.appendChild(more);
+    activity.appendChild(body);
+  };
+  const unmountBody = () => {
+    body?.remove();
+    body = null;
+  };
+  activity.addEventListener("toggle", () => {
+    if (activity.open) mountBody();
+    else unmountBody();
+  });
+  if (activity.open) mountBody();
   return activity;
 }
 
+function timelineSegments(timeline) {
+  const segments = [];
+  let activityItems = [];
+  const flushActivity = () => {
+    if (!activityItems.length) return;
+    segments.push({
+      type: "activity",
+      key: `activity:${activityItems[0].timelineId}`,
+      items: activityItems,
+      revision: activityItems.map((item) => `${item.timelineId}:${item.renderRevision || 0}`).join("|"),
+    });
+    activityItems = [];
+  };
+  for (const item of timeline) {
+    if (item.type === "activity_action" || item.type === "reasoning") {
+      activityItems.push(item);
+      continue;
+    }
+    flushActivity();
+    if (item.type === "text") {
+      segments.push({
+        type: "text",
+        key: `text:${item.timelineId}`,
+        items: [item],
+        revision: `${item.timelineId}:${item.renderRevision || 0}`,
+      });
+    }
+  }
+  flushActivity();
+  return segments;
+}
+
+function segmentArtifacts(segment, claimedPlotPaths) {
+  if (segment.type !== "activity") return { plotPaths: [], structurePaths: [] };
+  const calls = segment.items
+    .filter((item) => item.type === "activity_action")
+    .flatMap((action) => action.toolCalls || []);
+  const plotPaths = [];
+  const structurePaths = [];
+  for (const call of calls) {
+    for (const path of getPlotPaths(call.output)) {
+      if (claimedPlotPaths.has(path)) continue;
+      claimedPlotPaths.add(path);
+      plotPaths.push(path);
+    }
+    structurePaths.push(...getStructurePaths(call.output));
+  }
+  return { plotPaths, structurePaths: [...new Set(structurePaths)] };
+}
+
+function renderTimelineSegment(segment, context) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "timeline-segment";
+  wrapper.dataset.timelineSegment = segment.key;
+  if (segment.type === "text") {
+    const item = segment.items[0];
+    const div = document.createElement("div");
+    div.className = "markdown-content";
+    setMarkdownContent(div, item.text || "", {
+      cache: context.cacheMarkdown,
+      // The final streaming segment stays visible. Immutable history uses
+      // lazy mounting once it exceeds the DOM budget.
+      defer: context.cacheMarkdown,
+      anchorPrefix: `${context.disclosurePrefix}${item.timelineId || "text:legacy"}:content`,
+    });
+    wrapper.appendChild(div);
+    return wrapper;
+  }
+
+  const activityKey = `activity:${segment.items[0].timelineId}`;
+  const activity = createAgentActivity(segment.items, context.wireTimelineDetails, {
+    activityKey,
+    previousItemIds: context.previousActivityItemIds,
+    cacheMarkdown: context.cacheMarkdown,
+  });
+  if (activity) wrapper.appendChild(activity);
+  const delegationCalls = delegationToolCalls(segment.items);
+  if (delegationCalls.length) {
+    wrapper.appendChild(createDelegationGroup(delegationCalls, {
+      isNew: delegationCalls.some((call) => !context.previousActivityItemIds.has(call.action?.timelineId)),
+    }));
+  }
+  context.artifacts.plotPaths.forEach((path) => wrapper.appendChild(createTimelineImage(path)));
+  if (context.artifacts.structurePaths.length) {
+    wrapper.appendChild(createStructureViewButtonGroup(context.artifacts.structurePaths));
+  }
+  return wrapper;
+}
+
 // Render the presentation-model timeline. Protocol IN/OUT events have already
-// been paired into ToolCall objects by features/chat/timeline.js.
+// been paired into ToolCall objects by features/chat/timeline.js. Completed
+// segments retain their DOM and parsed Markdown; only the mutable segment is
+// replaced while a turn streams.
 function renderTimeline(container, timeline, shownPlotPaths = null) {
   const disclosures = chatDisclosureController;
   const agentMessage = container.closest(".agent-message:not(.step-feed-message)");
-  const agentMessages = [...chatArea.children]
-    .filter((element) => element.matches?.(".agent-message:not(.step-feed-message)"));
-  const agentIndex = agentMessages.indexOf(agentMessage);
-  // The live message has no persisted msgIndex yet. Its assistant-message
-  // ordinal remains stable when the Approve plan prompt causes a snapshot
-  // rebuild, so use that as the cross-render scope.
-  const messageKey = agentIndex >= 0
-    ? `agent:${agentIndex}`
-    : `message:${agentMessage?.dataset.msgIndex || "live"}`;
+  const messageKey = container._messageKey || `message:${agentMessage?.dataset.msgIndex || "live"}`;
   const disclosurePrefix = `timeline:${messageKey}:`;
   const liveKeys = new Set();
   const wireTimelineDetails = (details, key, defaultOpen = false) => {
@@ -1401,73 +1541,52 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
     // Timeline updates rebuild a compact activity block and any inline Node cards.
     // Persist their actual DOM state first; defaults alone are insufficient
     // once a running Node has become completed but remains visibly open.
-    disclosures.capture(chatArea);
+    const previousSegments = container._timelineSegments || new Map();
     const previousActivityItemIds = container._activityItemIds || new Set();
     const currentActivityItemIds = new Set(timeline
       .filter((item) => item.type === "activity_action" || item.type === "reasoning")
       .map((item) => item.timelineId));
-    container.innerHTML = "";
-    const containerPlotPaths = container._plotPaths || new Set();
+    const externalPlotPaths = container._externalPlotPaths
+      || new Set(shownPlotPaths ? [...shownPlotPaths] : []);
+    container._externalPlotPaths = externalPlotPaths;
+    const claimedPlotPaths = new Set(externalPlotPaths);
     const visiblePlotPaths = new Set();
-    let activityItems = [];
-    let activityCount = 0;
-    const flushActivity = () => {
-      if (!activityItems.length) return;
-      const activityKey = `activity:${activityItems[0].timelineId || activityCount}`;
-      const activity = createAgentActivity(activityItems, wireTimelineDetails, {
-        activityKey,
-        previousItemIds: previousActivityItemIds,
-      });
-      if (activity) container.appendChild(activity);
-      const delegationCalls = delegationToolCalls(activityItems);
-      if (delegationCalls.length) {
-        container.appendChild(createDelegationGroup(delegationCalls, {
-          isNew: delegationCalls.some((call) => !previousActivityItemIds.has(call.action?.timelineId)),
-        }));
+    const nextSegments = new Map();
+    let insertionPoint = container.firstElementChild;
+    const segments = timelineSegments(timeline);
+    for (const [segmentIndex, segment] of segments.entries()) {
+      const artifacts = segmentArtifacts(segment, claimedPlotPaths);
+      artifacts.plotPaths.forEach((path) => visiblePlotPaths.add(path));
+      const signature = `${segment.revision};plots:${artifacts.plotPaths.join("\u001f")};structures:${artifacts.structurePaths.join("\u001f")}`;
+      const previous = previousSegments.get(segment.key);
+      let element = previous?.signature === signature ? previous.element : null;
+      if (!element) {
+        if (previous?.element) disclosures.capture(previous.element);
+        element = renderTimelineSegment(segment, {
+          artifacts,
+          cacheMarkdown: !activeSessionRequest() || segmentIndex < segments.length - 1,
+          disclosurePrefix,
+          previousActivityItemIds,
+          wireTimelineDetails,
+        });
+      } else {
+        element.querySelectorAll("details[data-disclosure-key]").forEach((details) => {
+          liveKeys.add(details.dataset.disclosureKey);
+        });
       }
-      const calls = activityItems
-        .filter((item) => item.type === "activity_action")
-        .flatMap((action) => action.toolCalls || []);
-      const structurePaths = [];
-      for (const call of calls) {
-        for (const plotPath of getPlotPaths(call.output)) {
-        if (
-          visiblePlotPaths.has(plotPath) ||
-          (shownPlotPaths && shownPlotPaths.has(plotPath) && !containerPlotPaths.has(plotPath))
-        ) {
-          continue;
-        }
-        visiblePlotPaths.add(plotPath);
-        container.appendChild(createTimelineImage(plotPath));
-      }
-        structurePaths.push(...getStructurePaths(call.output));
-      }
-      const uniqueStructurePaths = [...new Set(structurePaths)];
-      if (uniqueStructurePaths.length) {
-        container.appendChild(createStructureViewButtonGroup(uniqueStructurePaths));
-      }
-      activityItems = [];
-      activityCount += 1;
-    };
-    for (const item of timeline) {
-      if (item.type === "activity_action" || item.type === "reasoning") {
-        activityItems.push(item);
-      } else if (item.type === "text") {
-        flushActivity();
-      const div = document.createElement("div");
-      div.className = "markdown-content";
-      div.innerHTML = renderMarkdown(item.text || "");
-      markReadingAnchors(div, `${disclosurePrefix}${item.timelineId || "text:legacy"}:content`);
-      protectAsyncContentLayout(div);
-      container.appendChild(div);
-      }
+      if (element !== insertionPoint) container.insertBefore(element, insertionPoint);
+      insertionPoint = element.nextElementSibling;
+      nextSegments.set(segment.key, { element, signature });
     }
-    flushActivity();
+    for (const [key, previous] of previousSegments) {
+      if (nextSegments.get(key)?.element !== previous.element) previous.element.remove();
+    }
     disclosures.prunePrefix(disclosurePrefix, liveKeys);
     container._plotPaths = visiblePlotPaths;
     container._activityItemIds = currentActivityItemIds;
+    container._timelineSegments = nextSegments;
     visiblePlotPaths.forEach((path) => shownPlotPaths?.add(path));
-  });
+  }, { mutationRoot: agentMessage });
 }
 
 // Create an agent message div with an inner timeline container, append to
@@ -1483,6 +1602,10 @@ function addAgentTimelineMessage(timeline, shownPlotPaths = null, msgIndex, cont
   bubble.className = "message-bubble";
   const inner = document.createElement("div");
   inner.className = "timeline-container";
+  // Resolve the assistant ordinal once when the message is created. The old
+  // renderer scanned every chat child again for every streamed token.
+  inner._messageKey = timing.messageKey || `agent:${container.querySelectorAll(":scope > .agent-message:not(.step-feed-message)").length}`;
+  outer.dataset.readingAnchor = `message:${inner._messageKey}`;
   // This host exists for the entire lifetime of the assistant message.  The
   // step feed gets the host directly instead of inferring it from parentElement
   // or falling back to chatArea during a streamed timeline rebuild.
@@ -1747,8 +1870,7 @@ const sessionRuntime = createSessionRuntime({
     addMessage,
     addAgentTimelineMessage,
     addPlanApprovalActions,
-    beginScrollTransaction,
-    endScrollTransaction,
+    renderTimeline,
     clearDisclosures: () => chatDisclosureController.clear(),
   },
   ui: {
@@ -1756,11 +1878,13 @@ const sessionRuntime = createSessionRuntime({
     renderSessionBanner,
     renderSessionFilesTree,
     refreshSessionFiles,
-    generateSessionSummary,
     workdirDisplay: document.getElementById("session-workdir-display"),
   },
   managedRun: { eventsUrl: managedRunEventsUrl },
 });
+if (new URLSearchParams(window.location.search).has("debug_transcript")) {
+  window.__matcreatorTranscriptMetrics = sessionRuntime.metrics;
+}
 
 const messageStreamController = createMessageStreamController({
   session: {
@@ -1780,7 +1904,9 @@ const messageStreamController = createMessageStreamController({
     chatArea,
     textInput,
     showLoginModal,
-    addMessage,
+    addMessage: (role, content, msgIndex, container, options) => addMessage(
+      role, content, msgIndex, container || sessionRuntime.getLiveHost(), options,
+    ),
     addAgentTimelineMessage,
     addPlanApprovalActions,
     renderTimeline,
@@ -2256,8 +2382,16 @@ async function patchSessionAgentMode(mode) {
 
 function renderSessionSnapshot(snapshot) {
   if (!snapshot) return;
+  if (sessionRuntime.restoreSessionSnapshot(snapshot)) {
+    renderSessionFilesTree(snapshot.files || []);
+    return;
+  }
   renderSessionBanner(snapshot.summary || "");
-  sessionRuntime.renderSessionTimeline(snapshot.events || [], snapshot.graphNodes || []);
+  sessionRuntime.renderSessionTimeline(
+    snapshot.events || [],
+    snapshot.graphNodes || [],
+    Boolean(snapshot.awaitingPlanApproval),
+  );
   sessionRuntime.markSessionRendered(state.sessionId, state.activeSessionUserId || state.userId);
   renderSessionFilesTree(snapshot.files || []);
   sessionRuntime.updateSessionWorkdirDisplay(snapshot.sessionData || {});
@@ -2670,7 +2804,7 @@ async function _doNewSession(customWorkdir) {
   updateSendButtonState();
   clearStoredSessionSelection();
   sessionIdEl.textContent = state.sessionId;
-  chatArea.innerHTML = "";
+  sessionRuntime.resetTranscript();
   stepExecutionFeed.reset();
   state.sessionSummaries = {};
   state.summaryGeneratedFor = new Set();

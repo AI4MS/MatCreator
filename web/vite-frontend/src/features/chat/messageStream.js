@@ -131,7 +131,8 @@ export function createMessageStreamController({
       user_id: state.activeSessionUserId || state.userId,
     });
     try { await fetch(`/api/sessions/${state.sessionId}/cancel?${cancellationQuery}`, { method: "DELETE" }); } catch (_) {}
-    const userMessage = addMessage("user", messageWithUploadNames(message, uploads));
+    const liveHost = sessionRuntime.beginLiveOutput();
+    const userMessage = addMessage("user", messageWithUploadNames(message, uploads), undefined, liveHost);
     const startedAt = Date.now();
     textInput.value = "";
     clearCurrentUploads();
@@ -145,7 +146,7 @@ export function createMessageStreamController({
 
     const timeline = [];
     const shownPlotPaths = new Set();
-    const timelineContainer = addAgentTimelineMessage(timeline, shownPlotPaths, undefined, chatArea, {
+    const timelineContainer = addAgentTimelineMessage(timeline, shownPlotPaths, undefined, liveHost, {
       startedAt,
       live: true,
     });
@@ -182,17 +183,31 @@ export function createMessageStreamController({
     let terminalStatus = null;
     let roadmapOpenedForPlan = false;
     let pendingTimelineFrame = null;
+    let pendingTimelineTimer = null;
+    let lastTimelineRenderAt = 0;
+    const timelineFrameIntervalMs = 32;
     const renderPendingTimeline = () => {
-      if (!timeline.length || pendingTimelineFrame !== null) return;
+      if (!timeline.length || pendingTimelineFrame !== null || pendingTimelineTimer !== null) return;
       // A single SSE message can contain several parts. Rendering each part
-      // independently creates competing height changes in the activity and
-      // assistant text; coalesce them into one browser frame instead.
-      pendingTimelineFrame = requestAnimationFrame(() => {
-        pendingTimelineFrame = null;
-        if (timelineContainer.isConnected) renderTimeline(timelineContainer, timeline, shownPlotPaths);
-      });
+      // independently creates competing height changes. Cap text commits at
+      // roughly 30fps; input/event processing stays free between batches.
+      const queueFrame = () => {
+        pendingTimelineTimer = null;
+        pendingTimelineFrame = requestAnimationFrame(() => {
+          pendingTimelineFrame = null;
+          lastTimelineRenderAt = performance.now();
+          if (timelineContainer.isConnected) renderTimeline(timelineContainer, timeline, shownPlotPaths);
+        });
+      };
+      const delay = Math.max(0, timelineFrameIntervalMs - (performance.now() - lastTimelineRenderAt));
+      if (delay > 0) pendingTimelineTimer = window.setTimeout(queueFrame, delay);
+      else queueFrame();
     };
     const flushPendingTimeline = () => {
+      if (pendingTimelineTimer !== null) {
+        window.clearTimeout(pendingTimelineTimer);
+        pendingTimelineTimer = null;
+      }
       if (pendingTimelineFrame !== null) {
         cancelAnimationFrame(pendingTimelineFrame);
         pendingTimelineFrame = null;
@@ -286,7 +301,7 @@ export function createMessageStreamController({
         await sessionRuntime.loadSession(request.sessionId, request.owner);
       } else if (!userMessage.isConnected
         && sessionRequestKey(request.sessionId, request.owner) === sessionRequestKey()) {
-        chatArea.prepend(userMessage);
+        sessionRuntime.getLiveHost().prepend(userMessage);
       }
     };
 
@@ -335,6 +350,7 @@ export function createMessageStreamController({
     } catch (error) {
       if (error?.name !== "AbortError") addMessage("agent", `Backend error: ${error}`, undefined, liveTurn);
     } finally {
+      flushPendingTimeline();
       timelineContainer.finishAgentDuration?.();
       // A cancelled browser subscription can finish before the managed run
       // does. Keep the composer locked until cancellation polling observes a

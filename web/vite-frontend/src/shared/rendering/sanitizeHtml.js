@@ -89,6 +89,25 @@ function unwrap(element) {
   element.replaceWith(...element.childNodes);
 }
 
+function flattenRepeatedInlineFormatting(root) {
+  // Markdown produced from long runs of `*`, `_`, or `~` can alternate the
+  // same inline tags (for example em > strong > em > strong) many times.
+  // Once a tag already exists in its ancestor chain, another instance adds no
+  // visual formatting but does add DOM depth and style work. Unwrapping the
+  // repeat preserves the rendered emphasis/strike-through while bounding the
+  // nesting depth of generated Markdown.
+  for (const element of [...root.querySelectorAll("em, strong, del")]) {
+    let ancestor = element.parentElement;
+    while (ancestor) {
+      if (ancestor.localName === element.localName) {
+        unwrap(element);
+        break;
+      }
+      ancestor = ancestor.parentElement;
+    }
+  }
+}
+
 function sanitizeAttributes(element) {
   const tagName = element.localName;
   const allowedForElement = ELEMENT_ATTRIBUTES[tagName] || new Set();
@@ -157,6 +176,8 @@ export function sanitizeRenderedHtml(html, documentRef = globalThis.document) {
       sanitizeAttributes(element);
     }
   }
+
+  flattenRepeatedInlineFormatting(template.content);
 
   return template.innerHTML;
 }

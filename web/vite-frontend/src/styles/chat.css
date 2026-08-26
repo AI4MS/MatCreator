@@ -940,14 +940,36 @@
   scroll-padding-bottom: var(--chat-bottom-reserve, 130px);
   overflow-y: auto;
   overflow-anchor: none;
-  display: flex;
-  flex-direction: column;
+  display: block;
   position: relative;
 }
 .chat-area::before {
-  content: "";
-  flex: 1 1 auto;
-  min-height: 0;
+  display: none;
+}
+
+.virtual-transcript-canvas {
+  position: relative;
+  width: 100%;
+  min-height: 1px;
+}
+
+.virtual-transcript-row {
+  position: absolute;
+  inset: 0 0 auto;
+  width: 100%;
+  display: flow-root;
+  contain: layout style;
+  will-change: transform;
+}
+
+.virtual-transcript-row.is-gap {
+  pointer-events: none;
+}
+
+.virtual-transcript-live {
+  position: relative;
+  width: 100%;
+  min-height: 1px;
 }
 
 .message {
@@ -961,6 +983,9 @@
   column-gap: var(--chat-message-gap);
   align-items: flex-start;
 }
+
+/* Timeline segments are DOM reconciliation boundaries, not visual wrappers. */
+.timeline-segment { display: contents; }
 
 .message-avatar { grid-row: 1; }
 .agent-message > .message-avatar { grid-column: 1; }
@@ -1072,16 +1097,6 @@
    timeline DOM is being rebuilt. */
 .step-feed-live-delegation:not(:has(.step-feed-message)) {
   display: none;
-}
-
-.session-history-load-control {
-  display: flex;
-  justify-content: center;
-  padding: 8px 0 14px;
-}
-
-.session-history-load-button {
-  font-size: 12px;
 }
 
 .step-feed-inline-region {
@@ -1435,6 +1450,25 @@ details.step-feed-nested {
    supporting blocks read as separate units inside a chat bubble. */
 .markdown-content > :first-child { margin-top: 0; }
 .markdown-content > :last-child { margin-bottom: 0; }
+
+/* Oversized completed replies mount their Markdown only when expanded. The
+   inner wrapper restores the ordinary first/last-block rhythm on demand. */
+.markdown-deferred {
+  margin: 0;
+}
+.markdown-deferred > summary {
+  width: fit-content;
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: var(--font-weight-semibold);
+}
+.markdown-deferred > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+.markdown-deferred-body > :first-child { margin-top: 0; }
+.markdown-deferred-body > :last-child { margin-bottom: 0; }
 
 .markdown-content :is(h1, h2, h3, h4, h5, h6) {
   color: var(--text-primary);

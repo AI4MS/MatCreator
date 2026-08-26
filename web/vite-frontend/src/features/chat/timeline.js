@@ -3,33 +3,78 @@ export function mergeReplayedText(current, incoming) {
   if (!current) return incoming;
   if (incoming.startsWith(current)) return incoming;
   if (current.endsWith(incoming)) return current;
-  const maxOverlap = Math.min(current.length, incoming.length);
-  for (let overlap = maxOverlap; overlap > 0; overlap--) {
-    if (current.endsWith(incoming.slice(0, overlap))) {
-      return current + incoming.slice(overlap);
-    }
+  // Find the longest suffix/prefix overlap in linear time. The previous
+  // descending slice/endsWith loop became quadratic for long streamed code
+  // blocks when a provider delivered partially overlapping chunks.
+  const prefix = incoming.slice(0, Math.min(current.length, incoming.length));
+  const combined = `${prefix}\u0000${current.slice(-prefix.length)}`;
+  const failure = new Uint32Array(combined.length);
+  for (let index = 1; index < combined.length; index += 1) {
+    let matched = failure[index - 1];
+    while (matched > 0 && combined[index] !== combined[matched]) matched = failure[matched - 1];
+    if (combined[index] === combined[matched]) matched += 1;
+    failure[index] = matched;
   }
+  const overlap = Math.min(prefix.length, failure[combined.length - 1] || 0);
+  if (overlap) return current + incoming.slice(overlap);
   return current + incoming;
 }
 
 export function compactRepeatedPrefixSnapshots(text) {
   if (!text) return text;
   let compacted = text;
-  let changed = true;
-  while (changed) {
-    changed = false;
-    const maxPrefix = Math.floor(compacted.length / 2);
-    for (let size = maxPrefix; size > 3; size--) {
-      const prefix = compacted.slice(0, size);
-      const rest = compacted.slice(size);
-      if (rest.startsWith(prefix)) {
-        compacted = rest;
-        changed = true;
+  while (compacted.length >= 8) {
+    // A repeated prefix must begin with the same four-character seed. Jump
+    // between those native string-search matches instead of allocating every
+    // possible prefix and testing all O(n) offsets. Ordinary streamed prose
+    // almost always exits after the first seed lookup.
+    const seed = compacted.slice(0, 4);
+    let repeatedPrefix = 0;
+    let size = compacted.lastIndexOf(seed, Math.floor(compacted.length / 2));
+    while (size > 3) {
+      if (compacted.startsWith(compacted.slice(0, size), size)) {
+        repeatedPrefix = size;
         break;
       }
+      size = compacted.lastIndexOf(seed, size - 1);
     }
+    if (!repeatedPrefix) break;
+    compacted = compacted.slice(repeatedPrefix);
   }
   return compacted;
+}
+
+function timelineLookup(timeline) {
+  if (timeline._lookup) return timeline._lookup;
+  const lookup = {
+    callById: new Map(),
+    callByExecutorKey: new Map(),
+    unresolvedByName: new Map(),
+    actionByBackendId: new Map(),
+  };
+  for (const action of timeline) {
+    if (action.type !== "activity_action") continue;
+    if (action.backendActionId) lookup.actionByBackendId.set(action.backendActionId, action);
+    for (const call of action.toolCalls || []) registerTimelineCall(lookup, call);
+  }
+  Object.defineProperty(timeline, "_lookup", { value: lookup, configurable: true });
+  return lookup;
+}
+
+function registerTimelineCall(lookup, call) {
+  if (call.id) lookup.callById.set(call.id, call);
+  if (call.executorTaskKey) lookup.callByExecutorKey.set(call.executorTaskKey, call);
+  if (!call.output) {
+    const unresolved = lookup.unresolvedByName.get(call.name) || new Set();
+    unresolved.add(call);
+    lookup.unresolvedByName.set(call.name, unresolved);
+  }
+}
+
+function resolveTimelineCall(lookup, call) {
+  const unresolved = lookup.unresolvedByName.get(call.name);
+  unresolved?.delete(call);
+  if (unresolved?.size === 0) lookup.unresolvedByName.delete(call.name);
 }
 
 function nextTimelineItemId(timeline, prefix) {
@@ -43,12 +88,16 @@ export function upsertTimelineThought(timeline, text) {
   const compacted = compactRepeatedPrefixSnapshots(text);
   const last = timeline[timeline.length - 1];
   if (last?.type === "reasoning") {
-    last.text = compactRepeatedPrefixSnapshots(mergeReplayedText(last.text || "", compacted));
+    const nextText = compactRepeatedPrefixSnapshots(mergeReplayedText(last.text || "", compacted));
+    if (nextText !== last.text) {
+      last.text = nextText;
+      last.renderRevision = (last.renderRevision || 0) + 1;
+    }
     return;
   }
   // Reasoning remains a chronological timeline entry. It is intentionally
   // not inferred to belong to a later tool call without explicit metadata.
-  timeline.push({ type: "reasoning", timelineId: nextTimelineItemId(timeline, "reasoning"), text: compacted });
+  timeline.push({ type: "reasoning", timelineId: nextTimelineItemId(timeline, "reasoning"), text: compacted, renderRevision: 1 });
 }
 
 export function upsertTimelineText(timeline, text) {
@@ -59,10 +108,14 @@ export function upsertTimelineText(timeline, text) {
     // Only the currently streaming, contiguous text block is mutable. Text
     // before a Thinking/IN/OUT item is historical content and must retain its
     // position and DOM identity when a later text block arrives.
-    last.text = compactRepeatedPrefixSnapshots(mergeReplayedText(last.text || "", compacted));
+    const nextText = compactRepeatedPrefixSnapshots(mergeReplayedText(last.text || "", compacted));
+    if (nextText !== last.text) {
+      last.text = nextText;
+      last.renderRevision = (last.renderRevision || 0) + 1;
+    }
     return;
   }
-  timeline.push({ type: "text", timelineId: nextTimelineItemId(timeline, "text"), text: compacted });
+  timeline.push({ type: "text", timelineId: nextTimelineItemId(timeline, "text"), text: compacted, renderRevision: 1 });
 }
 
 function titleizeToolName(name = "") {
@@ -191,10 +244,9 @@ function enrichToolCall(call) {
 }
 
 function findToolCall(timeline, event) {
-  const actions = timeline.filter((item) => item.type === "activity_action");
-  const calls = actions.flatMap((action) => action.toolCalls);
+  const lookup = timelineLookup(timeline);
   if (event.id) {
-    const exact = calls.find((call) => call.id === event.id);
+    const exact = lookup.callById.get(event.id);
     if (exact) return exact;
   }
 
@@ -204,7 +256,7 @@ function findToolCall(timeline, event) {
   // identity, so merge that replay instead of adding a second task row.
   const taskKey = event.type === "function_call" ? executorTaskKey(event.name, event.args) : null;
   if (taskKey) {
-    const replayed = calls.find((call) => call.executorTaskKey === taskKey);
+    const replayed = lookup.callByExecutorKey.get(taskKey);
     if (replayed) return mergeExecutorReplay(replayed, event);
   }
 
@@ -213,14 +265,17 @@ function findToolCall(timeline, event) {
   // most recent call here used to create a phantom delegation when a replay
   // arrived during a live stream.
   if (event.type === "function_response") {
-    const unresolved = calls.filter((call) => call.name === event.name && !call.output);
-    return unresolved.length === 1 ? unresolved[0] : undefined;
+    const unresolved = lookup.unresolvedByName.get(event.name);
+    return unresolved?.size === 1 ? unresolved.values().next().value : undefined;
   }
 
   // A call without an id or durable executor identity can only be paired by
   // order. This keeps the existing best-effort behavior for ordinary tools.
-  return calls.slice().reverse()
-    .find((call) => call.name === event.name && !call.output);
+  const unresolved = lookup.unresolvedByName.get(event.name);
+  if (!unresolved) return undefined;
+  let latest;
+  for (const call of unresolved) latest = call;
+  return latest;
 }
 
 function actionMetadata(event) {
@@ -236,13 +291,14 @@ function refreshAction(action) {
   action.title = primary.semanticAction || "Working";
   action.summary = primary.semanticSummary || "";
   action.durationMs = calls.reduce((total, call) => total + (call.durationMs || 0), 0) || null;
+  action.renderRevision = (action.renderRevision || 0) + 1;
   return action;
 }
 
 function findActionForNewCall(timeline, event) {
   const metadataId = actionMetadata(event);
   if (!metadataId) return null;
-  return timeline.find((item) => item.type === "activity_action" && item.backendActionId === metadataId) || null;
+  return timelineLookup(timeline).actionByBackendId.get(metadataId) || null;
 }
 
 /**
@@ -252,6 +308,7 @@ function findActionForNewCall(timeline, event) {
  */
 export function upsertTimelineEvent(timeline, event) {
   const isInput = event.type === "function_call";
+  const lookup = timelineLookup(timeline);
   let call = findToolCall(timeline, event);
   let action = call?.action;
   if (!call) {
@@ -275,17 +332,24 @@ export function upsertTimelineEvent(timeline, event) {
       executorTaskKey: event.type === "function_call" ? executorTaskKey(event.name, event.args) : null,
     };
     action.toolCalls.push(call);
-    if (!timeline.includes(action)) timeline.push(action);
+    registerTimelineCall(lookup, call);
+    if (!timeline.includes(action)) {
+      timeline.push(action);
+      if (action.backendActionId) lookup.actionByBackendId.set(action.backendActionId, action);
+    }
   }
   if (isInput) {
     call.id ||= event.id;
     call.name = event.name || call.name;
     call.input = event.args || {};
+    if (call.id) lookup.callById.set(call.id, call);
+    if (call.executorTaskKey) lookup.callByExecutorKey.set(call.executorTaskKey, call);
   } else {
     call.id ||= event.id;
     call.name = event.name || call.name;
     call.output = event.response || {};
     call.completedAt = Date.now();
+    resolveTimelineCall(lookup, call);
   }
   enrichToolCall(call);
   action.rawEvents.push(event);

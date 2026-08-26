@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  compactRepeatedPrefixSnapshots,
   deduplicateDelegationToolCalls,
   mergeReplayedText,
   upsertTimelineEvent,
   upsertTimelineText,
   upsertTimelineThought,
 } from "../src/features/chat/timeline.js";
+import { performance } from "node:perf_hooks";
 import {
   activityToolCalls,
   delegationToolCalls,
@@ -142,4 +144,38 @@ test("deduplicates delegated-task cards by their durable executor identity", () 
   ]);
 
   assert.deepEqual(calls.map((call) => call.input.node_id), ["node-a", "node-b"]);
+});
+
+test("compacts replayed prefix snapshots without changing chronological text", () => {
+  assert.equal(compactRepeatedPrefixSnapshots("abcdefghabcdefghTAIL"), "abcdefghTAIL");
+  assert.equal(compactRepeatedPrefixSnapshots("ordinary streamed prose"), "ordinary streamed prose");
+});
+
+test("large timelines pair updates through incremental indexes", () => {
+  const timeline = [];
+  const callCount = 5_000;
+  const startedAt = performance.now();
+  for (let index = 0; index < callCount; index += 1) {
+    upsertTimelineEvent(timeline, {
+      type: "function_call",
+      id: `stress-${index}`,
+      name: "read_file",
+      args: { index },
+    });
+  }
+  for (let index = 0; index < callCount; index += 1) {
+    upsertTimelineEvent(timeline, {
+      type: "function_response",
+      id: `stress-${index}`,
+      name: "read_file",
+      response: { status: "ok" },
+    });
+  }
+
+  assert.equal(timeline.length, callCount);
+  assert.ok(timeline.every((action) => action.status === "success"));
+  // This is a deliberately generous regression ceiling. The indexed path is
+  // normally well below 250ms; the former repeated filter/flatMap scan took
+  // seconds and grew quadratically at this size.
+  assert.ok(performance.now() - startedAt < 2_000);
 });

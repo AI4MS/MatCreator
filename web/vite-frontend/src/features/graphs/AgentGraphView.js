@@ -2,6 +2,7 @@ import { Network, DataSet } from "vis-network/standalone";
 import { createDisclosureController } from "../ui/disclosureState.js";
 import { installNetworkWheelZoom } from "./networkWheelZoom.js";
 import { httpClient } from "../../shared/api/http.js";
+import { applyGraphUpdate } from "./graphUpdates.js";
 
 // Node identity and execution state intentionally live in separate visual
 // vocabularies. Type owns the face and its letter; state only owns a compact
@@ -93,6 +94,7 @@ export class AgentGraphView {
     this._hasRunningNodes = false;
     this._nodeTransitions = new Map();
     this._lastNodeStatuses = new Map();
+    this._runningNodeIds = new Set();
     this._reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
     this._detailEl = document.getElementById("graph-detail");
     this._detailClose = document.getElementById("graph-detail-close");
@@ -107,6 +109,15 @@ export class AgentGraphView {
     this._detailConversation = document.getElementById("detail-conversation");
     this._detailConversationCount = document.getElementById("detail-conversation-count");
     this._nodeData = {};
+    this._layoutKey = null;
+    this._cachedDisplayEdges = [];
+    this._cachedPositions = {};
+    this._cachedVineEdgeIds = new Set();
+    this._displayEdgesByNode = new Map();
+    this._edgePhases = new Map();
+    this._nodeVisualKeys = new Map();
+    this._detailRenderKey = null;
+    this._graphSnapshot = null;
     this._activeDetailNodeId = null;
     this._detailDisclosures = createDisclosureController({
       captureScrollPosition: () => ({ scrollTop: this._detailEl.scrollTop }),
@@ -979,18 +990,88 @@ export class AgentGraphView {
     });
   }
 
-  update(graphData) {
-    if (!graphData || typeof graphData.nodes !== "object") return;
+  _graphLayoutKey(rawNodes, edges) {
+    // Conversation/tool payloads can grow without changing graph geometry.
+    // Keep them out of this key so those hot updates reuse the cold layout.
+    return JSON.stringify({
+      nodes: rawNodes.map((node) => [
+        node.id,
+        node.type,
+        node.parent_id || "",
+        node.batch_id || node.execution_batch_id || "",
+        node.start_time || "",
+        node.end_time || "",
+        node.input?.node_id || node.input?.step_id || "",
+      ]),
+      edges: (edges || []).map((edge) => [edge.id || "", edge.from, edge.to]),
+    });
+  }
 
-    const prevNodeIds = new Set(this._nodes.getIds());
-    const prevEdgeIds = new Set(this._edges.getIds());
-    const rawNodes = Object.values(graphData.nodes).map((node) => ({
-      ...node,
-      status: this._normalizeNodeStatus(node.status),
-    }));
+  _nodeVisualKey(node) {
+    return JSON.stringify([
+      node.status,
+      node.type,
+      node.label,
+      node.summary,
+      node.start_time,
+      node.end_time,
+      node.input?.step_number,
+    ]);
+  }
+
+  _nodeDetailKey(node) {
+    if (!node) return "";
+    return JSON.stringify([
+      this._nodeVisualKey(node),
+      node.input,
+      node.artifacts,
+      node.tool_calls,
+      node.type === "step" ? null : node.conversation,
+    ]);
+  }
+
+  update(incomingGraphData) {
+    if (!incomingGraphData || typeof incomingGraphData.nodes !== "object") return;
+    const patch = applyGraphUpdate(this._graphSnapshot, incomingGraphData);
+    const graphData = patch.graph;
+    this._graphSnapshot = graphData;
+
+    const layoutMayChange = !patch.isDelta || patch.layoutChanged;
+    const prevNodeIds = layoutMayChange ? new Set(this._nodes.getIds()) : null;
+    const prevEdgeIds = layoutMayChange ? new Set(this._edges.getIds()) : null;
+    let rawNodeMap;
+    if (patch.isDelta) {
+      rawNodeMap = { ...this._nodeData };
+      for (const id of patch.changedNodeIds) {
+        const node = graphData.nodes[id];
+        if (!node) {
+          delete rawNodeMap[id];
+          continue;
+        }
+        const status = this._normalizeNodeStatus(node.status);
+        rawNodeMap[id] = status === node.status ? node : { ...node, status };
+      }
+    } else {
+      rawNodeMap = Object.fromEntries(Object.values(graphData.nodes).map((node) => {
+        const status = this._normalizeNodeStatus(node.status);
+        const normalized = status === node.status ? node : { ...node, status };
+        return [normalized.id, normalized];
+      }));
+    }
+    const rawNodes = Object.values(rawNodeMap);
     const transitionStartedAt = performance.now();
-    const nextNodeStatuses = new Map();
-    rawNodes.forEach((node) => {
+    const nextNodeStatuses = patch.isDelta ? new Map(this._lastNodeStatuses) : new Map();
+    if (!patch.isDelta) this._runningNodeIds.clear();
+    const statusNodes = patch.isDelta
+      ? [...patch.changedNodeIds].map((id) => rawNodeMap[id]).filter(Boolean)
+      : rawNodes;
+    patch.changedNodeIds.forEach((id) => {
+      if (!rawNodeMap[id]) {
+        nextNodeStatuses.delete(id);
+        this._runningNodeIds.delete(id);
+      }
+    });
+    statusNodes.forEach((node) => {
       const previousStatus = this._lastNodeStatuses.get(node.id);
       if (!this._reduceMotion && previousStatus && previousStatus !== node.status) {
         this._nodeTransitions.set(node.id, {
@@ -1000,70 +1081,115 @@ export class AgentGraphView {
         });
       }
       nextNodeStatuses.set(node.id, node.status);
+      if (node.status === "running") this._runningNodeIds.add(node.id);
+      else this._runningNodeIds.delete(node.id);
     });
     this._lastNodeStatuses = nextNodeStatuses;
-    this._nodeData = Object.fromEntries(rawNodes.map((node) => [node.id, node]));
-    this._stepExecutionFeed.update(graphData);
-    const displayEdges = this._buildDisplayEdges(rawNodes, graphData.edges || []);
-    const rawNodeMap = Object.fromEntries(rawNodes.map((node) => [node.id, node]));
-    this._hasRunningNodes = rawNodes.some((node) => node.status === "running");
-    this._activeEdges = displayEdges
-      // A transfer is live only while both ends are active. This retains the
-      // original running-flow treatment and keeps completed edges quiet.
-      .filter((edge) => rawNodeMap[edge.from]?.status === "running" && rawNodeMap[edge.to]?.status === "running")
-      .map((edge, index) => ({
-        ...edge,
-        color: STATUS_VISUALS.running,
-        phase: (index * 0.173) % 1,
+    this._nodeData = rawNodeMap;
+    this._stepExecutionFeed.update(graphData, patch);
+    const layoutKey = patch.isDelta && !patch.layoutChanged
+      ? this._layoutKey
+      : this._graphLayoutKey(rawNodes, graphData.edges || []);
+    const layoutChanged = patch.isDelta ? patch.layoutChanged : layoutKey !== this._layoutKey;
+    if (layoutChanged) {
+      this._layoutKey = layoutKey;
+      this._cachedDisplayEdges = this._buildDisplayEdges(rawNodes, graphData.edges || []);
+      this._displayEdgesByNode = new Map();
+      this._edgePhases = new Map();
+      this._cachedDisplayEdges.forEach((edge, index) => {
+        const edgeId = edge.id || `${edge.from}__${edge.to}`;
+        this._edgePhases.set(edgeId, (index * 0.173) % 1);
+        for (const nodeId of [edge.from, edge.to]) {
+          const adjacent = this._displayEdgesByNode.get(nodeId) || [];
+          adjacent.push(edge);
+          this._displayEdgesByNode.set(nodeId, adjacent);
+        }
+      });
+      this._cachedPositions = this._computeVineLayout(rawNodes, this._cachedDisplayEdges);
+      this._cachedVineEdgeIds = new Set(this._cachedDisplayEdges
+        .filter((edge) => rawNodeMap[edge.from]?.type === "planning" && rawNodeMap[edge.to]?.type === "execution")
+        .map((edge) => edge.id || `${edge.from}__${edge.to}`));
+    }
+    const displayEdges = this._cachedDisplayEdges;
+    this._hasRunningNodes = this._runningNodeIds.size > 0;
+    const activeEdgeIds = new Set();
+    this._activeEdges = [];
+    for (const nodeId of this._runningNodeIds) {
+      for (const edge of this._displayEdgesByNode.get(nodeId) || []) {
+        const edgeId = edge.id || `${edge.from}__${edge.to}`;
+        if (activeEdgeIds.has(edgeId)
+          || rawNodeMap[edge.from]?.status !== "running"
+          || rawNodeMap[edge.to]?.status !== "running") continue;
+        activeEdgeIds.add(edgeId);
+        this._activeEdges.push({
+          ...edge,
+          color: STATUS_VISUALS.running,
+          phase: this._edgePhases.get(edgeId) || 0,
+        });
+      }
+    }
+    const positions = this._cachedPositions;
+    const vineEdgeIds = this._cachedVineEdgeIds;
+    if (layoutChanged) {
+      const vineTargetsByPlanner = new Map();
+      displayEdges.forEach((edge) => {
+        if (!vineEdgeIds.has(edge.id || `${edge.from}__${edge.to}`)) return;
+        if (!vineTargetsByPlanner.has(edge.from)) vineTargetsByPlanner.set(edge.from, []);
+        vineTargetsByPlanner.get(edge.from).push(edge.to);
+      });
+      this._vineEdges = [...vineTargetsByPlanner.entries()].map(([from, targetIds]) => ({
+        from,
+        branches: targetIds.map((to) => ({ to })),
       }));
-    const positions = this._computeVineLayout(rawNodes, displayEdges);
-    const vineEdgeIds = new Set(displayEdges
-      .filter((edge) => rawNodeMap[edge.from]?.type === "planning" && rawNodeMap[edge.to]?.type === "execution")
-      .map((edge) => edge.id || `${edge.from}__${edge.to}`));
-    const vineTargetsByPlanner = new Map();
-    displayEdges.forEach((edge) => {
-      if (!vineEdgeIds.has(edge.id || `${edge.from}__${edge.to}`)) return;
-      if (!vineTargetsByPlanner.has(edge.from)) vineTargetsByPlanner.set(edge.from, []);
-      vineTargetsByPlanner.get(edge.from).push(edge.to);
-    });
-    this._vineEdges = [...vineTargetsByPlanner.entries()].map(([from, targetIds]) => ({
-      from,
-      // This one object produces one shared stem and a branch for every
-      // direct execution relation. It intentionally does not replace edges
-      // in graphData: every E still belongs directly to its planner.
-      branches: targetIds.map((to) => ({ to })),
-    }));
+    }
     this._resizeSurface();
-    const nextNodeIds = new Set(rawNodes.map((raw) => raw.id));
-    const nextEdgeIds = new Set(displayEdges.map((e) => e.id || `${e.from}__${e.to}`));
-    const topologyChanged =
+    const nextNodeIds = layoutChanged ? new Set(rawNodes.map((raw) => raw.id)) : null;
+    const nextEdgeIds = layoutChanged
+      ? new Set(displayEdges.map((e) => e.id || `${e.from}__${e.to}`))
+      : null;
+    const topologyChanged = layoutChanged && (
       prevNodeIds.size !== nextNodeIds.size ||
       prevEdgeIds.size !== nextEdgeIds.size ||
       [...nextNodeIds].some((id) => !prevNodeIds.has(id)) ||
-      [...nextEdgeIds].some((id) => !prevEdgeIds.has(id));
+      [...nextEdgeIds].some((id) => !prevEdgeIds.has(id))
+    );
 
-    this._nodes.getIds().forEach((nodeId) => {
+    if (layoutChanged) this._nodes.getIds().forEach((nodeId) => {
       if (!nextNodeIds.has(nodeId)) this._nodes.remove(nodeId);
     });
 
-    rawNodes.forEach((raw) => {
+    const nextNodeVisualKeys = layoutChanged || !patch.isDelta
+      ? new Map()
+      : new Map(this._nodeVisualKeys);
+    const nodesToUpdate = layoutChanged || !patch.isDelta
+      ? rawNodes
+      : [...patch.changedNodeIds].map((id) => rawNodeMap[id]).filter(Boolean);
+    patch.changedNodeIds.forEach((id) => {
+      if (!rawNodeMap[id]) nextNodeVisualKeys.delete(id);
+    });
+    nodesToUpdate.forEach((raw) => {
+      const visualKey = this._nodeVisualKey(raw);
+      nextNodeVisualKeys.set(raw.id, visualKey);
+      const isNew = !this._nodes.get(raw.id);
+      if (!isNew && !layoutChanged && this._nodeVisualKeys.get(raw.id) === visualKey) return;
       const vis = this._visNode(raw);
       const position = positions[raw.id] || { x: 0, y: 0 };
       vis.x = position.x;
       vis.y = position.y;
       vis.fixed = { x: true, y: true };
-      if (this._nodes.get(raw.id)) {
+      if (!isNew) {
         this._nodes.update(vis);
       } else {
         this._nodes.add(vis);
       }
     });
+    this._nodeVisualKeys = nextNodeVisualKeys;
 
-    this._edges.getIds().forEach((edgeId) => {
+    if (layoutChanged) this._edges.getIds().forEach((edgeId) => {
       if (!nextEdgeIds.has(edgeId)) this._edges.remove(edgeId);
     });
 
-    displayEdges.forEach((e) => {
+    if (layoutChanged) displayEdges.forEach((e) => {
       const edgeId = e.id || `${e.from}__${e.to}`;
       const visEdge = {
         id: edgeId,
@@ -1089,7 +1215,10 @@ export class AgentGraphView {
 
     if (this._activeDetailNodeId) {
       if (this._nodeData[this._activeDetailNodeId]) {
-        this._showDetail(this._activeDetailNodeId, { preserveScroll: true, scrollToStep: false });
+        const detailKey = this._nodeDetailKey(this._nodeData[this._activeDetailNodeId]);
+        if (detailKey !== this._detailRenderKey) {
+          this._showDetail(this._activeDetailNodeId, { preserveScroll: true, scrollToStep: false });
+        }
       } else {
         this._hideDetail();
       }
@@ -1136,6 +1265,7 @@ export class AgentGraphView {
     this._activeEdges = [];
     this._nodeTransitions.clear();
     this._lastNodeStatuses.clear();
+    this._runningNodeIds.clear();
     if (this._animationFrame !== null) cancelAnimationFrame(this._animationFrame);
     this._animationFrame = null;
     this._network?.redraw();
@@ -1157,10 +1287,20 @@ export class AgentGraphView {
     this._nodes.clear();
     this._edges.clear();
     this._nodeData = {};
+    this._graphSnapshot = null;
+    this._layoutKey = null;
+    this._cachedDisplayEdges = [];
+    this._cachedPositions = {};
+    this._cachedVineEdgeIds = new Set();
+    this._displayEdgesByNode.clear();
+    this._edgePhases.clear();
+    this._nodeVisualKeys.clear();
+    this._detailRenderKey = null;
     this._didInitialFit = false;
     this._pendingFit = true;
     this._hasRunningNodes = false;
     this._activeEdges = [];
+    this._runningNodeIds.clear();
     this._detailDisclosures.clear();
     if (this._animationFrame !== null) cancelAnimationFrame(this._animationFrame);
     this._animationFrame = null;
@@ -1174,6 +1314,7 @@ export class AgentGraphView {
     const raw = this._nodeData[nodeId];
     if (!raw) return;
     this._activeDetailNodeId = nodeId;
+    this._detailRenderKey = this._nodeDetailKey(raw);
     const preserveScroll = Boolean(options.preserveScroll);
     const prevScrollTop = preserveScroll ? this._detailEl.scrollTop : 0;
     this._detailLabel.textContent = raw.label;
@@ -1274,6 +1415,7 @@ export class AgentGraphView {
 
   _hideDetail() {
     this._activeDetailNodeId = null;
+    this._detailRenderKey = null;
     this._detailEl.classList.add("hidden");
     this._syncPanelResizerVisibility();
   }
@@ -1407,9 +1549,34 @@ export class StepExecutionFeed {
     this._liveFallbackHost = null;
   }
 
-  update(graphData) {
+  update(graphData, patch = {}) {
     if (!graphData || typeof graphData.nodes !== "object") return;
     const hasLiveDestination = this._liveToolHosts.size > 0 || this._activeLiveContainer();
+    if (patch.isDelta && !patch.layoutChanged) {
+      const changedSteps = [];
+      for (const id of patch.changedNodeIds || []) {
+        const node = graphData.nodes[id];
+        if (node?.type !== "step") continue;
+        if (hasLiveDestination && !this._isLiveStep(node)) continue;
+        const previous = this._stepById.get(id);
+        this._stepById.set(id, node);
+        const siblings = this._childNodes.get(previous?.parent_id);
+        const siblingIndex = siblings?.findIndex((item) => item.id === id) ?? -1;
+        if (siblingIndex >= 0) siblings[siblingIndex] = node;
+        changedSteps.push(node);
+      }
+      if (changedSteps.length) {
+        this._updatePreservingReadingPosition(() => {
+          changedSteps.forEach((node) => {
+            const card = this._cards.get(node.id);
+            if (card?.isConnected) this._renderCardIfChanged(card, node);
+            else if (this.isRootStep(node)) this._upsert(node);
+          });
+        });
+      }
+      this._syncElapsedTimer();
+      return;
+    }
     const steps = Object.values(graphData.nodes)
       .filter((node) => node.type === "step")
       .filter((node) => !hasLiveDestination || this._isLiveStep(node))
