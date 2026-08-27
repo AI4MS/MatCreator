@@ -1105,6 +1105,7 @@ class ManagedRunBody(BaseModel):
     user_id: str
     session_id: str
     new_message: dict[str, Any]
+    streaming: bool = True
 
 
 def _body_to_dict(body: BaseModel) -> dict[str, Any]:
