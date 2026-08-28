@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  applyAssistantMessagePart,
+  completeAssistantMessage,
   compactRepeatedPrefixSnapshots,
+  createAssistantMessage,
   deduplicateDelegationToolCalls,
   mergeReplayedText,
   upsertTimelineEvent,
@@ -16,6 +19,7 @@ import {
   getFunctionResponse,
   getPlotPaths,
   getStructurePaths,
+  latestDelegationSegmentKey,
 } from "../src/features/chat/timelinePresentation.js";
 
 test("normalizes timeline protocol variants and artifact paths", () => {
@@ -25,6 +29,25 @@ test("normalizes timeline protocol variants and artifact paths", () => {
     artifacts: ["plots/energy.png", "structures/optimized.cif"],
     nested: { structure_paths: ["structures/optimized.cif", "structures/initial.xyz"] },
   }), ["structures/optimized.cif", "structures/initial.xyz"]);
+});
+
+test("assistant message lifecycle has one deterministic completion owner", () => {
+  const message = createAssistantMessage({ id: "assistant:test", startedAt: 10 });
+  assert.equal(message.lifecycle, "created");
+
+  applyAssistantMessagePart(message, { text: "# Heading" });
+  applyAssistantMessagePart(message, {
+    functionCall: { id: "tool-1", name: "read_file", args: { path: "a.md" } },
+  });
+  assert.equal(message.lifecycle, "streaming");
+  assert.deepEqual(message.items.map((item) => item.type), ["text", "activity_action"]);
+
+  assert.equal(completeAssistantMessage(message, 20), true);
+  assert.equal(message.lifecycle, "completed");
+  assert.equal(message.endedAt, 20);
+  assert.equal(completeAssistantMessage(message, 30), false);
+  assert.equal(applyAssistantMessagePart(message, { text: "late replay" }), null);
+  assert.equal(message.endedAt, 20);
 });
 
 test("separates delegated executor tools from regular activity tools", () => {
@@ -39,10 +62,32 @@ test("separates delegated executor tools from regular activity tools", () => {
   assert.deepEqual(delegationToolCalls([action]).map((call) => call.id), ["executor"]);
 });
 
+test("places the persistent delegation region at the latest launch point", () => {
+  const delegatedAction = (id) => ({
+    type: "activity_action",
+    toolCalls: [{ id, name: "run_node_executor", input: { node_id: id } }],
+  });
+  const segments = [
+    { type: "text", key: "text:intro", items: [{ type: "text" }] },
+    { type: "activity", key: "activity:first", items: [delegatedAction("first")] },
+    { type: "text", key: "text:middle", items: [{ type: "text" }] },
+    { type: "activity", key: "activity:regular", items: [{ type: "activity_action", toolCalls: [{ name: "read_file" }] }] },
+    { type: "activity", key: "activity:second", items: [delegatedAction("second")] },
+    { type: "text", key: "text:final", items: [{ type: "text" }] },
+  ];
+
+  assert.equal(latestDelegationSegmentKey(segments), "activity:second");
+  assert.equal(latestDelegationSegmentKey(segments.slice(0, 1)), null);
+});
+
 test("merges streaming snapshots without repeating replayed content", () => {
   assert.equal(mergeReplayedText("hello", "hello world"), "hello world");
   assert.equal(mergeReplayedText("hello world", "world"), "hello world");
   assert.equal(mergeReplayedText("abcde", "defgh"), "abcdefgh");
+  assert.equal(
+    mergeReplayedText("hello world", "\nhello world again"),
+    "hello world again",
+  );
 });
 
 test("keeps text and reasoning as separate chronological entries", () => {
@@ -58,6 +103,18 @@ test("keeps text and reasoning as separate chronological entries", () => {
     { type: "text", text: "Final result" },
   ]);
   assert.equal(new Set(timeline.map((item) => item.timelineId)).size, 3);
+});
+
+test("does not create a second text block when a snapshot replays after reasoning", () => {
+  const timeline = [];
+  upsertTimelineText(timeline, "The calculation converged.");
+  upsertTimelineThought(timeline, "Checking the final value");
+  upsertTimelineText(timeline, "\nThe calculation converged. Final energy: -1.2 eV.");
+
+  assert.deepEqual(timeline.map(({ type, text }) => ({ type, text })), [
+    { type: "text", text: "The calculation converged. Final energy: -1.2 eV." },
+    { type: "reasoning", text: "Checking the final value" },
+  ]);
 });
 
 test("pairs a tool response with its invocation and derives presentation state", () => {

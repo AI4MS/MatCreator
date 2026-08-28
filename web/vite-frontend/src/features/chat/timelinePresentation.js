@@ -62,6 +62,21 @@ export function delegationToolCalls(items) {
     .filter((call) => isExecutorLauncherTool(call.name)));
 }
 
+/**
+ * One message owns one persistent Delegated tasks region. Place that region
+ * after the latest activity segment which launched delegated work so later
+ * assistant prose remains chronologically below it.
+ */
+export function latestDelegationSegmentKey(segments) {
+  let key = null;
+  for (const segment of segments || []) {
+    if (segment?.type === "activity" && delegationToolCalls(segment.items || []).length) {
+      key = segment.key;
+    }
+  }
+  return key;
+}
+
 export function formatToolDuration(toolCall) {
   const duration = toolCall.durationMs ?? (toolCall.startedAt ? Date.now() - toolCall.startedAt : null);
   if (!Number.isFinite(duration)) return toolCall.status === "running" ? "running…" : "";

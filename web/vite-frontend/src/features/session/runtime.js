@@ -1,4 +1,9 @@
-import { upsertTimelineEvent, upsertTimelineText, upsertTimelineThought } from "../chat/timeline.js";
+import {
+  applyAssistantMessagePart,
+  completeAssistantMessage,
+  createAssistantMessage,
+} from "../chat/timeline.js";
+import { createMessageRenderScheduler, messageRenderInterval } from "../chat/messageRenderScheduler.js";
 import { TranscriptStore } from "./TranscriptStore.js";
 import { VirtualTranscript } from "./VirtualTranscript.js";
 
@@ -51,6 +56,7 @@ export function createSessionRuntime({
       unsubscribeStore?.();
       activeContext = context;
       unsubscribeStore = context.store.subscribe(() => refreshRows(context));
+      viewport.clearLive();
       clearChatDisclosures?.();
       stepExecutionFeed.reset({ preserveDisclosures: false });
     }
@@ -58,6 +64,24 @@ export function createSessionRuntime({
     const hasSavedOffset = Number.isFinite(context.viewportOffset);
     refreshRows(context, { follow: follow && !hasSavedOffset });
     if (switching && hasSavedOffset) viewport.restoreOffset(context.viewportOffset);
+    restoreActiveLiveView(context);
+  }
+
+  function restoreActiveLiveView(context) {
+    const request = state.activeRequests.get(context.viewKey);
+    if (!request?.messageView) return;
+    const records = [...context.store.records.values()].sort((left, right) => left.index - right.index);
+    const durableUserIndex = records.findLastIndex(({ event }) => event?.author === "user"
+      && (event.content?.parts || []).some((part) => String(part.text || "").includes(request.backendMessage || "\u0000")));
+    const durableUserPresent = durableUserIndex >= 0;
+    const durableReplyPresent = durableUserPresent && records.slice(durableUserIndex + 1)
+      .some(({ event }) => event?.author !== "user" && (event.content?.parts || []).length);
+    if (request.message?.lifecycle === "completed" && durableReplyPresent) return;
+    if (!durableUserPresent && request.userMessage) viewport.liveHost.appendChild(request.userMessage);
+    viewport.liveHost.appendChild(request.messageView.element);
+    if (request.message?.lifecycle !== "completed") {
+      stepExecutionFeed.resumeLiveTurn(request.messageView.stepFeedLiveHost, request.message.startedAt);
+    }
   }
 
   function refreshRows(context, { follow = false } = {}) {
@@ -176,23 +200,22 @@ export function createSessionRuntime({
     return responses;
   }
 
-  function appendEvent(timeline, event, responses = {}, paired = new Set()) {
+  function appendEvent(message, event, responses = {}, paired = new Set()) {
     (event?.content?.parts || []).forEach((part) => {
-      if (part.thought) upsertTimelineThought(timeline, part.text || "");
-      else if (part.functionCall || part.function_call) {
+      if (part.functionCall || part.function_call) {
         const call = part.functionCall || part.function_call;
-        upsertTimelineEvent(timeline, { type: "function_call", id: call.id, name: call.name || "Unknown", args: call.args || {} });
+        applyAssistantMessagePart(message, part);
         const response = responses[call.id];
         if (response) {
           paired.add(response.id);
-          upsertTimelineEvent(timeline, { type: "function_response", id: response.id, name: response.name || "Unknown", response: response.response || {} });
+          applyAssistantMessagePart(message, { functionResponse: response });
         }
       } else if (getFunctionResponse(part)) {
         const response = getFunctionResponse(part);
-        if (!paired.has(response.id)) upsertTimelineEvent(timeline, {
-          type: "function_response", id: response.id, name: response.name || "Unknown", response: response.response || {},
-        });
-      } else if (part.text) upsertTimelineText(timeline, part.text);
+        if (!paired.has(response.id)) applyAssistantMessagePart(message, part);
+      } else {
+        applyAssistantMessagePart(message, part);
+      }
     });
   }
 
@@ -216,15 +239,19 @@ export function createSessionRuntime({
       if (text) addMessage("user", text, row.startIndex, host, { messageKey: row.id });
       return;
     }
-    const timeline = [];
+    const message = createAssistantMessage({
+      id: row.id,
+      startedAt: eventTimestamp(events[0]),
+    });
     const paired = new Set();
     const responses = collectResponses(events);
-    events.forEach((event) => appendEvent(timeline, event, responses, paired));
-    attachStepNodes(timeline, context);
-    const container = addAgentTimelineMessage(timeline, new Set(), row.startIndex, host, {
-      startedAt: eventTimestamp(events[0]), endedAt: eventTimestamp(events.at(-1)), messageKey: row.id,
+    events.forEach((event) => appendEvent(message, event, responses, paired));
+    completeAssistantMessage(message, eventTimestamp(events.at(-1)));
+    attachStepNodes(message.items, context);
+    const view = addAgentTimelineMessage(message, new Set(), row.startIndex, host, {
+      startedAt: message.startedAt, endedAt: message.endedAt, messageKey: row.id,
     });
-    if (context.awaitingPlanApproval && row.endIndex === context.store.totalCount) addPlanApprovalActions(container);
+    if (context.awaitingPlanApproval && row.endIndex === context.store.totalCount) addPlanApprovalActions(view);
   }
 
   function latestPendingPlan(events) {
@@ -275,11 +302,16 @@ export function createSessionRuntime({
       context.summary = sessionData.summary || state.sessionSummaries[sessionId] || "";
       context.awaitingPlanApproval = shouldShowApproval(sessionId, sessionData, events);
       mergeGraphNodes(context, nodes);
+      // The persisted rows below include the completed reply that has just
+      // streamed in `liveHost`. Remove that optimistic copy before notifying
+      // the transcript store, whose subscriber mounts the persisted copy.
+      // Mounting first and clearing afterwards briefly showed both messages
+      // (and made the final response appear to double in height).
+      viewport.clearLive();
       context.store.insertPage(sessionData);
       rememberContext(context);
       const changedContext = activeContext !== context;
       activateContext(context, { follow: changedContext });
-      viewport.clearLive();
       state.sessionReady = true;
       if (state.deploymentMode === "local" && sessionData.userId) state.activeSessionUserId = sessionData.userId;
       if (sessionData.summary) {
@@ -347,8 +379,6 @@ export function createSessionRuntime({
     const suppressed = suppressedPlanApprovalTurns.get(sessionId);
     return !suppressed || suppressed.userText === userText;
   }
-  function markSessionRendered() {}
-
   function updateSessionWorkdirDisplay(sessionData) {
     if (!workdirDisplay) return;
     const workdir = sessionData?.state?.workdir || sessionData?.state?.custom_workdir || state.defaultWorkdir || "";
@@ -380,23 +410,38 @@ export function createSessionRuntime({
   function applyManagedPayload(live, payload) {
     String(payload || "").split("\n").forEach((line) => {
       if (!line.trim().startsWith("data: ")) return;
-      try { appendEvent(live.timeline, JSON.parse(line.trim().slice(6))); } catch (_) { /* malformed replay event */ }
+      try { appendEvent(live.message, JSON.parse(line.trim().slice(6))); } catch (_) { /* malformed replay event */ }
     });
-    if (live.container?.isConnected) renderTimeline(live.container, live.timeline, live.shownPlots);
+    live.scheduler.request();
   }
 
   async function streamManagedRunEvents(request) {
     const isCurrent = () => state.activeRequests.get(request.key) === request;
     let live = null;
     if (sessionRequestKey() === request.key) {
-      const timeline = [];
+      const message = createAssistantMessage({
+        id: `managed:${request.runId}`,
+        startedAt: Date.now(),
+      });
       const shownPlots = new Set();
+      const view = addAgentTimelineMessage(message, shownPlots, undefined, beginLiveOutput(), {
+        startedAt: message.startedAt, live: true, messageKey: message.id,
+      });
+      stepExecutionFeed.startLiveTurn(null, message.startedAt, view.stepFeedLiveHost);
       live = {
-        timeline, shownPlots,
-        container: addAgentTimelineMessage(timeline, shownPlots, undefined, beginLiveOutput(), {
-          startedAt: Date.now(), live: true, messageKey: `managed:${request.runId}`,
+        message, shownPlots, view,
+        scheduler: createMessageRenderScheduler({
+          intervalMs: () => messageRenderInterval(message.items
+            .filter((item) => item.type === "text" || item.type === "reasoning")
+            .reduce((total, item) => total + String(item.text || "").length, 0)),
+          render: () => {
+            if (view.element.isConnected) renderTimeline(view, message, shownPlots);
+          },
         }),
       };
+      request.message = message;
+      request.messageView = view;
+      updateSendButtonState();
     }
     try {
       while (isCurrent() && !request.controller.signal.aborted) {
@@ -426,6 +471,11 @@ export function createSessionRuntime({
               await loadSession(request.sessionId, request.owner);
             } else if (envelope.type === "terminal") {
               request.lastSequence = envelope.latest_sequence || request.lastSequence;
+              if (live) {
+                completeAssistantMessage(live.message);
+                updateSendButtonState();
+                await live.scheduler.finish();
+              }
               terminal = true;
             }
           }
@@ -437,6 +487,8 @@ export function createSessionRuntime({
     } catch (error) {
       if (error?.name !== "AbortError") console.error("Managed run reconnect failed:", error);
     } finally {
+      live?.scheduler.cancel();
+      if (live) stepExecutionFeed.finishLiveTurn();
       if (isCurrent()) {
         releaseSessionRequest(request);
         await loadSession(request.sessionId, request.owner);
@@ -445,7 +497,7 @@ export function createSessionRuntime({
   }
 
   return {
-    beginLiveOutput, getLiveHost, canRevealPlanApproval, discoverManagedRun, loadSession, markSessionRendered,
+    beginLiveOutput, getLiveHost, canRevealPlanApproval, discoverManagedRun, loadSession,
     renderSessionTimeline, resetTranscript, restorePlanApproval, restoreSessionSnapshot, startManagedRunReconnect,
     suppressPlanApproval, updateSessionWorkdirDisplay,
     metrics: () => ({ ...metrics, ...viewport.metrics(), totalEvents: activeContext?.store.totalCount || 0 }),

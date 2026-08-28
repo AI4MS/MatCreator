@@ -185,7 +185,7 @@ def test_stop_feedback_uses_managed_run_status_and_survives_session_refresh() ->
     assert 'fetch(`/api/runs/${encodeURIComponent(request.runId)}`)' in content
     assert '["completed", "failed", "cancelled"].includes(run.status)' in content
     assert "request.stopStatus = \"stopped\";\n        releaseSessionRequest(request);" in content
-    assert "reloadSessionSnapshot()," in content
+    assert "reloadSessionSnapshot({ handoff: true })" in content
     assert "await Promise.allSettled([" in content
     assert "renderStopStatus(request);" in content
     assert "cancellation_requested" not in content
@@ -200,7 +200,6 @@ def test_stop_and_plan_refreshes_preserve_open_node_dialogs() -> None:
     disclosures = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "ui" / "disclosureState.js").read_text(encoding="utf-8")
     graph = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "graphs" / "AgentGraphView.js").read_text(encoding="utf-8")
 
-    assert "sessionRuntime.markSessionRendered(state.sessionId, owner);" in streams
     assert "getItemKey: (index) => this.rows[index]?.id" in (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "session" / "VirtualTranscript.js").read_text(encoding="utf-8")
     assert "openState.set(details.dataset.disclosureKey, details.open);" in disclosures
     assert "captureDisclosureState()" in graph
@@ -232,7 +231,9 @@ def test_bottom_attachment_and_node_toggle_use_one_scroll_policy() -> None:
     assert 'querySelectorAll("[data-reading-anchor]' not in rendering
     assert "interacted = true" in disclosures
     assert "function updatePreservingReadingPosition(update)" in rendering
-    assert "updatePreservingReadingPosition(() => {" in main
+    # The live timeline render is wrapped as a named update so the controller
+    # can measure/mutate around it; direct arrow-wrapped calls were removed.
+    assert "updatePreservingReadingPosition(updateTimeline" in main
     assert "this._updatePreservingReadingPosition(() => {" in graph
     assert "const shouldStick = isChatBottomPinned();" not in main
     assert "const shouldStick = this._isChatBottomPinned();" not in graph
@@ -249,7 +250,7 @@ def test_all_chat_disclosures_share_the_reading_position_controller() -> None:
     assert "wireTimelineDetails(activity," in create_activity
     assert "createTimelineReasoning(" in create_activity
     assert "createActivityAction(" in create_activity
-    assert "updatePreservingReadingPosition(() => {" in render_timeline
+    assert "updatePreservingReadingPosition(updateTimeline" in render_timeline
 
     render_card = graph[graph.index("_createCard(node)"):graph.index("// ---------------------------------------------------------------------------\n// Execution Plan Graph")]
     assert 'this._disclosures.wire(details, `step:${node.id}:card`' in render_card
@@ -294,11 +295,36 @@ def test_plain_text_blocks_keep_history_order_and_stable_identity() -> None:
     assert 'if (last?.type === "text")' in text_upsert
     assert 'timelineId: nextTimelineItemId(timeline, "text")' in text_upsert
     assert "timeline.splice" not in text_upsert
-    assert 'upsertTimelineText(timeline, part.text);' in streams
-    assert 'upsertTimelineText(timeline, part.text);' in runtime
+    assert 'applyAssistantMessagePart(assistantMessage, part);' in streams
+    assert 'applyAssistantMessagePart(message, part);' in runtime
     assert 'let accumulatedText = "";' not in streams
     assert 'let accumulatedText = "";' not in runtime
     assert '${item.timelineId || "text:legacy"}:content' in main
+
+
+def test_chat_messages_use_one_model_scheduler_and_stable_regions() -> None:
+    main = _main_js()
+    streams = _message_stream_js()
+    runtime = _runtime_js()
+    rendering = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "chat" / "rendering.js").read_text(encoding="utf-8")
+
+    assert "createAssistantMessage({" in streams
+    assert "createAssistantMessage({" in runtime
+    assert "createMessageRenderScheduler({" in streams
+    assert "createMessageRenderScheduler({" in runtime
+    assert "completeAssistantMessage(assistantMessage);" in streams
+    assert 'request.message?.lifecycle !== "completed"' in main
+    assert "request.presentationFinished" not in streams
+    assert "_timelinePresentationFinished" not in main
+    assert "new MutationObserver" not in main[main.index("function addAgentTimelineMessage("):main.index("function addPlanApprovalActions(")]
+    assert "inner.appendChild(liveDelegationGroup);" in main
+    assert "latestDelegationSegmentKey(segments)" in main
+    assert "container.insertBefore(delegationGroup, following);" in main
+    render_segment = main[main.index("function renderTimelineSegment("):main.index("function renderTimeline(")]
+    assert "liveDelegationGroup" not in render_segment
+    assert "setStreamText" not in rendering
+    assert "restoreActiveLiveView(context);" in runtime
+    assert "stepExecutionFeed.resumeLiveTurn(" in runtime
 
 
 def test_agent_graph_stops_animation_and_uses_one_update_transport() -> None:

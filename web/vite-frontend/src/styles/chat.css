@@ -2203,6 +2203,17 @@ body[data-theme="light"] .composer-toolbar .send-btn:not(.is-stopping):hover {
   border-color: var(--accent-primary-hover);
   color: var(--bg-elevated);
 }
+/* The answer is visible but the server has not yet released this session.
+   Disable the control rather than leaving a red stop action that can no
+   longer affect model generation. */
+body[data-theme] .composer-toolbar .send-btn.is-finalizing,
+body[data-theme] .composer-toolbar .send-btn.is-finalizing:hover {
+  background: var(--subtle-surface);
+  border-color: var(--border-default, var(--border));
+  color: var(--muted);
+  cursor: progress;
+  opacity: 0.72;
+}
 .agent-message.is-pending { display: none; }
 .tool-btn:disabled { cursor: progress; opacity: 0.55; }
 #detail-stop-step-btn.stop-step-btn {

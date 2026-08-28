@@ -1485,9 +1485,7 @@ export class StepExecutionFeed {
   startLiveTurn(anchorEl, startedAt = Date.now(), hostEl = null) {
     this._liveAnchorEl = anchorEl || null;
     this._liveStartedAt = startedAt;
-    this._liveContainerEl = document.createElement("div");
-    this._liveContainerEl.className = "step-feed-live-region";
-    this._liveContainerEl.dataset.stepLiveRegion = "true";
+    this._liveContainerEl = hostEl || document.createElement("div");
     this._liveToolHosts.clear();
     this._liveFallbackHost = null;
 
@@ -1496,13 +1494,28 @@ export class StepExecutionFeed {
     // these cards into top-level chat rows, visually detaching them from the
     // assistant turn that owns them.  Appending to a detached explicit host is
     // safe; it will become visible once its owning message is mounted.
-    if (hostEl) {
-      hostEl.appendChild(this._liveContainerEl);
-    } else {
+    if (!hostEl) {
       console.warn("StepExecutionFeed started without a delegated-task host; cards will remain detached.");
     }
 
     return this._liveContainerEl;
+  }
+
+  resumeLiveTurn(hostEl, startedAt = Date.now()) {
+    if (!hostEl) return;
+    this._liveAnchorEl = null;
+    this._liveStartedAt = startedAt;
+    this._liveContainerEl = hostEl;
+    this._liveToolHosts.clear();
+    this._liveFallbackHost = hostEl;
+    const group = hostEl.closest?.(".delegation-group");
+    group?.querySelectorAll?.(".delegation-task-host[data-step-execution-key]").forEach((host) => {
+      if (host.dataset.stepExecutionKey) this._liveToolHosts.set(host.dataset.stepExecutionKey, host);
+    });
+    group?.querySelectorAll?.(".step-feed-message[data-step-node-id]").forEach((card) => {
+      if (card._stepNode) this._cards.set(card.dataset.stepNodeId, card);
+    });
+    this._syncElapsedTimer();
   }
 
   attachLiveToolHost(hostEl, nodeId = "") {
@@ -1765,6 +1778,11 @@ export class StepExecutionFeed {
   }
 
   _insertIntoLiveContainer(container, outer, node) {
+    const delegationGroup = container.closest?.(".delegation-group");
+    if (delegationGroup) {
+      delegationGroup.hidden = false;
+      delegationGroup.closest(".agent-message")?.classList.remove("is-pending", "is-waiting");
+    }
     const newTime = this._stepSortTime(node);
     outer.dataset.stepStartTime = String(newTime);
 
@@ -1779,68 +1797,9 @@ export class StepExecutionFeed {
     container.appendChild(outer);
   }
 
-  _insertSorted(outer, node) {
-    const newTime = this._stepSortTime(node);
-    outer.dataset.stepStartTime = String(newTime);
-
-    // Walk all chat children to find the right insertion point.
-    // - Step cards: compare by start_time, insert before the first later one.
-    // - User/agent messages: track as anchor, but reset when a step card is
-    //   found after them (so we insert after the most recent step card too).
-    const children = [...this._chatArea.children];
-    const liveAnchor = this._liveAnchorEl && this._chatArea.contains(this._liveAnchorEl)
-      ? this._liveAnchorEl
-      : null;
-    let insertAfter = liveAnchor; // element to insert after (null = before first child)
-    let passedLiveAnchor = !liveAnchor;
-
-    for (const el of children) {
-      if (el === outer) continue;
-      if (liveAnchor && !passedLiveAnchor) {
-        if (el === liveAnchor) passedLiveAnchor = true;
-        continue;
-      }
-
-      if (el.dataset.stepStartTime) {
-        const elTime = Number(el.dataset.stepStartTime);
-        if (newTime < elTime) {
-          // Found a later step card — insert before it
-          if (insertAfter) {
-            this._chatArea.insertBefore(outer, insertAfter.nextElementSibling);
-          } else {
-            this._chatArea.insertBefore(outer, el);
-          }
-          return;
-        }
-        // This step card is earlier — update anchor
-        insertAfter = el;
-      } else if (el.dataset.msgIndex !== undefined) {
-        // User/agent message — update anchor
-        insertAfter = el;
-      } else if (el.classList.contains("user-message")) {
-        // Live messages have no msgIndex until the session is reloaded.
-        insertAfter = el;
-      } else if (
-        insertAfter &&
-        el.classList.contains("agent-message") &&
-        !el.classList.contains("step-feed-message")
-      ) {
-        this._chatArea.insertBefore(outer, el);
-        return;
-      }
-    }
-
-    // No later step card found — insert after the last tracked element.
-    if (insertAfter) {
-      this._chatArea.insertBefore(outer, insertAfter.nextElementSibling);
-    } else {
-      this._chatArea.appendChild(outer);
-    }
-  }
-
   _createCard(node) {
     const outer = document.createElement("div");
-    outer.className = "message agent-message step-feed-message";
+    outer.className = "message agent-message step-feed-message is-entering";
     outer.dataset.stepNodeId = node.id;
     outer.dataset.stepStartTime = node.start_time ? String(new Date(node.start_time).getTime()) : "";
     outer.appendChild(this._createAgentAvatarEl());

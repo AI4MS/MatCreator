@@ -2764,6 +2764,35 @@ async def list_user_sessions(user_id: str) -> JSONResponse:
     return JSONResponse(_query_session_summaries(user_id))
 
 
+def _session_event_meta(
+    events: list[dict[str, Any]],
+    rows: list[Any],
+    start_index: int,
+    previous_user_cursor: str = "",
+) -> list[dict[str, Any]]:
+    """Assign every assistant event to the user turn that initiated it.
+
+    An ADK invocation id identifies one internal agent/tool invocation, not a
+    conversational turn. Grouping persisted rows by it split a single answer
+    into several bubbles whenever delegated work used fresh invocation ids.
+    """
+    current_turn_id = previous_user_cursor
+    event_meta: list[dict[str, Any]] = []
+    for event_index, (event, row) in enumerate(zip(events, rows, strict=False), start=start_index):
+        cursor_value = f"{row['event_timestamp']},{row['event_row_id']}"
+        if event.get("author") == "user":
+            # The database cursor is available to every paginated response;
+            # unlike invocationId it remains stable when this turn spans
+            # more than one transcript page.
+            current_turn_id = cursor_value
+        event_meta.append({
+            "index": event_index,
+            "cursor": cursor_value,
+            "turn_id": str(current_turn_id or cursor_value),
+        })
+    return event_meta
+
+
 @app.get("/api/users/{user_id}/sessions/{session_id}")
 async def get_user_session(
     user_id: str,
@@ -2923,15 +2952,7 @@ async def get_user_session(
         )
     start_index = page_start_index
 
-    current_turn_id = previous_user_cursor
-    event_meta: list[dict[str, Any]] = []
-    for event_index, (event, row) in enumerate(zip(events, chronological_rows, strict=False), start=start_index):
-        cursor_value = f"{row['event_timestamp']},{row['event_row_id']}"
-        invocation_id = event.get("invocationId") or event.get("invocation_id")
-        if event.get("author") == "user":
-            current_turn_id = str(invocation_id or cursor_value)
-        turn_id = str(invocation_id or current_turn_id or cursor_value)
-        event_meta.append({"index": event_index, "cursor": cursor_value, "turn_id": turn_id})
+    event_meta = _session_event_meta(events, chronological_rows, start_index, previous_user_cursor)
     # Return canonical persisted events, but only one chronological page. The
     # graph/log endpoints remain the explicit opt-in path for debug payloads.
     summary["events"] = events

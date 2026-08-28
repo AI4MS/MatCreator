@@ -2,7 +2,6 @@ import { marked } from "marked";
 import { sanitizeRenderedHtml } from "../../shared/rendering/sanitizeHtml.js";
 
 const BOX_RE = /[┌┐└┘├┤┬┴┼│━─]/;
-const CJK_RE = /[一-鿿㐀-䶿豈-﫿　-〿＀-￯]/;
 const AGENT_AVATAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="rgba(148,163,184,0.9)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
   <rect x="3" y="8" width="18" height="11" rx="2"/><path d="M8 8V6a4 4 0 0 1 8 0v2"/><circle cx="9" cy="14" r="1" fill="rgba(148,163,184,0.9)" stroke="none"/><circle cx="15" cy="14" r="1" fill="rgba(148,163,184,0.9)" stroke="none"/><path d="M7 19v2M17 19v2"/>
 </svg>`;
@@ -18,6 +17,7 @@ const BOTTOM_ATTACH_THRESHOLD = 80;
 // into thousands of live nodes. Defer only genuinely large completed blocks;
 // short replies retain the normal, immediately visible chat treatment.
 const DEFERRED_MARKDOWN_ELEMENT_LIMIT = 300;
+const CHAT_RESIZE_MOTION_MS = 240;
 
 export function createChatRenderer({ chatArea, bottomOverlay = null }) {
   const markdownCache = new Map();
@@ -97,7 +97,10 @@ export function createChatRenderer({ chatArea, bottomOverlay = null }) {
     defer = true,
     anchorPrefix = "",
   } = {}) {
-    const html = renderMarkdown(text || "", { cache });
+    const source = String(text || "");
+    const renderKey = `${source}\u0000${defer ? 1 : 0}\u0000${anchorPrefix}`;
+    if (element._markdownRenderKey === renderKey) return false;
+    const html = renderMarkdown(source, { cache });
     element.replaceChildren();
     element.classList.remove("is-markdown-deferred");
 
@@ -109,7 +112,8 @@ export function createChatRenderer({ chatArea, bottomOverlay = null }) {
 
     if (!defer || markdownElementCount(html) < DEFERRED_MARKDOWN_ELEMENT_LIMIT) {
       finishMount(element);
-      return;
+      element._markdownRenderKey = renderKey;
+      return true;
     }
 
     element.classList.add("is-markdown-deferred");
@@ -120,17 +124,25 @@ export function createChatRenderer({ chatArea, bottomOverlay = null }) {
     const body = document.createElement("div");
     body.className = "markdown-deferred-body";
     details.append(summary, body);
+    let clearTimer = null;
     details.addEventListener("toggle", () => {
       if (details.open) {
+        if (clearTimer !== null) window.clearTimeout(clearTimer);
         if (!body.childNodes.length) finishMount(body);
       } else {
-        // Releasing the expanded subtree is what keeps reopening older
-        // transcripts cheap. The sanitized HTML remains in the bounded
-        // Markdown cache, so reopening does not repeat Markdown parsing.
-        body.replaceChildren();
+        // Keep the subtree around until the collapse transition finishes.
+        // The sanitized HTML remains in the bounded Markdown cache, so
+        // reopening does not repeat Markdown parsing.
+        if (clearTimer !== null) window.clearTimeout(clearTimer);
+        clearTimer = window.setTimeout(() => {
+          clearTimer = null;
+          if (!details.open) body.replaceChildren();
+        }, CHAT_RESIZE_MOTION_MS);
       }
     });
     element.appendChild(details);
+    element._markdownRenderKey = renderKey;
+    return true;
   }
 
   function escapeHtml(value) {
@@ -140,69 +152,6 @@ export function createChatRenderer({ chatArea, bottomOverlay = null }) {
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;")
       .replaceAll("'", "&#39;");
-  }
-
-  function unescapeText(text) {
-    if (!text) return "";
-    return text.replace(/\\\\/g, "\x00").replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\r/g, "\r").replace(/\\"/g, '"').replace(/\x00/g, "\\");
-  }
-
-  function getCharWidths() {
-    if (asciiWidth) return { ascii: asciiWidth, cjk: cjkWidth };
-    const sample = document.createElement("span");
-    sample.style.cssText = "position:absolute;visibility:hidden;font:14px var(--mono);white-space:pre;";
-    document.body.appendChild(sample);
-    sample.textContent = "x";
-    asciiWidth = sample.getBoundingClientRect().width;
-    sample.textContent = "中";
-    cjkWidth = sample.getBoundingClientRect().width;
-    sample.remove();
-    return { ascii: asciiWidth, cjk: cjkWidth };
-  }
-
-  function measureLine(line) {
-    const { ascii, cjk } = getCharWidths();
-    return [...line].reduce((width, character) => width + (CJK_RE.test(character) ? cjk : ascii), 0);
-  }
-
-  function applyWrapMarkers(pre) {
-    const raw = pre.dataset.raw;
-    if (!raw) return;
-    const containerWidth = pre.clientWidth - 16;
-    if (containerWidth <= 0) return;
-    const { ascii, cjk } = getCharWidths();
-    const markerWidth = ascii * 3;
-    const lines = [];
-    for (const line of raw.split("\n")) {
-      if (measureLine(line) <= containerWidth) {
-        lines.push(line);
-        continue;
-      }
-      let width = 0;
-      let start = 0;
-      for (let index = 0; index < line.length; index += 1) {
-        const characterWidth = CJK_RE.test(line[index]) ? cjk : ascii;
-        if (width + characterWidth > containerWidth - markerWidth) {
-          lines.push(`${line.slice(start, index)} ↵`);
-          start = index;
-          width = characterWidth;
-        } else {
-          width += characterWidth;
-        }
-      }
-      if (start < line.length) lines.push(line.slice(start));
-    }
-    pre.textContent = lines.join("\n");
-  }
-
-  function createJsonBlock(content) {
-    const pre = document.createElement("pre");
-    pre.className = "json-block";
-    pre.dataset.raw = unescapeText(content).replace(/^\{\s*/, "").replace(/\s*\}$/, "");
-    applyWrapMarkers(pre);
-    // This helper is not currently used by the timeline. Keep it synchronous
-    // so a future caller cannot leave one ResizeObserver per transient block.
-    return pre;
   }
 
   function markReadingAnchors(root, prefix) {
@@ -270,6 +219,7 @@ export function createChatRenderer({ chatArea, bottomOverlay = null }) {
     if (followBottom) scrollToBottom({ preserveUserPosition: true });
     return result;
   }
+
   function protectAsyncContentLayout(root) {
     root?.querySelectorAll?.("img:not([data-layout-protected])").forEach((img) => {
       img.dataset.layoutProtected = "true";
@@ -283,14 +233,12 @@ export function createChatRenderer({ chatArea, bottomOverlay = null }) {
     });
   }
   function appendLiveTurnChild(container, child) {
-    if (container === chatArea || !container?.dataset?.stepLiveRegion) return container.appendChild(child);
-    const firstStepCard = [...container.children].find((element) => element.dataset.stepStartTime !== undefined);
-    return firstStepCard ? container.insertBefore(child, firstStepCard) : container.appendChild(child);
+    return container.appendChild(child);
   }
   function addMessage(role, content, msgIndex, container = chatArea, options = {}) {
     const shouldStick = role === "user" || isChatBottomPinned();
     const message = document.createElement("div");
-    message.className = `message ${role}-message`;
+    message.className = `message ${role}-message${msgIndex === undefined ? " is-entering" : ""}`;
     if (msgIndex !== undefined) message.dataset.msgIndex = String(msgIndex);
     if (options.messageKey) message.dataset.readingAnchor = `message:${options.messageKey}`;
     message.append(role === "agent" ? createAgentAvatarEl() : createUserAvatarEl());
@@ -311,5 +259,5 @@ export function createChatRenderer({ chatArea, bottomOverlay = null }) {
     return message;
   }
 
-  return { addMessage, appendLiveTurnChild, applyUserAvatarToEl, createAgentAvatarEl, createJsonBlock, isChatBottomPinned, markReadingAnchors, protectAsyncContentLayout, renderMarkdown, scrollToBottom, setMarkdownContent, setUserAvatar, updatePreservingReadingPosition };
+  return { addMessage, appendLiveTurnChild, applyUserAvatarToEl, createAgentAvatarEl, isChatBottomPinned, markReadingAnchors, protectAsyncContentLayout, renderMarkdown, scrollToBottom, setMarkdownContent, setUserAvatar, updatePreservingReadingPosition };
 }

@@ -1,8 +1,112 @@
+export const ASSISTANT_MESSAGE_LIFECYCLES = Object.freeze([
+  "created",
+  "streaming",
+  "finalizing",
+  "completed",
+]);
+
+export function createAssistantMessage({
+  id,
+  lifecycle = "created",
+  startedAt = null,
+  endedAt = null,
+} = {}) {
+  if (!ASSISTANT_MESSAGE_LIFECYCLES.includes(lifecycle)) {
+    throw new Error(`Unknown assistant message lifecycle: ${lifecycle}`);
+  }
+  return {
+    id: id || `assistant:${startedAt || Date.now()}`,
+    role: "assistant",
+    lifecycle,
+    items: [],
+    revision: 0,
+    startedAt,
+    endedAt,
+  };
+}
+
+function setAssistantMessageLifecycle(message, lifecycle) {
+  if (message.lifecycle === lifecycle) return false;
+  const current = ASSISTANT_MESSAGE_LIFECYCLES.indexOf(message.lifecycle);
+  const next = ASSISTANT_MESSAGE_LIFECYCLES.indexOf(lifecycle);
+  if (current < 0 || next !== current + 1) {
+    throw new Error(`Invalid assistant message lifecycle transition: ${message.lifecycle} -> ${lifecycle}`);
+  }
+  message.lifecycle = lifecycle;
+  message.revision += 1;
+  return true;
+}
+
+export function beginAssistantMessageFinalization(message) {
+  if (message.lifecycle === "completed" || message.lifecycle === "finalizing") return false;
+  if (message.lifecycle === "created") setAssistantMessageLifecycle(message, "streaming");
+  return setAssistantMessageLifecycle(message, "finalizing");
+}
+
+export function completeAssistantMessage(message, endedAt = Date.now()) {
+  if (message.lifecycle === "completed") return false;
+  beginAssistantMessageFinalization(message);
+  message.endedAt = endedAt;
+  setAssistantMessageLifecycle(message, "completed");
+  return true;
+}
+
+export function applyAssistantMessagePart(message, part) {
+  if (!part || message.lifecycle === "completed" || message.lifecycle === "finalizing") return null;
+  if (message.lifecycle === "created") setAssistantMessageLifecycle(message, "streaming");
+
+  if (part.thought) {
+    upsertTimelineThought(message.items, part.text || "");
+    message.revision += 1;
+    return { type: "reasoning", text: part.text || "" };
+  }
+  const functionCall = part.functionCall || part.function_call;
+  if (functionCall) {
+    const normalized = {
+      type: "function_call",
+      id: functionCall.id,
+      name: functionCall.name || "Unknown",
+      args: functionCall.args || {},
+      actionId: functionCall.action_id || functionCall.actionId,
+    };
+    upsertTimelineEvent(message.items, normalized);
+    message.revision += 1;
+    return normalized;
+  }
+  const functionResponse = part.functionResponse || part.function_response;
+  if (functionResponse) {
+    const normalized = {
+      type: "function_response",
+      id: functionResponse.id,
+      name: functionResponse.name || "Unknown",
+      response: functionResponse.response || {},
+      actionId: functionResponse.action_id || functionResponse.actionId,
+    };
+    upsertTimelineEvent(message.items, normalized);
+    message.revision += 1;
+    return normalized;
+  }
+  if (part.text) {
+    upsertTimelineText(message.items, part.text);
+    message.revision += 1;
+    return { type: "text", text: part.text };
+  }
+  return null;
+}
+
 export function mergeReplayedText(current, incoming) {
   if (!incoming) return current;
   if (!current) return incoming;
   if (incoming.startsWith(current)) return incoming;
   if (current.endsWith(incoming)) return current;
+  // ADK can replay a cumulative text snapshot on a fresh SSE record with a
+  // separator newline (or spaces) prepended. That prefix is transport
+  // framing, not newly generated prose. Without this check the full snapshot
+  // is appended to the streamed text, then disappears when durable history
+  // replaces the live turn at completion.
+  const replayCandidate = incoming.replace(/^\s+/, "");
+  if (replayCandidate !== incoming && replayCandidate.startsWith(current)) return replayCandidate;
+  if (replayCandidate !== incoming && current.endsWith(replayCandidate)) return current;
   // Find the longest suffix/prefix overlap in linear time. The previous
   // descending slice/endsWith loop became quadratic for long streamed code
   // blocks when a provider delivered partially overlapping chunks.
@@ -112,6 +216,22 @@ export function upsertTimelineText(timeline, text) {
     if (nextText !== last.text) {
       last.text = nextText;
       last.renderRevision = (last.renderRevision || 0) + 1;
+    }
+    return;
+  }
+  // A provider can replay the cumulative assistant snapshot after a thought
+  // or tool event. In that shape the last timeline item is not text, so the
+  // normal contiguous merge above cannot see the replay and creates a second
+  // copy of the answer. Update the originating text block instead. A real
+  // follow-up message cannot begin with the entire earlier block.
+  const earlierText = [...timeline].reverse().find((item) => item.type === "text");
+  const replayCandidate = compacted.replace(/^\s+/, "");
+  const earlierCandidate = String(earlierText?.text || "").replace(/^\s+/, "");
+  if (earlierText && earlierCandidate.length >= 8 && replayCandidate.startsWith(earlierCandidate)) {
+    const nextText = compactRepeatedPrefixSnapshots(mergeReplayedText(earlierText.text || "", compacted));
+    if (nextText !== earlierText.text) {
+      earlierText.text = nextText;
+      earlierText.renderRevision = (earlierText.renderRevision || 0) + 1;
     }
     return;
   }

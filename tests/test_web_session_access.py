@@ -190,6 +190,24 @@ def test_server_worker_image_uses_deployment_override(monkeypatch, tmp_path):
     assert web_main._worker_supervisor.image == "registry.example/matcreator-worker:v2"
 
 
+def test_session_event_meta_keeps_delegated_events_in_their_user_turn(monkeypatch):
+    web_main = _load_web_main(monkeypatch)
+    events = [
+        {"author": "user", "invocationId": "user-turn"},
+        {"author": "agent", "invocationId": "planner-invocation"},
+        {"author": "agent", "invocationId": "sub-agent-invocation"},
+        {"author": "agent", "invocationId": "tool-invocation"},
+    ]
+    rows = [
+        {"event_timestamp": 10 + index, "event_row_id": 100 + index}
+        for index in range(len(events))
+    ]
+
+    meta = web_main._session_event_meta(events, rows, 0)
+
+    assert [item["turn_id"] for item in meta] == ["10,100"] * len(events)
+
+
 def test_server_worker_shared_mounts_parse_extra_binds(monkeypatch, tmp_path):
     control_home = tmp_path / "control-plane" / ".matcreator"
     control_home.mkdir(parents=True)

@@ -1,5 +1,6 @@
 import { createChatRenderer } from "./features/chat/rendering.js";
 import { createMessageStreamController } from "./features/chat/messageStream.js";
+import { createSmoothTextReveal } from "./features/chat/textReveal.js";
 import { createLayoutController } from "./features/layout/resizers.js";
 import { createImageLightbox } from "./features/media/imageLightbox.js";
 import { classifyPath, createSessionFileTree } from "./features/session/fileTree.js";
@@ -26,6 +27,7 @@ import {
   getPlotPaths,
   getStructurePaths,
   isExecutorLauncherTool,
+  latestDelegationSegmentKey,
   normalizeAgentTimestamp,
   toolStatusIcon,
 } from "./features/chat/timelinePresentation.js";
@@ -396,14 +398,19 @@ function releaseSessionRequest(request) {
 
 const orbitalIndicator = mountOrbitalAgentIndicator(agentRunningOrbital);
 
-function attachAgentRunningIndicator(timelineContainer) {
-  const message = timelineContainer?.closest(".agent-message:not(.step-feed-message)");
+function attachAgentRunningIndicator(messageView) {
+  const message = messageView?.element
+    || messageView?.closest?.(".agent-message:not(.step-feed-message)");
   if (!message || !agentRunningIndicator) return;
   const meta = message.querySelector(".agent-bubble-meta");
   (meta || message).prepend(agentRunningIndicator);
   // Before the first streamed item, make the agent's avatar and status row
   // visible without rendering an empty message bubble.
-  if (!timelineContainer.childElementCount) message.classList.add("is-waiting");
+  const timelineElement = messageView?.timelineElement || messageView;
+  const hasPresentedContent = timelineElement?.querySelector?.(
+    ":scope > .timeline-segment, .delegation-group .step-feed-message",
+  );
+  if (!hasPresentedContent) message.classList.add("is-waiting");
   message.classList.remove("is-pending");
 }
 
@@ -418,6 +425,7 @@ function updateAgentRunningStatus(phase = "working") {
   const phases = {
     connecting: ["Connecting to MatCreator…", "thinking"],
     connected: ["Connected — MatCreator is working…", "thinking"],
+    saving: ["Saving the response…", "thinking"],
     working: ["MatCreator is working. Please wait…", "thinking"],
     thinking: ["MatCreator is thinking…", "thinking"],
     planning: ["MatCreator is planning the workflow…", "thinking"],
@@ -432,14 +440,26 @@ function updateAgentRunningStatus(phase = "working") {
 }
 
 function updateSendButtonState() {
-  const running = Boolean(activeSessionRequest());
-  if (running) ensureAgentRunningIndicatorAttached();
-  if (agentRunningIndicator) agentRunningIndicator.setAttribute("aria-hidden", String(!running));
+  const request = activeSessionRequest();
+  const running = Boolean(request);
+  // The text presentation can finish before the backend completes its durable
+  // bookkeeping. Keep the request lock, but do not present that gap as an
+  // active agent response.
+  const presenting = running && request.message?.lifecycle !== "completed";
+  if (presenting) ensureAgentRunningIndicatorAttached();
+  if (agentRunningIndicator) agentRunningIndicator.setAttribute("aria-hidden", String(!presenting));
   if (!running) updateAgentRunningStatus();
   if (!sendBtn) return;
-  sendBtn.textContent = running ? "■" : "➜";
-  sendBtn.title = running ? "Stop" : "Send";
-  sendBtn.classList.toggle("is-stopping", running);
+  // The upstream stream can still be committing after the visible response
+  // has ended. Keep the request lock (a new run would be rejected), but do
+  // not misrepresent this quiet handoff as an agent that is still running.
+  const finalizing = running && !presenting;
+  sendBtn.disabled = finalizing;
+  sendBtn.textContent = finalizing ? "…" : running ? "■" : "➜";
+  sendBtn.title = finalizing ? "Finalizing response…" : running ? "Stop" : "Send";
+  sendBtn.setAttribute("aria-label", sendBtn.title);
+  sendBtn.classList.toggle("is-stopping", running && !finalizing);
+  sendBtn.classList.toggle("is-finalizing", finalizing);
 }
 
 function storeSessionSelection(sessionId, owner) {
@@ -1266,6 +1286,7 @@ function createActivityAction(action, wireTimelineDetails, { isNew = false, incl
   details.appendChild(summary);
 
   let body = null;
+  let unmountTimer = null;
   const mountBody = () => {
     if (body) return;
     body = document.createElement("div");
@@ -1325,30 +1346,50 @@ function createDelegationGroupShell({ isNew = false, live = false } = {}) {
   const list = document.createElement("div");
   list.className = "delegation-group-list";
   group.appendChild(list);
+  group._delegationRows = new Map();
   return { group, list, meta };
 }
 
-function createDelegationGroup(calls, { isNew = false } = {}) {
-  const { group, list, meta } = createDelegationGroupShell({ isNew });
+function reconcileDelegationGroup(group, calls, { live = false } = {}) {
+  const list = group.querySelector(".delegation-group-list");
+  const meta = group.querySelector(".delegation-group-meta");
+  const rows = group._delegationRows || new Map();
+  group._delegationRows = rows;
   const running = calls.filter((call) => call.status === "running").length;
   meta.textContent = `${calls.length} task${calls.length === 1 ? "" : "s"}${running ? ` · ${running} running` : ""}`;
+  const liveKeys = new Set();
+  let insertionPoint = list.firstElementChild;
   calls.forEach((call) => {
-    const task = document.createElement("div");
-    task.className = "delegation-task";
-    const host = document.createElement("div");
-    host.className = "step-feed-inline-region delegation-task-host";
-    host.dataset.stepInlineHost = call.id || executorNodeId(call) || call.name;
-    task.appendChild(host);
-    list.appendChild(task);
+    const key = String(call.executorTaskKey || call.id || executorNodeId(call) || call.timelineId || call.name);
+    liveKeys.add(key);
+    let row = rows.get(key);
+    if (!row) {
+      const task = document.createElement("div");
+      task.className = "delegation-task";
+      task.dataset.delegationKey = key;
+      const host = document.createElement("div");
+      host.className = "step-feed-inline-region delegation-task-host";
+      host.dataset.stepInlineHost = key;
+      task.appendChild(host);
+      row = { task, host };
+      rows.set(key, row);
+    }
+    row.host.dataset.stepExecutionKey = String(executorNodeId(call) || "");
+    if (row.task !== insertionPoint) list.insertBefore(row.task, insertionPoint);
+    insertionPoint = row.task.nextElementSibling;
 
     if (Array.isArray(call.stepNodes) && call.stepNodes.length) {
-      call.stepNodes.forEach((node) => stepExecutionFeed.appendStatic(node, host));
-    } else if (activeSessionRequest()) {
-      stepExecutionFeed.attachLiveToolHost(host, executorNodeId(call));
+      call.stepNodes.forEach((node) => stepExecutionFeed.appendStatic(node, row.host));
+    } else if (live) {
+      stepExecutionFeed.attachLiveToolHost(row.host, executorNodeId(call));
     }
   });
-  if (activeSessionRequest()) stepExecutionFeed.attachLiveFallbackHost(list);
-  return group;
+  for (const [key, row] of rows) {
+    if (liveKeys.has(key)) continue;
+    row.task.remove();
+    rows.delete(key);
+  }
+  group.hidden = calls.length === 0 && !list.querySelector(".step-feed-message");
 }
 
 function createAgentActivity(items, wireTimelineDetails, options) {
@@ -1358,7 +1399,7 @@ function createAgentActivity(items, wireTimelineDetails, options) {
     .filter((action) => action.toolCalls.length);
   const hasReasoning = items.some((item) => item.type === "reasoning");
   if (!actions.length && !hasReasoning) return null;
-  const completed = !activeSessionRequest()
+  const completed = options.completed || !activeSessionRequest()
     && actions.every((action) => action.status !== "running");
   const activity = document.createElement("details");
   activity.className = "agent-activity";
@@ -1492,10 +1533,12 @@ function renderTimelineSegment(segment, context) {
     div.className = "markdown-content";
     setMarkdownContent(div, item.text || "", {
       cache: context.cacheMarkdown,
-      // The final streaming segment stays visible. Immutable history uses
-      // lazy mounting once it exceeds the DOM budget.
-      defer: context.cacheMarkdown,
-      anchorPrefix: `${context.disclosurePrefix}${item.timelineId || "text:legacy"}:content`,
+      // Streaming reparses only this affected text segment at the controller's
+      // cadence. Immutable history may defer exceptionally large DOM trees.
+      defer: context.deferMarkdown,
+      anchorPrefix: context.completed
+        ? `${context.disclosurePrefix}${item.timelineId || "text:legacy"}:content`
+        : "",
     });
     wrapper.appendChild(div);
     return wrapper;
@@ -1506,14 +1549,9 @@ function renderTimelineSegment(segment, context) {
     activityKey,
     previousItemIds: context.previousActivityItemIds,
     cacheMarkdown: context.cacheMarkdown,
+    completed: context.completed,
   });
   if (activity) wrapper.appendChild(activity);
-  const delegationCalls = delegationToolCalls(segment.items);
-  if (delegationCalls.length) {
-    wrapper.appendChild(createDelegationGroup(delegationCalls, {
-      isNew: delegationCalls.some((call) => !context.previousActivityItemIds.has(call.action?.timelineId)),
-    }));
-  }
   context.artifacts.plotPaths.forEach((path) => wrapper.appendChild(createTimelineImage(path)));
   if (context.artifacts.structurePaths.length) {
     wrapper.appendChild(createStructureViewButtonGroup(context.artifacts.structurePaths));
@@ -1521,14 +1559,14 @@ function renderTimelineSegment(segment, context) {
   return wrapper;
 }
 
-// Render the presentation-model timeline. Protocol IN/OUT events have already
-// been paired into ToolCall objects by features/chat/timeline.js. Completed
-// segments retain their DOM and parsed Markdown; only the mutable segment is
-// replaced while a turn streams.
-function renderTimeline(container, timeline, shownPlotPaths = null) {
+// Render one canonical assistant-message model into permanent semantic
+// regions. The timeline controls the slot's chronological position, while the
+// message view permanently owns its DOM node and delegated-task cards.
+function renderTimeline(view, message, shownPlotPaths = null) {
+  const { timelineElement: container, delegationGroup, element: agentMessage } = view;
+  const timeline = message.items;
   const disclosures = chatDisclosureController;
-  const agentMessage = container.closest(".agent-message:not(.step-feed-message)");
-  const messageKey = container._messageKey || `message:${agentMessage?.dataset.msgIndex || "live"}`;
+  const messageKey = message.id;
   const disclosurePrefix = `timeline:${messageKey}:`;
   const liveKeys = new Set();
   const wireTimelineDetails = (details, key, defaultOpen = false) => {
@@ -1537,7 +1575,7 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
     disclosures.wire(details, scopedKey, { defaultOpen });
     return scopedKey;
   };
-  updatePreservingReadingPosition(() => {
+  const updateTimeline = () => {
     // Timeline updates rebuild a compact activity block and any inline Node cards.
     // Persist their actual DOM state first; defaults alone are insufficient
     // once a running Node has become completed but remains visibly open.
@@ -1553,21 +1591,42 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
     const visiblePlotPaths = new Set();
     const nextSegments = new Map();
     let insertionPoint = container.firstElementChild;
+    const skipDelegationSlot = () => {
+      if (insertionPoint === delegationGroup) insertionPoint = insertionPoint.nextElementSibling;
+    };
+    skipDelegationSlot();
     const segments = timelineSegments(timeline);
+    const completed = message.lifecycle === "completed";
     for (const [segmentIndex, segment] of segments.entries()) {
       const artifacts = segmentArtifacts(segment, claimedPlotPaths);
       artifacts.plotPaths.forEach((path) => visiblePlotPaths.add(path));
-      const signature = `${segment.revision};plots:${artifacts.plotPaths.join("\u001f")};structures:${artifacts.structurePaths.join("\u001f")}`;
+      const isLastSegment = segmentIndex === segments.length - 1;
+      const completionRevision = segment.type === "activity" ? `;completed:${completed ? 1 : 0}` : "";
+      const signature = `${segment.revision}${completionRevision};plots:${artifacts.plotPaths.join("\u001f")};structures:${artifacts.structurePaths.join("\u001f")}`;
       const previous = previousSegments.get(segment.key);
       let element = previous?.signature === signature ? previous.element : null;
+      if (!element && previous?.element && segment.type === "text") {
+        element = previous.element;
+        const item = segment.items[0];
+        const content = element.querySelector(".markdown-content");
+        if (content) setMarkdownContent(content, item.text || "", {
+          cache: completed || !isLastSegment,
+          defer: completed && !view.live,
+          anchorPrefix: completed
+            ? `${disclosurePrefix}${item.timelineId || "text:legacy"}:content`
+            : "",
+        });
+      }
       if (!element) {
         if (previous?.element) disclosures.capture(previous.element);
         element = renderTimelineSegment(segment, {
           artifacts,
-          cacheMarkdown: !activeSessionRequest() || segmentIndex < segments.length - 1,
+          cacheMarkdown: completed || !isLastSegment,
           disclosurePrefix,
           previousActivityItemIds,
           wireTimelineDetails,
+          completed,
+          deferMarkdown: completed && !view.live,
         });
       } else {
         element.querySelectorAll("details[data-disclosure-key]").forEach((details) => {
@@ -1576,22 +1635,42 @@ function renderTimeline(container, timeline, shownPlotPaths = null) {
       }
       if (element !== insertionPoint) container.insertBefore(element, insertionPoint);
       insertionPoint = element.nextElementSibling;
+      skipDelegationSlot();
       nextSegments.set(segment.key, { element, signature });
     }
     for (const [key, previous] of previousSegments) {
-      if (nextSegments.get(key)?.element !== previous.element) previous.element.remove();
+      if (nextSegments.get(key)?.element !== previous.element) {
+        previous.element.remove();
+      }
+    }
+    reconcileDelegationGroup(delegationGroup, delegationToolCalls(timeline), {
+      live: message.lifecycle !== "completed",
+    });
+    const delegationAnchor = nextSegments.get(latestDelegationSegmentKey(segments))?.element || null;
+    if (delegationAnchor) {
+      const following = delegationAnchor.nextElementSibling;
+      if (following !== delegationGroup) container.insertBefore(delegationGroup, following);
+    } else if (delegationGroup.parentElement !== container || delegationGroup.nextElementSibling) {
+      // Before the matching function-call event arrives, graph-first cards use
+      // the end of this message as a temporary fallback position.
+      container.appendChild(delegationGroup);
     }
     disclosures.prunePrefix(disclosurePrefix, liveKeys);
     container._plotPaths = visiblePlotPaths;
     container._activityItemIds = currentActivityItemIds;
     container._timelineSegments = nextSegments;
     visiblePlotPaths.forEach((path) => shownPlotPaths?.add(path));
-  }, { mutationRoot: agentMessage });
+    const hasContent = nextSegments.size > 0
+      || Boolean(delegationGroup.querySelector(".step-feed-message"));
+    agentMessage.classList.toggle("is-pending", !hasContent && message.lifecycle === "created");
+    if (hasContent) agentMessage.classList.remove("is-waiting");
+  };
+  updatePreservingReadingPosition(updateTimeline, { mutationRoot: agentMessage });
 }
 
-// Create an agent message div with an inner timeline container, append to
-// chatArea, and return the inner container for live updates.
-function addAgentTimelineMessage(timeline, shownPlotPaths = null, msgIndex, container = chatArea, timing = {}) {
+// Create one assistant view with permanent timeline, delegation, and metadata
+// slots. The returned view is the only DOM owner for this message.
+function addAgentTimelineMessage(message, shownPlotPaths = null, msgIndex, container = chatArea, timing = {}) {
   const outer = document.createElement("div");
   // A live turn starts before the server has sent its first event. Keep its
   // empty shell out of view until it contains a timeline item or step card.
@@ -1602,26 +1681,22 @@ function addAgentTimelineMessage(timeline, shownPlotPaths = null, msgIndex, cont
   bubble.className = "message-bubble";
   const inner = document.createElement("div");
   inner.className = "timeline-container";
-  // Resolve the assistant ordinal once when the message is created. The old
-  // renderer scanned every chat child again for every streamed token.
-  inner._messageKey = timing.messageKey || `agent:${container.querySelectorAll(":scope > .agent-message:not(.step-feed-message)").length}`;
-  outer.dataset.readingAnchor = `message:${inner._messageKey}`;
-  // This host exists for the entire lifetime of the assistant message.  The
-  // step feed gets the host directly instead of inferring it from parentElement
-  // or falling back to chatArea during a streamed timeline rebuild.
+  outer.dataset.readingAnchor = `message:${message.id}`;
   const { group: liveDelegationGroup, list: liveDelegationList } = createDelegationGroupShell({ live: true });
-  liveDelegationList.classList.add("step-feed-live-region");
-  liveDelegationList.dataset.stepLiveRegion = "true";
-  inner._stepFeedLiveHost = liveDelegationList;
+  const stepFeedLiveHost = document.createElement("div");
+  stepFeedLiveHost.className = "step-feed-live-region delegation-fallback-host";
+  stepFeedLiveHost.dataset.stepLiveRegion = "true";
+  liveDelegationList.appendChild(stepFeedLiveHost);
   const duration = document.createElement("div");
   duration.className = "agent-bubble-duration";
   duration.setAttribute("aria-live", "off");
   const meta = document.createElement("div");
   meta.className = "agent-bubble-meta";
   meta.appendChild(duration);
-  bubble.append(inner, liveDelegationGroup);
+  inner.appendChild(liveDelegationGroup);
+  bubble.appendChild(inner);
 
-  const startedAt = normalizeAgentTimestamp(timing.startedAt);
+  const startedAt = normalizeAgentTimestamp(message.startedAt ?? timing.startedAt);
   let timer = null;
   const renderDuration = (endedAt = null) => {
     if (!Number.isFinite(startedAt)) {
@@ -1639,36 +1714,37 @@ function addAgentTimelineMessage(timeline, shownPlotPaths = null, msgIndex, cont
     timer = null;
     renderDuration(endedAt);
   };
-  inner.finishAgentDuration = finishDuration;
-  const endedAt = normalizeAgentTimestamp(timing.endedAt);
+  const finishLiveActivity = () => {
+    const openActivities = [...inner.querySelectorAll("details.agent-activity[open]")];
+    openActivities.forEach((activity) => { activity.open = false; });
+    return Promise.resolve();
+  };
+  const endedAt = normalizeAgentTimestamp(message.endedAt ?? timing.endedAt);
   renderDuration(endedAt);
   if (timing.live && Number.isFinite(startedAt) && !Number.isFinite(endedAt)) {
     timer = window.setInterval(renderDuration, 1000);
   }
   outer.append(bubble, meta);
-  const revealWhenPopulated = () => {
-    // The permanent live host contains an initially empty inner region, so
-    // its mere presence must not reveal an otherwise empty assistant shell.
-    const hasLiveContent = Boolean(outer.querySelector(
-      ".step-feed-message, .step-feed-live-region > .message",
-    ));
-    if (!inner.childElementCount && !hasLiveContent) return;
-    outer.classList.remove("is-pending", "is-waiting");
-    observer.disconnect();
-  };
-  const observer = new MutationObserver(revealWhenPopulated);
-  observer.observe(outer, { childList: true, subtree: true });
+  if (timing.live) outer.classList.add("is-entering");
   appendLiveTurnChild(container, outer);
-  renderTimeline(inner, timeline, shownPlotPaths);
-  revealWhenPopulated();
-  return inner;
+  const view = {
+    element: outer,
+    timelineElement: inner,
+    delegationGroup: liveDelegationGroup,
+    stepFeedLiveHost,
+    finishDuration,
+    finishLiveActivity,
+    live: Boolean(timing.live),
+  };
+  renderTimeline(view, message, shownPlotPaths);
+  return view;
 }
 
-function addPlanApprovalActions(timelineContainer) {
-  const agentMessage = timelineContainer?.closest(".agent-message");
+function addPlanApprovalActions(messageView) {
+  const agentMessage = messageView?.element || messageView?.closest?.(".agent-message");
   if (!agentMessage || agentMessage.nextElementSibling?.classList.contains("plan-approval-message")) return;
   const responseMessage = document.createElement("div");
-  responseMessage.className = "message user-message plan-approval-message";
+  responseMessage.className = "message user-message plan-approval-message is-entering";
   const bubble = document.createElement("div");
   bubble.className = "message-bubble";
   const prompt = document.createElement("div");
@@ -2054,7 +2130,7 @@ async function uploadFilesToSession(fileList) {
   if (!files.length) return;
   if (!state.userId) { showLoginModal(); return; }
   if (!canWriteActiveSession()) {
-    addMessage("agent", `Admin view is read-only for ${state.activeSessionUserId}'s session.`);
+    addMessage("agent", `Admin view is read-only for ${state.activeSessionUserId}'s session.`, undefined, sessionRuntime.getLiveHost());
     return;
   }
 
@@ -2097,45 +2173,34 @@ async function uploadFilesToSession(fileList) {
 // Session summary (experimental)
 // ---------------------------------------------------------------------------
 
-function renderSessionBanner(summary) {
+function renderSessionBanner(summary, { animate = false } = {}) {
   if (!sessionSummaryText) return;
   const defaultTitle = sessionSummaryText.dataset.defaultTitle || "Chat";
+  stopTextReveal(sessionSummaryText);
   if (summary) {
-    sessionSummaryText.textContent = summary;
     chatTab?.setAttribute("title", sessionTabTooltip(summary));
     sessionSummaryText.classList.remove("session-summary-placeholder");
-    sessionSummaryText.classList.remove("typewriter", "typewriter-done");
-    sessionSummaryText.style.removeProperty("opacity");
-    sessionSummaryText.style.removeProperty("max-width");
+    if (animate) runTextReveal(sessionSummaryText, summary);
+    else sessionSummaryText.textContent = summary;
   } else {
     sessionSummaryText.textContent = defaultTitle;
     chatTab?.setAttribute("title", sessionTabTooltip(defaultTitle));
-    sessionSummaryText.classList.remove("session-summary-placeholder", "typewriter", "typewriter-done");
-    sessionSummaryText.style.removeProperty("opacity");
-    sessionSummaryText.style.removeProperty("max-width");
+    sessionSummaryText.classList.remove("session-summary-placeholder");
   }
 }
 
-function runTypewriter(el, text) {
-  el.classList.remove("typewriter", "typewriter-done");
-  el.style.opacity = "";
-  el.style.maxWidth = "none";
-  el.textContent = text;
-  const fullW = el.scrollWidth;
-  el.style.maxWidth = "";
-  void el.offsetWidth;
-  const len = [...text].length;
-  el.style.setProperty("--tw-steps", len);
-  el.style.setProperty("--tw-width", fullW + "px");
-  el.textContent = text;
-  el.classList.add("typewriter");
-  el.addEventListener("animationend", function onEnd() {
-    el.removeEventListener("animationend", onEnd);
-    el.classList.remove("typewriter");
-    el.classList.add("typewriter-done");
-    el.style.removeProperty("--tw-steps");
-    el.style.removeProperty("--tw-width");
-  });
+function stopTextReveal(el) {
+  el._textReveal?.cancel();
+  el._textReveal = null;
+}
+
+function runTextReveal(el, text) {
+  const reveal = createSmoothTextReveal(el);
+  el._textReveal = reveal;
+  // The summary endpoint currently returns its result as one chunk. The reveal
+  // controller also accepts incremental chunks without changing this caller.
+  reveal.append(text);
+  reveal.finish();
 }
 
 function startSummaryEdit() {
@@ -2221,7 +2286,7 @@ async function generateSessionSummary(sessionId) {
       state.summaryGeneratedFor.add(sessionId);
       // Only update banner if user is still on this session
       if (sessionId === state.sessionId) {
-        renderSessionBanner(data.summary);
+        renderSessionBanner(data.summary, { animate: true });
       }
       // Refresh session list to show summary
       rerenderSessionList();
@@ -2392,7 +2457,6 @@ function renderSessionSnapshot(snapshot) {
     snapshot.graphNodes || [],
     Boolean(snapshot.awaitingPlanApproval),
   );
-  sessionRuntime.markSessionRendered(state.sessionId, state.activeSessionUserId || state.userId);
   renderSessionFilesTree(snapshot.files || []);
   sessionRuntime.updateSessionWorkdirDisplay(snapshot.sessionData || {});
 }

@@ -1,8 +1,9 @@
 import {
-  upsertTimelineEvent,
-  upsertTimelineText,
-  upsertTimelineThought,
+  applyAssistantMessagePart,
+  completeAssistantMessage,
+  createAssistantMessage,
 } from "./timeline.js";
+import { createMessageRenderScheduler, messageRenderInterval } from "./messageRenderScheduler.js";
 
 /**
  * Coordinates a single composer request from optimistic UI through SSE completion.
@@ -55,7 +56,7 @@ export function createMessageStreamController({
     if (!request.stopStatus || sessionRequestKey(request.sessionId, request.owner) !== sessionRequestKey()) return;
     const content = request.stopStatus === "stopped" ? "✓ Execution stopped." : "Still executing…";
     if (!request.stopStatusMessage?.isConnected) {
-      request.stopStatusMessage = addMessage("agent", content);
+      request.stopStatusMessage = addMessage("agent", content, undefined, sessionRuntime.getLiveHost());
       return;
     }
     const inner = request.stopStatusMessage.querySelector(".markdown-content");
@@ -118,7 +119,7 @@ export function createMessageStreamController({
     if (!message.trim() || activeSessionRequest()) return;
     if (!state.userId) { showLoginModal(); return; }
     if (!canWriteActiveSession()) {
-      addMessage("agent", `Admin view is read-only for ${state.activeSessionUserId}'s session.`);
+      addMessage("agent", `Admin view is read-only for ${state.activeSessionUserId}'s session.`, undefined, sessionRuntime.getLiveHost());
       return;
     }
     const uploads = state.currentUploads.slice();
@@ -139,35 +140,35 @@ export function createMessageStreamController({
     autoResizeTextInput();
     if (!state.sessionReady) await createSession();
     if (!state.sessionReady) {
-      addMessage("agent", "Failed to create session — the backend may still be loading. Please try again in a moment.");
+      addMessage("agent", "Failed to create session — the backend may still be loading. Please try again in a moment.", undefined, liveHost);
       stepExecutionFeed.finishLiveTurn();
       return;
     }
 
-    const timeline = [];
+    const assistantMessage = createAssistantMessage({
+      id: `live:${state.sessionId}:${startedAt}`,
+      startedAt,
+    });
     const shownPlotPaths = new Set();
-    const timelineContainer = addAgentTimelineMessage(timeline, shownPlotPaths, undefined, liveHost, {
+    const messageView = addAgentTimelineMessage(assistantMessage, shownPlotPaths, undefined, liveHost, {
       startedAt,
       live: true,
     });
     // The agent shell is visible immediately while the first SSE event is
     // pending, so the user sees progress in the conversational flow rather
     // than an isolated indicator above the composer.
-    attachAgentRunningIndicator(timelineContainer);
+    attachAgentRunningIndicator(messageView);
 
     agentGraph.reset();
     planGraph.reset();
-    const liveTurn = stepExecutionFeed.startLiveTurn(userMessage, startedAt, timelineContainer._stepFeedLiveHost);
+    stepExecutionFeed.startLiveTurn(userMessage, startedAt, messageView.stepFeedLiveHost);
     agentGraph.startPolling(state.sessionId);
     planGraph.startPolling(state.sessionId);
     const owner = state.activeSessionUserId || state.userId;
-    // The optimistic user message and live assistant shell already represent
-    // this session. Mark it before the first persisted snapshot arrives so
-    // stop/plan-completion refreshes preserve the visible disclosure state.
-    sessionRuntime.markSessionRendered(state.sessionId, owner);
     const request = {
       key: sessionRequestKey(state.sessionId, owner), sessionId: state.sessionId, owner,
       backendUserId: activeSessionBackendUserId(), controller: new AbortController(), lastSequence: 0, runId: null,
+      message: assistantMessage, messageView, userMessage, backendMessage,
     };
     state.activeRequests.set(request.key, request);
     // Make connection progress explicit even before the agent has emitted its
@@ -182,39 +183,25 @@ export function createMessageStreamController({
     let executionApprovedThisTurn = false;
     let terminalStatus = null;
     let roadmapOpenedForPlan = false;
-    let pendingTimelineFrame = null;
-    let pendingTimelineTimer = null;
-    let lastTimelineRenderAt = 0;
-    const timelineFrameIntervalMs = 32;
-    const renderPendingTimeline = () => {
-      if (!timeline.length || pendingTimelineFrame !== null || pendingTimelineTimer !== null) return;
-      // A single SSE message can contain several parts. Rendering each part
-      // independently creates competing height changes. Cap text commits at
-      // roughly 30fps; input/event processing stays free between batches.
-      const queueFrame = () => {
-        pendingTimelineTimer = null;
-        pendingTimelineFrame = requestAnimationFrame(() => {
-          pendingTimelineFrame = null;
-          lastTimelineRenderAt = performance.now();
-          if (timelineContainer.isConnected) renderTimeline(timelineContainer, timeline, shownPlotPaths);
-        });
-      };
-      const delay = Math.max(0, timelineFrameIntervalMs - (performance.now() - lastTimelineRenderAt));
-      if (delay > 0) pendingTimelineTimer = window.setTimeout(queueFrame, delay);
-      else queueFrame();
-    };
-    const flushPendingTimeline = () => {
-      if (pendingTimelineTimer !== null) {
-        window.clearTimeout(pendingTimelineTimer);
-        pendingTimelineTimer = null;
-      }
-      if (pendingTimelineFrame !== null) {
-        cancelAnimationFrame(pendingTimelineFrame);
-        pendingTimelineFrame = null;
-      }
-      if (timeline.length && timelineContainer.isConnected) {
-        renderTimeline(timelineContainer, timeline, shownPlotPaths);
-      }
+    const renderScheduler = createMessageRenderScheduler({
+      intervalMs: () => messageRenderInterval(assistantMessage.items
+        .filter((item) => item.type === "text" || item.type === "reasoning")
+        .reduce((total, item) => total + String(item.text || "").length, 0)),
+      render: () => {
+        if (messageView.element.isConnected) renderTimeline(messageView, assistantMessage, shownPlotPaths);
+      },
+    });
+    let presentationFinishPromise = null;
+    const finishLivePresentation = () => {
+      if (presentationFinishPromise) return presentationFinishPromise;
+      completeAssistantMessage(assistantMessage);
+      messageView.finishDuration(assistantMessage.endedAt);
+      const activityFinish = messageView.finishLiveActivity();
+      // Status teardown is derived from the canonical lifecycle and happens
+      // before the final Markdown task is scheduled.
+      updateSendButtonState();
+      presentationFinishPromise = Promise.all([activityFinish, renderScheduler.finish()]);
+      return presentationFinishPromise;
     };
     const revealPlanApproval = () => {
       if (terminalStatus !== "completed" || !validatedPlanThisTurn || executionApprovedThisTurn
@@ -223,10 +210,9 @@ export function createMessageStreamController({
       // The terminal event is the safe handoff boundary: the backend no longer
       // owns this session, so approval can start a new run immediately. Do not
       // make the user wait for graph, file, and persisted-session refreshes.
-      flushPendingTimeline();
       sessionRuntime.restorePlanApproval(request.sessionId);
-      const latestTimeline = timelineContainer.isConnected
-        ? timelineContainer
+      const latestTimeline = messageView.element.isConnected
+        ? messageView
         : Array.from(chatArea.querySelectorAll(".agent-message .timeline-container")).at(-1);
       if (latestTimeline) addPlanApprovalActions(latestTimeline);
       // Open once at the completed-plan handoff, not when validate_graph first
@@ -237,20 +223,27 @@ export function createMessageStreamController({
       }
     };
     const handleAdkData = (data) => {
-      if (data === "[DONE]") return;
+      if (data === "[DONE]") {
+        // The model has finished emitting text, even though the managed run
+        // can remain active briefly while the session is persisted. Commit
+        // the final scheduled text frame now, then finish the *visible* turn.
+        // The request stays locked until its terminal event, but presentation
+        // no longer depends on that slower durable-write lifecycle.
+        void finishLivePresentation();
+        return;
+      }
       try {
         for (const part of JSON.parse(data)?.content?.parts || []) {
+          const normalized = applyAssistantMessagePart(assistantMessage, part);
+          if (!normalized) continue;
           if (part.thought) {
             updateAgentRunningStatus("thinking");
-            upsertTimelineThought(timeline, part.text || "");
-          } else if (part.functionCall) {
-            const name = part.functionCall.name || "Unknown";
+          } else if (normalized.type === "function_call") {
+            const name = normalized.name;
             updateAgentRunningStatus(phaseForTool(name));
-            upsertTimelineEvent(timeline, { type: "function_call", id: part.functionCall.id, name, args: part.functionCall.args || {} });
           }
-          else if (part.functionResponse) {
-            const response = part.functionResponse;
-            upsertTimelineEvent(timeline, { type: "function_response", id: response.id, name: response.name || "Unknown", response: response.response || {} });
+          else if (normalized.type === "function_response") {
+            const response = normalized;
             updateAgentRunningStatus(phaseForTool(response.name));
             if (shouldRefreshPlanGraphForTool(response.name)) planGraph.refresh(request.sessionId);
             if ((response.name === "validate_graph" || response.name === "validate_plan")
@@ -260,17 +253,16 @@ export function createMessageStreamController({
             }
             if ((response.name === "confirm_plan_and_start_execution" || response.name === "resume_execution")
               && response.response?.status === "ok") executionApprovedThisTurn = true;
-          } else if (part.text) {
+          } else if (normalized.type === "text") {
             updateAgentRunningStatus(validatedPlanThisTurn && !executionApprovedThisTurn
               ? "finalizing_plan"
               : "thinking");
-            upsertTimelineText(timeline, part.text);
             if (!summaryTriggered && !state.summaryGeneratedFor.has(request.sessionId) && !state.sessionSummaries[request.sessionId]) {
               summaryTriggered = true;
               generateSessionSummary(request.sessionId, request.owner);
             }
           }
-          renderPendingTimeline();
+          renderScheduler.request();
         }
       } catch (_) { /* Ignore malformed backend events. */ }
     };
@@ -280,7 +272,7 @@ export function createMessageStreamController({
       lineBuffer = lines.pop();
       lines.forEach((line) => { const trimmed = line.trim(); if (trimmed.startsWith("data: ")) handleAdkData(trimmed.slice(6)); });
     };
-    const reloadSessionSnapshot = async () => {
+    const reloadSessionSnapshot = async ({ handoff = false } = {}) => {
       const newerRequestIsActive = () => {
         const active = activeSessionRequest();
         return active && active !== request;
@@ -292,17 +284,34 @@ export function createMessageStreamController({
       const restored = await sessionRuntime.loadSession(request.sessionId, request.owner, { render: false });
       if (newerRequestIsActive()) return;
       const events = restored?.events || [];
-      const userEventIndex = events.findIndex((event) => event?.author === "user"
+      // Always identify the most recent matching user event. `findIndex`
+      // matched an older identical prompt (notably "yes"), then saw that old
+      // prompt's reply and incorrectly replaced the active live turn.
+      const userEventIndex = events.findLastIndex((event) => event?.author === "user"
         && (event.content?.parts || []).some((part) => String(part.text || "").includes(backendMessage)));
       const hasPersistedReply = userEventIndex >= 0 && events.slice(userEventIndex + 1)
         .some((event) => event?.author !== "user" && (event.content?.parts || []).length);
 
-      if (hasPersistedReply) {
+      if (handoff && hasPersistedReply) {
         await sessionRuntime.loadSession(request.sessionId, request.owner);
-      } else if (!userMessage.isConnected
+        return true;
+      }
+      if (handoff && !userMessage.isConnected
         && sessionRequestKey(request.sessionId, request.owner) === sessionRequestKey()) {
         sessionRuntime.getLiveHost().prepend(userMessage);
       }
+      return false;
+    };
+    const reconcileDurableTurn = async () => {
+      // A terminal notification may slightly precede the database commit.
+      // Retry the durable handoff in the background, without ever mounting a
+      // second response or disturbing the completed live presentation.
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        if (await reloadSessionSnapshot({ handoff: true })) return true;
+        if (activeSessionRequest() && activeSessionRequest() !== request) return false;
+        if (attempt < 3) await new Promise((resolve) => window.setTimeout(resolve, 200 * (attempt + 1)));
+      }
+      return false;
     };
 
     try {
@@ -333,12 +342,15 @@ export function createMessageStreamController({
             continue; // Ignore malformed SSE messages.
           }
           if (event.type === "event") { request.lastSequence = event.sequence || request.lastSequence; handleAdkChunk(event.data || ""); }
+          // Snapshot recovery keeps the live presentation authoritative. Only
+          // the final handoff below is allowed to mount durable history.
           else if (event.type === "snapshot_required") await reloadSessionSnapshot();
           else if (event.type === "terminal") {
             request.lastSequence = event.latest_sequence || request.lastSequence;
             terminalStatus = event.status;
             if (event.status === "failed") throw new Error(event.error || "Agent run failed");
             if (event.status === "completed") {
+              void finishLivePresentation();
               releaseSessionRequest(request);
               stepExecutionFeed.finishLiveTurn();
               revealPlanApproval();
@@ -348,16 +360,23 @@ export function createMessageStreamController({
       }
       if (lineBuffer.trim().startsWith("data: ")) handleAdkData(lineBuffer.trim().slice(6));
     } catch (error) {
-      if (error?.name !== "AbortError") addMessage("agent", `Backend error: ${error}`, undefined, liveTurn);
+      if (error?.name !== "AbortError") addMessage("agent", `Backend error: ${error}`, undefined, liveHost);
     } finally {
-      flushPendingTimeline();
-      timelineContainer.finishAgentDuration?.();
+      // Every exit converges on the same idempotent lifecycle transition and
+      // one guaranteed final affected-message render.
+      const presentationFinished = finishLivePresentation();
       // A cancelled browser subscription can finish before the managed run
       // does. Keep the composer locked until cancellation polling observes a
       // terminal run, otherwise a new send would clear the cancellation flag.
       if (request.stopStatus !== "waiting") releaseSessionRequest(request);
       stepExecutionFeed.finishLiveTurn();
       revealPlanApproval();
+      // The final affected-message pass is the handoff boundary. Durable
+      // history cannot mount a competing representation before it completes.
+      const reconcileAfterTransition = async () => {
+        await presentationFinished;
+        return reconcileDurableTurn();
+      };
       // These are independent reconciliation tasks. They keep the durable
       // session, roadmap, agent graph, and files current, but none is required
       // before the user can act on a completed plan.
@@ -365,7 +384,7 @@ export function createMessageStreamController({
         agentGraph._poll(request.sessionId),
         planGraph._poll(request.sessionId),
         refreshSessionFiles(request.sessionId, request.owner),
-        reloadSessionSnapshot(),
+        reconcileAfterTransition(),
       ]);
       agentGraph.stopPolling();
       planGraph.stopPolling();
