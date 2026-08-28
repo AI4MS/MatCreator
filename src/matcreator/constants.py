@@ -50,6 +50,7 @@ _yaml_to_env: dict[str, str | None] = {
     "EMBEDDING_MODEL":      _llm_cfg.get("embedding_model"),
     "GRAPH_AGENT_MODEL":    _llm_cfg.get("graph_agent_model"),
     "REVIEW_AGENT_MODEL":   _llm_cfg.get("review_agent_model"),
+    "SMALL_MODEL":          _llm_cfg.get("small_model"),
     "BOHRIUM_USERNAME":     _bohrium_cfg.get("email"),
     "BOHRIUM_PASSWORD":     _bohrium_cfg.get("password"),
     "BOHRIUM_ACCESS_KEY":   _bohrium_cfg.get("access_key"),

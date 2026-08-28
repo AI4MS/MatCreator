@@ -207,7 +207,7 @@ SUMMARIES_PATH = ROOT / "agents" / "MatCreator" / ".adk" / "session_summaries.js
 _SENSITIVE_FIELDS = frozenset({"LLM_API_KEY", "BOHRIUM_PASSWORD", "BOHRIUM_ACCESS_KEY"})
 _ENV_FIELDS = [
     "LLM_MODEL", "LLM_API_KEY", "LLM_BASE_URL", "EMBEDDING_MODEL",
-    "GRAPH_AGENT_MODEL", "REVIEW_AGENT_MODEL",
+    "GRAPH_AGENT_MODEL", "REVIEW_AGENT_MODEL", "SMALL_MODEL",
     "BOHRIUM_USERNAME", "BOHRIUM_PASSWORD", "BOHRIUM_ACCESS_KEY", "BOHRIUM_API_URL", "BOHRIUM_PROJECT_ID",
     "BOHRIUM_VASP_IMAGE", "BOHRIUM_VASP_MACHINE",
     "BOHRIUM_DEEPMD_IMAGE", "BOHRIUM_DEEPMD_MACHINE", "DEEPMD_MODEL_PATH",
@@ -793,7 +793,7 @@ def _worker_env_vars() -> dict[str, str]:
     """
     keys = [
         "LLM_MODEL", "LLM_API_KEY", "LLM_BASE_URL", "EMBEDDING_MODEL",
-        "GRAPH_AGENT_MODEL", "REVIEW_AGENT_MODEL",
+        "GRAPH_AGENT_MODEL", "REVIEW_AGENT_MODEL", "SMALL_MODEL",
         "BOHRIUM_USERNAME", "BOHRIUM_PASSWORD", "BOHRIUM_ACCESS_KEY", "BOHRIUM_API_URL", "BOHRIUM_PROJECT_ID",
         "BOHRIUM_VASP_IMAGE", "BOHRIUM_VASP_MACHINE",
         "BOHRIUM_DEEPMD_IMAGE", "BOHRIUM_DEEPMD_MACHINE", "DEEPMD_MODEL_PATH",
@@ -1685,22 +1685,28 @@ async def summarize_session(
     if cached and isinstance(cached, dict) and cached.get("content_hash") == content_hash:
         return JSONResponse({"summary": cached["summary"]})
 
-    # Call LLM to generate summary
+    # Call LLM to generate summary (uses llm.small_model when set).
     summary = ""
     try:
         from litellm import acompletion
 
         model, api_key, base_url = _llm_config()
+        # Prefer the lightweight ``llm.small_model`` (e.g. qwen3.7-flash or
+        # glm-5.2-fast-preview) for cheap, high-volume session summaries.
+        # When ``small_model`` is unset (None), fall back to the main
+        # ``llm.model`` so summarization still works out of the box.
+        summary_model = _runtime_env_value("SMALL_MODEL") or model
         prompt_template = _SUMMARIZE_PROMPT_EN if _is_primarily_english(first_msg) else _SUMMARIZE_PROMPT
         prompt = prompt_template.format(text=first_msg[:2000])
 
         response = await acompletion(
-            model=model,
+            model=summary_model,
             messages=[{"role": "user", "content": prompt}],
             api_key=api_key or None,
             base_url=base_url or None,
             temperature=0.3,
-            max_tokens=100,
+            # Raised from 100 so longer summaries are not truncated mid-phrase.
+            max_tokens=2000,
         )
         raw = response.choices[0].message.content or ""
         import unicodedata

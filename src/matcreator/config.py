@@ -13,6 +13,7 @@ llm:
     embedding_model: text-embedding-v4
     graph_agent_model: ...   # optional override
     review_agent_model: ...  # optional override
+    small_model: ...        # optional override; cheap model for session summaries (falls back to llm.model)
     executor_cards:
         default: balanced
         cards:
@@ -69,6 +70,7 @@ YAML_TO_ENV: dict[str, str] = {
     "llm.embedding_model":    "EMBEDDING_MODEL",
     "llm.graph_agent_model":  "GRAPH_AGENT_MODEL",
     "llm.review_agent_model": "REVIEW_AGENT_MODEL",
+    "llm.small_model":        "SMALL_MODEL",
     "bohrium.email":          "BOHRIUM_USERNAME",
     "bohrium.password":       "BOHRIUM_PASSWORD",
     "bohrium.access_key":     "BOHRIUM_ACCESS_KEY",
