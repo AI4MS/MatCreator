@@ -1443,6 +1443,12 @@ details.step-feed-nested {
   font-size: var(--font-size-body);
   overflow-wrap: anywhere;
 }
+.markdown-content img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin-inline: auto;
+}
 .markdown-content a { color: var(--accent); text-decoration: none; font-weight: 600; }
 
 /* Markdown has no browser defaults here because base.css resets all margins.

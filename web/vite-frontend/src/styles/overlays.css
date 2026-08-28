@@ -560,6 +560,7 @@
   object-fit: contain;
   border-radius: 8px;
   margin-top: 8px;
+  margin-inline: auto;
   display: block;
 }
 .timeline-image-loading,
