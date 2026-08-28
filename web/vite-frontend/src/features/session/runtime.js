@@ -1,466 +1,495 @@
 import {
-  upsertTimelineEvent,
-  upsertTimelineText,
-  upsertTimelineThought,
+  applyAssistantMessagePart,
+  completeAssistantMessage,
+  createAssistantMessage,
 } from "../chat/timeline.js";
+import { createMessageRenderScheduler, messageRenderInterval } from "../chat/messageRenderScheduler.js";
+import { TranscriptStore } from "./TranscriptStore.js";
+import { VirtualTranscript } from "./VirtualTranscript.js";
 
-/** Owns restoring a persisted session and reconnecting to an active managed run. */
+/** Persisted history mutates a store; VirtualTranscript alone owns geometry. */
 export function createSessionRuntime({
-  state,
-  chatArea,
-  stepExecutionFeed,
-  sessionRequestKey,
-  activeSessionRequest,
-  releaseSessionRequest,
-  updateSendButtonState,
-  managedRunEventsUrl,
-  isExecutorLauncherTool,
-  getFunctionResponse,
-  displayMessageFromStoredUserText,
-  addMessage,
-  addAgentTimelineMessage,
-  addPlanApprovalActions,
-  beginScrollTransaction,
-  endScrollTransaction,
-  clearChatDisclosures,
-  renderSessionBanner,
-  renderSessionFilesTree,
-  refreshSessionFiles,
-  generateSessionSummary,
-  workdirDisplay,
+  session: { state, requestKey: sessionRequestKey, releaseRequest: releaseSessionRequest },
+  timeline: {
+    chatArea, stepExecutionFeed, isExecutorLauncherTool, getFunctionResponse,
+    displayStoredUserText: displayMessageFromStoredUserText,
+    addMessage, addAgentTimelineMessage, addPlanApprovalActions, renderTimeline,
+    clearDisclosures: clearChatDisclosures,
+  },
+  ui: { updateSendButtonState, renderSessionBanner, refreshSessionFiles, workdirDisplay },
+  managedRun: { eventsUrl: managedRunEventsUrl },
 }) {
-  const sessionViewCacheLimit = 3;
-  let renderedSessionKey = null;
-  // Plan approval is UI-derived from persisted events. A cancelled turn can
-  // still contain a successful validation event, so remember that its prompt
-  // was dismissed until the user deliberately starts another turn.
+  const pageSize = 40;
+  const contextLimit = 3;
+  const contexts = new Map();
   const suppressedPlanApprovalTurns = new Map();
+  let activeContext = null;
+  let unsubscribeStore = null;
+  let sessionFetchController = null;
+  const metrics = { sessionLoads: 0, historyFetches: 0, managedSnapshotRecoveries: 0 };
 
-  async function fetchSessionData(sessionId) {
-    const owner = state.activeSessionUserId || state.userId;
-    const response = await fetch(`/api/users/${encodeURIComponent(owner)}/sessions/${encodeURIComponent(sessionId)}`, {
-      headers: { "Content-Type": "application/json" },
-    });
+  const viewport = new VirtualTranscript({
+    chatArea,
+    renderRow: (row, host) => renderPersistedRow(row, host),
+    estimateRow: (row) => activeContext?.store.estimateRow(row) || 132,
+    onNeedRange: ({ targetIndex }) => {
+      if (!activeContext) return;
+      activeContext.store.setFocusIndex(targetIndex);
+      void loadRange(activeContext, targetIndex);
+    },
+  });
+
+  function rememberContext(context) {
+    contexts.delete(context.viewKey);
+    contexts.set(context.viewKey, context);
+    while (contexts.size > contextLimit) contexts.delete(contexts.keys().next().value);
+  }
+
+  function activateContext(context, { follow = false } = {}) {
+    const switching = activeContext !== context;
+    if (switching) {
+      if (activeContext) {
+        activeContext.viewportOffset = viewport.currentOffset();
+        activeContext.rangeControllers.forEach((controller) => controller.abort());
+        activeContext.rangeControllers.clear();
+      }
+      unsubscribeStore?.();
+      activeContext = context;
+      unsubscribeStore = context.store.subscribe(() => refreshRows(context));
+      viewport.clearLive();
+      clearChatDisclosures?.();
+      stepExecutionFeed.reset({ preserveDisclosures: false });
+    }
+    stepExecutionFeed.setHierarchy([...context.graphNodes.values()]);
+    const hasSavedOffset = Number.isFinite(context.viewportOffset);
+    refreshRows(context, { follow: follow && !hasSavedOffset });
+    if (switching && hasSavedOffset) viewport.restoreOffset(context.viewportOffset);
+    restoreActiveLiveView(context);
+  }
+
+  function restoreActiveLiveView(context) {
+    const request = state.activeRequests.get(context.viewKey);
+    if (!request?.messageView) return;
+    const records = [...context.store.records.values()].sort((left, right) => left.index - right.index);
+    const durableUserIndex = records.findLastIndex(({ event }) => event?.author === "user"
+      && (event.content?.parts || []).some((part) => String(part.text || "").includes(request.backendMessage || "\u0000")));
+    const durableUserPresent = durableUserIndex >= 0;
+    const durableReplyPresent = durableUserPresent && records.slice(durableUserIndex + 1)
+      .some(({ event }) => event?.author !== "user" && (event.content?.parts || []).length);
+    if (request.message?.lifecycle === "completed" && durableReplyPresent) return;
+    if (!durableUserPresent && request.userMessage) viewport.liveHost.appendChild(request.userMessage);
+    viewport.liveHost.appendChild(request.messageView.element);
+    if (request.message?.lifecycle !== "completed") {
+      stepExecutionFeed.resumeLiveTurn(request.messageView.stepFeedLiveHost, request.message.startedAt);
+    }
+  }
+
+  function refreshRows(context, { follow = false } = {}) {
+    if (activeContext !== context || sessionRequestKey() !== context.viewKey) return;
+    const rows = context.store.rows().map((row) => {
+      if (row.type !== "assistant") return row;
+      const graphRevision = launcherNodeIds(row.records.map((record) => record.event))
+        .map((id) => context.graphRevisions.get(id) || "")
+        .join("|");
+      return {
+        ...row,
+        id: `${context.viewKey}:${row.id}`,
+        revision: `${row.revision}:g${graphRevision}:a${context.awaitingPlanApproval ? 1 : 0}`,
+      };
+    }).map((row) => row.type === "assistant" ? row : ({ ...row, id: `${context.viewKey}:${row.id}` }));
+    viewport.setRows(rows, { follow });
+  }
+
+  async function fetchSessionData(sessionId, owner, { offset = null, signal } = {}) {
+    const query = new URLSearchParams({ compact: "1", limit: String(pageSize) });
+    if (Number.isInteger(offset)) query.set("offset", String(Math.max(0, offset)));
+    const response = await fetch(
+      `/api/users/${encodeURIComponent(owner)}/sessions/${encodeURIComponent(sessionId)}?${query}`,
+      { headers: { "Content-Type": "application/json" }, signal },
+    );
     return response.ok ? response.json() : null;
   }
 
-  async function fetchSessionStepNodes(sessionId) {
+  function launcherNodeId(input = {}) {
+    const value = input.node_id ?? input.step_id ?? input.step_number;
+    return value === undefined || value === null ? "" : String(value);
+  }
+
+  function launcherNodeIds(events) {
+    const ids = new Set();
+    (events || []).forEach((event) => (event?.content?.parts || []).forEach((part) => {
+      const call = part?.functionCall || part?.function_call;
+      if (!call || !isExecutorLauncherTool(call.name)) return;
+      const id = launcherNodeId(call.args || {});
+      if (id) ids.add(id);
+    }));
+    return [...ids];
+  }
+
+  async function fetchStepNodes(sessionId, events, signal) {
+    const ids = launcherNodeIds(events);
+    if (!ids.length) return [];
     try {
-      const response = await fetch(`/api/agent-graph/${encodeURIComponent(sessionId)}`);
+      const query = new URLSearchParams();
+      ids.forEach((id) => query.append("node_id", id));
+      const response = await fetch(`/api/agent-graph/${encodeURIComponent(sessionId)}?${query}`, { signal });
       if (!response.ok) return [];
       const graph = await response.json();
-      return Object.values(graph.nodes || {})
-        .filter((node) => node.type === "step")
-        .sort((left, right) => stepNodeTimestamp(left) - stepNodeTimestamp(right));
-    } catch (_) {
+      return Object.values(graph.nodes || {}).filter((node) => node.type === "step");
+    } catch (error) {
+      if (error?.name !== "AbortError") console.error("Failed to load transcript steps:", error);
       return [];
     }
   }
 
-  function eventTimestamp(event, fallbackOrder) {
-    if (event.timestamp) {
-      const raw = Number(event.timestamp);
-      return raw < 1e12 ? raw * 1000 : raw;
+  function mergeGraphNodes(context, nodes) {
+    let changed = false;
+    nodes.forEach((node) => {
+      if (!node?.id) return;
+      const requestedId = launcherNodeId(node.input) || node.id;
+      const revision = String(node.updated_at || node.end_time || node.status || "idle");
+      if (context.graphRevisions.get(requestedId) === revision) return;
+      context.graphNodes.set(node.id, node);
+      context.graphRevisions.set(requestedId, revision);
+      changed = true;
+    });
+    if (!changed) return;
+    context.graphRevision += 1;
+    if (activeContext === context) stepExecutionFeed.setHierarchy([...context.graphNodes.values()]);
+  }
+
+  async function loadRange(context, targetIndex) {
+    if (activeContext !== context || sessionRequestKey() !== context.viewKey) return;
+    const offset = Math.max(0, Math.min(
+      Math.floor(targetIndex / pageSize) * pageSize,
+      Math.max(0, context.store.totalCount - pageSize),
+    ));
+    if (!context.store.beginLoad(offset)) return;
+    const controller = new AbortController();
+    context.rangeControllers.set(offset, controller);
+    metrics.historyFetches += 1;
+    try {
+      const response = await fetchSessionData(context.sessionId, context.owner, { offset, signal: controller.signal });
+      if (!response || activeContext !== context || sessionRequestKey() !== context.viewKey) return;
+      const nodes = await fetchStepNodes(context.sessionId, response.events || [], controller.signal);
+      if (activeContext !== context) return;
+      mergeGraphNodes(context, nodes);
+      context.store.insertPage(response);
+    } catch (error) {
+      if (error?.name !== "AbortError") console.error("Failed to load transcript range:", error);
+    } finally {
+      if (context.rangeControllers.get(offset) === controller) context.rangeControllers.delete(offset);
+      context.store.endLoad(offset);
     }
-    return event.createTime ? new Date(event.createTime).getTime() : fallbackOrder;
   }
 
-  function stepNodeTimestamp(node) {
-    return node.start_time ? new Date(node.start_time).getTime() : Infinity;
+  function eventTimestamp(event, fallback = null) {
+    if (event?.timestamp !== undefined) {
+      const value = Number(event.timestamp);
+      return value < 1e12 ? value * 1000 : value;
+    }
+    return event?.createTime ? new Date(event.createTime).getTime() : fallback;
   }
 
-  function collectFunctionResponsesById(events) {
+  function collectResponses(events) {
     const responses = {};
-    for (const event of events) {
-      for (const part of event.content?.parts || []) {
-        const response = getFunctionResponse(part);
-        if (response?.id) responses[response.id] = response;
-      }
-    }
+    events.forEach((event) => (event?.content?.parts || []).forEach((part) => {
+      const response = getFunctionResponse(part);
+      if (response?.id) responses[response.id] = response;
+    }));
     return responses;
   }
 
-  function eventToTimelineParts(event, responsesById, pairedResponseIds = new Set(), timeline = []) {
-    for (const part of event.content?.parts || []) {
-      if (part.thought) {
-        upsertTimelineThought(timeline, part.text || "");
-      } else if (part.functionCall || part.function_call) {
+  function appendEvent(message, event, responses = {}, paired = new Set()) {
+    (event?.content?.parts || []).forEach((part) => {
+      if (part.functionCall || part.function_call) {
         const call = part.functionCall || part.function_call;
-        const matchedResponse = responsesById[call.id];
-        upsertTimelineEvent(timeline, { type: "function_call", id: call.id, name: call.name || "Unknown", args: call.args || {} });
-        if (matchedResponse) {
-          if (matchedResponse.id) pairedResponseIds.add(matchedResponse.id);
-          upsertTimelineEvent(timeline, { type: "function_response", id: matchedResponse.id, name: matchedResponse.name || "Unknown", response: matchedResponse.response || {} });
+        applyAssistantMessagePart(message, part);
+        const response = responses[call.id];
+        if (response) {
+          paired.add(response.id);
+          applyAssistantMessagePart(message, { functionResponse: response });
         }
       } else if (getFunctionResponse(part)) {
         const response = getFunctionResponse(part);
-        if (response.id && pairedResponseIds.has(response.id)) continue;
-        upsertTimelineEvent(timeline, { type: "function_response", id: response.id, name: response.name || "Unknown", response: response.response || {} });
-      } else if (part.text) {
-        upsertTimelineText(timeline, part.text);
+        if (!paired.has(response.id)) applyAssistantMessagePart(message, part);
+      } else {
+        applyAssistantMessagePart(message, part);
       }
-    }
-    return timeline;
-  }
-
-  function attachStepNodes(timeline, pendingStepNodes) {
-    const launcherCalls = timeline
-      .filter((item) => item.type === "activity_action")
-      .flatMap((action) => action.toolCalls || [])
-      .filter((call) => isExecutorLauncherTool(call.name));
-    if (!launcherCalls.length) return timeline;
-
-    // A resumed session may contain several parallel run_node_executor calls
-    // in one assistant event. Match their persisted step cards by node ID
-    // first; consuming them one-at-a-time made the remaining cards fall back
-    // to the chat root when the session was switched mid-run.
-    for (const item of launcherCalls) {
-      const requestedNodeId = item.args?.node_id;
-      const matchIndex = pendingStepNodes.findIndex((node) =>
-        requestedNodeId && (node.input?.node_id === requestedNodeId || node.id?.endsWith(`__node_${requestedNodeId}`)),
-      );
-      if (matchIndex >= 0) {
-        const [node] = pendingStepNodes.splice(matchIndex, 1);
-        item.stepNodes = [node];
-      }
-    }
-
-    // Older runs and flash-step calls do not always carry a stable node ID.
-    // Keep their cards inside an executor call bubble using chronological
-    // fallback, rather than appending standalone agent-message cards.
-    for (const item of launcherCalls) {
-      if (item.stepNodes?.length) continue;
-      const nextStep = pendingStepNodes.shift();
-      if (nextStep) item.stepNodes = [nextStep];
-    }
-    return timeline;
-  }
-
-  function latestTurnPendingPlan(events) {
-    const latestUserIndex = events.reduce((index, event, current) => event?.author === "user" ? current : index, -1);
-    if (latestUserIndex < 0) return null;
-    let pendingPlan = null;
-    events.slice(latestUserIndex + 1).forEach((event) => {
-      (event.content?.parts || []).forEach((part) => {
-        const response = getFunctionResponse(part);
-        if ((response?.name === "validate_graph" || response?.name === "validate_plan")
-          && response.response?.status === "ok") {
-          pendingPlan = { event, response, userEvent: events[latestUserIndex] };
-        } else if ((response?.name === "confirm_plan_and_start_execution" || response?.name === "resume_execution")
-          && response.response?.status === "ok") {
-          // Approval consumes the most recently validated plan. This must be
-          // derived in event order because a persisted snapshot can contain
-          // both validation and approval responses from the same user turn.
-          pendingPlan = null;
-        }
-      });
     });
-    return pendingPlan;
   }
 
-  function shouldShowPlanApprovalActions(sessionId, sessionData, events) {
-    // This is deliberately UI-derived state. A validation creates a pending
-    // prompt, while a later approval in the same turn consumes it.
-    const state = sessionData?.state || {};
-    const pendingPlan = latestTurnPendingPlan(events);
-    const suppressedTurn = suppressedPlanApprovalTurns.get(sessionId);
-    const latestUserText = (pendingPlan?.userEvent?.content?.parts || [])
-      .map((part) => part.text || "").join("");
-    const validationBelongsToNewTurn = !suppressedTurn
-      || (suppressedTurn.userText && latestUserText === suppressedTurn.userText);
-    return (state.agent_mode || "normal") === "normal"
-      && pendingPlan !== null
-      && validationBelongsToNewTurn;
+  function attachStepNodes(timeline, context) {
+    const nodes = [...context.graphNodes.values()];
+    timeline.filter((item) => item.type === "activity_action").flatMap((item) => item.toolCalls || [])
+      .filter((call) => isExecutorLauncherTool(call.name)).forEach((call) => {
+        const id = launcherNodeId(call.input);
+        const node = nodes.find((candidate) => id
+          && (launcherNodeId(candidate.input) === id || candidate.id?.endsWith(`__node_${id}`)));
+        if (node) call.stepNodes = [node];
+      });
   }
 
-  function suppressPlanApproval(sessionId, userText = "") {
-    if (sessionId) suppressedPlanApprovalTurns.set(sessionId, { userText });
+  function renderPersistedRow(row, host) {
+    const context = activeContext;
+    if (!context) return;
+    const events = row.records.map((record) => record.event);
+    if (row.type === "user") {
+      const text = displayMessageFromStoredUserText((events[0]?.content?.parts || []).map((part) => part.text || "").join(""));
+      if (text) addMessage("user", text, row.startIndex, host, { messageKey: row.id });
+      return;
+    }
+    const message = createAssistantMessage({
+      id: row.id,
+      startedAt: eventTimestamp(events[0]),
+    });
+    const paired = new Set();
+    const responses = collectResponses(events);
+    events.forEach((event) => appendEvent(message, event, responses, paired));
+    completeAssistantMessage(message, eventTimestamp(events.at(-1)));
+    attachStepNodes(message.items, context);
+    const view = addAgentTimelineMessage(message, new Set(), row.startIndex, host, {
+      startedAt: message.startedAt, endedAt: message.endedAt, messageKey: row.id,
+    });
+    if (context.awaitingPlanApproval && row.endIndex === context.store.totalCount) addPlanApprovalActions(view);
   }
 
-  function restorePlanApproval(sessionId) {
-    if (sessionId) suppressedPlanApprovalTurns.delete(sessionId);
+  function latestPendingPlan(events) {
+    const userIndex = events.reduce((result, event, index) => event?.author === "user" ? index : result, -1);
+    if (userIndex < 0) return null;
+    let pending = null;
+    events.slice(userIndex + 1).forEach((event) => (event?.content?.parts || []).forEach((part) => {
+      const response = getFunctionResponse(part);
+      if (["validate_graph", "validate_plan"].includes(response?.name) && response.response?.status === "ok") pending = events[userIndex];
+      if (["confirm_plan_and_start_execution", "resume_execution"].includes(response?.name) && response.response?.status === "ok") pending = null;
+    }));
+    return pending;
   }
 
-  function markSessionRendered(sessionId, owner = state.activeSessionUserId || state.userId) {
-    renderedSessionKey = sessionRequestKey(sessionId, owner);
+  function shouldShowApproval(sessionId, sessionData, events) {
+    const userEvent = latestPendingPlan(events);
+    const suppressed = suppressedPlanApprovalTurns.get(sessionId);
+    const text = (userEvent?.content?.parts || []).map((part) => part.text || "").join("");
+    return (sessionData?.state?.agent_mode || "normal") === "normal"
+      && userEvent !== null && (!suppressed || (suppressed.userText && suppressed.userText === text));
   }
 
-  function renderSessionTimeline(events, stepNodes, awaitingPlanApproval = false, preserveDisclosures = false) {
-    beginScrollTransaction();
-    try {
-      // Disclosure keys belong to one rendered transcript. Once the DOM is
-      // replaced for another session, retaining them provides no UI benefit.
-      if (!preserveDisclosures) clearChatDisclosures?.();
-      // Running cards are initially open by default, so their state is not in
-      // the user-choice map yet. Snapshot the actual DOM before an in-place
-      // refresh changes running nodes to completed/cancelled and changes that
-      // default to closed.
-      if (preserveDisclosures) stepExecutionFeed.captureDisclosureState();
-      chatArea.innerHTML = "";
-      stepExecutionFeed.reset({ preserveDisclosures });
-      stepExecutionFeed.setHierarchy(stepNodes || []);
-    const sortedEvents = (events || []).map((event, index) => ({ event, timestamp: eventTimestamp(event, index), index }))
-      .sort((left, right) => left.timestamp - right.timestamp || left.index - right.index).map(({ event }) => event);
-    const pendingStepNodes = (stepNodes || []).filter((node) => stepExecutionFeed.isRootStep(node)).slice()
-      .sort((left, right) => stepNodeTimestamp(left) - stepNodeTimestamp(right));
-    const responsesById = collectFunctionResponsesById(events || []);
-    const pairedResponseIds = new Set();
-    let shownPlotPaths = new Set();
-    let messageIndex = 0;
-    let lastAgentTimeline = null;
-    let pendingAgentTimeline = [];
-    const flushAgentTimeline = () => {
-      if (!pendingAgentTimeline.length) return;
-      const timeline = attachStepNodes(pendingAgentTimeline, pendingStepNodes);
-      lastAgentTimeline = addAgentTimelineMessage(timeline, shownPlotPaths, messageIndex++);
-      pendingAgentTimeline = [];
+  function makeContext(sessionId, owner, viewKey) {
+    return {
+      sessionId, owner, viewKey, store: new TranscriptStore(), graphNodes: new Map(), graphRevisions: new Map(),
+      graphRevision: 0, sessionData: null, summary: "", awaitingPlanApproval: false, viewportOffset: null,
+      rangeControllers: new Map(),
     };
-
-    for (const event of sortedEvents) {
-      if (event.author === "user") {
-        flushAgentTimeline();
-        const text = displayMessageFromStoredUserText((event.content?.parts || []).map((part) => part.text || "").join(""));
-        if (text) addMessage("user", text, messageIndex++);
-        shownPlotPaths = new Set();
-        continue;
-      }
-      // Persisted ADK events are often split into separate records while the
-      // managed SSE stream delivers them as one assistant turn. Accumulating
-      // adjacent non-user events gives history and live output identical
-      // Thinking / IN / OUT grouping, including the same upsert semantics.
-      eventToTimelineParts(event, responsesById, pairedResponseIds, pendingAgentTimeline);
-    }
-    flushAgentTimeline();
-    // Preserve the assistant-message containment even if an older/incomplete
-    // persisted event stream cannot be matched to a specific executor call.
-    // This is particularly important while reconnecting after a session
-    // switch: standalone cards become visual siblings of the chat bubble.
-    if (pendingStepNodes.length) {
-      // A session can be switched to after the backend has recorded its user
-      // turn and graph nodes, but before it has persisted the assistant's
-      // executor function-call event. Provide that in-flight turn with a real
-      // bubble instead of rendering the recovered cards as chat-root siblings.
-      if (!lastAgentTimeline) {
-        lastAgentTimeline = addAgentTimelineMessage([], shownPlotPaths, messageIndex++);
-      }
-      const fallbackHost = document.createElement("div");
-      fallbackHost.className = "step-feed-inline-region";
-      lastAgentTimeline.appendChild(fallbackHost);
-      pendingStepNodes.forEach((node) => stepExecutionFeed.appendStatic(node, fallbackHost));
-    }
-      if (awaitingPlanApproval && lastAgentTimeline) addPlanApprovalActions(lastAgentTimeline);
-    } finally {
-      // Loading/polling a persisted snapshot is passive. The approval card is
-      // visible immediately only for an already attached viewport; a reader
-      // elsewhere keeps the same anchor and can reach it deliberately.
-      endScrollTransaction();
-    }
-  }
-
-  function updateSessionWorkdirDisplay(sessionData) {
-    if (!workdirDisplay) return;
-    const workdir = sessionData.state?.workdir || sessionData.state?.custom_workdir || state.defaultWorkdir || "";
-    workdirDisplay.textContent = workdir;
-    workdirDisplay.style.display = workdir ? "" : "none";
   }
 
   async function loadSession(sessionId, owner = state.activeSessionUserId || state.userId, { render = true } = {}) {
+    metrics.sessionLoads += 1;
     const viewKey = sessionRequestKey(sessionId, owner);
-    const requestAtStart = activeSessionRequest();
-    const isCurrentView = () => sessionRequestKey() === viewKey;
+    const isCurrent = () => sessionRequestKey() === viewKey;
+    sessionFetchController?.abort();
+    const controller = new AbortController();
+    sessionFetchController = controller;
+    const filesPromise = render ? refreshSessionFiles(sessionId, owner) : Promise.resolve();
     try {
-      const [sessionData, graphNodes] = await Promise.all([fetchSessionData(sessionId), fetchSessionStepNodes(sessionId)]);
-      if (!sessionData) {
-        if (isCurrentView()) state.sessionReady = false;
-        return;
-      }
-      if (!isCurrentView()) return;
+      const sessionData = await fetchSessionData(sessionId, owner, { signal: controller.signal });
+      if (!sessionData || !isCurrent()) return null;
+      const events = sessionData.events || [];
+      if (!render) return { sessionData, events, graphNodes: [], summary: sessionData.summary || "" };
+      const nodes = await fetchStepNodes(sessionId, events, controller.signal);
+      if (!isCurrent()) return null;
+      let context = contexts.get(viewKey) || makeContext(sessionId, owner, viewKey);
+      context.sessionData = sessionData;
+      context.summary = sessionData.summary || state.sessionSummaries[sessionId] || "";
+      context.awaitingPlanApproval = shouldShowApproval(sessionId, sessionData, events);
+      mergeGraphNodes(context, nodes);
+      // The persisted rows below include the completed reply that has just
+      // streamed in `liveHost`. Remove that optimistic copy before notifying
+      // the transcript store, whose subscriber mounts the persisted copy.
+      // Mounting first and clearing afterwards briefly showed both messages
+      // (and made the final response appear to double in height).
+      viewport.clearLive();
+      context.store.insertPage(sessionData);
+      rememberContext(context);
+      const changedContext = activeContext !== context;
+      activateContext(context, { follow: changedContext });
       state.sessionReady = true;
       if (state.deploymentMode === "local" && sessionData.userId) state.activeSessionUserId = sessionData.userId;
-      const events = sessionData.events || [];
       if (sessionData.summary) {
         state.sessionSummaries[sessionId] = sessionData.summary;
         state.summaryGeneratedFor.add(sessionId);
       }
-      const summary = sessionData.summary || state.sessionSummaries[sessionId] || "";
-      const preserveDisclosures = renderedSessionKey === viewKey;
-      // Snapshot probing (`render: false`) is the first half of the managed
-      // stream reload. Remember its view so the following rendered snapshot
-      // is treated as an in-place refresh, including the refresh immediately
-      // before the Approve plan prompt appears.
-      renderedSessionKey = viewKey;
-      if (render) {
-        renderSessionBanner(summary);
-        renderSessionTimeline(
-          events,
-          graphNodes,
-          shouldShowPlanApprovalActions(sessionId, sessionData, events),
-          preserveDisclosures,
-        );
-      }
-      // Complete transcripts and tool payloads can be large. Keep only a
-      // small LRU cache for responsive switching instead of retaining ten
-      // session histories for the life of the browser tab.
+      renderSessionBanner(context.summary);
+      updateSessionWorkdirDisplay(sessionData);
       state.sessionViewCache.delete(viewKey);
       state.sessionViewCache.set(viewKey, {
-        sessionData: { state: sessionData.state },
-        events,
-        graphNodes,
-        files: [],
-        summary,
+        transcriptContext: context, sessionData: { state: sessionData.state }, files: [],
+        summary: context.summary, revision: sessionData.revision,
       });
-      while (state.sessionViewCache.size > sessionViewCacheLimit) {
-        state.sessionViewCache.delete(state.sessionViewCache.keys().next().value);
-      }
-      if (render && events.some((event) => event?.author === "user") && !summary && !state.summaryGeneratedFor.has(sessionId)) {
-        generateSessionSummary(sessionId);
-      }
-      if (requestAtStart && requestAtStart !== activeSessionRequest()) return;
-      if (render) {
-        void refreshSessionFiles(sessionId, owner);
-        updateSessionWorkdirDisplay(sessionData);
-      }
-      return { sessionData, events, graphNodes, summary };
+      while (state.sessionViewCache.size > contextLimit) state.sessionViewCache.delete(state.sessionViewCache.keys().next().value);
+      void filesPromise;
+      return { sessionData, events, graphNodes: nodes, summary: context.summary };
     } catch (error) {
-      console.error("Failed to load session:", error);
+      if (error?.name !== "AbortError") console.error("Failed to load session:", error);
+      return null;
+    } finally {
+      if (sessionFetchController === controller) sessionFetchController = null;
     }
+  }
+
+  function restoreSessionSnapshot(snapshot) {
+    if (!snapshot?.transcriptContext) return false;
+    activateContext(snapshot.transcriptContext);
+    renderSessionBanner(snapshot.summary || "");
+    updateSessionWorkdirDisplay(snapshot.sessionData || {});
+    return true;
+  }
+
+  function renderSessionTimeline(events, graphNodes = [], awaitingPlanApproval = false) {
+    const context = makeContext(state.sessionId, state.activeSessionUserId || state.userId, sessionRequestKey());
+    context.awaitingPlanApproval = awaitingPlanApproval;
+    mergeGraphNodes(context, graphNodes);
+    context.store.insertPage({
+      events,
+      event_meta: events.map((event, index) => ({ index, cursor: String(index), turn_id: event.invocationId || String(index) })),
+      pagination: { start_index: 0, end_index: events.length, total_count: events.length },
+      revision: `legacy:${events.length}`,
+    });
+    rememberContext(context);
+    activateContext(context, { follow: true });
+  }
+
+  function beginLiveOutput() {
+    viewport.clearLive();
+    viewport.followOutput();
+    return viewport.liveHost;
+  }
+  function getLiveHost() { return viewport.liveHost; }
+  function resetTranscript() {
+    activeContext?.rangeControllers.forEach((controller) => controller.abort());
+    activeContext?.rangeControllers.clear();
+    unsubscribeStore?.();
+    unsubscribeStore = null;
+    activeContext = null;
+    viewport.reset();
+  }
+
+  function suppressPlanApproval(sessionId, userText = "") { if (sessionId) suppressedPlanApprovalTurns.set(sessionId, { userText }); }
+  function restorePlanApproval(sessionId) { if (sessionId) suppressedPlanApprovalTurns.delete(sessionId); }
+  function canRevealPlanApproval(sessionId, userText = "") {
+    const suppressed = suppressedPlanApprovalTurns.get(sessionId);
+    return !suppressed || suppressed.userText === userText;
+  }
+  function updateSessionWorkdirDisplay(sessionData) {
+    if (!workdirDisplay) return;
+    const workdir = sessionData?.state?.workdir || sessionData?.state?.custom_workdir || state.defaultWorkdir || "";
+    workdirDisplay.textContent = workdir;
+    workdirDisplay.style.display = workdir ? "" : "none";
   }
 
   async function discoverManagedRun(sessionId, owner = state.activeSessionUserId || state.userId) {
     if (!owner || !sessionId) return null;
     try {
-      const query = new URLSearchParams({ user_id: owner, session_id: sessionId });
-      const response = await fetch(`/api/runs/active?${query}`);
-      if (!response.ok) return null;
-      return (await response.json()).run || null;
-    } catch (_) {
-      return null;
-    }
+      const response = await fetch(`/api/runs/active?${new URLSearchParams({ user_id: owner, session_id: sessionId })}`);
+      return response.ok ? (await response.json()).run || null : null;
+    } catch (_) { return null; }
   }
-
-  const MANAGED_RUN_RETRY_INITIAL_DELAY_MS = 500;
-  const MANAGED_RUN_RETRY_MAX_DELAY_MS = 5000;
-  const MANAGED_RUN_REFRESH_DELAY_MS = 250;
 
   function startManagedRunReconnect(activeRun, sessionId, owner = state.activeSessionUserId || state.userId) {
     if (!activeRun?.run_id) return;
     const key = sessionRequestKey(sessionId, owner);
     if (state.activeRequests.get(key)) return;
     const request = {
-      key,
-      sessionId,
-      owner,
-      backendUserId: owner,
-      controller: new AbortController(),
-      lastSequence: activeRun.latest_sequence || 0,
-      runId: activeRun.run_id,
-      refreshTimer: null,
-      retryDelayMs: MANAGED_RUN_RETRY_INITIAL_DELAY_MS,
+      key, sessionId, owner, backendUserId: owner, controller: new AbortController(),
+      lastSequence: activeRun.latest_sequence || 0, runId: activeRun.run_id, retryDelayMs: 500,
     };
     state.activeRequests.set(key, request);
     updateSendButtonState();
     void streamManagedRunEvents(request);
   }
 
-  function isCurrentManagedRunRequest(request) {
-    return state.activeRequests.get(request.key) === request;
-  }
-
-  function scheduleManagedRunRefresh(request, { immediate = false } = {}) {
-    if (!isCurrentManagedRunRequest(request)) return;
-    if (request.refreshTimer !== null) {
-      if (!immediate) return;
-      clearTimeout(request.refreshTimer);
-    }
-    const refresh = async () => {
-      request.refreshTimer = null;
-      if (isCurrentManagedRunRequest(request)) {
-        await loadSession(request.sessionId, request.owner);
-      }
-    };
-    request.refreshTimer = setTimeout(refresh, immediate ? 0 : MANAGED_RUN_REFRESH_DELAY_MS);
-  }
-
-  async function managedRunStillActive(request) {
-    try {
-      const response = await fetch(`/api/runs/${encodeURIComponent(request.runId)}`);
-      if (response.ok) {
-        const run = await response.json();
-        if (["starting", "running", "cancelling"].includes(run.status)) return true;
-        return false;
-      }
-      if (response.status !== 404) return true;
-    } catch (_) {
-      return true;
-    }
-    const activeRun = await discoverManagedRun(request.sessionId, request.owner);
-    if (activeRun?.run_id) {
-      request.runId = activeRun.run_id;
-      request.lastSequence = activeRun.latest_sequence || 0;
-      return true;
-    }
-    return false;
-  }
-
-  async function waitForManagedRunRetry(request) {
-    const delay = request.retryDelayMs;
-    request.retryDelayMs = Math.min(delay * 2, MANAGED_RUN_RETRY_MAX_DELAY_MS);
-    await new Promise((resolve) => setTimeout(resolve, delay));
-    return isCurrentManagedRunRequest(request) && !request.controller.signal.aborted;
+  function applyManagedPayload(live, payload) {
+    String(payload || "").split("\n").forEach((line) => {
+      if (!line.trim().startsWith("data: ")) return;
+      try { appendEvent(live.message, JSON.parse(line.trim().slice(6))); } catch (_) { /* malformed replay event */ }
+    });
+    live.scheduler.request();
   }
 
   async function streamManagedRunEvents(request) {
-    let shouldRetry = true;
+    const isCurrent = () => state.activeRequests.get(request.key) === request;
+    let live = null;
+    if (sessionRequestKey() === request.key) {
+      const message = createAssistantMessage({
+        id: `managed:${request.runId}`,
+        startedAt: Date.now(),
+      });
+      const shownPlots = new Set();
+      const view = addAgentTimelineMessage(message, shownPlots, undefined, beginLiveOutput(), {
+        startedAt: message.startedAt, live: true, messageKey: message.id,
+      });
+      stepExecutionFeed.startLiveTurn(null, message.startedAt, view.stepFeedLiveHost);
+      live = {
+        message, shownPlots, view,
+        scheduler: createMessageRenderScheduler({
+          intervalMs: () => messageRenderInterval(message.items
+            .filter((item) => item.type === "text" || item.type === "reasoning")
+            .reduce((total, item) => total + String(item.text || "").length, 0)),
+          render: () => {
+            if (view.element.isConnected) renderTimeline(view, message, shownPlots);
+          },
+        }),
+      };
+      request.message = message;
+      request.messageView = view;
+      updateSendButtonState();
+    }
     try {
-      while (shouldRetry && isCurrentManagedRunRequest(request) && !request.controller.signal.aborted) {
-        try {
-          const response = await fetch(managedRunEventsUrl(request), {
-            headers: { Accept: "text/event-stream" },
-            signal: request.controller.signal,
-          });
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-          let terminal = false;
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop();
-            for (const line of lines) {
-              if (!line.trim().startsWith("data: ")) continue;
-              try {
-                const event = JSON.parse(line.trim().slice(6));
-                if (event.type === "event") {
-                  request.lastSequence = event.sequence || request.lastSequence;
-                  request.retryDelayMs = MANAGED_RUN_RETRY_INITIAL_DELAY_MS;
-                  scheduleManagedRunRefresh(request);
-                } else if (event.type === "snapshot_required") {
-                  request.lastSequence = event.latest_sequence || request.lastSequence;
-                  scheduleManagedRunRefresh(request, { immediate: true });
-                } else if (event.type === "terminal") {
-                  request.lastSequence = event.latest_sequence || request.lastSequence;
-                  terminal = true;
-                }
-              } catch (_) { /* Ignore malformed SSE events. */ }
+      while (isCurrent() && !request.controller.signal.aborted) {
+        const response = await fetch(managedRunEventsUrl(request), {
+          headers: { Accept: "text/event-stream" }, signal: request.controller.signal,
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let terminal = false;
+        while (!terminal) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop();
+          for (const line of lines) {
+            if (!line.trim().startsWith("data: ")) continue;
+            const envelope = JSON.parse(line.trim().slice(6));
+            if (envelope.type === "event") {
+              request.lastSequence = envelope.sequence || request.lastSequence;
+              if (live) applyManagedPayload(live, envelope.data);
+            } else if (envelope.type === "snapshot_required") {
+              request.lastSequence = envelope.latest_sequence || request.lastSequence;
+              metrics.managedSnapshotRecoveries += 1;
+              await loadSession(request.sessionId, request.owner);
+            } else if (envelope.type === "terminal") {
+              request.lastSequence = envelope.latest_sequence || request.lastSequence;
+              if (live) {
+                completeAssistantMessage(live.message);
+                updateSendButtonState();
+                await live.scheduler.finish();
+              }
+              terminal = true;
             }
           }
-          if (terminal) {
-            shouldRetry = false;
-            continue;
-          }
-        } catch (error) {
-          if (error?.name === "AbortError") break;
         }
-        if (!await managedRunStillActive(request) || !await waitForManagedRunRetry(request)) {
-          shouldRetry = false;
-        }
+        if (terminal) break;
+        await new Promise((resolve) => setTimeout(resolve, request.retryDelayMs));
+        request.retryDelayMs = Math.min(5000, request.retryDelayMs * 2);
       }
+    } catch (error) {
+      if (error?.name !== "AbortError") console.error("Managed run reconnect failed:", error);
     } finally {
-      if (request.refreshTimer !== null) clearTimeout(request.refreshTimer);
-      if (isCurrentManagedRunRequest(request)) {
+      live?.scheduler.cancel();
+      if (live) stepExecutionFeed.finishLiveTurn();
+      if (isCurrent()) {
         releaseSessionRequest(request);
         await loadSession(request.sessionId, request.owner);
       }
@@ -468,13 +497,9 @@ export function createSessionRuntime({
   }
 
   return {
-    discoverManagedRun,
-    loadSession,
-    markSessionRendered,
-    renderSessionTimeline,
-    restorePlanApproval,
-    startManagedRunReconnect,
-    suppressPlanApproval,
-    updateSessionWorkdirDisplay,
+    beginLiveOutput, getLiveHost, canRevealPlanApproval, discoverManagedRun, loadSession,
+    renderSessionTimeline, resetTranscript, restorePlanApproval, restoreSessionSnapshot, startManagedRunReconnect,
+    suppressPlanApproval, updateSessionWorkdirDisplay,
+    metrics: () => ({ ...metrics, ...viewport.metrics(), totalEvents: activeContext?.store.totalCount || 0 }),
   };
 }

@@ -940,45 +940,103 @@
   scroll-padding-bottom: var(--chat-bottom-reserve, 130px);
   overflow-y: auto;
   overflow-anchor: none;
-  display: flex;
-  flex-direction: column;
+  display: block;
   position: relative;
 }
 .chat-area::before {
-  content: "";
-  flex: 1 1 auto;
-  min-height: 0;
+  display: none;
+}
+
+.virtual-transcript-canvas {
+  position: relative;
+  width: 100%;
+  min-height: 1px;
+}
+
+.virtual-transcript-row {
+  position: absolute;
+  inset: 0 0 auto;
+  width: 100%;
+  display: flow-root;
+  contain: layout style;
+  will-change: transform;
+}
+
+.virtual-transcript-row.is-gap {
+  pointer-events: none;
+}
+
+.virtual-transcript-live {
+  position: relative;
+  width: 100%;
+  min-height: 1px;
 }
 
 .message {
+  --chat-avatar-size: 34px;
+  --chat-message-gap: 10px;
   flex: 0 0 auto;
-  /* The row reserves an avatar slot on both sides. This makes the agent
-     bubble's maximum right edge line up with the user bubble's right edge. */
   width: min(100%, 968px);
   margin: 0 auto 12px;
-  display: flex;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: var(--chat-avatar-size) minmax(0, 1fr) var(--chat-avatar-size);
+  column-gap: var(--chat-message-gap);
   align-items: flex-start;
 }
-.user-message { flex-direction: row-reverse; }
 
-.message-bubble { flex: 1; min-width: 0; border-radius: var(--msg-radius); }
+/* Timeline segments are DOM reconciliation boundaries, not visual wrappers. */
+.timeline-segment { display: contents; }
+
+.message-avatar { grid-row: 1; }
+.agent-message > .message-avatar { grid-column: 1; }
+.user-message > .message-avatar { grid-column: 3; }
+
+.message-bubble {
+  grid-column: 2;
+  min-width: 0;
+  border-radius: var(--msg-radius);
+}
 
 /* message styling uses shared tokens; theme blocks override only color tokens */
 .agent-message .message-bubble {
-  /* Keep long replies at a comfortable reading width. The zero grow factor
-     leaves the remaining room open on wide panels, while flex-shrink keeps
-     the bubble usable when the chat pane becomes narrow. */
-  flex: 0 1 880px;
-  width: min(880px, max(0px, calc(100% - 88px)));
-  max-width: min(880px, max(0px, calc(100% - 88px)));
+  justify-self: start;
+  width: 100%;
+  max-width: 880px;
   background: var(--agent-bg-1);
   border: 1px solid var(--agent-border);
   box-shadow: var(--msg-box-shadow-offset) var(--agent-box-shadow-color);
   padding: var(--msg-padding);
 }
+
+.agent-bubble-meta {
+  grid-column: 2;
+  grid-row: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin: 8px 0 0;
+}
+
+.agent-bubble-meta:not(:has(.agent-bubble-duration:not([hidden]), .agent-running-indicator[aria-hidden="false"])) {
+  display: none;
+}
+
+.agent-bubble-duration {
+  display: flex;
+  margin-left: auto;
+  justify-content: flex-end;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-bubble-duration[hidden] {
+  display: none;
+}
+
 .user-message .message-bubble {
-  flex: 0 1 auto;
+  justify-self: end;
   max-width: min(72%, 760px);
   background: var(--user-bg-1);
   border: 1px solid var(--user-border);
@@ -1020,8 +1078,25 @@
   display: none;
 }
 
+/* Step cards are nested inside a chat bubble and do not participate in the
+   transcript's avatar gutters. */
+.step-feed-message {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.step-feed-message .message-bubble {
+  grid-column: 1;
+}
+
 .step-feed-live-region {
   display: block;
+}
+
+/* A live assistant message owns a permanent Delegated tasks host.  Keep its
+   empty shell out of view, but never let cards escape to the chat root while
+   timeline DOM is being rebuilt. */
+.step-feed-live-delegation:not(:has(.step-feed-message)) {
+  display: none;
 }
 
 .step-feed-inline-region {
@@ -1063,6 +1138,21 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.delegation-group .step-feed-message {
+  /* These cards no longer render an avatar, so the ordinary agent-bubble
+     width (which reserves an 88px avatar lane) makes them terminate early.
+     Fill the group's content width to align with Agent activity on the right. */
+  width: 100%;
+  max-width: none;
+  margin: 0;
+}
+
+.delegation-group .step-feed-message > .message-bubble {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: none;
 }
 
 .delegation-task-host {
@@ -1194,6 +1284,7 @@
   color: var(--muted);
   font-size: var(--font-size-caption);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .step-feed-stop-btn {
@@ -1352,6 +1443,12 @@ details.step-feed-nested {
   font-size: var(--font-size-body);
   overflow-wrap: anywhere;
 }
+.markdown-content img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin-inline: auto;
+}
 .markdown-content a { color: var(--accent); text-decoration: none; font-weight: 600; }
 
 /* Markdown has no browser defaults here because base.css resets all margins.
@@ -1359,6 +1456,25 @@ details.step-feed-nested {
    supporting blocks read as separate units inside a chat bubble. */
 .markdown-content > :first-child { margin-top: 0; }
 .markdown-content > :last-child { margin-bottom: 0; }
+
+/* Oversized completed replies mount their Markdown only when expanded. The
+   inner wrapper restores the ordinary first/last-block rhythm on demand. */
+.markdown-deferred {
+  margin: 0;
+}
+.markdown-deferred > summary {
+  width: fit-content;
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: var(--font-weight-semibold);
+}
+.markdown-deferred > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+.markdown-deferred-body > :first-child { margin-top: 0; }
+.markdown-deferred-body > :last-child { margin-bottom: 0; }
 
 .markdown-content :is(h1, h2, h3, h4, h5, h6) {
   color: var(--text-primary);
@@ -1802,13 +1918,8 @@ body[data-theme="dark"] .input-container[data-agent-mode="bench"] {
   display: flex;
 }
 
-.agent-message:has(> .agent-running-indicator) {
-  flex-wrap: wrap;
-}
-
-.agent-message > .agent-running-indicator {
-  flex: 0 0 calc(100% - 44px);
-  margin: -4px 0 0 44px;
+.agent-message > .agent-bubble-meta > .agent-running-indicator {
+  margin: 0;
 }
 
 .agent-message.is-waiting > .message-bubble {
@@ -1834,7 +1945,7 @@ body[data-theme="dark"] .input-container[data-agent-mode="bench"] {
 }
 
 .plan-approval-message .message-bubble {
-  flex: 0 1 500px;
+  justify-self: end;
   width: min(100%, 500px);
   max-width: min(88%, 500px);
   padding: 14px;
@@ -2097,6 +2208,17 @@ body[data-theme="light"] .composer-toolbar .send-btn:not(.is-stopping):hover {
   background: var(--accent-primary-hover);
   border-color: var(--accent-primary-hover);
   color: var(--bg-elevated);
+}
+/* The answer is visible but the server has not yet released this session.
+   Disable the control rather than leaving a red stop action that can no
+   longer affect model generation. */
+body[data-theme] .composer-toolbar .send-btn.is-finalizing,
+body[data-theme] .composer-toolbar .send-btn.is-finalizing:hover {
+  background: var(--subtle-surface);
+  border-color: var(--border-default, var(--border));
+  color: var(--muted);
+  cursor: progress;
+  opacity: 0.72;
 }
 .agent-message.is-pending { display: none; }
 .tool-btn:disabled { cursor: progress; opacity: 0.55; }

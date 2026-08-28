@@ -55,7 +55,7 @@ def test_skill_graph_payload_includes_only_undistilled_memory(monkeypatch) -> No
             return {"nodes": 2, "edges": 0}
 
     monkeypatch.setattr(main, "_get_kg", FakeGraph)
-    monkeypatch.setattr(main, "get_disabled_skills", lambda: [])
+    monkeypatch.setattr(main, "get_disabled_skill_names", lambda: set())
     monkeypatch.setattr(main, "get_default_skill_names", lambda: set())
     monkeypatch.setattr(main, "_skill_dir_map", lambda: {})
 
@@ -112,6 +112,26 @@ def test_toggle_unofficial_skill_graph_nodes_uses_bulk_kdg_helper(monkeypatch) -
         "changed": 3,
         "node_ids": ["a", "b", "c", "d"],
     }
+
+
+def test_settings_disabled_skills_are_saved_to_graph_not_config(monkeypatch) -> None:
+    config = {"skills": {"disabled": ["legacy-skill"], "module_root": "/skills"}}
+    saved: list[dict] = []
+    calls: list[set[str]] = []
+    monkeypatch.setattr(main, "_load_config_for_user", lambda _user: config)
+    monkeypatch.setattr(main, "_save_config_for_user", lambda value, _user: saved.append(value.copy()))
+    monkeypatch.setattr(main, "refresh_skills", lambda: {"status": "ok"})
+    monkeypatch.setattr(main, "set_disabled_skill_names", lambda names: calls.append(names))
+
+    result = asyncio.run(
+        main.update_settings(main.SettingsBody(skills={"disabled": ["atomic-structure"]}))
+    )
+
+    assert result.status_code == 200
+    assert calls == [{"atomic-structure"}]
+    assert "disabled" not in config["skills"]
+    assert config["skills"]["module_root"] == "/skills"
+    assert saved
 
 
 def test_create_evaluation_campaign_reads_json_body(monkeypatch, tmp_path) -> None:

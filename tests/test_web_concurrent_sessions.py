@@ -44,15 +44,21 @@ def test_plan_approval_uses_live_validation_and_consumes_stale_prompt() -> None:
     assert "let validatedPlanThisTurn = false;" in content
     assert 'response.name === "validate_graph"' in content
     assert '!validatedPlanThisTurn || executionApprovedThisTurn' in content
+    assert "sessionRuntime.canRevealPlanApproval(request.sessionId, backendMessage)" in content
     assert "sessionRuntime.restorePlanApproval(request.sessionId);" in content
     assert "addPlanApprovalActions(latestTimeline);" in content
+    assert "plan-approval-avatar-spacer" not in _main_js()
+
+    chat_css = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "styles" / "chat.css").read_text(encoding="utf-8")
+    assert "grid-template-columns: var(--chat-avatar-size) minmax(0, 1fr) var(--chat-avatar-size);" in chat_css
 
     runtime = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "session" / "runtime.js").read_text(encoding="utf-8")
     assert "const suppressedPlanApprovalTurns = new Map();" in runtime
-    assert "latestUserText === suppressedTurn.userText" in runtime
-    assert "function latestTurnPendingPlan(events)" in runtime
-    assert 'response?.name === "confirm_plan_and_start_execution"' in runtime
-    assert "pendingPlan = null;" in runtime
+    assert "suppressed.userText === text" in runtime
+    assert "function canRevealPlanApproval(sessionId, userText = \"\")" in runtime
+    assert "function latestPendingPlan(events)" in runtime
+    assert '"confirm_plan_and_start_execution"' in runtime
+    assert "pending = null;" in runtime
 
 
 def test_frontend_tracks_requests_per_session() -> None:
@@ -145,25 +151,20 @@ def test_running_session_switch_discovers_and_reconnects_managed_run() -> None:
 
     assert "discoverManagedRun(sessionId, owner)" in main
     assert "startManagedRunReconnect(activeRun, sessionId, owner)" in main
-    assert 'fetch(`/api/runs/active?${query}`)' in runtime
+    assert 'fetch(`/api/runs/active?${new URLSearchParams(' in runtime
     assert "after=${request.lastSequence}" in main
 
 
-def test_managed_run_reconnect_retries_and_refreshes_persisted_state() -> None:
+def test_managed_run_reconnect_merges_events_without_snapshot_polling() -> None:
     runtime = _runtime_js()
 
-    assert "const MANAGED_RUN_RETRY_INITIAL_DELAY_MS = 500;" in runtime
-    assert "function scheduleManagedRunRefresh(request" in runtime
+    assert "function applyManagedPayload(live, payload)" in runtime
+    assert "scheduleManagedRunRefresh" not in runtime
+    assert "MANAGED_RUN_REFRESH_DELAY_MS" not in runtime
     assert "await loadSession(request.sessionId, request.owner);" in runtime
-    assert "async function managedRunStillActive(request)" in runtime
-    assert 'fetch(`/api/runs/${encodeURIComponent(request.runId)}`)' in runtime
-    assert "async function waitForManagedRunRetry(request)" in runtime
-    assert "while (shouldRetry && isCurrentManagedRunRequest(request)" in runtime
-    assert "request.lastSequence = event.sequence || request.lastSequence;" in runtime
-    assert "scheduleManagedRunRefresh(request);" in runtime
-    assert "if (event.type === \"terminal\")" in runtime
-    assert "if (!await managedRunStillActive(request) || !await waitForManagedRunRetry(request))" in runtime
-    assert "if (isCurrentManagedRunRequest(request)) {\n        releaseSessionRequest(request);" in runtime
+    assert "request.lastSequence = envelope.sequence || request.lastSequence;" in runtime
+    assert 'envelope.type === "terminal"' in runtime
+    assert 'envelope.type === "snapshot_required"' in runtime
 
 
 def test_stop_request_identifies_the_active_session_owner() -> None:
@@ -184,7 +185,7 @@ def test_stop_feedback_uses_managed_run_status_and_survives_session_refresh() ->
     assert 'fetch(`/api/runs/${encodeURIComponent(request.runId)}`)' in content
     assert '["completed", "failed", "cancelled"].includes(run.status)' in content
     assert "request.stopStatus = \"stopped\";\n        releaseSessionRequest(request);" in content
-    assert "reloadSessionSnapshot()," in content
+    assert "reloadSessionSnapshot({ handoff: true })" in content
     assert "await Promise.allSettled([" in content
     assert "renderStopStatus(request);" in content
     assert "cancellation_requested" not in content
@@ -199,11 +200,9 @@ def test_stop_and_plan_refreshes_preserve_open_node_dialogs() -> None:
     disclosures = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "ui" / "disclosureState.js").read_text(encoding="utf-8")
     graph = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "graphs" / "AgentGraphView.js").read_text(encoding="utf-8")
 
-    assert "sessionRuntime.markSessionRendered(state.sessionId, owner);" in streams
-    assert "if (preserveDisclosures) stepExecutionFeed.captureDisclosureState();" in runtime
+    assert "getItemKey: (index) => this.rows[index]?.id" in (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "session" / "VirtualTranscript.js").read_text(encoding="utf-8")
     assert "openState.set(details.dataset.disclosureKey, details.open);" in disclosures
     assert "captureDisclosureState()" in graph
-    assert 'defaultOpen: node.status === "running"' in graph
     assert "details.open = isRunning && (userChoice === undefined ? true : userChoice);" in graph
 
 
@@ -213,26 +212,28 @@ def test_bottom_attachment_and_node_toggle_use_one_scroll_policy() -> None:
     main = _main_js()
     graph = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "graphs" / "AgentGraphView.js").read_text(encoding="utf-8")
 
-    assert "const BOTTOM_ATTACH_THRESHOLD = 80;" in rendering
-    assert "currentScrollTop < lastScrollTop - 0.5" in rendering
-    assert "if (preserveUserPosition && userDetached) return;" in rendering
-    assert "if (event.deltaY < 0) detachBottomFollow();" in rendering
-    assert "else if (event.deltaY > 0 && isChatNearBottom()) enterBottomFollow();" in rendering
-    assert "viewportModeVersion !== transaction.viewportModeVersion" in rendering
-    assert "position.viewportModeVersion !== viewportModeVersion" in rendering
-    assert "|| !userDetached) return;" in rendering
-    assert "if (!userScrollActive && isChatNearBottom()) bottomPinned = true;" not in rendering
-    assert "if (detachBottom && !followBottom) detachBottomFollow();" in rendering
-    assert "if (followBottom) return { followBottom: true, userScrollIntent, viewportModeVersion };" in rendering
-    assert "if (snapshot.followBottom)" in rendering
-    assert "captureScrollPosition?.(details," in disclosures
-    assert 'block.dataset.readingAnchor = `${key}:block:${index}`;' in disclosures
-    assert "absolute: true" not in disclosures
-    assert "const readingPosition = wasBottomPinned ? null : captureScrollPosition();" in rendering
-    assert "restoreScrollPosition(transaction.readingPosition);" in rendering
-    assert "absolute = false" not in rendering
+    virtual = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "session" / "VirtualTranscript.js").read_text(encoding="utf-8")
+    assert 'this.mode = "FOLLOW_OUTPUT"' in virtual
+    assert 'this.mode = "DETACHED"' in virtual
+    assert 'chatArea.dataset.transcriptViewport = "virtual"' in virtual
+    assert 'if (chatArea.dataset.transcriptViewport === "virtual") return;' in rendering
+    assert 'if (chatArea.dataset.transcriptViewport === "virtual") return update();' in rendering
+    assert "captureLogicalAnchor()" in virtual
+    assert "restoreLogicalAnchor(anchor," in virtual
+    assert "shouldAdjustScrollPositionOnItemSizeChange" in virtual
+    assert "useAnimationFrameWithResizeObserver: false" in virtual
+    assert "handleVirtualizerChange(instance)" in virtual
+    assert "this.renderPass();" in virtual
+    assert "getVirtualItemForOffset(offset)" in virtual
+    assert "getBoundingClientRect()" not in virtual
+    assert "viewportModeVersion" not in rendering
+    assert "pendingRestoreSnapshot" not in rendering
+    assert 'querySelectorAll("[data-reading-anchor]' not in rendering
+    assert "interacted = true" in disclosures
     assert "function updatePreservingReadingPosition(update)" in rendering
-    assert "updatePreservingReadingPosition(() => {" in main
+    # The live timeline render is wrapped as a named update so the controller
+    # can measure/mutate around it; direct arrow-wrapped calls were removed.
+    assert "updatePreservingReadingPosition(updateTimeline" in main
     assert "this._updatePreservingReadingPosition(() => {" in graph
     assert "const shouldStick = isChatBottomPinned();" not in main
     assert "const shouldStick = this._isChatBottomPinned();" not in graph
@@ -249,7 +250,7 @@ def test_all_chat_disclosures_share_the_reading_position_controller() -> None:
     assert "wireTimelineDetails(activity," in create_activity
     assert "createTimelineReasoning(" in create_activity
     assert "createActivityAction(" in create_activity
-    assert "updatePreservingReadingPosition(() => {" in render_timeline
+    assert "updatePreservingReadingPosition(updateTimeline" in render_timeline
 
     render_card = graph[graph.index("_createCard(node)"):graph.index("// ---------------------------------------------------------------------------\n// Execution Plan Graph")]
     assert 'this._disclosures.wire(details, `step:${node.id}:card`' in render_card
@@ -260,26 +261,25 @@ def test_all_chat_disclosures_share_the_reading_position_controller() -> None:
     assert 'collapsed: node.status !== "running"' in render_card
     assert "this._wireNested(node.id, key, this._renderStepToolCall(toolCall))" in render_card
 
-    assert "beginScrollTransaction();" in runtime
-    assert "endScrollTransaction();" in runtime
-    assert "endScrollTransaction({ revealBottom: awaitingPlanApproval });" not in runtime
+    assert "beginScrollTransaction" not in runtime
+    assert "endScrollTransaction" not in runtime
+    assert "new VirtualTranscript" in runtime
 
 
 def test_image_and_all_timeline_updates_preserve_node_disclosures() -> None:
     main = _main_js()
     rendering = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "chat" / "rendering.js").read_text(encoding="utf-8")
     render_timeline = main[main.index("function renderTimeline("):main.index("function addAgentTimelineMessage(")]
-    create_image = main[main.index("function createTimelineImage("):main.index("function isExecutorLauncherTool(")]
+    artifacts = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "chat" / "timelineArtifacts.js").read_text(encoding="utf-8")
 
-    assert "disclosures.capture(chatArea);" in render_timeline
-    assert "container.innerHTML = \"\";" in render_timeline
-    assert render_timeline.index("disclosures.capture(chatArea);") < render_timeline.index('container.innerHTML = "";')
-    assert "pendingRestoreSnapshot.userScrollIntent !== snapshot.userScrollIntent" in rendering
-    assert "[data-reading-anchor]" in rendering
-    assert 'anchorKeyType: anchorEl?.dataset.readingAnchor ? "reading"' in rendering
+    assert "previousSegments" in render_timeline
+    assert "nextSegments" in render_timeline
+    assert "container.innerHTML" not in render_timeline
+    assert "createTimelineImage(path)" in artifacts
+    assert "pendingRestoreSnapshot" not in rendering
     assert "function protectAsyncContentLayout(root)" in rendering
     assert 'img:not([data-layout-protected])' in rendering
-    assert "protectAsyncContentLayout(div);" in render_timeline
+    create_image = artifacts[artifacts.index("function createTimelineImage("):artifacts.index("return { createArtifactListItem")]
     assert create_image.count("updatePreservingReadingPosition(() => {") == 2
     assert "prepareAsyncReadingPositionUpdate" not in create_image
 
@@ -295,11 +295,36 @@ def test_plain_text_blocks_keep_history_order_and_stable_identity() -> None:
     assert 'if (last?.type === "text")' in text_upsert
     assert 'timelineId: nextTimelineItemId(timeline, "text")' in text_upsert
     assert "timeline.splice" not in text_upsert
-    assert 'upsertTimelineText(timeline, part.text);' in streams
-    assert 'upsertTimelineText(timeline, part.text);' in runtime
+    assert 'applyAssistantMessagePart(assistantMessage, part);' in streams
+    assert 'applyAssistantMessagePart(message, part);' in runtime
     assert 'let accumulatedText = "";' not in streams
     assert 'let accumulatedText = "";' not in runtime
     assert '${item.timelineId || "text:legacy"}:content' in main
+
+
+def test_chat_messages_use_one_model_scheduler_and_stable_regions() -> None:
+    main = _main_js()
+    streams = _message_stream_js()
+    runtime = _runtime_js()
+    rendering = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "chat" / "rendering.js").read_text(encoding="utf-8")
+
+    assert "createAssistantMessage({" in streams
+    assert "createAssistantMessage({" in runtime
+    assert "createMessageRenderScheduler({" in streams
+    assert "createMessageRenderScheduler({" in runtime
+    assert "completeAssistantMessage(assistantMessage);" in streams
+    assert 'request.message?.lifecycle !== "completed"' in main
+    assert "request.presentationFinished" not in streams
+    assert "_timelinePresentationFinished" not in main
+    assert "new MutationObserver" not in main[main.index("function addAgentTimelineMessage("):main.index("function addPlanApprovalActions(")]
+    assert "inner.appendChild(liveDelegationGroup);" in main
+    assert "latestDelegationSegmentKey(segments)" in main
+    assert "container.insertBefore(delegationGroup, following);" in main
+    render_segment = main[main.index("function renderTimelineSegment("):main.index("function renderTimeline(")]
+    assert "liveDelegationGroup" not in render_segment
+    assert "setStreamText" not in rendering
+    assert "restoreActiveLiveView(context);" in runtime
+    assert "stepExecutionFeed.resumeLiveTurn(" in runtime
 
 
 def test_agent_graph_stops_animation_and_uses_one_update_transport() -> None:
@@ -390,7 +415,7 @@ def test_remote_job_controls_do_not_cancel_the_linked_step_executor() -> None:
     assert "request_step_cancellation" not in controls
 
 
-def test_session_switch_parallelizes_independent_requests() -> None:
+def test_session_switch_loads_page_scoped_graph_after_the_transcript_page() -> None:
     main = _main_js()
     runtime = _runtime_js()
     switch_session = main[
@@ -406,8 +431,10 @@ def test_session_switch_parallelizes_independent_requests() -> None:
     assert "discoverManagedRun(sessionId, owner)" in switch_session
     assert "loadSession(sessionId, owner)" in switch_session
     assert "void loadSessions();" in switch_session
-    assert "const [sessionData, graphNodes] = await Promise.all([" in load_session
-    assert "void refreshSessionFiles(sessionId, owner);" in load_session
+    assert "const sessionData = await fetchSessionData(sessionId, owner" in load_session
+    assert "fetchStepNodes(sessionId, events" in load_session
+    assert "const filesPromise = render" in load_session
+    assert "? refreshSessionFiles(sessionId, owner)" in load_session
     assert "await refreshSessionFiles(sessionId, owner);" not in load_session
 
 
@@ -423,15 +450,28 @@ def test_session_switch_renders_cached_snapshot_immediately() -> None:
     assert switch_session.index("renderSessionSnapshot(") < switch_session.index(
         "await Promise.all(["
     )
-    assert "if (state.sessionViewCache.size > 10)" in _runtime_js()
+    runtime = _runtime_js()
+    assert "while (state.sessionViewCache.size > contextLimit)" in runtime
+    assert "transcriptContext: context" in runtime
+    assert "restoreSessionSnapshot" in runtime
+
+
+def test_reselecting_the_active_session_does_not_rebuild_the_view() -> None:
+    content = _main_js()
+    switch_session = content[
+        content.index("async function switchSession("):
+        content.index("function showConfirmDialog(")
+    ]
+
+    assert "if (state.sessionReady && viewKey === sessionRequestKey()) return;" in switch_session
 
 
 def test_stale_session_loads_cannot_replace_active_view() -> None:
     content = _runtime_js()
 
     assert "const viewKey = sessionRequestKey(sessionId, owner);" in content
-    assert "const requestAtStart = activeSessionRequest();" in content
-    assert "if (!isCurrentView()) return;" in content
+    assert "sessionFetchController?.abort();" in content
+    assert "if (!sessionData || !isCurrent()) return null;" in content
 
 
 def test_new_session_ids_are_not_limited_to_one_second_resolution() -> None:
@@ -520,3 +560,26 @@ def test_evaluation_sidebar_prioritizes_runs_and_collapses_configuration() -> No
     assert ".evaluation-start-area" in styles
     assert "margin-top: auto;" in styles
     assert 'button.classList.toggle("is-active", isActive);' in content
+
+
+def test_session_history_uses_bidirectional_variable_height_virtualization() -> None:
+    runtime = _runtime_js()
+    web_main = WEB_MAIN_PY.read_text(encoding="utf-8")
+    chat_css = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "styles" / "chat.css").read_text(encoding="utf-8")
+
+    virtual = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "session" / "VirtualTranscript.js").read_text(encoding="utf-8")
+    store = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "session" / "TranscriptStore.js").read_text(encoding="utf-8")
+    assert 'from "@tanstack/virtual-core"' in virtual
+    assert "measureElement(element)" in virtual
+    assert "getTotalSize()" in virtual
+    assert "class TranscriptStore" in store
+    assert 'query.set("offset"' in runtime
+    assert "scheduleManagedRunRefresh" not in runtime
+    assert 'chatArea.innerHTML = ""' not in runtime
+    assert "getBoundingClientRect" not in runtime
+    assert "session-history-load-control" not in runtime
+    assert "session-history-load-control" not in chat_css
+    assert "def _filter_agent_graph_nodes(data: dict, node_ids: list[str])" in web_main
+    assert 'alias="node_id"' in web_main
+    assert '"total_count": total_events' in web_main
+    assert 'offset: int | None = Query(default=None, ge=0)' in web_main

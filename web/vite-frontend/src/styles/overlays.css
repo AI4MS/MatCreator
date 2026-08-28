@@ -424,20 +424,24 @@
 .session-summary-banner.visible .session-summary-text {
   opacity: 1;
 }
-.session-summary-text.typewriter {
+.session-summary-text.text-reveal {
   display: inline-block;
   overflow: hidden;
   white-space: nowrap;
-  max-width: 0;
   opacity: 1;
-  animation: typewriter-reveal 1.3s steps(var(--tw-steps, 20), end) forwards;
+  background: none;
+  color: var(--accent);
+  -webkit-text-fill-color: currentColor;
 }
-.session-summary-text.typewriter-done {
-  max-width: none;
+.text-reveal-tail {
+  display: contents;
 }
-@keyframes typewriter-reveal {
-  from { max-width: 0; }
-  to   { max-width: var(--tw-width, 1000px); }
+.text-reveal-char {
+  /* Keep inline so newline/space characters still collapse/break naturally
+     inside pre-wrap chat text. transform is not available on inline boxes,
+     so the reveal animates opacity + blur only. */
+  opacity: 1;
+  filter: none;
 }
 .session-summary-placeholder {
   opacity: 0.4;
@@ -556,6 +560,7 @@
   object-fit: contain;
   border-radius: 8px;
   margin-top: 8px;
+  margin-inline: auto;
   display: block;
 }
 .timeline-image-loading,

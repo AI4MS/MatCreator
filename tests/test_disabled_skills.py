@@ -2,14 +2,88 @@ import asyncio
 from types import SimpleNamespace
 
 
+def test_set_disabled_skill_names_updates_graph_nodes(monkeypatch, tmp_path):
+    from know_do_graph import EntryMetadata, EntryType, KnowDoGraph
+    from matcreator import skill
+    from matcreator.knowledge import query
+    from matcreator.knowledge.kdg_memory import is_entry_disabled
+
+    graph = KnowDoGraph(tmp_path / "know-do.db")
+    enabled = graph.add(
+        "enabled-skill",
+        entry_type=EntryType.capability,
+        tags=["matcreator-skill"],
+        metadata=EntryMetadata(custom={}),
+    )
+    disabled = graph.add(
+        "disabled-skill",
+        entry_type=EntryType.capability,
+        tags=["matcreator-skill"],
+        metadata=EntryMetadata(custom={}),
+    )
+    monkeypatch.setattr(query, "_get_kg", lambda: graph)
+    monkeypatch.setattr(
+        skill,
+        "ALL_SKILLS",
+        [SimpleNamespace(name="enabled-skill"), SimpleNamespace(name="disabled-skill")],
+    )
+
+    result = skill.set_disabled_skill_names({"disabled-skill", "unknown-skill"})
+
+    assert result["disabled"] == ["disabled-skill"]
+    assert result["changed"] == 1
+    assert not is_entry_disabled(graph.get(enabled.id))
+    assert is_entry_disabled(graph.get(disabled.id))
+    assert skill.get_disabled_skill_names() == {"disabled-skill"}
+
+
+def test_legacy_config_disabled_skills_migrate_to_graph_once(monkeypatch):
+    from matcreator import config, skill
+
+    legacy_config = {"skills": {"disabled": ["atomic-structure"], "module_root": "/skills"}}
+    saved: list[dict] = []
+    monkeypatch.setattr(config, "load_config", lambda: legacy_config)
+    monkeypatch.setattr(config, "save_config", lambda value: saved.append(value.copy()))
+    monkeypatch.setattr(
+        skill,
+        "set_disabled_skill_names",
+        lambda names: {"disabled": sorted(names), "changed": 1},
+    )
+
+    result = skill.migrate_legacy_disabled_skill_config()
+
+    assert result == {"migrated": True, "disabled": ["atomic-structure"], "changed": 1}
+    assert legacy_config == {"skills": {"module_root": "/skills"}}
+    assert saved
+
+
+def test_empty_legacy_disabled_list_does_not_reenable_graph_nodes(monkeypatch):
+    from matcreator import config, skill
+
+    legacy_config = {"skills": {"disabled": []}}
+    monkeypatch.setattr(config, "load_config", lambda: legacy_config)
+    monkeypatch.setattr(config, "save_config", lambda _value: None)
+    monkeypatch.setattr(
+        skill,
+        "set_disabled_skill_names",
+        lambda _names: (_ for _ in ()).throw(AssertionError("must not synchronize an empty legacy list")),
+    )
+
+    result = skill.migrate_legacy_disabled_skill_config()
+
+    assert result["migrated"] is True
+    assert result["disabled"] == []
+    assert legacy_config == {}
+
+
 def test_executor_skill_toolset_hides_disabled_skills(monkeypatch):
     from matcreator.skill import MatCreatorSkillToolset
 
     enabled_skill = SimpleNamespace(name="enabled-skill")
     disabled_skill = SimpleNamespace(name="disabled-skill")
     monkeypatch.setattr(
-        "matcreator.skill.get_disabled_skills",
-        lambda: ["disabled-skill"],
+        "matcreator.skill.get_disabled_skill_names",
+        lambda: {"disabled-skill"},
     )
 
     toolset = MatCreatorSkillToolset([enabled_skill, disabled_skill])
@@ -23,8 +97,8 @@ def test_run_skill_script_refuses_disabled_skill(monkeypatch):
     from matcreator.tools.workspace_tools import run_skill_script
 
     monkeypatch.setattr(
-        "matcreator.config.get_disabled_skills",
-        lambda: ["disabled-skill"],
+        "matcreator.skill.is_skill_disabled",
+        lambda name: name == "disabled-skill",
     )
 
     result = asyncio.run(

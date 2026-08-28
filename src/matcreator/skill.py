@@ -19,7 +19,7 @@ from google.adk.tools import skill_toolset
 from google.adk.tools.function_tool import FunctionTool
 from .workspace import workspace_skills_dir
 from .tools.workspace_tools import run_skill_script
-from .config import get_disabled_skills, get_planning_skills
+from .config import get_planning_skills
 from .knowledge.kdg_memory import (
     is_entry_disabled,
     is_official_skill_entry,
@@ -207,6 +207,99 @@ def set_unofficial_skill_nodes_disabled(disabled: bool = True) -> dict[str, obje
     }
 
 
+def get_disabled_skill_names() -> set[str]:
+    """Return installed skill names disabled in the Know-Do Graph.
+
+    The graph is the sole runtime source of truth for skill availability.  Use
+    ``iter_entries_including_disabled`` because KDG's normal search APIs may
+    intentionally omit disabled nodes.
+    """
+    from .knowledge.query import _get_kg
+
+    installed_names = {skill.name for skill in ALL_SKILLS}
+    return {
+        entry.title
+        for entry in iter_entries_including_disabled(_get_kg())
+        if "matcreator-skill" in entry.tags
+        and not entry.metadata.custom.get("virtual")
+        and entry.title in installed_names
+        and is_entry_disabled(entry)
+    }
+
+
+def is_skill_disabled(skill_name: str) -> bool:
+    """Return whether the installed skill named *skill_name* is disabled."""
+    return skill_name in get_disabled_skill_names()
+
+
+def set_disabled_skill_names(disabled_skill_names: set[str]) -> dict[str, object]:
+    """Synchronize installed skill-node disabled state with a desired name set.
+
+    This powers the Settings UI.  It deliberately affects only installed,
+    non-virtual skill nodes, leaving manually managed knowledge-only nodes and
+    guides untouched.
+    """
+    from .knowledge.query import _get_kg
+
+    graph = _get_kg()
+    installed_names = {skill.name for skill in ALL_SKILLS}
+    desired = {name for name in disabled_skill_names if name in installed_names}
+    affected: list[str] = []
+    changed: list[str] = []
+    for entry in iter_entries_including_disabled(graph):
+        if (
+            "matcreator-skill" not in entry.tags
+            or entry.metadata.custom.get("virtual")
+            or entry.title not in installed_names
+        ):
+            continue
+        affected.append(entry.id)
+        disabled = entry.title in desired
+        if is_entry_disabled(entry) != disabled:
+            set_entry_disabled(graph, entry.id, disabled)
+            changed.append(entry.id)
+    if changed:
+        graph.refresh()
+    return {
+        "disabled": sorted(desired),
+        "affected": len(affected),
+        "changed": len(changed),
+        "node_ids": affected,
+    }
+
+
+def migrate_legacy_disabled_skill_config() -> dict[str, object]:
+    """Move legacy ``skills.disabled`` config state into graph nodes once.
+
+    Older releases stored availability in config.yaml.  Keep that state when
+    upgrading, then remove the retired key so later graph toggles cannot drift
+    from a second source of truth.
+    """
+    from .config import load_config, save_config
+
+    config = load_config()
+    skill_config = config.get("skills")
+    if not isinstance(skill_config, dict) or "disabled" not in skill_config:
+        return {"migrated": False, "disabled": []}
+    disabled = {
+        str(name)
+        for name in skill_config.pop("disabled") or []
+        if str(name).strip()
+    }
+    if not skill_config:
+        config.pop("skills", None)
+    # An empty legacy list conveys no disabled skill to migrate.  In
+    # particular, do not use it to re-enable graph nodes that were disabled
+    # directly through the graph UI in a previous release.
+    result = (
+        set_disabled_skill_names(disabled)
+        if disabled
+        else {"disabled": [], "affected": 0, "changed": 0, "node_ids": []}
+    )
+    save_config(config)
+    return {"migrated": True, **result}
+
+
 def load_skills() -> list:
     """Load builtin, official, user-global custom, then workspace custom skills.
 
@@ -241,21 +334,42 @@ _DEFAULT_PLANNING_SKILLS = frozenset({"dpa4"})
 
 def _build_planning_skill_names() -> frozenset[str]:
     names: set[str] = set()
-    disabled = set(get_disabled_skills())
     for source in skill_sources():
         for path in _discover_skill_dirs_for_source(source):
-            if path.name not in disabled and path.parent.name in _PLANNING_CATEGORIES:
+            if path.parent.name in _PLANNING_CATEGORIES:
                 names.add(path.name)
     for name in _DEFAULT_PLANNING_SKILLS:
-        if name not in disabled:
-            names.add(name)
+        names.add(name)
     for name in get_planning_skills():
-        if name not in disabled:
-            names.add(name)
+        names.add(name)
     return frozenset(names)
 
 
 PLANNING_SKILL_NAMES: set[str] = set(_build_planning_skill_names())
+
+
+class MatCreatorLoadSkillTool(skill_toolset.LoadSkillTool):
+    """Augment ADK skill loads with metadata-only L3/L4 attachment counts."""
+
+    async def run_async(self, *, args, tool_context):
+        result = await super().run_async(args=args, tool_context=tool_context)
+        if not isinstance(result, dict) or result.get("error"):
+            return result
+
+        skill_name = result.get("skill_name")
+        if not isinstance(skill_name, str):
+            return result
+
+        from .knowledge.query import format_node_context_hint, get_node_context_summary
+
+        context = get_node_context_summary(skill_name)
+        if context is None:
+            return result
+        result["attached_context"] = context
+        hint = format_node_context_hint(context)
+        if hint:
+            result["attached_context_hint"] = hint
+        return result
 
 
 class MatCreatorSkillToolset(skill_toolset.SkillToolset):
@@ -263,8 +377,13 @@ class MatCreatorSkillToolset(skill_toolset.SkillToolset):
 
     def __init__(self, skills: list):
         super().__init__(skills=skills)
-        kept = [t for t in self._tools
-                if t.__class__.__name__ in ('LoadSkillTool', 'LoadSkillResourceTool')]
+        kept = [
+            MatCreatorLoadSkillTool(self)
+            if isinstance(t, skill_toolset.LoadSkillTool)
+            else t
+            for t in self._tools
+            if isinstance(t, (skill_toolset.LoadSkillTool, skill_toolset.LoadSkillResourceTool))
+        ]
         self._tools = [
             #FunctionTool(list_workspace_skills),
             *kept,
@@ -273,16 +392,16 @@ class MatCreatorSkillToolset(skill_toolset.SkillToolset):
 
     def _get_skill(self, skill_name: str):
         skill = super()._get_skill(skill_name)
-        if skill is not None and skill.name in get_disabled_skills():
+        if skill is not None and is_skill_disabled(skill.name):
             return None
         return skill
 
     def _list_skills(self) -> list:
-        disabled = set(get_disabled_skills())
+        disabled = get_disabled_skill_names()
         return [skill for skill in super()._list_skills() if skill.name not in disabled]
 
     async def process_llm_request(self, *, tool_context, llm_request) -> None:
-        # Suppress the default XML skill-list injection; agents use search_skills instead.
+        # Suppress the default XML skill-list injection; agents use graph discovery instead.
         pass
 
 
@@ -446,6 +565,7 @@ def seed_skills_to_graph() -> dict:
                 custom={
                     "managed_by": "matcreator",
                     "kind": "skill",
+                    "description": (skill.description or "").strip(),
                     "skill_source": source_name,
                     "virtual": False,
                     "virtual_reason": None,
@@ -466,6 +586,59 @@ def seed_skills_to_graph() -> dict:
         skill_node_ids[skill.name] = node.id
         seeded += int(created)
         attachments_seeded += len(internal_refs) + len(assets)
+
+    # Older releases could create a second managed node when the original was
+    # disabled, because their upsert lookup only saw enabled nodes.  Collapse
+    # those duplicates before rebuilding dependency edges below.
+    duplicate_groups: dict[str, list] = {}
+    for entry in iter_entries_including_disabled(kg):
+        if (
+            "matcreator-skill" in entry.tags
+            and "managed" in entry.tags
+            and not entry.metadata.custom.get("virtual")
+            and entry.title in active_skill_names
+        ):
+            duplicate_groups.setdefault(entry.title, []).append(entry)
+
+    deduplicated = 0
+    for skill_name, entries in duplicate_groups.items():
+        if len(entries) < 2:
+            continue
+        canonical = min(
+            entries,
+            key=lambda entry: str(
+                getattr(entry.metadata, "timestamp", None)
+                or getattr(entry, "created_at", None)
+                or entry.id
+            ),
+        )
+        duplicates = [entry for entry in entries if entry.id != canonical.id]
+        try:
+            with sqlite3.connect(kg.path) as conn:
+                for duplicate in duplicates:
+                    conn.execute(
+                        "UPDATE edges SET source_id = ? WHERE source_id = ?",
+                        (canonical.id, duplicate.id),
+                    )
+                    conn.execute(
+                        "UPDATE edges SET target_id = ? WHERE target_id = ?",
+                        (canonical.id, duplicate.id),
+                    )
+                conn.commit()
+        except sqlite3.Error as exc:
+            logger.warning("Failed to merge duplicate skill '%s': %s", skill_name, exc)
+            continue
+
+        # A disabled duplicate records an explicit user choice; preserve it on
+        # the canonical node rather than silently re-enabling the skill.
+        if any(is_entry_disabled(entry) for entry in entries) and not is_entry_disabled(canonical):
+            set_entry_disabled(kg, canonical.id, True)
+        for duplicate in duplicates:
+            kg.delete(duplicate.id)
+        skill_node_ids[skill_name] = canonical.id
+        deduplicated += len(duplicates)
+    if deduplicated:
+        kg.refresh()
 
     for guide in ALL_GUIDES:
         _, created = upsert_entry(
@@ -662,6 +835,7 @@ def seed_skills_to_graph() -> dict:
                 )
 
     kg.refresh()
+    migrate_legacy_disabled_skill_config()
     return {
         "status": "ok",
         "seeded": seeded,
@@ -669,6 +843,7 @@ def seed_skills_to_graph() -> dict:
         "edges_created": edges_created,
         "removed": removed,
         "virtualized": virtualized,
+        "deduplicated": deduplicated,
     }
 
 

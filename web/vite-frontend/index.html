@@ -7,7 +7,10 @@
     <link rel="icon" type="image/png" href="/favicon.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Avoid a late fallback-to-web-font swap changing text metrics and shifting the UI.
+         Fonts that arrive during the initial render are still used; slower responses keep
+         the metric-stable system fallback for this page load. -->
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=optional" rel="stylesheet">
     <script type="module" src="/src/main.js"></script>
     <script>
       // Generate rounded favicon via Canvas

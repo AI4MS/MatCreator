@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from ...llm_cards import LLMCard
 from ...skill import ALL_SKILLS_TOOLSET
-from ...knowledge.query import get_related_skills, search_skill_context, search_skills
+from ...knowledge.query import get_related_skills, query_knowledge_graph, read_knowledge_node
 from ...tools.remoteagent_tool import load_remote_a2a_agents
 from ...tools.util_tools import show_artifact, show_plot, show_structure
 from ...tools.workspace_tools import get_user_skills_root, run_bash, run_python
@@ -108,9 +108,9 @@ You are a focused step executor. Execute the single plan step provided in your i
 
 ## Your task
 1. Review `suggested_skills` from your input. Call `load_skill` for each skill you deem
-   relevant to the action. Use `search_skills` to discover additional skills if the
-   suggested list is insufficient. After selecting a skill, use
-   `search_skill_context` to retrieve only its attached L3/L4 guidance.
+   relevant to the action. Use `query_knowledge_graph` to discover additional skills if the
+   suggested list is insufficient. Inspect `load_skill`'s `attached_context`; only
+   when it reports L3/L4 entries, call `read_knowledge_node` to retrieve that guidance.
 2. Decompose task into sub-tasks. Directly execute them (**simple** cases) or **Delegate** them to child executors by calling `run_sub_agent` tool (**complex** cases).
        
 ## Reporting results (REQUIRED)
@@ -288,8 +288,8 @@ def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
         tools=[
             FunctionTool(run_sub_agent),
             FunctionTool(submit_step_result),
-            FunctionTool(search_skills),
-            FunctionTool(search_skill_context),
+            FunctionTool(query_knowledge_graph),
+            FunctionTool(read_knowledge_node),
             FunctionTool(get_related_skills),
             FunctionTool(get_user_skills_root),
             FunctionTool(run_python),

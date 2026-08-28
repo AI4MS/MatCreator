@@ -137,7 +137,10 @@ def find_entry(
     allowed = set(entry_types or EntryType)
     folded = title.strip().casefold()
     best: tuple[float, Entry] | None = None
-    for candidate in iter_entries(graph):
+    # KDG's default list/search APIs may omit native-disabled entries.  They
+    # are still durable nodes and must participate in upserts; otherwise a
+    # seed after disabling a skill creates a same-named enabled duplicate.
+    for candidate in iter_entries_including_disabled(graph):
         if candidate.entry_type not in allowed:
             continue
         ratio = difflib.SequenceMatcher(None, folded, candidate.title.casefold()).ratio()

@@ -11,6 +11,7 @@ from matcreator.agents.execution_agent.step_executor import (
 from matcreator.agents.execution_agent.step_executor_runner import (
     _artifact_allowed_roots,
     _build_step_content,
+    _refresh_skill_registry_after_creation,
     _schedule_step_runner_cleanup,
     _verify_step_result_artifacts,
 )
@@ -145,6 +146,28 @@ def test_success_accepts_existing_file_and_directory_artifacts(tmp_path):
     assert verified.status == "success"
     assert verified.artifacts == [str(file_artifact), str(directory_artifact)]
     assert missing_artifacts == []
+
+
+def test_skill_creation_success_refreshes_the_skill_registry(monkeypatch):
+    expected = {"count": 42, "skills": ["new-skill"]}
+    monkeypatch.setattr(
+        "matcreator.skill.refresh_skills",
+        lambda: expected,
+    )
+
+    assert _refresh_skill_registry_after_creation(["skill-creation"]) == {
+        "status": "ok",
+        **expected,
+    }
+
+
+def test_other_steps_do_not_refresh_the_skill_registry(monkeypatch):
+    monkeypatch.setattr(
+        "matcreator.skill.refresh_skills",
+        lambda: pytest.fail("refresh should only run after skill creation"),
+    )
+
+    assert _refresh_skill_registry_after_creation(["structure-generation"]) is None
 
 
 def test_relative_artifact_path_is_not_treated_as_verified(tmp_path, monkeypatch):

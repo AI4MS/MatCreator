@@ -190,6 +190,24 @@ def test_server_worker_image_uses_deployment_override(monkeypatch, tmp_path):
     assert web_main._worker_supervisor.image == "registry.example/matcreator-worker:v2"
 
 
+def test_session_event_meta_keeps_delegated_events_in_their_user_turn(monkeypatch):
+    web_main = _load_web_main(monkeypatch)
+    events = [
+        {"author": "user", "invocationId": "user-turn"},
+        {"author": "agent", "invocationId": "planner-invocation"},
+        {"author": "agent", "invocationId": "sub-agent-invocation"},
+        {"author": "agent", "invocationId": "tool-invocation"},
+    ]
+    rows = [
+        {"event_timestamp": 10 + index, "event_row_id": 100 + index}
+        for index in range(len(events))
+    ]
+
+    meta = web_main._session_event_meta(events, rows, 0)
+
+    assert [item["turn_id"] for item in meta] == ["10,100"] * len(events)
+
+
 def test_server_worker_shared_mounts_parse_extra_binds(monkeypatch, tmp_path):
     control_home = tmp_path / "control-plane" / ".matcreator"
     control_home.mkdir(parents=True)
@@ -358,6 +376,48 @@ def test_local_mode_reads_session_detail_regardless_of_requested_user(monkeypatc
     assert payload["userId"] == "legacy-display-name"
     assert payload["state"] == {"answer": 42}
     assert payload["events"] == [{"event": "persisted"}]
+    assert payload["pagination"]["has_more"] is False
+    assert payload["pagination"]["next_before"] == ""
+
+    compact = json.loads(asyncio.run(web_main.get_user_session(
+        "current-user", "session-1", compact=True,
+    )).body)
+    assert compact["state"] == {}
+
+
+def test_session_detail_pages_events_in_chronological_order(monkeypatch, tmp_path):
+    web_main = _load_web_main(monkeypatch)
+    db_path = tmp_path / "session.db"
+    _create_session_db(db_path, web_main.APP_NAME)
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            "INSERT INTO events VALUES (?, ?, ?, ?, ?)",
+            [
+                (web_main.APP_NAME, "legacy-display-name", "session-1", json.dumps({"event": "second"}), 2.0),
+                (web_main.APP_NAME, "legacy-display-name", "session-1", json.dumps({"event": "third"}), 3.0),
+                (web_main.APP_NAME, "legacy-display-name", "session-1", json.dumps({"event": "fourth"}), 4.0),
+            ],
+        )
+        conn.commit()
+    monkeypatch.setattr(web_main, "SESSION_DB_PATH", db_path)
+    monkeypatch.setattr(web_main, "_MATCREATOR_MODE", "local")
+
+    latest = json.loads(asyncio.run(web_main.get_user_session("current-user", "session-1", limit=2)).body)
+
+    assert [event["event"] for event in latest["events"]] == ["third", "fourth"]
+    assert latest["pagination"]["has_more"] is True
+    earlier = json.loads(asyncio.run(web_main.get_user_session(
+        "current-user", "session-1", limit=2, before=latest["pagination"]["next_before"],
+    )).body)
+    assert [event["event"] for event in earlier["events"]] == ["persisted", "second"]
+    assert earlier["pagination"]["has_more"] is False
+    assert earlier["pagination"]["next_before"] == ""
+
+    newer = json.loads(asyncio.run(web_main.get_user_session(
+        "current-user", "session-1", limit=2, after=earlier["pagination"]["end_cursor"],
+    )).body)
+    assert [event["event"] for event in newer["events"]] == ["third", "fourth"]
+    assert newer["pagination"]["has_more_after"] is False
 
 
 def test_execution_graph_endpoint_reads_atomic_graph_snapshot(monkeypatch, tmp_path):
