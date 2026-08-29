@@ -4,6 +4,10 @@ import {
   createAssistantMessage,
 } from "../chat/timeline.js";
 import { createMessageRenderScheduler, messageRenderInterval } from "../chat/messageRenderScheduler.js";
+import {
+  initializeRequestLifecycle,
+  markRequestTerminal,
+} from "./requestLifecycle.js";
 import { TranscriptStore } from "./TranscriptStore.js";
 import { VirtualTranscript } from "./VirtualTranscript.js";
 
@@ -16,7 +20,10 @@ export function createSessionRuntime({
     addMessage, addAgentTimelineMessage, addPlanApprovalActions, renderTimeline,
     clearDisclosures: clearChatDisclosures,
   },
-  ui: { updateSendButtonState, renderSessionBanner, refreshSessionFiles, workdirDisplay },
+  ui: {
+    updateSendButtonState, renderSessionBanner, refreshSessionFiles, workdirDisplay,
+    onRequestStateChange,
+  },
   managedRun: { eventsUrl: managedRunEventsUrl },
 }) {
   const pageSize = 40;
@@ -401,10 +408,10 @@ export function createSessionRuntime({
     if (!activeRun?.run_id) return;
     const key = sessionRequestKey(sessionId, owner);
     if (state.activeRequests.get(key)) return;
-    const request = {
+    const request = initializeRequestLifecycle({
       key, sessionId, owner, backendUserId: owner, controller: new AbortController(),
       lastSequence: activeRun.latest_sequence || 0, runId: activeRun.run_id, retryDelayMs: 500,
-    };
+    });
     state.activeRequests.set(key, request);
     updateSendButtonState();
     void streamManagedRunEvents(request);
@@ -488,6 +495,9 @@ export function createSessionRuntime({
               await loadSession(request.sessionId, request.owner, { render: false });
             } else if (envelope.type === "terminal") {
               request.lastSequence = envelope.latest_sequence || request.lastSequence;
+              markRequestTerminal(request, envelope.status);
+              updateSendButtonState();
+              onRequestStateChange?.();
               if (live) {
                 // Flush a final unterminated line for runs recorded by an
                 // older server; current servers publish complete SSE records.

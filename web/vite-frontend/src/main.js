@@ -8,6 +8,10 @@ import { createTimelineArtifactRenderer } from "./features/chat/timelineArtifact
 import { createSessionListController } from "./features/session/sessionList.js";
 import { createSessionDetailsController } from "./features/session/sessionDetails.js";
 import { createSessionRuntime } from "./features/session/runtime.js";
+import {
+  finishRequestCleanup,
+  requestHasActiveRun,
+} from "./features/session/requestLifecycle.js";
 import { createWorkspaceTerminalController } from "./features/workspace/terminal.js";
 import { AgentGraphView, StepExecutionFeed } from "./features/graphs/AgentGraphView.js";
 import { ExecutionPlanView } from "./features/graphs/ExecutionPlanView.js";
@@ -312,7 +316,7 @@ const sessionDetailsController = createSessionDetailsController({
 
 const stepExecutionFeed = new StepExecutionFeed({
   chatArea,
-  isSending: () => Boolean(activeSessionRequest()),
+  isSending: () => requestHasActiveRun(activeSessionRequest()),
   updatePreservingReadingPosition,
   createAgentAvatarEl,
   stepFeedTitle,
@@ -390,8 +394,10 @@ function releaseSessionRequest(request) {
   if (current === request) {
     state.activeRequests.delete(request.key);
   }
+  finishRequestCleanup(request);
   if (request.key === sessionRequestKey()) {
     updateSendButtonState();
+    rerenderSessionList?.();
   }
 }
 
@@ -440,7 +446,7 @@ function updateAgentRunningStatus(phase = "working") {
 
 function updateSendButtonState() {
   const request = activeSessionRequest();
-  const running = Boolean(request);
+  const running = requestHasActiveRun(request);
   // The text presentation can finish before the backend completes its durable
   // bookkeeping. Keep the request lock, but do not present that gap as an
   // active agent response.
@@ -449,16 +455,13 @@ function updateSendButtonState() {
   if (agentRunningIndicator) agentRunningIndicator.setAttribute("aria-hidden", String(!presenting));
   if (!running) updateAgentRunningStatus();
   if (!sendBtn) return;
-  // The upstream stream can still be committing after the visible response
-  // has ended. Keep the request lock (a new run would be rejected), but do
-  // not misrepresent this quiet handoff as an agent that is still running.
-  const finalizing = running && !presenting;
-  sendBtn.disabled = finalizing;
-  sendBtn.textContent = finalizing ? "…" : running ? "■" : "➜";
-  sendBtn.title = finalizing ? "Finalizing response…" : running ? "Stop" : "Send";
+  const queued = Boolean(request?.followupQueued);
+  sendBtn.disabled = queued;
+  sendBtn.textContent = queued ? "…" : running ? "■" : "➜";
+  sendBtn.title = queued ? "Sending after message sync…" : running ? "Stop" : "Send";
   sendBtn.setAttribute("aria-label", sendBtn.title);
-  sendBtn.classList.toggle("is-stopping", running && !finalizing);
-  sendBtn.classList.toggle("is-finalizing", finalizing);
+  sendBtn.classList.toggle("is-stopping", running);
+  sendBtn.classList.toggle("is-finalizing", queued);
 }
 
 function storeSessionSelection(sessionId, owner) {
@@ -925,7 +928,7 @@ const remoteJobsController = createRemoteJobsController({
 });
 
 function sessionDisplayStatus(session, owner) {
-  if (state.activeRequests.get(sessionRequestKey(session.id, owner))) return "running";
+  if (requestHasActiveRun(state.activeRequests.get(sessionRequestKey(session.id, owner)))) return "running";
   if (session.id === state.sessionId && owner === state.activeSessionUserId) {
     const statuses = state.remoteJobs.map((job) => job.status);
     if (statuses.includes("running") || statuses.includes("queued")) return "running";
@@ -1922,6 +1925,7 @@ const sessionRuntime = createSessionRuntime({
     renderSessionBanner,
     renderSessionFilesTree,
     refreshSessionFiles,
+    onRequestStateChange: rerenderSessionList,
     workdirDisplay: document.getElementById("session-workdir-display"),
   },
   managedRun: { eventsUrl: managedRunEventsUrl },
@@ -1969,6 +1973,7 @@ const messageStreamController = createMessageStreamController({
     managedRunEventsUrl,
     shouldRefreshPlanGraphForTool,
     showPlanGraph,
+    onRequestStateChange: rerenderSessionList,
   },
 });
 
@@ -2690,7 +2695,7 @@ layoutController.init();
 // ---------------------------------------------------------------------------
 
 sendBtn.addEventListener("click", () => {
-  if (activeSessionRequest()) {
+  if (requestHasActiveRun(activeSessionRequest())) {
     messageStreamController.stop();
     return;
   }
@@ -2704,7 +2709,7 @@ textInput.addEventListener("keydown", (e) => {
 
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
-    if (activeSessionRequest()) return;
+    if (requestHasActiveRun(activeSessionRequest())) return;
     messageStreamController.send(textInput.value);
   }
 });

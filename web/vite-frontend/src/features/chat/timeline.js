@@ -145,6 +145,25 @@ function comparableSnapshot(text) {
   return String(text || "").replace(/^\s+/, "");
 }
 
+function commonPrefixLength(left, right) {
+  const limit = Math.min(left.length, right.length);
+  let index = 0;
+  while (index < limit && left[index] === right[index]) index += 1;
+  return index;
+}
+
+function isRevisedCumulativeSnapshot(current, incoming) {
+  const currentText = comparableSnapshot(current);
+  const incomingText = comparableSnapshot(incoming);
+  const shorterLength = Math.min(currentText.length, incomingText.length);
+  if (shorterLength < 32 || incomingText.length < currentText.length / 2) return false;
+  // A long common beginning is protocol evidence that `incoming` is a newer
+  // cumulative snapshot with a correction later in the message. Ordinary
+  // token deltas do not repeat an anchored paragraph-sized prefix.
+  const requiredPrefix = Math.min(96, Math.max(24, Math.ceil(shorterLength / 4)));
+  return commonPrefixLength(currentText, incomingText) >= requiredPrefix;
+}
+
 /**
  * A provider can mark the whole partial stream as `thought`, then partition
  * the authoritative event into reasoning followed by visible Markdown. Treat
@@ -167,7 +186,11 @@ function reconcileFinalTextSnapshot(message, authorStreams, parts) {
 
   const streamed = comparableSnapshot(streams.map((stream) => stream.text).join(""));
   const finalized = comparableSnapshot(blocks.map((block) => block.text).join(""));
-  if (!streamed || !finalized || (!streamed.startsWith(finalized) && !finalized.startsWith(streamed))) {
+  const sameSnapshot = streamed.startsWith(finalized)
+    || finalized.startsWith(streamed)
+    || streamed.endsWith(finalized)
+    || isRevisedCumulativeSnapshot(streamed, finalized);
+  if (!streamed || !finalized || !sameSnapshot) {
     return null;
   }
 
@@ -319,6 +342,12 @@ export function mergeReplayedText(current, incoming) {
   const replayCandidate = incoming.replace(/^\s+/, "");
   if (replayCandidate !== incoming && replayCandidate.startsWith(current)) return replayCandidate;
   if (replayCandidate !== incoming && current.endsWith(replayCandidate)) return current;
+  // Some providers periodically replace an in-progress cumulative snapshot
+  // after correcting Markdown structure (most visibly an unfinished table or
+  // formula delimiter). The new snapshot shares a substantial anchored
+  // prefix but is not a byte-for-byte extension, so appending it would render
+  // the whole answer twice inside one Markdown element.
+  if (isRevisedCumulativeSnapshot(current, replayCandidate)) return replayCandidate;
   // Find the longest suffix/prefix overlap in linear time. The previous
   // descending slice/endsWith loop became quadratic for long streamed code
   // blocks when a provider delivered partially overlapping chunks.

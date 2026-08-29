@@ -100,6 +100,43 @@ test("merges streaming snapshots without repeating replayed content", () => {
   );
 });
 
+test("replaces a corrected cumulative Markdown snapshot instead of appending it", () => {
+  const introduction = [
+    "✅ **Execution complete!** All parallel nodes finished successfully.",
+    "",
+    "## Execution Summary",
+    "",
+    "| Node | Label | Formulas Printed | Status |",
+  ].join("\n");
+  const incomplete = `${introduction}\n|------|----------------|----|\n| basic | Algebra | 3 formulas |`;
+  const corrected = `${introduction}\n|------|-------|------------------|--------|\n| basic | Algebra | 3 formulas | ✅ Success |`;
+
+  assert.equal(mergeReplayedText(incomplete, corrected), corrected);
+});
+
+test("keeps one text item when a partial Markdown snapshot is structurally corrected", () => {
+  const message = createAssistantMessage({ id: "assistant:corrected-markdown" });
+  const introduction = "## Execution Summary\n\nThe parallel formula tasks completed successfully.\n\n";
+  const incomplete = `${introduction}| Node | Formula | Status |\n|------|----------|\n| A | $E=mc^2$ |`;
+  const corrected = `${introduction}| Node | Formula | Status |\n|------|---------|--------|\n| A | $E=mc^2$ | ✅ |`;
+
+  applyAssistantMessageEvent(message, {
+    author: "agent", partial: true, content: { parts: [{ text: incomplete }] },
+  });
+  applyAssistantMessageEvent(message, {
+    author: "agent", partial: true, content: { parts: [{ text: corrected }] },
+  });
+  applyAssistantMessageEvent(message, {
+    author: "agent", partial: false, content: { parts: [{ text: corrected }] },
+  });
+
+  const textItems = message.items.filter((item) => item.type === "text");
+  assert.equal(textItems.length, 1);
+  assert.equal(textItems[0].text, corrected);
+  assert.equal(textItems[0].text.indexOf("## Execution Summary"), 0);
+  assert.equal(textItems[0].text.indexOf("## Execution Summary", 1), -1);
+});
+
 test("keeps text and reasoning as separate chronological entries", () => {
   const timeline = [];
   upsertTimelineText(timeline, "Answer");

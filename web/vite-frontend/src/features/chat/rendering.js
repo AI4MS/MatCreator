@@ -1,4 +1,6 @@
 import { marked } from "marked";
+import markedKatex from "marked-katex-extension";
+import "katex/dist/katex.min.css";
 import { sanitizeRenderedHtml } from "../../shared/rendering/sanitizeHtml.js";
 
 const BOX_RE = /[┌┐└┘├┤┬┴┼│━─]/;
@@ -18,6 +20,16 @@ const BOTTOM_ATTACH_THRESHOLD = 80;
 // short replies retain the normal, immediately visible chat treatment.
 const DEFERRED_MARKDOWN_ELEMENT_LIMIT = 300;
 const CHAT_RESIZE_MOTION_MS = 240;
+
+// Keep TeX parsing in Marked's token pipeline so formula delimiters inside
+// fenced/inline code remain literal. HTML-only output keeps the generated DOM
+// compact while retaining KaTeX's visual rendering.
+marked.use(markedKatex({
+  throwOnError: false,
+  strict: "ignore",
+  output: "html",
+  nonStandard: true,
+}));
 
 export function createChatRenderer({ chatArea, bottomOverlay = null }) {
   const markdownCache = new Map();
@@ -85,11 +97,16 @@ export function createChatRenderer({ chatArea, bottomOverlay = null }) {
   }
 
   function markdownElementCount(html) {
-    // The generated HTML is sanitized before reaching this point. Counting
-    // opening tags is cheap and accurately captures the DOM pressure from
-    // lists and tables, unlike a source-character threshold (a long code
-    // block is one inexpensive DOM subtree).
-    return (String(html).match(/<(?!\/)[a-z][^>]*>/gi) || []).length;
+    // The generated HTML is sanitized before reaching this point. KaTeX uses
+    // many nested spans for one visual formula, so treating those implementation
+    // nodes as transcript content would incorrectly collapse short answers.
+    // Count only nodes outside a formula, where lists and tables still reflect
+    // the real DOM pressure that deferred mounting is meant to control.
+    const template = document.createElement("template");
+    template.innerHTML = String(html);
+    return [...template.content.querySelectorAll("*")]
+      .filter((element) => !element.closest(".katex"))
+      .length;
   }
 
   function setMarkdownContent(element, text, {
