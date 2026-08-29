@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 import uuid
 from collections import deque
@@ -11,6 +12,33 @@ from typing import Any
 
 ACTIVE_RUN_STATUSES = frozenset({"starting", "running", "cancelling"})
 TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "cancelled"})
+_SSE_RECORD_END = re.compile(r"\r?\n\r?\n")
+
+
+class SseRecordBuffer:
+    """Incrementally frame an SSE byte stream into complete records."""
+
+    def __init__(self) -> None:
+        self.buffer = ""
+
+    def feed(self, chunk: str) -> list[str]:
+        self.buffer += chunk
+        records: list[str] = []
+        while match := _SSE_RECORD_END.search(self.buffer):
+            records.append(self.buffer[:match.end()])
+            self.buffer = self.buffer[match.end():]
+        return records
+
+    def flush(self) -> list[str]:
+        if not self.buffer:
+            return []
+        record = self.buffer
+        self.buffer = ""
+        return [record]
+
+
+def is_sse_done(record: str) -> bool:
+    return any(line.strip() == "data: [DONE]" for line in record.splitlines())
 
 
 @dataclass

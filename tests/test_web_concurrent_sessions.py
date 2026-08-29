@@ -106,19 +106,25 @@ def test_sse_request_uses_captured_session_context() -> None:
     assert "sessionRuntime.loadSession(request.sessionId, request.owner" in content
 
 
-def test_completed_request_releases_composer_before_refreshes() -> None:
+def test_completed_request_handoffs_live_turn_before_durable_refresh() -> None:
     content = _message_stream_js()
+    runtime = _runtime_js()
     send_message = content[content.index("async function send(message)"):]
     finally_block = send_message[send_message.index("} finally {"):]
 
-    assert finally_block.index("releaseSessionRequest(request);") < finally_block.index(
-        "await Promise.allSettled(["
-    )
+    assert "const durableReplyReady = await reconcileAfterTransition();" in finally_block
+    assert "if (durableReplyReady) await sessionRuntime.handoffLiveTurn(request);" in finally_block
+    assert "else if (request.stopStatus !== \"waiting\") releaseSessionRequest(request);" in finally_block
     assert 'terminalStatus = event.status;' in send_message
     assert 'updateAgentRunningStatus("finalizing_plan");' in send_message
     assert 'finalizing_plan: ["Plan validated — preparing it for review…", "thinking"]' in _main_js()
-    assert send_message.index("releaseSessionRequest(request);") < send_message.index("revealPlanApproval();")
-    assert finally_block.index("revealPlanApproval();") < finally_block.index("await Promise.allSettled([")
+    assert "releaseSessionRequest(request);\n              stepExecutionFeed.finishLiveTurn();" not in send_message
+    assert finally_block.index("revealPlanApproval();") < finally_block.index("const durableReplyReady = await reconcileAfterTransition();")
+    handoff = runtime[runtime.index("async function handoffLiveTurn(request)"):runtime.index("function resetTranscript()")]
+    assert handoff.index("viewport.clearLive();") < handoff.index("releaseSessionRequest(request);")
+    assert "const isVisible = sessionRequestKey(request.sessionId, request.owner) === sessionRequestKey();" in handoff
+    assert "refreshRows(activeContext, { follow: true });" in handoff
+    assert "await loadSession(request.sessionId, request.owner);" not in handoff
 
 
 def test_roadmap_auto_opens_at_completed_plan_handoff() -> None:
@@ -186,12 +192,12 @@ def test_stop_feedback_uses_managed_run_status_and_survives_session_refresh() ->
     assert '["completed", "failed", "cancelled"].includes(run.status)' in content
     assert "request.stopStatus = \"stopped\";\n        releaseSessionRequest(request);" in content
     assert "reloadSessionSnapshot({ handoff: true })" in content
-    assert "await Promise.allSettled([" in content
+    assert "const backgroundReconciliation = Promise.allSettled([" in content
     assert "renderStopStatus(request);" in content
     assert "cancellation_requested" not in content
 
     finally_block = content[content.index("} finally {"):]
-    assert 'if (request.stopStatus !== "waiting") releaseSessionRequest(request);' in finally_block
+    assert 'else if (request.stopStatus !== "waiting") releaseSessionRequest(request);' in finally_block
 
 
 def test_stop_and_plan_refreshes_preserve_open_node_dialogs() -> None:
@@ -203,7 +209,7 @@ def test_stop_and_plan_refreshes_preserve_open_node_dialogs() -> None:
     assert "getItemKey: (index) => this.rows[index]?.id" in (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "session" / "VirtualTranscript.js").read_text(encoding="utf-8")
     assert "openState.set(details.dataset.disclosureKey, details.open);" in disclosures
     assert "captureDisclosureState()" in graph
-    assert "details.open = isRunning && (userChoice === undefined ? true : userChoice);" in graph
+    assert "details.open = isRunning && userChoice === true;" in graph
 
 
 def test_bottom_attachment_and_node_toggle_use_one_scroll_policy() -> None:
@@ -295,8 +301,8 @@ def test_plain_text_blocks_keep_history_order_and_stable_identity() -> None:
     assert 'if (last?.type === "text")' in text_upsert
     assert 'timelineId: nextTimelineItemId(timeline, "text")' in text_upsert
     assert "timeline.splice" not in text_upsert
-    assert 'applyAssistantMessagePart(assistantMessage, part);' in streams
-    assert 'applyAssistantMessagePart(message, part);' in runtime
+    assert "applyAssistantMessageEvent(assistantMessage, event)" in streams
+    assert "applyAssistantMessageEvent(message, event);" in runtime
     assert 'let accumulatedText = "";' not in streams
     assert 'let accumulatedText = "";' not in runtime
     assert '${item.timelineId || "text:legacy"}:content' in main
@@ -306,6 +312,7 @@ def test_chat_messages_use_one_model_scheduler_and_stable_regions() -> None:
     main = _main_js()
     streams = _message_stream_js()
     runtime = _runtime_js()
+    graph = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "graphs" / "AgentGraphView.js").read_text(encoding="utf-8")
     rendering = (Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "chat" / "rendering.js").read_text(encoding="utf-8")
 
     assert "createAssistantMessage({" in streams
@@ -317,14 +324,23 @@ def test_chat_messages_use_one_model_scheduler_and_stable_regions() -> None:
     assert "request.presentationFinished" not in streams
     assert "_timelinePresentationFinished" not in main
     assert "new MutationObserver" not in main[main.index("function addAgentTimelineMessage("):main.index("function addPlanApprovalActions(")]
-    assert "inner.appendChild(liveDelegationGroup);" in main
-    assert "latestDelegationSegmentKey(segments)" in main
-    assert "container.insertBefore(delegationGroup, following);" in main
+    assert "stepFeedLiveHost: inner" in main
+    assert 'segment.type === "delegation"' in main
+    assert "stepExecutionFeed.bindRootHost(row.host, executorNodeId(call));" in main
+    assert "latestDelegationSegmentKey(segments)" not in main
+    assert "container.insertBefore(delegationGroup, following);" not in main
+    assert "previous.element.replaceWith(element);" in main
     render_segment = main[main.index("function renderTimelineSegment("):main.index("function renderTimeline(")]
-    assert "liveDelegationGroup" not in render_segment
+    assert "createDelegationGroupShell" in render_segment
     assert "setStreamText" not in rendering
     assert "restoreActiveLiveView(context);" in runtime
     assert "stepExecutionFeed.resumeLiveTurn(" in runtime
+    assert "this._rootHosts = new Map();" in graph
+    assert "bindRootHost(hostEl, executionKey" in graph
+    assert 'bubble?.querySelector(":scope > .step-feed-child-section")?.remove();' in graph
+    assert graph.index('if (!section) {') < graph.index('const childHost = section.querySelector(":scope > .step-feed-child-list");')
+    create_activity = main[main.index("function createAgentActivity("):main.index("function segmentArtifacts(")]
+    assert 'wireTimelineDetails(activity, `${options.activityKey}:container`, false);' in create_activity
 
 
 def test_agent_graph_stops_animation_and_uses_one_update_transport() -> None:

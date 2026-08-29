@@ -46,6 +46,16 @@ export function isExecutorLauncherTool(name) {
   return ["run_flash_step", "run_node_executor", "run_sub_agent"].includes(name || "");
 }
 
+/**
+ * Only root executor launches own rows in the message-level Delegated tasks
+ * group. `run_sub_agent` is rendered by StepExecutionFeed beneath the parent
+ * executor card, so giving it another group row renders the same sub-agent
+ * twice.
+ */
+export function isDelegatedTaskRootTool(name) {
+  return ["run_flash_step", "run_node_executor"].includes(name || "");
+}
+
 export function executorNodeId(call) {
   const input = call?.input || {};
   return input.node_id || input.step_id || input.step_number || "";
@@ -59,22 +69,81 @@ export function delegationToolCalls(items) {
   return deduplicateDelegationToolCalls(items
     .filter((item) => item.type === "activity_action")
     .flatMap((action) => action.toolCalls || [])
-    .filter((call) => isExecutorLauncherTool(call.name)));
+    .filter((call) => isDelegatedTaskRootTool(call.name)));
 }
 
 /**
- * One message owns one persistent Delegated tasks region. Place that region
- * after the latest activity segment which launched delegated work so later
- * assistant prose remains chronologically below it.
+ * Project the canonical event timeline into renderable segments without
+ * changing its order. Delegations are first-class segments at the invocation
+ * position; graph updates later populate that fixed slot instead of moving a
+ * message-level task container through newer text and activity.
  */
-export function latestDelegationSegmentKey(segments) {
-  let key = null;
-  for (const segment of segments || []) {
-    if (segment?.type === "activity" && delegationToolCalls(segment.items || []).length) {
-      key = segment.key;
+export function timelineSegments(timeline) {
+  const segments = [];
+  let activityItems = [];
+  const flushActivity = () => {
+    if (!activityItems.length) return;
+    segments.push({
+      type: "activity",
+      key: `activity:${activityItems[0].timelineId}`,
+      items: activityItems,
+      revision: activityItems.map((item) => `${item.timelineId}:${item.renderRevision || 0}`).join("|"),
+    });
+    activityItems = [];
+  };
+  const appendDelegation = (item, call, callSlot) => {
+    const activityId = item.activityId || null;
+    const delegationItem = { ...item, timelineId: callSlot, toolCalls: [call] };
+    const revision = `${callSlot}:${item.renderRevision || 0}`;
+    const previous = segments.at(-1);
+    if (activityId && previous?.type === "delegation" && previous.activityId === activityId) {
+      previous.items.push(delegationItem);
+      previous.calls.push(call);
+      previous.revision += `|${revision}`;
+      return;
+    }
+    segments.push({
+      type: "delegation",
+      key: `delegation:${activityId || callSlot}`,
+      activityId,
+      items: [delegationItem],
+      calls: [call],
+      revision,
+    });
+  };
+
+  for (const item of timeline || []) {
+    if (item.type === "reasoning") {
+      activityItems.push(item);
+      continue;
+    }
+    if (item.type === "activity_action") {
+      const calls = item.toolCalls || [];
+      calls.forEach((call, callIndex) => {
+        const callSlot = calls.length === 1
+          ? item.timelineId
+          : `${item.timelineId}:tool:${call.timelineId || call.id || callIndex}`;
+        if (isDelegatedTaskRootTool(call.name)) {
+          flushActivity();
+          appendDelegation(item, call, callSlot);
+        } else if (!isExecutorLauncherTool(call.name)) {
+          activityItems.push({ ...item, timelineId: callSlot, toolCalls: [call] });
+        }
+      });
+      continue;
+    }
+    flushActivity();
+    if (item.type === "text") {
+      segments.push({
+        type: "text",
+        key: `text:${item.timelineId}`,
+        items: [item],
+        revision: `${item.timelineId}:${item.renderRevision || 0}`,
+      });
     }
   }
-  return key;
+  flushActivity();
+  return segments;
 }
 
 export function formatToolDuration(toolCall) {

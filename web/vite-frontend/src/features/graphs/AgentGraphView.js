@@ -1457,8 +1457,7 @@ export class StepExecutionFeed {
     this._liveAnchorEl = null;
     this._liveContainerEl = null;
     this._liveStartedAt = null;
-    this._liveToolHosts = new Map();
-    this._liveFallbackHost = null;
+    this._rootHosts = new Map();
     this._stepById = new Map();
     this._childNodes = new Map();
     this._elapsedTimer = null;
@@ -1466,14 +1465,17 @@ export class StepExecutionFeed {
 
   reset({ preserveDisclosures = false } = {}) {
     this._stopElapsedTimer();
+    // `_cards` is the ownership registry, not merely a render cache. Never
+    // forget a card while leaving its DOM node behind: a later graph replay
+    // would otherwise create a second bubble for the same graph node.
+    for (const card of new Set(this._cards.values())) card.remove();
     this._cards.clear();
     if (!preserveDisclosures) this._disclosures.clear();
     this._highlightedId = null;
     this._liveAnchorEl = null;
     this._liveContainerEl = null;
     this._liveStartedAt = null;
-    this._liveToolHosts.clear();
-    this._liveFallbackHost = null;
+    this._rootHosts.clear();
     this._stepById = new Map();
     this._childNodes = new Map();
   }
@@ -1485,18 +1487,15 @@ export class StepExecutionFeed {
   startLiveTurn(anchorEl, startedAt = Date.now(), hostEl = null) {
     this._liveAnchorEl = anchorEl || null;
     this._liveStartedAt = startedAt;
-    this._liveContainerEl = hostEl || document.createElement("div");
-    this._liveToolHosts.clear();
-    this._liveFallbackHost = null;
+    this._liveContainerEl = document.createElement("div");
+    this._rootHosts.clear();
 
-    // Step cards belong to an assistant message's Delegated tasks group.  Do
-    // not fall back to chatArea here: a missing or detached host used to turn
-    // these cards into top-level chat rows, visually detaching them from the
-    // assistant turn that owns them.  Appending to a detached explicit host is
-    // safe; it will become visible once its owning message is mounted.
-    if (!hostEl) {
-      console.warn("StepExecutionFeed started without a delegated-task host; cards will remain detached.");
-    }
+    // `hostEl` is the message timeline, used only to recover already-rendered
+    // invocation slots. A graph node without a launcher slot stays detached;
+    // guessing a visible fallback position is what made tasks jump later.
+    hostEl?.querySelectorAll?.(".delegation-task-host[data-step-execution-key]").forEach((host) => {
+      if (host.dataset.stepExecutionKey) this._rootHosts.set(host.dataset.stepExecutionKey, host);
+    });
 
     return this._liveContainerEl;
   }
@@ -1505,52 +1504,27 @@ export class StepExecutionFeed {
     if (!hostEl) return;
     this._liveAnchorEl = null;
     this._liveStartedAt = startedAt;
-    this._liveContainerEl = hostEl;
-    this._liveToolHosts.clear();
-    this._liveFallbackHost = hostEl;
-    const group = hostEl.closest?.(".delegation-group");
-    group?.querySelectorAll?.(".delegation-task-host[data-step-execution-key]").forEach((host) => {
-      if (host.dataset.stepExecutionKey) this._liveToolHosts.set(host.dataset.stepExecutionKey, host);
+    this._liveContainerEl = document.createElement("div");
+    this._rootHosts.clear();
+    hostEl.querySelectorAll?.(".delegation-task-host[data-step-execution-key]").forEach((host) => {
+      if (host.dataset.stepExecutionKey) this._rootHosts.set(host.dataset.stepExecutionKey, host);
     });
-    group?.querySelectorAll?.(".step-feed-message[data-step-node-id]").forEach((card) => {
+    hostEl.querySelectorAll?.(".step-feed-message[data-step-node-id]").forEach((card) => {
       if (card._stepNode) this._cards.set(card.dataset.stepNodeId, card);
     });
     this._syncElapsedTimer();
   }
 
-  attachLiveToolHost(hostEl, nodeId = "") {
-    if (!hostEl) return false;
-    const key = String(nodeId || "");
-    if (!key) return false;
-
-    // A turn can launch several independent executors. Associate each live
-    // node with its own host instead of moving one shared region between
-    // calls, which previously made every card land in the final action.
-    this._liveToolHosts.set(key, hostEl);
-    const node = [...this._stepById.values()].find((item) => this._nodeExecutionKey(item) === key);
+  bindRootHost(hostEl, executionKey = "") {
+    const key = String(executionKey || "");
+    if (!hostEl || !key) return false;
+    hostEl.dataset.stepExecutionKey = key;
+    this._rootHosts.set(key, hostEl);
+    const node = [...this._stepById.values()].find((candidate) => (
+      this._nodeExecutionKey(candidate) === key || String(candidate.id || "").endsWith(`__node_${key}`)
+    ));
     const card = node && this._cards.get(node.id);
-    if (node && card) {
-      this._insertIntoLiveContainer(hostEl, card, node);
-    }
-    return true;
-  }
-
-  attachLiveFallbackHost(hostEl) {
-    if (!hostEl) return false;
-    // One fallback host is enough for a live turn. Keep the first rendered
-    // Delegated tasks group as the stable destination until a timeline redraw
-    // replaces its DOM; exact node-to-tool hosts always take precedence.
-    if (this._liveFallbackHost?.isConnected) return true;
-    this._liveFallbackHost = hostEl;
-
-    // A graph update can arrive before its matching function-call event. Move
-    // cards that were temporarily placed in the outer live region into the
-    // delegation group as soon as that group becomes available.
-    for (const node of this._stepById.values()) {
-      if (!this.isRootStep(node) || this._liveToolHosts.has(this._nodeExecutionKey(node))) continue;
-      const card = this._cards.get(node.id);
-      if (card) this._insertIntoLiveContainer(hostEl, card, node);
-    }
+    if (node && card) this._insertIntoLiveContainer(hostEl, card, node);
     return true;
   }
 
@@ -1558,38 +1532,16 @@ export class StepExecutionFeed {
     this._liveAnchorEl = null;
     this._liveContainerEl = null;
     this._liveStartedAt = null;
-    this._liveToolHosts.clear();
-    this._liveFallbackHost = null;
+    this._rootHosts.clear();
   }
 
   update(graphData, patch = {}) {
     if (!graphData || typeof graphData.nodes !== "object") return;
-    const hasLiveDestination = this._liveToolHosts.size > 0 || this._activeLiveContainer();
-    if (patch.isDelta && !patch.layoutChanged) {
-      const changedSteps = [];
-      for (const id of patch.changedNodeIds || []) {
-        const node = graphData.nodes[id];
-        if (node?.type !== "step") continue;
-        if (hasLiveDestination && !this._isLiveStep(node)) continue;
-        const previous = this._stepById.get(id);
-        this._stepById.set(id, node);
-        const siblings = this._childNodes.get(previous?.parent_id);
-        const siblingIndex = siblings?.findIndex((item) => item.id === id) ?? -1;
-        if (siblingIndex >= 0) siblings[siblingIndex] = node;
-        changedSteps.push(node);
-      }
-      if (changedSteps.length) {
-        this._updatePreservingReadingPosition(() => {
-          changedSteps.forEach((node) => {
-            const card = this._cards.get(node.id);
-            if (card?.isConnected) this._renderCardIfChanged(card, node);
-            else if (this.isRootStep(node)) this._upsert(node);
-          });
-        });
-      }
-      this._syncElapsedTimer();
-      return;
-    }
+    const hasLiveDestination = Boolean(this._liveStartedAt);
+    // Rebuild the small hierarchy index for every graph snapshot, including
+    // deltas. Parent nodes and children often arrive in separate updates; the
+    // former incremental path updated node values but not topology, leaving a
+    // child rendered once as a root and again beneath its eventual parent.
     const steps = Object.values(graphData.nodes)
       .filter((node) => node.type === "step")
       .filter((node) => !hasLiveDestination || this._isLiveStep(node))
@@ -1600,14 +1552,6 @@ export class StepExecutionFeed {
       });
     this.setHierarchy(steps);
     const rootSteps = steps.filter((node) => this.isRootStep(node));
-
-    const seen = new Set(steps.map((node) => node.id));
-    for (const nodeId of this._cards.keys()) {
-      if (!seen.has(nodeId)) {
-        this._cards.delete(nodeId);
-        this._disclosures.deletePrefix(`step:${nodeId}:`);
-      }
-    }
 
     this._updatePreservingReadingPosition(() => {
       rootSteps.forEach((node) => this._upsert(node));
@@ -1636,24 +1580,19 @@ export class StepExecutionFeed {
     return !this._stepById.has(node?.parent_id);
   }
 
-  _activeLiveContainer() {
-    return this._liveContainerEl && this._liveContainerEl.isConnected
-      ? this._liveContainerEl
-      : null;
-  }
-
   _nodeExecutionKey(node) {
     const input = node?.input || {};
     return String(input.node_id || input.step_id || node?.id || "");
   }
 
-  _liveHostForNode(node) {
-    const host = this._liveToolHosts.get(this._nodeExecutionKey(node));
+  _rootHostForNode(node) {
+    const directKey = this._nodeExecutionKey(node);
+    let host = this._rootHosts.get(directKey);
+    if (!host && node?.id) {
+      const matchingKey = [...this._rootHosts.keys()].find((key) => String(node.id).endsWith(`__node_${key}`));
+      if (matchingKey) host = this._rootHosts.get(matchingKey);
+    }
     return host?.isConnected ? host : null;
-  }
-
-  _liveFallbackContainer() {
-    return this._liveFallbackHost?.isConnected ? this._liveFallbackHost : null;
   }
 
   _isLiveStep(node) {
@@ -1676,15 +1615,11 @@ export class StepExecutionFeed {
   }
 
   _upsert(node) {
-    let outer = this._cards.get(node.id);
-    const nextSortTime = this._stepSortTime(node);
-    if (!outer || !this._chatArea.contains(outer)) {
-      outer = this._createCard(node);
-      this._cards.set(node.id, outer);
-      this._placeCard(outer, node);
-    } else if (outer.dataset.stepStartTime !== String(nextSortTime)) {
-      this._placeCard(outer, node);
-    }
+    const outer = this._ensureCard(node);
+    // Placement is idempotent and is part of reconciliation, not creation.
+    // A node can become a child (or a root) after an incremental graph update;
+    // checking only DOM presence left it in its former host indefinitely.
+    this._placeCard(outer, node);
     this._renderCardIfChanged(outer, node);
   }
 
@@ -1693,13 +1628,9 @@ export class StepExecutionFeed {
       console.warn("StepExecutionFeed received a static card without a delegated-task host.");
       return null;
     }
-    let outer = this._cards.get(node.id);
-    if (!outer || !container.contains(outer)) {
-      outer = this._createCard(node);
-      this._cards.set(node.id, outer);
-    }
-    outer.dataset.stepStartTime = String(this._stepSortTime(node));
-    container.appendChild(outer);
+    const outer = this._ensureCard(node);
+    outer.classList.remove("step-feed-child-message");
+    this._insertIntoLiveContainer(container, outer, node);
     this._renderCardIfChanged(outer, node);
     this._syncElapsedTimer();
     return outer;
@@ -1707,14 +1638,14 @@ export class StepExecutionFeed {
 
   _placeCard(outer, node) {
     outer.classList.remove("step-feed-child-message");
-    const liveContainer = this._liveHostForNode(node)
-      || this._liveFallbackContainer()
-      || this._activeLiveContainer();
-    if (liveContainer) {
-      this._insertIntoLiveContainer(liveContainer, outer, node);
+    const rootHost = this._rootHostForNode(node);
+    if (rootHost) {
+      this._insertIntoLiveContainer(rootHost, outer, node);
       return;
     }
     if (this._isSending() && this._liveContainerEl) {
+      // This holding element is deliberately detached. The function-call
+      // event will bind the node to its permanent chronological slot.
       this._insertIntoLiveContainer(this._liveContainerEl, outer, node);
       return;
     }
@@ -1738,14 +1669,18 @@ export class StepExecutionFeed {
   }
 
   _upsertNested(node, container, ancestors) {
-    let outer = this._cards.get(node.id);
-    if (!outer) {
-      outer = this._createCard(node);
-      this._cards.set(node.id, outer);
-    }
+    const outer = this._ensureCard(node);
     outer.classList.add("step-feed-child-message");
     this._insertIntoLiveContainer(container, outer, node);
     this._renderCardIfChanged(outer, node, ancestors);
+    return outer;
+  }
+
+  _ensureCard(node) {
+    const nodeId = String(node?.id || "");
+    let outer = this._cards.get(nodeId) || null;
+    if (!outer) outer = this._createCard(node);
+    this._cards.set(nodeId, outer);
     return outer;
   }
 
@@ -1786,20 +1721,39 @@ export class StepExecutionFeed {
     const newTime = this._stepSortTime(node);
     outer.dataset.stepStartTime = String(newTime);
 
+    let followingCard = null;
     for (const el of [...container.children]) {
       if (el === outer) continue;
       if (!el.dataset.stepStartTime) continue;
       if (newTime < Number(el.dataset.stepStartTime)) {
-        container.insertBefore(outer, el);
-        return;
+        followingCard = el;
+        break;
       }
     }
-    container.appendChild(outer);
+    if (followingCard) {
+      // Avoid reinserting a card that is already in its sorted position. In a
+      // live message this method runs with every text render; needless DOM
+      // moves restart the card's entry animation and look like a flash.
+      if (outer.parentElement !== container || outer.nextElementSibling !== followingCard) {
+        container.insertBefore(outer, followingCard);
+      }
+      return;
+    }
+
+    // The card is already correctly placed after all earlier cards. Leave it
+    // alone so streamed assistant prose does not repeatedly remount it.
+    if (outer.parentElement !== container) container.appendChild(outer);
   }
 
   _createCard(node) {
     const outer = document.createElement("div");
     outer.className = "message agent-message step-feed-message is-entering";
+    const clearEntryAnimation = (event) => {
+      if (event.target !== outer) return;
+      outer.classList.remove("is-entering");
+      outer.removeEventListener("animationend", clearEntryAnimation);
+    };
+    outer.addEventListener("animationend", clearEntryAnimation);
     outer.dataset.stepNodeId = node.id;
     outer.dataset.stepStartTime = node.start_time ? String(new Date(node.start_time).getTime()) : "";
     outer.appendChild(this._createAgentAvatarEl());
@@ -1830,7 +1784,6 @@ export class StepExecutionFeed {
     outer.classList.toggle("step-feed-highlight", this._highlightedId === node.id);
 
     const bubble = outer.querySelector(".step-feed-bubble");
-    bubble?.querySelector(":scope > .step-feed-child-section")?.remove();
 
     const details = outer.querySelector(".step-feed-details");
     const cardKey = `step:${node.id}:card`;
@@ -1902,22 +1855,28 @@ export class StepExecutionFeed {
     const childNodes = (this._childNodes.get(node.id) || [])
       .filter((child) => !ancestors.has(child.id));
     if (childNodes.length) {
-      const section = document.createElement("div");
-      section.className = "step-feed-section step-feed-child-section";
-      const label = document.createElement("div");
-      label.className = "step-feed-section-title";
+      let section = bubble?.querySelector(":scope > .step-feed-child-section");
+      if (!section) {
+        section = document.createElement("div");
+        section.className = "step-feed-section step-feed-child-section";
+        const label = document.createElement("div");
+        label.className = "step-feed-section-title";
+        const childHost = document.createElement("div");
+        childHost.className = "step-feed-child-list";
+        section.append(label, childHost);
+        bubble?.appendChild(section);
+      }
+      const label = section.querySelector(":scope > .step-feed-section-title");
       label.textContent = `Sub-executors (${childNodes.length})`;
-      const childHost = document.createElement("div");
-      childHost.className = "step-feed-child-list";
-      section.append(label, childHost);
+      const childHost = section.querySelector(":scope > .step-feed-child-list");
 
       childNodes.forEach((child) => {
         const nextAncestors = new Set(ancestors);
         nextAncestors.add(child.id);
         this._upsertNested(child, childHost, nextAncestors);
       });
-
-      bubble?.appendChild(section);
+    } else {
+      bubble?.querySelector(":scope > .step-feed-child-section")?.remove();
     }
 
     const activityItems = this._activityStream(node);

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ast
 import importlib.util
 import json
 import sqlite3
@@ -91,6 +92,44 @@ def _load_web_main_server(monkeypatch, control_home: Path, data_root: Path, host
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def test_graph_filter_uses_durable_launcher_ids_not_child_step_numbers(monkeypatch, tmp_path):
+    del monkeypatch, tmp_path
+    source_path = Path(__file__).resolve().parents[1] / "web" / "main.py"
+    module = ast.parse(source_path.read_text(encoding="utf-8"))
+    filter_node = next(
+        node for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_filter_agent_graph_nodes"
+    )
+    namespace: dict[str, object] = {}
+    exec(compile(ast.Module(body=[filter_node], type_ignores=[]), str(source_path), "exec"), namespace)
+    filter_graph_nodes = namespace["_filter_agent_graph_nodes"]
+    graph = {
+        "nodes": {
+            "execution__node_relax": {
+                "id": "execution__node_relax", "type": "step", "parent_id": "execution",
+                "input": {"node_id": "relax"},
+            },
+            "execution__node_relax__node_1": {
+                "id": "execution__node_relax__node_1", "type": "step", "parent_id": "execution__node_relax",
+                "input": {"node_id": "1", "step_number": 1},
+            },
+            "execution__node_static": {
+                "id": "execution__node_static", "type": "step", "parent_id": "execution",
+                "input": {"node_id": "static"},
+            },
+            "execution__node_static__node_1": {
+                "id": "execution__node_static__node_1", "type": "step", "parent_id": "execution__node_static",
+                "input": {"node_id": "1", "step_number": 1},
+            },
+        },
+        "edges": [],
+    }
+
+    filtered = filter_graph_nodes(graph, ["relax"])
+    assert set(filtered["nodes"]) == {"execution__node_relax", "execution__node_relax__node_1"}
+    assert filter_graph_nodes(graph, ["1"])["nodes"] == {}
 
 
 def _create_session_db(path: Path, app_name: str) -> None:

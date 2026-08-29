@@ -25,6 +25,7 @@ The vite dev server proxies /api/* here and /run_sse + /apps/* to the ADK server
 from __future__ import annotations
 
 import asyncio
+import codecs
 import fcntl
 import json
 import logging
@@ -113,7 +114,12 @@ from matcreator.control_plane.evaluation_manager import EvaluationManager  # noq
 from matcreator.control_plane.evaluation_runtime import RuntimeOutcome, RuntimeSpec  # noqa: E402
 from matcreator.control_plane.evaluation_service import EvaluationService  # noqa: E402
 from matcreator.control_plane.evaluations import EvaluationStore  # noqa: E402
-from matcreator.control_plane.runs import ManagedRun, ManagedRunRegistry  # noqa: E402
+from matcreator.control_plane.runs import (  # noqa: E402
+    ManagedRun,
+    ManagedRunRegistry,
+    SseRecordBuffer,
+    is_sse_done,
+)
 from matcreator.control_plane.worker_supervisor import WorkerSupervisor  # noqa: E402
 from matcreator.control_plane.session_question_generator import (  # noqa: E402
     CallableSessionQuestionGenerator,
@@ -1130,6 +1136,8 @@ async def _produce_managed_run(run: ManagedRun, payload: dict[str, Any], target_
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
     }
+    records = SseRecordBuffer()
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     async with httpx.AsyncClient(timeout=None) as client:
         async with client.stream(
             method="POST",
@@ -1144,7 +1152,14 @@ async def _produce_managed_run(run: ManagedRun, payload: dict[str, Any], target_
                 if run.status == "cancelling":
                     raise asyncio.CancelledError()
                 if chunk:
-                    await _run_registry.publish(run, chunk.decode("utf-8", errors="replace"))
+                    for record in records.feed(decoder.decode(chunk)):
+                        await _run_registry.publish(run, record)
+                        if is_sse_done(record):
+                            return
+            for record in records.feed(decoder.decode(b"", final=True)):
+                await _run_registry.publish(run, record)
+            for record in records.flush():
+                await _run_registry.publish(run, record)
 
 
 async def _start_managed_run(
@@ -1840,21 +1855,25 @@ def _filter_agent_graph_nodes(data: dict, node_ids: list[str]) -> dict:
             children.setdefault(parent_id, []).append(graph_node_id)
         if node.get("type") != "step":
             continue
+        parent = all_nodes.get(parent_id) if isinstance(parent_id, str) else None
+        # Launcher calls start top-level executor steps. Nested children are
+        # returned with that root's subtree; matching a child directly would
+        # make its parent-local identity compete with unrelated siblings.
+        if isinstance(parent, dict) and parent.get("type") == "step":
+            continue
         node_input = node.get("input") if isinstance(node.get("input"), dict) else {}
         stable_ids = {
             str(value).strip()
             for value in (
                 node_input.get("node_id"),
                 node_input.get("step_id"),
-                node_input.get("step_number"),
             )
             if value is not None and str(value).strip()
         }
-        legacy_graph_id_match = any(
-            graph_node_id == requested_id or graph_node_id.endswith(f"__node_{requested_id}")
-            for requested_id in wanted
-        )
-        if wanted & stable_ids or legacy_graph_id_match:
+        # `step_number` is local to a parent executor (many unrelated child
+        # tasks are numbered 1), so it cannot identify a transcript launch.
+        # Match only a durable node/step ID, or an explicit full graph ID.
+        if wanted & stable_ids or graph_node_id in wanted:
             included.add(graph_node_id)
 
     # A matched executor card owns all of its nested subagent cards.  Include

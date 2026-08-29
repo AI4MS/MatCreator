@@ -1,5 +1,5 @@
 import {
-  applyAssistantMessagePart,
+  applyAssistantMessageEvent,
   completeAssistantMessage,
   createAssistantMessage,
 } from "./timeline.js";
@@ -233,9 +233,8 @@ export function createMessageStreamController({
         return;
       }
       try {
-        for (const part of JSON.parse(data)?.content?.parts || []) {
-          const normalized = applyAssistantMessagePart(assistantMessage, part);
-          if (!normalized) continue;
+        const event = JSON.parse(data);
+        for (const { part, normalized } of applyAssistantMessageEvent(assistantMessage, event)) {
           if (part.thought) {
             updateAgentRunningStatus("thinking");
           } else if (normalized.type === "function_call") {
@@ -281,7 +280,10 @@ export function createMessageStreamController({
       // ADK may close the managed SSE stream before its session database has
       // received the final events. Do not let such an incomplete snapshot
       // erase the optimistic user message and already-streamed agent reply.
-      const restored = await sessionRuntime.loadSession(request.sessionId, request.owner, { render: false });
+      // For the final handoff, load the durable row into the transcript store
+      // while the live request still owns visibility. Runtime filtering keeps
+      // that row hidden until ownership is swapped synchronously below.
+      const restored = await sessionRuntime.loadSession(request.sessionId, request.owner, { render: handoff });
       if (newerRequestIsActive()) return;
       const events = restored?.events || [];
       // Always identify the most recent matching user event. `findIndex`
@@ -292,10 +294,10 @@ export function createMessageStreamController({
       const hasPersistedReply = userEventIndex >= 0 && events.slice(userEventIndex + 1)
         .some((event) => event?.author !== "user" && (event.content?.parts || []).length);
 
-      if (handoff && hasPersistedReply) {
-        await sessionRuntime.loadSession(request.sessionId, request.owner);
-        return true;
-      }
+      // The caller performs the visible handoff.  Keeping this probe
+      // render-free is essential: it must never mount persisted Markdown
+      // while the live timeline still owns this assistant turn.
+      if (handoff && hasPersistedReply) return true;
       if (handoff && !userMessage.isConnected
         && sessionRequestKey(request.sessionId, request.owner) === sessionRequestKey()) {
         sessionRuntime.getLiveHost().prepend(userMessage);
@@ -351,7 +353,6 @@ export function createMessageStreamController({
             if (event.status === "failed") throw new Error(event.error || "Agent run failed");
             if (event.status === "completed") {
               void finishLivePresentation();
-              releaseSessionRequest(request);
               stepExecutionFeed.finishLiveTurn();
               revealPlanApproval();
             }
@@ -368,7 +369,6 @@ export function createMessageStreamController({
       // A cancelled browser subscription can finish before the managed run
       // does. Keep the composer locked until cancellation polling observes a
       // terminal run, otherwise a new send would clear the cancellation flag.
-      if (request.stopStatus !== "waiting") releaseSessionRequest(request);
       stepExecutionFeed.finishLiveTurn();
       revealPlanApproval();
       // The final affected-message pass is the handoff boundary. Durable
@@ -380,12 +380,15 @@ export function createMessageStreamController({
       // These are independent reconciliation tasks. They keep the durable
       // session, roadmap, agent graph, and files current, but none is required
       // before the user can act on a completed plan.
-      await Promise.allSettled([
+      const backgroundReconciliation = Promise.allSettled([
         agentGraph._poll(request.sessionId),
         planGraph._poll(request.sessionId),
         refreshSessionFiles(request.sessionId, request.owner),
-        reconcileAfterTransition(),
       ]);
+      const durableReplyReady = await reconcileAfterTransition();
+      if (durableReplyReady) await sessionRuntime.handoffLiveTurn(request);
+      else if (request.stopStatus !== "waiting") releaseSessionRequest(request);
+      await backgroundReconciliation;
       agentGraph.stopPolling();
       planGraph.stopPolling();
       // A session snapshot replaces the chat DOM. Restore the stop indicator

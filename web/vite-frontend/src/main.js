@@ -19,7 +19,6 @@ import { mountOrbitalAgentIndicator } from "./components/mountOrbitalAgentIndica
 import { createDisclosureController } from "./features/ui/disclosureState.js";
 import {
   activityToolCalls,
-  delegationToolCalls,
   executorNodeId,
   formatAgentDuration,
   formatToolDuration,
@@ -27,8 +26,8 @@ import {
   getPlotPaths,
   getStructurePaths,
   isExecutorLauncherTool,
-  latestDelegationSegmentKey,
   normalizeAgentTimestamp,
+  timelineSegments,
   toolStatusIcon,
 } from "./features/chat/timelinePresentation.js";
 import "./styles/index.css";
@@ -1330,9 +1329,9 @@ function createActivityAction(action, wireTimelineDetails, { isNew = false, incl
   return details;
 }
 
-function createDelegationGroupShell({ isNew = false, live = false } = {}) {
+function createDelegationGroupShell({ isNew = false } = {}) {
   const group = document.createElement("section");
-  group.className = `delegation-group${live ? " step-feed-live-delegation" : ""}${isNew ? " is-entering" : ""}`;
+  group.className = `delegation-group${isNew ? " is-entering" : ""}`;
   const header = document.createElement("div");
   header.className = "delegation-group-header";
   const title = document.createElement("span");
@@ -1346,7 +1345,6 @@ function createDelegationGroupShell({ isNew = false, live = false } = {}) {
   const list = document.createElement("div");
   list.className = "delegation-group-list";
   group.appendChild(list);
-  group._delegationRows = new Map();
   return { group, list, meta };
 }
 
@@ -1356,7 +1354,6 @@ function reconcileDelegationGroup(group, calls, { live = false } = {}) {
   const rows = group._delegationRows || new Map();
   group._delegationRows = rows;
   const running = calls.filter((call) => call.status === "running").length;
-  meta.textContent = `${calls.length} task${calls.length === 1 ? "" : "s"}${running ? ` · ${running} running` : ""}`;
   const liveKeys = new Set();
   let insertionPoint = list.firstElementChild;
   calls.forEach((call) => {
@@ -1369,19 +1366,17 @@ function reconcileDelegationGroup(group, calls, { live = false } = {}) {
       task.dataset.delegationKey = key;
       const host = document.createElement("div");
       host.className = "step-feed-inline-region delegation-task-host";
-      host.dataset.stepInlineHost = key;
+      host.dataset.stepExecutionKey = String(executorNodeId(call) || "");
       task.appendChild(host);
       row = { task, host };
       rows.set(key, row);
     }
-    row.host.dataset.stepExecutionKey = String(executorNodeId(call) || "");
     if (row.task !== insertionPoint) list.insertBefore(row.task, insertionPoint);
     insertionPoint = row.task.nextElementSibling;
-
     if (Array.isArray(call.stepNodes) && call.stepNodes.length) {
       call.stepNodes.forEach((node) => stepExecutionFeed.appendStatic(node, row.host));
     } else if (live) {
-      stepExecutionFeed.attachLiveToolHost(row.host, executorNodeId(call));
+      stepExecutionFeed.bindRootHost(row.host, executorNodeId(call));
     }
   });
   for (const [key, row] of rows) {
@@ -1389,7 +1384,8 @@ function reconcileDelegationGroup(group, calls, { live = false } = {}) {
     row.task.remove();
     rows.delete(key);
   }
-  group.hidden = calls.length === 0 && !list.querySelector(".step-feed-message");
+  meta.textContent = `${calls.length} task${calls.length === 1 ? "" : "s"}${running ? ` · ${running} running` : ""}`;
+  group.hidden = calls.length === 0;
 }
 
 function createAgentActivity(items, wireTimelineDetails, options) {
@@ -1418,7 +1414,12 @@ function createAgentActivity(items, wireTimelineDetails, options) {
   summary.append(title, meta);
   activity.appendChild(summary);
 
-  wireTimelineDetails(activity, `${options.activityKey}:container`, !completed);
+  // Reasoning is supporting detail, not a second assistant answer.  Keeping
+  // it expanded during streaming displayed the token-level thought stream
+  // directly above the Markdown response and looked like duplicated content.
+  // The running state remains visible in the summary; readers can explicitly
+  // open the activity when they want the detail.
+  wireTimelineDetails(activity, `${options.activityKey}:container`, false);
   if (completed) activity.open = false;
   let body = null;
   const mountBody = () => {
@@ -1473,40 +1474,8 @@ function createAgentActivity(items, wireTimelineDetails, options) {
   return activity;
 }
 
-function timelineSegments(timeline) {
-  const segments = [];
-  let activityItems = [];
-  const flushActivity = () => {
-    if (!activityItems.length) return;
-    segments.push({
-      type: "activity",
-      key: `activity:${activityItems[0].timelineId}`,
-      items: activityItems,
-      revision: activityItems.map((item) => `${item.timelineId}:${item.renderRevision || 0}`).join("|"),
-    });
-    activityItems = [];
-  };
-  for (const item of timeline) {
-    if (item.type === "activity_action" || item.type === "reasoning") {
-      activityItems.push(item);
-      continue;
-    }
-    flushActivity();
-    if (item.type === "text") {
-      segments.push({
-        type: "text",
-        key: `text:${item.timelineId}`,
-        items: [item],
-        revision: `${item.timelineId}:${item.renderRevision || 0}`,
-      });
-    }
-  }
-  flushActivity();
-  return segments;
-}
-
 function segmentArtifacts(segment, claimedPlotPaths) {
-  if (segment.type !== "activity") return { plotPaths: [], structurePaths: [] };
+  if (segment.type !== "activity" && segment.type !== "delegation") return { plotPaths: [], structurePaths: [] };
   const calls = segment.items
     .filter((item) => item.type === "activity_action")
     .flatMap((action) => action.toolCalls || []);
@@ -1544,6 +1513,19 @@ function renderTimelineSegment(segment, context) {
     return wrapper;
   }
 
+  if (segment.type === "delegation") {
+    const { group } = createDelegationGroupShell({
+      isNew: !context.previousActivityItemIds.has(segment.items[0].timelineId),
+    });
+    reconcileDelegationGroup(group, segment.calls, { live: !context.completed });
+    wrapper.appendChild(group);
+    context.artifacts.plotPaths.forEach((path) => wrapper.appendChild(createTimelineImage(path)));
+    if (context.artifacts.structurePaths.length) {
+      wrapper.appendChild(createStructureViewButtonGroup(context.artifacts.structurePaths));
+    }
+    return wrapper;
+  }
+
   const activityKey = `activity:${segment.items[0].timelineId}`;
   const activity = createAgentActivity(segment.items, context.wireTimelineDetails, {
     activityKey,
@@ -1563,7 +1545,7 @@ function renderTimelineSegment(segment, context) {
 // regions. The timeline controls the slot's chronological position, while the
 // message view permanently owns its DOM node and delegated-task cards.
 function renderTimeline(view, message, shownPlotPaths = null) {
-  const { timelineElement: container, delegationGroup, element: agentMessage } = view;
+  const { timelineElement: container, element: agentMessage } = view;
   const timeline = message.items;
   const disclosures = chatDisclosureController;
   const messageKey = message.id;
@@ -1581,9 +1563,10 @@ function renderTimeline(view, message, shownPlotPaths = null) {
     // once a running Node has become completed but remains visibly open.
     const previousSegments = container._timelineSegments || new Map();
     const previousActivityItemIds = container._activityItemIds || new Set();
-    const currentActivityItemIds = new Set(timeline
-      .filter((item) => item.type === "activity_action" || item.type === "reasoning")
-      .map((item) => item.timelineId));
+    const segments = timelineSegments(timeline);
+    const currentActivityItemIds = new Set(segments
+      .filter((segment) => segment.type === "activity" || segment.type === "delegation")
+      .flatMap((segment) => segment.items.map((item) => item.timelineId)));
     const externalPlotPaths = container._externalPlotPaths
       || new Set(shownPlotPaths ? [...shownPlotPaths] : []);
     container._externalPlotPaths = externalPlotPaths;
@@ -1591,11 +1574,6 @@ function renderTimeline(view, message, shownPlotPaths = null) {
     const visiblePlotPaths = new Set();
     const nextSegments = new Map();
     let insertionPoint = container.firstElementChild;
-    const skipDelegationSlot = () => {
-      if (insertionPoint === delegationGroup) insertionPoint = insertionPoint.nextElementSibling;
-    };
-    skipDelegationSlot();
-    const segments = timelineSegments(timeline);
     const completed = message.lifecycle === "completed";
     for (const [segmentIndex, segment] of segments.entries()) {
       const artifacts = segmentArtifacts(segment, claimedPlotPaths);
@@ -1617,6 +1595,11 @@ function renderTimeline(view, message, shownPlotPaths = null) {
             : "",
         });
       }
+      if (!element && previous?.element && segment.type === "delegation") {
+        element = previous.element;
+        const group = element.querySelector(".delegation-group");
+        if (group) reconcileDelegationGroup(group, segment.calls, { live: !completed });
+      }
       if (!element) {
         if (previous?.element) disclosures.capture(previous.element);
         element = renderTimelineSegment(segment, {
@@ -1628,6 +1611,13 @@ function renderTimeline(view, message, shownPlotPaths = null) {
           completed,
           deferMarkdown: completed && !view.live,
         });
+        // Activity segments are rebuilt as their reasoning/tool content
+        // changes. Replace one in place so its permanent Delegated tasks
+        // sibling is not pulled out and appended again on every update.
+        if (previous?.element?.parentElement === container) {
+          if (insertionPoint === previous.element) insertionPoint = element;
+          previous.element.replaceWith(element);
+        }
       } else {
         element.querySelectorAll("details[data-disclosure-key]").forEach((details) => {
           liveKeys.add(details.dataset.disclosureKey);
@@ -1635,7 +1625,6 @@ function renderTimeline(view, message, shownPlotPaths = null) {
       }
       if (element !== insertionPoint) container.insertBefore(element, insertionPoint);
       insertionPoint = element.nextElementSibling;
-      skipDelegationSlot();
       nextSegments.set(segment.key, { element, signature });
     }
     for (const [key, previous] of previousSegments) {
@@ -1643,25 +1632,12 @@ function renderTimeline(view, message, shownPlotPaths = null) {
         previous.element.remove();
       }
     }
-    reconcileDelegationGroup(delegationGroup, delegationToolCalls(timeline), {
-      live: message.lifecycle !== "completed",
-    });
-    const delegationAnchor = nextSegments.get(latestDelegationSegmentKey(segments))?.element || null;
-    if (delegationAnchor) {
-      const following = delegationAnchor.nextElementSibling;
-      if (following !== delegationGroup) container.insertBefore(delegationGroup, following);
-    } else if (delegationGroup.parentElement !== container || delegationGroup.nextElementSibling) {
-      // Before the matching function-call event arrives, graph-first cards use
-      // the end of this message as a temporary fallback position.
-      container.appendChild(delegationGroup);
-    }
     disclosures.prunePrefix(disclosurePrefix, liveKeys);
     container._plotPaths = visiblePlotPaths;
     container._activityItemIds = currentActivityItemIds;
     container._timelineSegments = nextSegments;
     visiblePlotPaths.forEach((path) => shownPlotPaths?.add(path));
-    const hasContent = nextSegments.size > 0
-      || Boolean(delegationGroup.querySelector(".step-feed-message"));
+    const hasContent = nextSegments.size > 0;
     agentMessage.classList.toggle("is-pending", !hasContent && message.lifecycle === "created");
     if (hasContent) agentMessage.classList.remove("is-waiting");
   };
@@ -1682,18 +1658,12 @@ function addAgentTimelineMessage(message, shownPlotPaths = null, msgIndex, conta
   const inner = document.createElement("div");
   inner.className = "timeline-container";
   outer.dataset.readingAnchor = `message:${message.id}`;
-  const { group: liveDelegationGroup, list: liveDelegationList } = createDelegationGroupShell({ live: true });
-  const stepFeedLiveHost = document.createElement("div");
-  stepFeedLiveHost.className = "step-feed-live-region delegation-fallback-host";
-  stepFeedLiveHost.dataset.stepLiveRegion = "true";
-  liveDelegationList.appendChild(stepFeedLiveHost);
   const duration = document.createElement("div");
   duration.className = "agent-bubble-duration";
   duration.setAttribute("aria-live", "off");
   const meta = document.createElement("div");
   meta.className = "agent-bubble-meta";
   meta.appendChild(duration);
-  inner.appendChild(liveDelegationGroup);
   bubble.appendChild(inner);
 
   const startedAt = normalizeAgentTimestamp(message.startedAt ?? timing.startedAt);
@@ -1730,8 +1700,7 @@ function addAgentTimelineMessage(message, shownPlotPaths = null, msgIndex, conta
   const view = {
     element: outer,
     timelineElement: inner,
-    delegationGroup: liveDelegationGroup,
-    stepFeedLiveHost,
+    stepFeedLiveHost: inner,
     finishDuration,
     finishLiveActivity,
     live: Boolean(timing.live),
@@ -1940,7 +1909,6 @@ const sessionRuntime = createSessionRuntime({
   timeline: {
     chatArea,
     stepExecutionFeed,
-    isExecutorLauncherTool,
     getFunctionResponse,
     displayStoredUserText: displayMessageFromStoredUserText,
     addMessage,
