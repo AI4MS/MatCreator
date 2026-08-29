@@ -54,9 +54,10 @@ class FakeElement {
 
 function createFakeDom() {
   let timerId = 0;
+  let currentTime = 0;
   const timers = new Map();
   const view = {
-    performance: { now: () => 0 },
+    performance: { now: () => currentTime },
     setTimeout(callback, delay) {
       const id = ++timerId;
       timers.set(id, { callback, delay });
@@ -80,7 +81,24 @@ function createFakeDom() {
       return new FakeElement(name, document);
     },
   };
-  return { document, timers };
+  function runFrame(at) {
+    currentTime = at;
+    const entry = [...timers.entries()].find(([, timer]) => timer.frame);
+    assert.ok(entry, `expected a queued animation frame at ${at}ms`);
+    const [id, timer] = entry;
+    timers.delete(id);
+    timer.callback(at);
+  }
+  return { document, timers, runFrame };
+}
+
+function findByClass(element, className) {
+  if ((element.getAttribute?.("class") || "").split(" ").includes(className)) return element;
+  for (const child of element.children) {
+    const match = findByClass(child, className);
+    if (match) return match;
+  }
+  return null;
 }
 
 test("renders once per state and cleans up its active timer", () => {
@@ -110,5 +128,36 @@ test("renders once per state and cleans up its active timer", () => {
 
   indicator.unmount();
   assert.equal(target.children.length, 0);
+  assert.equal(timers.size, 0);
+});
+
+test("runs dwell, coupled ripple, and continuous orbital morph on one frame clock", () => {
+  const { document, timers, runFrame } = createFakeDom();
+  const target = new FakeElement("div", document);
+  const indicator = createOrbitalAgentIndicator(target, { state: "thinking" });
+  const svg = target.children[0];
+  const outline = findByClass(svg, "orbital-agent-indicator__outline");
+  const ripple = findByClass(svg, "orbital-agent-indicator__ripple--1");
+  const density = findByClass(svg, "orbital-agent-indicator__density");
+  const initialPath = outline.getAttribute("d");
+
+  assert.ok(outline);
+  assert.ok(density, "the animated density is clipped inside the orbital");
+  assert.equal(timers.size, 1, "the choreography uses one animation-frame loop");
+
+  runFrame(4200); // dwell -> pre-transition
+  runFrame(4560); // strongest part of the pre-transition disturbance
+  assert.notEqual(outline.getAttribute("d"), initialPath);
+  assert.ok(Number(ripple.getAttribute("stroke-opacity")) > 0);
+
+  runFrame(4920); // pre-transition -> morph
+  runFrame(5140); // midpoint of the fast continuous morph
+  assert.notEqual(outline.getAttribute("d"), initialPath);
+
+  runFrame(5360); // settle on p or d; either must differ from initial s
+  assert.notEqual(outline.getAttribute("d"), initialPath);
+  assert.equal(timers.size, 1);
+
+  indicator.unmount();
   assert.equal(timers.size, 0);
 });
