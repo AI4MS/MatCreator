@@ -161,3 +161,41 @@ test("runs dwell, coupled ripple, and continuous orbital morph on one frame cloc
   indicator.unmount();
   assert.equal(timers.size, 0);
 });
+
+test("keeps the centre-crossing d orbital symmetric across both axes", () => {
+  const originalRandom = Math.random;
+  Math.random = () => 0.999;
+  const { document, runFrame } = createFakeDom();
+  const target = new FakeElement("div", document);
+  const indicator = createOrbitalAgentIndicator(target, { state: "thinking" });
+
+  try {
+    runFrame(4200); // select d and enter ripple
+    runFrame(4920); // enter morph
+    runFrame(5360); // settle on d
+
+    const outline = findByClass(target.children[0], "orbital-agent-indicator__outline");
+    const values = outline.getAttribute("d").match(/-?\d*\.?\d+/g).map(Number);
+    const endpoints = [[values[0], values[1]]];
+    for (let index = 6; index < values.length; index += 6) {
+      endpoints.push([values[index], values[index + 1]]);
+    }
+    const radii = endpoints.map(([x, y]) => Math.hypot(x - 50, y - 50));
+
+    assert.ok(Math.min(...radii) < 0.01, "the four lobes meet at the centre");
+    assert.ok(Math.max(...radii) > 41, "the lobes still reach the outer orbit");
+    endpoints.forEach(([x, y]) => {
+      const hasHorizontalReflection = endpoints.some(([otherX, otherY]) => (
+        Math.abs(otherX - x) < 0.01 && Math.abs(otherY - (100 - y)) < 0.01
+      ));
+      const hasVerticalReflection = endpoints.some(([otherX, otherY]) => (
+        Math.abs(otherX - (100 - x)) < 0.01 && Math.abs(otherY - y) < 0.01
+      ));
+      assert.ok(hasHorizontalReflection, `missing horizontal reflection of ${x},${y}`);
+      assert.ok(hasVerticalReflection, `missing vertical reflection of ${x},${y}`);
+    });
+  } finally {
+    indicator.unmount();
+    Math.random = originalRandom;
+  }
+});

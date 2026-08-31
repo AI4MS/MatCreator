@@ -1,14 +1,16 @@
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const TAU = Math.PI * 2;
 
-// All three orbitals deliberately use the same eight cubic Bezier segments.
-// Their corresponding coordinates can therefore be treated as samples of one
-// parametric curve and interpolated without a path-morphing dependency.
-const ORBITALS = {
-  s: "M 50 10 C 61 10 71 16 78 25 C 85 34 88 42 88 50 C 88 58 85 66 78 75 C 71 84 61 90 50 90 C 39 90 29 84 22 75 C 15 66 12 58 12 50 C 12 42 15 34 22 25 C 29 16 39 10 50 10 Z",
-  p: "M 50 50 C 50 36 57 20 70 20 C 83 20 90 34 90 50 C 90 66 83 80 70 80 C 57 80 50 64 50 50 C 50 64 43 80 30 80 C 17 80 10 66 10 50 C 10 34 17 20 30 20 C 43 20 50 36 50 50 Z",
-  d: "M 50 50 C 35 42 20 22 50 8 C 80 22 65 42 50 50 C 58 35 78 20 92 50 C 78 80 58 65 50 50 C 65 58 80 78 50 92 C 20 78 35 58 50 50 C 42 65 22 80 8 50 C 22 20 42 35 50 50 Z",
-};
+// Every orbital comes from one weighted polar equation:
+// r(theta) = radius * (base + twoLobe*|cos(theta)| + fourLobe*|cos(2theta)|).
+// The p/d presets are two/four-petal rose curves. They meet at the centre but
+// retain horizontal and vertical reflection symmetry, unlike the old pinwheel.
+const ORBITAL_PARAMETERS = Object.freeze({
+  s: Object.freeze({ radius: 40, twoLobe: 0, fourLobe: 0 }),
+  p: Object.freeze({ radius: 42, twoLobe: 1, fourLobe: 0 }),
+  d: Object.freeze({ radius: 42, twoLobe: 0, fourLobe: 1 }),
+});
+const CURVE_SEGMENTS = 16;
 
 const ACTIVE_STATES = new Set(["thinking", "searching", "computing"]);
 const VALID_STATES = new Set(["idle", ...ACTIVE_STATES, "done"]);
@@ -54,49 +56,97 @@ function smootherstep(progress) {
   return value ** 3 * (value * (value * 6 - 15) + 10);
 }
 
-function pathNumbers(path) {
-  return path.match(/-?\d*\.?\d+/g).map(Number);
+function interpolateParameters(from, to, progress) {
+  const eased = smootherstep(progress);
+  const fromParameters = ORBITAL_PARAMETERS[from];
+  const toParameters = ORBITAL_PARAMETERS[to];
+  return Object.fromEntries(Object.keys(fromParameters).map((name) => [
+    name,
+    fromParameters[name] + (toParameters[name] - fromParameters[name]) * eased,
+  ]));
 }
 
-const PATH_POINTS = Object.fromEntries(
-  Object.entries(ORBITALS).map(([name, path]) => [name, pathNumbers(path)]),
+function orbitalPoint(parameters, angle, disturbance = null) {
+  const { radius, twoLobe, fourLobe } = parameters;
+  const base = 1 - twoLobe - fourLobe;
+  const cos1 = Math.cos(angle);
+  const cos2 = Math.cos(2 * angle);
+  const shape = base + twoLobe * Math.abs(cos1) + fourLobe * Math.abs(cos2);
+  const shapeDerivative = (
+    -twoLobe * Math.sin(angle) * Math.sign(cos1)
+    -2 * fourLobe * Math.sin(2 * angle) * Math.sign(cos2)
+  );
+  let radialDistance = radius * shape;
+  let radialDerivative = radius * shapeDerivative;
+
+  if (disturbance) {
+    const { amplitude, phase } = disturbance;
+    const wave = (
+      Math.cos(4 * angle) * Math.sin(phase * 7 + 0.65)
+      + 0.42 * Math.cos(8 * angle) * Math.sin(phase * 11 - 0.35)
+    );
+    const waveDerivative = (
+      -4 * Math.sin(4 * angle) * Math.sin(phase * 7 + 0.65)
+      -3.36 * Math.sin(8 * angle) * Math.sin(phase * 11 - 0.35)
+    );
+    radialDistance += amplitude * shape * wave;
+    radialDerivative += amplitude * (shapeDerivative * wave + shape * waveDerivative);
+  }
+
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  return {
+    x: 50 + radialDistance * cos,
+    y: 50 + radialDistance * sin,
+    dx: radialDerivative * cos - radialDistance * sin,
+    dy: radialDerivative * sin + radialDistance * cos,
+  };
+}
+
+// Convert the polar equation and its analytical tangent into a closed cubic
+// Bezier path. All presets use the same segment count, keeping every frame
+// smooth and directly controlled by the parameters above.
+function orbitalPath(parameters, disturbance = null) {
+  const step = TAU / CURVE_SEGMENTS;
+  const tangentScale = (4 / 3) * Math.tan(step / 4);
+  const tangentInset = step * 0.0001;
+  const startAngle = -Math.PI / 2;
+  const start = orbitalPoint(parameters, startAngle, disturbance);
+  let path = `M ${start.x.toFixed(2)} ${start.y.toFixed(2)}`;
+
+  for (let index = 0; index < CURVE_SEGMENTS; index += 1) {
+    const fromAngle = startAngle + index * step;
+    const toAngle = fromAngle + step;
+    const from = orbitalPoint(parameters, fromAngle, disturbance);
+    const to = orbitalPoint(parameters, toAngle, disturbance);
+    // Use one-sided tangents so both sides of an |cos| zero keep their own
+    // direction. That creates a symmetric centre cusp instead of a swirl.
+    const fromTangent = orbitalPoint(parameters, fromAngle + tangentInset, disturbance);
+    const toTangent = orbitalPoint(parameters, toAngle - tangentInset, disturbance);
+    path += ` C ${(from.x + fromTangent.dx * tangentScale).toFixed(2)} ${(from.y + fromTangent.dy * tangentScale).toFixed(2)}`;
+    path += ` ${(to.x - toTangent.dx * tangentScale).toFixed(2)} ${(to.y - toTangent.dy * tangentScale).toFixed(2)}`;
+    path += ` ${to.x.toFixed(2)} ${to.y.toFixed(2)}`;
+  }
+  return `${path} Z`;
+}
+
+const ORBITALS = Object.fromEntries(
+  Object.entries(ORBITAL_PARAMETERS).map(([name, parameters]) => [name, orbitalPath(parameters)]),
 );
 
-function serializePath(points) {
-  let result = `M ${points[0].toFixed(2)} ${points[1].toFixed(2)}`;
-  for (let index = 2; index < points.length; index += 6) {
-    result += ` C ${points.slice(index, index + 6).map((value) => value.toFixed(2)).join(" ")}`;
-  }
-  return `${result} Z`;
-}
-
 function interpolatePath(from, to, progress) {
-  const eased = smootherstep(progress);
-  const fromPoints = PATH_POINTS[from];
-  const toPoints = PATH_POINTS[to];
-  return serializePath(fromPoints.map((value, index) => value + (toPoints[index] - value) * eased));
+  return orbitalPath(interpolateParameters(from, to, progress));
 }
 
-// A radial travelling wave perturbs every point/control point coherently. The
-// sin(pi*p) envelope guarantees an exact, continuous join at both ends.
+// The pre-transition ripple is another axis-symmetric radial harmonic on the
+// same equation. It stays zero at every centre crossing and at both time ends.
 function ripplePath(orbital, progress) {
-  const points = PATH_POINTS[orbital];
-  const envelope = Math.sin(Math.PI * clamp(progress)) * smoothstep(progress);
-  const amplitude = MOTION.jitterAmplitude * envelope;
-  const displaced = [];
-  for (let index = 0; index < points.length; index += 2) {
-    const x = points[index];
-    const y = points[index + 1];
-    const angle = Math.atan2(y - 50, x - 50);
-    const wave = Math.sin(angle * 4 + progress * TAU * 7)
-      + 0.42 * Math.sin(angle * 7 - progress * TAU * 11);
-    const distance = Math.hypot(x - 50, y - 50) || 1;
-    displaced.push(
-      x + ((x - 50) / distance) * amplitude * wave,
-      y + ((y - 50) / distance) * amplitude * wave,
-    );
-  }
-  return serializePath(displaced);
+  const safeProgress = clamp(progress);
+  const envelope = Math.sin(Math.PI * safeProgress) * smoothstep(safeProgress);
+  return orbitalPath(ORBITAL_PARAMETERS[orbital], {
+    amplitude: MOTION.jitterAmplitude * envelope,
+    phase: safeProgress * TAU,
+  });
 }
 
 // Two moving sinusoidal contours make the probability density visibly flow.
@@ -113,7 +163,7 @@ function densityWavePath(phase, offset = 0) {
 }
 
 function chooseNextOrbital(current) {
-  const choices = Object.keys(ORBITALS).filter((orbital) => orbital !== current);
+  const choices = Object.keys(ORBITAL_PARAMETERS).filter((orbital) => orbital !== current);
   return choices[Math.floor(Math.random() * choices.length)];
 }
 
