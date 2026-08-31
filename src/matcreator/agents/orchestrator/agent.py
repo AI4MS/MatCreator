@@ -19,6 +19,7 @@ Every invocation runs a planning-first loop:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from contextlib import aclosing
@@ -44,6 +45,9 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MEMORIZATION_FREQUENCY = 1
 _DEFAULT_REVIEW_FREQUENCY = 10
 _PLANNING_NODE_STATE_KEY = "_graph_planning_node_id"
+_EXECUTION_STREAM_ATTEMPTS = max(
+    1, int(os.environ.get("MATCREATOR_EXECUTION_JSON_RETRY_ATTEMPTS", "2"))
+)
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +111,45 @@ def _get_planning_node_id(state: dict, graph: AgentGraphLogger) -> str:
 
     state[_PLANNING_NODE_STATE_KEY] = node_id
     return node_id
+
+
+async def _stream_execution_with_recovery(
+    execution_agent: BaseAgent,
+    ctx: InvocationContext,
+    *,
+    max_attempts: int = _EXECUTION_STREAM_ATTEMPTS,
+) -> AsyncGenerator[Event, None]:
+    """Run an execution stream across recoverable model-output failures.
+
+    Step executors persist their result before returning it to the execution
+    orchestrator. If the orchestrator's next tool call contains malformed JSON,
+    restart the orchestration stream after folding those durable results into
+    the graph. The restarted agent therefore schedules only unfinished nodes.
+    """
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be at least 1")
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            async with aclosing(execution_agent.run_async(ctx)) as execution_events:
+                async for event in execution_events:
+                    yield event
+            return
+        except json.JSONDecodeError:
+            recovered = reconcile_recovery_state(
+                ctx.session.state,
+                ctx.session.state.get("workdir") or get_workspace_root(),
+            )
+            logger.warning(
+                "[orchestrator] malformed execution tool arguments on attempt %d/%d; "
+                "recovered state: %s",
+                attempt,
+                max_attempts,
+                recovered,
+                exc_info=True,
+            )
+            if attempt == max_attempts:
+                raise
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +256,7 @@ class PlanningExecutionOrchestrator(BaseAgent):
                 )
                 state["_graph_exec_node_id"] = exec_id
 
-                async for event in self.execution_agent.run_async(ctx):
+                async for event in _stream_execution_with_recovery(self.execution_agent, ctx):
                     yield event
 
                 interrupted = state.get("return_to_planner", False)

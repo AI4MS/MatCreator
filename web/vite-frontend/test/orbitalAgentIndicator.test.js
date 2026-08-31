@@ -54,9 +54,10 @@ class FakeElement {
 
 function createFakeDom() {
   let timerId = 0;
+  let currentTime = 0;
   const timers = new Map();
   const view = {
-    performance: { now: () => 0 },
+    performance: { now: () => currentTime },
     setTimeout(callback, delay) {
       const id = ++timerId;
       timers.set(id, { callback, delay });
@@ -80,7 +81,24 @@ function createFakeDom() {
       return new FakeElement(name, document);
     },
   };
-  return { document, timers };
+  function runFrame(at) {
+    currentTime = at;
+    const entry = [...timers.entries()].find(([, timer]) => timer.frame);
+    assert.ok(entry, `expected a queued animation frame at ${at}ms`);
+    const [id, timer] = entry;
+    timers.delete(id);
+    timer.callback(at);
+  }
+  return { document, timers, runFrame };
+}
+
+function findByClass(element, className) {
+  if ((element.getAttribute?.("class") || "").split(" ").includes(className)) return element;
+  for (const child of element.children) {
+    const match = findByClass(child, className);
+    if (match) return match;
+  }
+  return null;
 }
 
 test("renders once per state and cleans up its active timer", () => {
@@ -111,4 +129,73 @@ test("renders once per state and cleans up its active timer", () => {
   indicator.unmount();
   assert.equal(target.children.length, 0);
   assert.equal(timers.size, 0);
+});
+
+test("runs dwell, coupled ripple, and continuous orbital morph on one frame clock", () => {
+  const { document, timers, runFrame } = createFakeDom();
+  const target = new FakeElement("div", document);
+  const indicator = createOrbitalAgentIndicator(target, { state: "thinking" });
+  const svg = target.children[0];
+  const outline = findByClass(svg, "orbital-agent-indicator__outline");
+  const ripple = findByClass(svg, "orbital-agent-indicator__ripple--1");
+  const density = findByClass(svg, "orbital-agent-indicator__density");
+  const initialPath = outline.getAttribute("d");
+
+  assert.ok(outline);
+  assert.ok(density, "the animated density is clipped inside the orbital");
+  assert.equal(timers.size, 1, "the choreography uses one animation-frame loop");
+
+  runFrame(4200); // dwell -> pre-transition
+  runFrame(4560); // strongest part of the pre-transition disturbance
+  assert.notEqual(outline.getAttribute("d"), initialPath);
+  assert.ok(Number(ripple.getAttribute("stroke-opacity")) > 0);
+
+  runFrame(4920); // pre-transition -> morph
+  runFrame(5140); // midpoint of the fast continuous morph
+  assert.notEqual(outline.getAttribute("d"), initialPath);
+
+  runFrame(5360); // settle on p or d; either must differ from initial s
+  assert.notEqual(outline.getAttribute("d"), initialPath);
+  assert.equal(timers.size, 1);
+
+  indicator.unmount();
+  assert.equal(timers.size, 0);
+});
+
+test("keeps the centre-crossing d orbital symmetric across both axes", () => {
+  const originalRandom = Math.random;
+  Math.random = () => 0.999;
+  const { document, runFrame } = createFakeDom();
+  const target = new FakeElement("div", document);
+  const indicator = createOrbitalAgentIndicator(target, { state: "thinking" });
+
+  try {
+    runFrame(4200); // select d and enter ripple
+    runFrame(4920); // enter morph
+    runFrame(5360); // settle on d
+
+    const outline = findByClass(target.children[0], "orbital-agent-indicator__outline");
+    const values = outline.getAttribute("d").match(/-?\d*\.?\d+/g).map(Number);
+    const endpoints = [[values[0], values[1]]];
+    for (let index = 6; index < values.length; index += 6) {
+      endpoints.push([values[index], values[index + 1]]);
+    }
+    const radii = endpoints.map(([x, y]) => Math.hypot(x - 50, y - 50));
+
+    assert.ok(Math.min(...radii) < 0.01, "the four lobes meet at the centre");
+    assert.ok(Math.max(...radii) > 41, "the lobes still reach the outer orbit");
+    endpoints.forEach(([x, y]) => {
+      const hasHorizontalReflection = endpoints.some(([otherX, otherY]) => (
+        Math.abs(otherX - x) < 0.01 && Math.abs(otherY - (100 - y)) < 0.01
+      ));
+      const hasVerticalReflection = endpoints.some(([otherX, otherY]) => (
+        Math.abs(otherX - (100 - x)) < 0.01 && Math.abs(otherY - y) < 0.01
+      ));
+      assert.ok(hasHorizontalReflection, `missing horizontal reflection of ${x},${y}`);
+      assert.ok(hasVerticalReflection, `missing vertical reflection of ${x},${y}`);
+    });
+  } finally {
+    indicator.unmount();
+    Math.random = originalRandom;
+  }
 });

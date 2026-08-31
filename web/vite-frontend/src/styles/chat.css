@@ -1088,24 +1088,6 @@
   grid-column: 1;
 }
 
-.step-feed-live-region {
-  display: block;
-}
-
-/* A live assistant message owns a permanent Delegated tasks host.  Keep its
-   empty shell out of view, but never let cards escape to the chat root while
-   timeline DOM is being rebuilt. */
-.step-feed-live-delegation:not(:has(.step-feed-message)) {
-  display: none;
-}
-
-.step-feed-inline-region {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 8px;
-}
-
 .delegation-group {
   margin: 10px 0;
   padding: 8px 0 0 12px;
@@ -1153,14 +1135,6 @@
   flex: 1 1 auto;
   width: 100%;
   max-width: none;
-}
-
-.delegation-task-host {
-  margin: 0;
-}
-
-.delegation-task-host > .step-feed-message {
-  margin-bottom: 0;
 }
 
 .step-feed-child-list {
@@ -1928,9 +1902,9 @@ body[data-theme="dark"] .input-container[data-agent-mode="bench"] {
 
 .agent-running-orbital {
   display: inline-flex;
-  width: 18px;
-  height: 18px;
-  flex: 0 0 18px;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
 }
 
 .plan-approval-actions {

@@ -10,7 +10,17 @@ WEB_DIR = Path(__file__).resolve().parents[1] / "web"
 if str(WEB_DIR) not in sys.path:
     sys.path.insert(0, str(WEB_DIR))
 
-from managed_runs import ManagedRunRegistry
+from managed_runs import ManagedRunRegistry, SseRecordBuffer, is_sse_done
+
+
+def test_sse_record_buffer_frames_split_events_and_done_marker() -> None:
+    records = SseRecordBuffer()
+
+    assert records.feed('data: {"partial":') == []
+    assert records.feed('true}\n\ndata: [DO') == ['data: {"partial":true}\n\n']
+    assert records.feed('NE]\r\n\r\n') == ['data: [DONE]\r\n\r\n']
+    assert is_sse_done('data: [DONE]\r\n\r\n')
+    assert records.flush() == []
 
 
 def test_subscriber_disconnect_does_not_cancel_producer() -> None:

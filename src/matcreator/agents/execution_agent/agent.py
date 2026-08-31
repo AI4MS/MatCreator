@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 from typing import List, Optional
@@ -10,7 +9,6 @@ from google.adk.agents.callback_context import CallbackContext
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
-from google.adk.workflow import RetryConfig
 
 from ...constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from ...workspace import get_session_workdir
@@ -28,12 +26,6 @@ logger = logging.getLogger(__name__)
 _model_name = os.environ.get("LLM_MODEL", LLM_MODEL)
 _model_api_key = os.environ.get("LLM_API_KEY", LLM_API_KEY)
 _model_base_url = os.environ.get("LLM_BASE_URL", LLM_BASE_URL)
-
-# Retry malformed streamed tool arguments rather than attempting to repair
-# them.  ``max_attempts`` includes the original request, so 2 means one retry.
-_JSON_DECODE_RETRY_ATTEMPTS = int(
-    os.environ.get("MATCREATOR_EXECUTION_JSON_RETRY_ATTEMPTS", "2")
-)
 
 # ---------------------------------------------------------------------------
 # Instruction
@@ -175,14 +167,6 @@ def _exec_before_agent_callback(callback_context: CallbackContext) -> None:
 
 execution_agent = LlmAgent(
     name="execution_orchestrator",
-    retry_config=RetryConfig(
-        max_attempts=_JSON_DECODE_RETRY_ATTEMPTS,
-        initial_delay=1.0,
-        max_delay=4.0,
-        backoff_factor=2.0,
-        jitter=0.0,
-        exceptions=[json.JSONDecodeError],
-    ),
     model=LiteLlm(
         model=_model_name,
         base_url=_model_base_url,

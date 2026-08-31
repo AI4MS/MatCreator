@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  applyAssistantMessageEvent,
   applyAssistantMessagePart,
   completeAssistantMessage,
   compactRepeatedPrefixSnapshots,
@@ -19,7 +20,8 @@ import {
   getFunctionResponse,
   getPlotPaths,
   getStructurePaths,
-  latestDelegationSegmentKey,
+  isDelegatedTaskRootTool,
+  timelineSegments,
 } from "../src/features/chat/timelinePresentation.js";
 
 test("normalizes timeline protocol variants and artifact paths", () => {
@@ -56,28 +58,36 @@ test("separates delegated executor tools from regular activity tools", () => {
     toolCalls: [
       { id: "regular", name: "read_file" },
       { id: "executor", name: "run_node_executor", input: { node_id: "relax" } },
+      { id: "child", name: "run_sub_agent", input: { step_number: 1, action: "Optimize" } },
     ],
   };
   assert.deepEqual(activityToolCalls(action).map((call) => call.id), ["regular"]);
   assert.deepEqual(delegationToolCalls([action]).map((call) => call.id), ["executor"]);
+  assert.equal(isDelegatedTaskRootTool("run_sub_agent"), false);
 });
 
-test("places the persistent delegation region at the latest launch point", () => {
+test("keeps each delegated task at its invocation position", () => {
   const delegatedAction = (id) => ({
     type: "activity_action",
+    timelineId: `action:${id}`,
+    renderRevision: 1,
     toolCalls: [{ id, name: "run_node_executor", input: { node_id: id } }],
   });
-  const segments = [
-    { type: "text", key: "text:intro", items: [{ type: "text" }] },
-    { type: "activity", key: "activity:first", items: [delegatedAction("first")] },
-    { type: "text", key: "text:middle", items: [{ type: "text" }] },
-    { type: "activity", key: "activity:regular", items: [{ type: "activity_action", toolCalls: [{ name: "read_file" }] }] },
-    { type: "activity", key: "activity:second", items: [delegatedAction("second")] },
-    { type: "text", key: "text:final", items: [{ type: "text" }] },
+  const timeline = [
+    { type: "text", timelineId: "text:intro", text: "Intro" },
+    delegatedAction("first"),
+    { type: "text", timelineId: "text:middle", text: "Code" },
+    { type: "reasoning", timelineId: "reasoning:middle", text: "Checking" },
+    delegatedAction("second"),
+    { type: "text", timelineId: "text:final", text: "Done" },
   ];
 
-  assert.equal(latestDelegationSegmentKey(segments), "activity:second");
-  assert.equal(latestDelegationSegmentKey(segments.slice(0, 1)), null);
+  const segments = timelineSegments(timeline);
+  assert.deepEqual(segments.map((segment) => segment.type), [
+    "text", "delegation", "text", "activity", "delegation", "text",
+  ]);
+  assert.deepEqual(segments.filter((segment) => segment.type === "delegation")
+    .map((segment) => segment.calls[0].input.node_id), ["first", "second"]);
 });
 
 test("merges streaming snapshots without repeating replayed content", () => {
@@ -88,6 +98,43 @@ test("merges streaming snapshots without repeating replayed content", () => {
     mergeReplayedText("hello world", "\nhello world again"),
     "hello world again",
   );
+});
+
+test("replaces a corrected cumulative Markdown snapshot instead of appending it", () => {
+  const introduction = [
+    "✅ **Execution complete!** All parallel nodes finished successfully.",
+    "",
+    "## Execution Summary",
+    "",
+    "| Node | Label | Formulas Printed | Status |",
+  ].join("\n");
+  const incomplete = `${introduction}\n|------|----------------|----|\n| basic | Algebra | 3 formulas |`;
+  const corrected = `${introduction}\n|------|-------|------------------|--------|\n| basic | Algebra | 3 formulas | ✅ Success |`;
+
+  assert.equal(mergeReplayedText(incomplete, corrected), corrected);
+});
+
+test("keeps one text item when a partial Markdown snapshot is structurally corrected", () => {
+  const message = createAssistantMessage({ id: "assistant:corrected-markdown" });
+  const introduction = "## Execution Summary\n\nThe parallel formula tasks completed successfully.\n\n";
+  const incomplete = `${introduction}| Node | Formula | Status |\n|------|----------|\n| A | $E=mc^2$ |`;
+  const corrected = `${introduction}| Node | Formula | Status |\n|------|---------|--------|\n| A | $E=mc^2$ | ✅ |`;
+
+  applyAssistantMessageEvent(message, {
+    author: "agent", partial: true, content: { parts: [{ text: incomplete }] },
+  });
+  applyAssistantMessageEvent(message, {
+    author: "agent", partial: true, content: { parts: [{ text: corrected }] },
+  });
+  applyAssistantMessageEvent(message, {
+    author: "agent", partial: false, content: { parts: [{ text: corrected }] },
+  });
+
+  const textItems = message.items.filter((item) => item.type === "text");
+  assert.equal(textItems.length, 1);
+  assert.equal(textItems[0].text, corrected);
+  assert.equal(textItems[0].text.indexOf("## Execution Summary"), 0);
+  assert.equal(textItems[0].text.indexOf("## Execution Summary", 1), -1);
 });
 
 test("keeps text and reasoning as separate chronological entries", () => {
@@ -105,16 +152,140 @@ test("keeps text and reasoning as separate chronological entries", () => {
   assert.equal(new Set(timeline.map((item) => item.timelineId)).size, 3);
 });
 
-test("does not create a second text block when a snapshot replays after reasoning", () => {
-  const timeline = [];
-  upsertTimelineText(timeline, "The calculation converged.");
-  upsertTimelineThought(timeline, "Checking the final value");
-  upsertTimelineText(timeline, "\nThe calculation converged. Final energy: -1.2 eV.");
+test("drops final ADK text replays after token-level partial events", () => {
+  const message = createAssistantMessage({ id: "assistant:partial-replay" });
+  const partials = [
+    { author: "agent", partial: true, content: { parts: [{ text: "Working", thought: true }] } },
+    { author: "agent", partial: true, content: { parts: [{ text: " on it", thought: true }] } },
+    { author: "agent", partial: true, content: { parts: [{ text: "# Result" }] } },
+  ];
+  partials.forEach((event) => applyAssistantMessageEvent(message, event));
 
-  assert.deepEqual(timeline.map(({ type, text }) => ({ type, text })), [
-    { type: "text", text: "The calculation converged. Final energy: -1.2 eV." },
-    { type: "reasoning", text: "Checking the final value" },
+  applyAssistantMessageEvent(message, {
+    author: "agent",
+    partial: false,
+    content: { parts: [
+      { text: "Working", thought: true },
+      { text: " on it", thought: true },
+      { text: "# Result" },
+      { functionCall: { id: "call-1", name: "read_file", args: {} } },
+    ] },
+  });
+
+  assert.deepEqual(message.items.map((item) => item.type), ["reasoning", "text", "activity_action"]);
+  assert.equal(message.items[0].text, "Working on it");
+  assert.equal(message.items[1].text, "# Result");
+});
+
+test("keeps final visible text when only reasoning was streamed partially", () => {
+  const message = createAssistantMessage({ id: "assistant:mixed-replay" });
+  applyAssistantMessageEvent(message, {
+    author: "agent", partial: true, content: { parts: [{ text: "Thinking", thought: true }] },
+  });
+
+  applyAssistantMessageEvent(message, {
+    author: "agent", partial: false, content: { parts: [
+      { text: "Thinking", thought: true },
+      { text: "Final answer" },
+    ] },
+  });
+
+  assert.deepEqual(message.items.map((item) => item.type), ["reasoning", "text"]);
+  assert.equal(message.items[1].text, "Final answer");
+});
+
+test("adds only a missing final suffix after an interrupted partial stream", () => {
+  const message = createAssistantMessage({ id: "assistant:interrupted-replay" });
+  applyAssistantMessageEvent(message, {
+    author: "agent", partial: true, content: { parts: [{ text: "Partial answer" }] },
+  });
+
+  applyAssistantMessageEvent(message, {
+    author: "agent", partial: false, content: { parts: [{ text: "Partial answer completed" }] },
+  });
+
+  assert.equal(message.items[0].text, "Partial answer completed");
+});
+
+test("promotes a corrected thought stream to one Markdown slot", () => {
+  const message = createAssistantMessage({ id: "assistant:corrected-kind" });
+  applyAssistantMessageEvent(message, {
+    author: "agent",
+    partial: true,
+    content: { parts: [{ text: "## Result\n\nValue: **42**", thought: true }] },
+  });
+  const originalSlot = message.items[0];
+
+  applyAssistantMessageEvent(message, {
+    author: "agent",
+    partial: false,
+    content: { parts: [{ text: "## Result\n\nValue: **42**" }] },
+  });
+
+  assert.equal(message.items.length, 1);
+  assert.strictEqual(message.items[0], originalSlot);
+  assert.equal(message.items[0].type, "text");
+});
+
+test("repartitions a provisional thought stream into reasoning and one Markdown answer", () => {
+  const message = createAssistantMessage({ id: "assistant:repartitioned-thought" });
+  applyAssistantMessageEvent(message, {
+    id: "partial-output",
+    author: "agent",
+    partial: true,
+    content: { parts: [
+      { text: "Checking the calculation.\n\n", thought: true },
+      { text: "## Result\n\nValue: **42**", thought: true },
+    ] },
+  });
+
+  applyAssistantMessageEvent(message, {
+    id: "final-output",
+    author: "agent",
+    partial: false,
+    content: { parts: [
+      { text: "Checking the calculation.\n\n", thought: true },
+      { text: "## Result\n\nValue: **42**" },
+      { functionCall: { id: "call-after-answer", name: "save_result", args: {} } },
+    ] },
+  });
+
+  assert.deepEqual(message.items.map((item) => item.type), [
+    "reasoning", "text", "activity_action",
   ]);
+  assert.equal(message.items[0].text, "Checking the calculation.\n\n");
+  assert.equal(message.items[1].text, "## Result\n\nValue: **42**");
+  assert.equal(message.items.filter((item) => item.text?.includes("## Result")).length, 1);
+});
+
+test("does not lose a live text slot at an intervening tool-only event", () => {
+  const message = createAssistantMessage({ id: "assistant:tool-boundary" });
+  applyAssistantMessageEvent(message, {
+    id: "partial-answer",
+    author: "agent",
+    partial: true,
+    content: { parts: [{ text: "## Result\n\nValue: **42**" }] },
+  });
+  const originalTextSlot = message.items[0];
+
+  applyAssistantMessageEvent(message, {
+    id: "tool-only",
+    author: "agent",
+    partial: false,
+    content: { parts: [
+      { functionResponse: { id: "call-tool", name: "save_result", response: { status: "ok" } } },
+    ] },
+  });
+  applyAssistantMessageEvent(message, {
+    id: "final-answer",
+    author: "agent",
+    partial: false,
+    content: { parts: [{ text: "## Result\n\nValue: **42**" }] },
+  });
+
+  const textItems = message.items.filter((item) => item.type === "text");
+  assert.equal(textItems.length, 1);
+  assert.strictEqual(textItems[0], originalTextSlot);
 });
 
 test("pairs a tool response with its invocation and derives presentation state", () => {
@@ -144,7 +315,74 @@ test("pairs a tool response with its invocation and derives presentation state",
   assert.equal(action.toolCalls[0].output.result, "ok");
 });
 
-test("groups calls that share a backend action id", () => {
+test("preserves parallel calls with the same tool name as distinct chronological tasks", () => {
+  const message = createAssistantMessage({ id: "assistant:parallel-executors" });
+  applyAssistantMessageEvent(message, {
+    id: "activity-parallel-executors",
+    author: "execution_orchestrator",
+    partial: false,
+    content: { parts: [
+      { functionCall: { id: "call-a", name: "run_node_executor", args: { node_id: "step_parallel_a" } } },
+      { functionCall: { id: "call-b", name: "run_node_executor", args: { node_id: "step_parallel_b" } } },
+      { functionCall: { id: "call-c", name: "run_node_executor", args: { node_id: "step_parallel_c" } } },
+    ] },
+  });
+  applyAssistantMessageEvent(message, {
+    id: "activity-parallel-responses",
+    author: "execution_orchestrator",
+    partial: false,
+    content: { parts: [
+      { functionResponse: { id: "call-a", name: "run_node_executor", response: { status: "success" } } },
+      { functionResponse: { id: "call-b", name: "run_node_executor", response: { status: "success" } } },
+      { functionResponse: { id: "call-c", name: "run_node_executor", response: { status: "success" } } },
+    ] },
+  });
+
+  const calls = message.items.flatMap((item) => item.toolCalls || []);
+  assert.deepEqual(calls.map((call) => call.id), ["call-a", "call-b", "call-c"]);
+  assert.deepEqual(calls.map((call) => call.input.node_id), [
+    "step_parallel_a", "step_parallel_b", "step_parallel_c",
+  ]);
+  assert.ok(calls.every((call) => call.status === "success"));
+  const segments = timelineSegments(message.items);
+  assert.equal(segments.length, 1);
+  assert.equal(segments[0].type, "delegation");
+  assert.deepEqual(
+    segments[0].calls.map((call) => call.input.node_id),
+    ["step_parallel_a", "step_parallel_b", "step_parallel_c"],
+  );
+});
+
+test("groups parallel agents by activity without merging separate activities in one bubble", () => {
+  const message = createAssistantMessage({ id: "assistant:activity-boundaries" });
+  const dispatch = (id, nodes) => applyAssistantMessageEvent(message, {
+    id,
+    author: "execution_orchestrator",
+    partial: false,
+    content: { parts: nodes.map((node) => ({
+      functionCall: { id: `call-${node}`, name: "run_node_executor", args: { node_id: node } },
+    })) },
+  });
+
+  dispatch("activity-one", ["a", "b"]);
+  applyAssistantMessageEvent(message, {
+    id: "activity-text",
+    author: "execution_orchestrator",
+    partial: false,
+    content: { parts: [{ text: "The next batch is now ready." }] },
+  });
+  dispatch("activity-two", ["c", "d"]);
+
+  const segments = timelineSegments(message.items);
+  assert.deepEqual(segments.map((segment) => segment.type), ["delegation", "text", "delegation"]);
+  assert.deepEqual(
+    segments.filter((segment) => segment.type === "delegation")
+      .map((segment) => segment.calls.map((call) => call.input.node_id)),
+    [["a", "b"], ["c", "d"]],
+  );
+});
+
+test("keeps later calls in later chronological slots even when action ids match", () => {
   const timeline = [];
   upsertTimelineEvent(timeline, {
     type: "function_call",
@@ -161,9 +399,10 @@ test("groups calls that share a backend action id", () => {
     args: {},
   });
 
-  assert.equal(timeline.length, 1);
-  assert.equal(timeline[0].toolCalls.length, 2);
+  assert.equal(timeline.length, 2);
+  assert.deepEqual(timeline.map((action) => action.toolCalls[0].name), ["validate_plan", "get_ready_nodes"]);
   assert.equal(timeline[0].backendActionId, "action-1");
+  assert.equal(timeline[1].backendActionId, "action-1");
 });
 
 test("merges replayed executor calls that have a new transient call id", () => {

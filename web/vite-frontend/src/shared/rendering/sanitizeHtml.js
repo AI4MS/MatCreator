@@ -37,14 +37,12 @@ const DROP_WITH_CONTENT = new Set([
   "iframe",
   "input",
   "link",
-  "math",
   "meta",
   "object",
   "option",
   "script",
   "select",
   "style",
-  "svg",
   "template",
   "textarea",
 ]);
@@ -56,6 +54,7 @@ const ELEMENT_ATTRIBUTES = {
   img: new Set(["alt", "loading", "src", "title"]),
   ol: new Set(["start"]),
   pre: new Set(["class"]),
+  span: new Set(["aria-hidden", "class", "style"]),
   td: new Set(["align", "colspan", "rowspan"]),
   th: new Set(["align", "colspan", "rowspan", "scope"]),
 };
@@ -67,6 +66,46 @@ const SAFE_CLASSES = {
   div: /^markdown-table-scroll$/,
   pre: /^ascii-art$/,
 };
+const KATEX_CLASSES = new Set([
+  "accent", "accent-body", "accent-full", "amsrm", "angl", "anglpad", "arraycolsep", "base", "boldsymbol", "boxpad", "brace-center", "brace-left", "brace-right", "cancel-lap", "cancel-pad", "cd-arrow-pad", "cd-label-left", "cd-label-right", "cd-vert-arrow-pad", "clap", "col-align-c", "col-align-l", "col-align-r", "delim-size1", "delim-size4", "delimcenter", "delimsizing", "eqn-num", "fbox", "fcolorbox", "fix", "fleqn", "fontsize-ensurer", "frac-line", "halfarrow-left", "halfarrow-right", "hbox", "hdashline", "hide-tail", "hline", "inner", "katex", "katex-display", "katex-html", "large-op", "leqno", "llap", "mainrm", "mathbb", "mathbf", "mathboldfrak", "mathboldsf", "mathcal", "mathfrak", "mathit", "mathitsf", "mathnormal", "mathrm", "mathscr", "mathsf", "mathsfit", "mathtt", "mfrac", "mop", "mord", "mopen", "mclose", "mrel", "mbin", "mspace", "msupsub", "mtable", "mtr-glue", "mult", "munder", "newline", "nulldelimiter", "op-limits", "op-symbol", "overlay", "overline", "overline-line", "pstrut", "reset-size1", "reset-size10", "reset-size11", "reset-size2", "reset-size3", "reset-size4", "reset-size5", "reset-size6", "reset-size7", "reset-size8", "reset-size9", "rlap", "root", "rule", "size1", "size10", "size11", "size2", "size3", "size4", "size5", "size6", "size7", "size8", "size9", "sizing", "small-op", "smash", "sout", "sqrt", "stretchy", "strut", "svg-align", "tag", "textbb", "textbf", "textboldfrak", "textboldsf", "textfrak", "textit", "textitsf", "textrm", "textscr", "textsf", "texttt", "thinbox", "ttf", "underline", "underline-line", "vbox", "vertical-separator", "vlist", "vlist-r", "vlist-s", "vlist-t", "vlist-t2", "x-arrow", "x-arrow-pad",
+]);
+const KATEX_STYLE_PROPERTIES = new Set([
+  "border-bottom-width",
+  "height",
+  "left",
+  "margin-left",
+  "margin-right",
+  "min-width",
+  "padding-left",
+  "position",
+  "top",
+  "vertical-align",
+  "width",
+]);
+const KATEX_LENGTH = /^(?:0|[+-]?(?:\d+\.?\d*|\.\d+)(?:em|ex|px|pt|rem|%))$/;
+
+function isSafeKatexStyle(value) {
+  if (typeof value !== "string" || !value.trim()) return false;
+  return value.split(";").every((declaration) => {
+    if (!declaration.trim()) return true;
+    const separator = declaration.indexOf(":");
+    if (separator < 1) return false;
+    const property = declaration.slice(0, separator).trim().toLowerCase();
+    const cssValue = declaration.slice(separator + 1).trim().toLowerCase();
+    if (!KATEX_STYLE_PROPERTIES.has(property)) return false;
+    return property === "position"
+      ? cssValue === "relative"
+      : KATEX_LENGTH.test(cssValue);
+  });
+}
+
+function isKatexSvgElement(element) {
+  if (element.localName === "svg") {
+    return element.parentElement?.classList.contains("hide-tail");
+  }
+  return element.localName === "path" && element.parentElement?.localName === "svg"
+    && element.parentElement.parentElement?.classList.contains("hide-tail");
+}
 
 /**
  * Return whether a URL is safe for a rendered Markdown link or image.
@@ -125,9 +164,15 @@ function sanitizeAttributes(element) {
 
   if (element.hasAttribute("class")) {
     const allowedClass = SAFE_CLASSES[tagName];
-    const safeClasses = element.className.split(/\s+/).filter((name) => allowedClass?.test(name));
+    const safeClasses = element.className.split(/\s+/).filter((name) => (
+      allowedClass?.test(name) || (tagName === "span" && KATEX_CLASSES.has(name))
+    ));
     if (safeClasses.length) element.className = safeClasses.join(" ");
     else element.removeAttribute("class");
+  }
+
+  if (tagName === "span" && element.hasAttribute("style") && !isSafeKatexStyle(element.getAttribute("style"))) {
+    element.removeAttribute("style");
   }
 
   if (tagName === "div") {
@@ -154,6 +199,15 @@ function sanitizeAttributes(element) {
   if (tagName === "img") element.setAttribute("loading", "lazy");
 }
 
+function sanitizeKatexSvg(element) {
+  const allowedAttributes = element.localName === "svg"
+    ? new Set(["height", "preserveaspectratio", "viewbox", "width", "xmlns"])
+    : new Set(["d"]);
+  for (const attribute of [...element.attributes]) {
+    if (!allowedAttributes.has(attribute.name.toLowerCase())) element.removeAttribute(attribute.name);
+  }
+}
+
 /**
  * Sanitize generated Markdown HTML with a deliberately small allowlist.
  *
@@ -170,6 +224,10 @@ export function sanitizeRenderedHtml(html, documentRef = globalThis.document) {
     const tagName = element.localName;
     if (DROP_WITH_CONTENT.has(tagName)) {
       element.remove();
+    } else if (isKatexSvgElement(element)) {
+      sanitizeKatexSvg(element);
+    } else if (tagName === "svg") {
+      element.remove();
     } else if (!ALLOWED_ELEMENTS.has(tagName)) {
       unwrap(element);
     } else {
@@ -181,3 +239,5 @@ export function sanitizeRenderedHtml(html, documentRef = globalThis.document) {
 
   return template.innerHTML;
 }
+
+export { isSafeKatexStyle };

@@ -1,9 +1,14 @@
 import {
-  applyAssistantMessagePart,
+  applyAssistantMessageEvent,
   completeAssistantMessage,
   createAssistantMessage,
 } from "./timeline.js";
 import { createMessageRenderScheduler, messageRenderInterval } from "./messageRenderScheduler.js";
+import {
+  initializeRequestLifecycle,
+  markRequestTerminal,
+  requestHasActiveRun,
+} from "../session/requestLifecycle.js";
 
 /**
  * Coordinates a single composer request from optimistic UI through SSE completion.
@@ -49,6 +54,7 @@ export function createMessageStreamController({
     managedRunEventsUrl,
     shouldRefreshPlanGraphForTool,
     showPlanGraph,
+    onRequestStateChange,
   },
 }) {
 
@@ -104,7 +110,7 @@ export function createMessageStreamController({
 
   function stop() {
     const request = activeSessionRequest();
-    if (!request) return;
+    if (!requestHasActiveRun(request)) return;
     sessionRuntime.suppressPlanApproval(request.sessionId);
     const query = new URLSearchParams({ user_id: request.owner || state.userId });
     fetch(`/api/sessions/${request.sessionId}/cancel?${query}`, { method: "POST" }).catch(() => {});
@@ -116,7 +122,22 @@ export function createMessageStreamController({
   }
 
   async function send(message) {
-    if (!message.trim() || activeSessionRequest()) return;
+    if (!message.trim()) return;
+    const previousRequest = activeSessionRequest();
+    if (requestHasActiveRun(previousRequest)) return;
+    if (previousRequest) {
+      // The managed run is terminal, so this reply is no longer "running".
+      // Keep the completed live turn mounted until its durable counterpart is
+      // ready, and serialize an immediate follow-up behind that short handoff.
+      if (previousRequest.followupQueued) return;
+      const queuedSessionKey = sessionRequestKey();
+      previousRequest.followupQueued = true;
+      textInput.disabled = true;
+      updateSendButtonState();
+      await previousRequest.cleanupComplete;
+      textInput.disabled = false;
+      if (sessionRequestKey() !== queuedSessionKey || activeSessionRequest()) return;
+    }
     if (!state.userId) { showLoginModal(); return; }
     if (!canWriteActiveSession()) {
       addMessage("agent", `Admin view is read-only for ${state.activeSessionUserId}'s session.`, undefined, sessionRuntime.getLiveHost());
@@ -165,11 +186,11 @@ export function createMessageStreamController({
     agentGraph.startPolling(state.sessionId);
     planGraph.startPolling(state.sessionId);
     const owner = state.activeSessionUserId || state.userId;
-    const request = {
+    const request = initializeRequestLifecycle({
       key: sessionRequestKey(state.sessionId, owner), sessionId: state.sessionId, owner,
       backendUserId: activeSessionBackendUserId(), controller: new AbortController(), lastSequence: 0, runId: null,
       message: assistantMessage, messageView, userMessage, backendMessage,
-    };
+    });
     state.activeRequests.set(request.key, request);
     // Make connection progress explicit even before the agent has emitted its
     // first thought, tool call, or text token.  This is especially important
@@ -233,9 +254,8 @@ export function createMessageStreamController({
         return;
       }
       try {
-        for (const part of JSON.parse(data)?.content?.parts || []) {
-          const normalized = applyAssistantMessagePart(assistantMessage, part);
-          if (!normalized) continue;
+        const event = JSON.parse(data);
+        for (const { part, normalized } of applyAssistantMessageEvent(assistantMessage, event)) {
           if (part.thought) {
             updateAgentRunningStatus("thinking");
           } else if (normalized.type === "function_call") {
@@ -281,7 +301,10 @@ export function createMessageStreamController({
       // ADK may close the managed SSE stream before its session database has
       // received the final events. Do not let such an incomplete snapshot
       // erase the optimistic user message and already-streamed agent reply.
-      const restored = await sessionRuntime.loadSession(request.sessionId, request.owner, { render: false });
+      // For the final handoff, load the durable row into the transcript store
+      // while the live request still owns visibility. Runtime filtering keeps
+      // that row hidden until ownership is swapped synchronously below.
+      const restored = await sessionRuntime.loadSession(request.sessionId, request.owner, { render: handoff });
       if (newerRequestIsActive()) return;
       const events = restored?.events || [];
       // Always identify the most recent matching user event. `findIndex`
@@ -292,10 +315,10 @@ export function createMessageStreamController({
       const hasPersistedReply = userEventIndex >= 0 && events.slice(userEventIndex + 1)
         .some((event) => event?.author !== "user" && (event.content?.parts || []).length);
 
-      if (handoff && hasPersistedReply) {
-        await sessionRuntime.loadSession(request.sessionId, request.owner);
-        return true;
-      }
+      // The caller performs the visible handoff.  Keeping this probe
+      // render-free is essential: it must never mount persisted Markdown
+      // while the live timeline still owns this assistant turn.
+      if (handoff && hasPersistedReply) return true;
       if (handoff && !userMessage.isConnected
         && sessionRequestKey(request.sessionId, request.owner) === sessionRequestKey()) {
         sessionRuntime.getLiveHost().prepend(userMessage);
@@ -348,10 +371,12 @@ export function createMessageStreamController({
           else if (event.type === "terminal") {
             request.lastSequence = event.latest_sequence || request.lastSequence;
             terminalStatus = event.status;
+            markRequestTerminal(request, event.status);
+            updateSendButtonState();
+            onRequestStateChange?.();
             if (event.status === "failed") throw new Error(event.error || "Agent run failed");
             if (event.status === "completed") {
               void finishLivePresentation();
-              releaseSessionRequest(request);
               stepExecutionFeed.finishLiveTurn();
               revealPlanApproval();
             }
@@ -368,7 +393,6 @@ export function createMessageStreamController({
       // A cancelled browser subscription can finish before the managed run
       // does. Keep the composer locked until cancellation polling observes a
       // terminal run, otherwise a new send would clear the cancellation flag.
-      if (request.stopStatus !== "waiting") releaseSessionRequest(request);
       stepExecutionFeed.finishLiveTurn();
       revealPlanApproval();
       // The final affected-message pass is the handoff boundary. Durable
@@ -377,17 +401,20 @@ export function createMessageStreamController({
         await presentationFinished;
         return reconcileDurableTurn();
       };
-      // These are independent reconciliation tasks. They keep the durable
-      // session, roadmap, agent graph, and files current, but none is required
-      // before the user can act on a completed plan.
-      await Promise.allSettled([
+      // These are independent reconciliation tasks. The run is already
+      // presented as terminal; retaining ownership until they settle prevents
+      // an old poll from overwriting a follow-up turn that starts immediately.
+      const backgroundReconciliation = Promise.allSettled([
         agentGraph._poll(request.sessionId),
         planGraph._poll(request.sessionId),
         refreshSessionFiles(request.sessionId, request.owner),
-        reconcileAfterTransition(),
       ]);
+      const durableReplyReady = await reconcileAfterTransition();
+      await backgroundReconciliation;
       agentGraph.stopPolling();
       planGraph.stopPolling();
+      if (durableReplyReady) await sessionRuntime.handoffLiveTurn(request);
+      else if (request.stopStatus !== "waiting") releaseSessionRequest(request);
       // A session snapshot replaces the chat DOM. Restore the stop indicator
       // from the request state so cancellation feedback is never lost during
       // the final refresh.

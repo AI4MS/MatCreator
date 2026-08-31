@@ -19,6 +19,8 @@ export function createAssistantMessage({
     role: "assistant",
     lifecycle,
     items: [],
+    textStreams: new Map(),
+    activitySequence: 0,
     revision: 0,
     startedAt,
     endedAt,
@@ -47,18 +49,19 @@ export function completeAssistantMessage(message, endedAt = Date.now()) {
   if (message.lifecycle === "completed") return false;
   beginAssistantMessageFinalization(message);
   message.endedAt = endedAt;
+  message.textStreams.clear();
   setAssistantMessageLifecycle(message, "completed");
   return true;
 }
 
-export function applyAssistantMessagePart(message, part) {
+export function applyAssistantMessagePart(message, part, { activityId = null } = {}) {
   if (!part || message.lifecycle === "completed" || message.lifecycle === "finalizing") return null;
   if (message.lifecycle === "created") setAssistantMessageLifecycle(message, "streaming");
 
   if (part.thought) {
-    upsertTimelineThought(message.items, part.text || "");
+    const item = upsertTimelineThought(message.items, part.text || "");
     message.revision += 1;
-    return { type: "reasoning", text: part.text || "" };
+    return { type: "reasoning", text: part.text || "", item };
   }
   const functionCall = part.functionCall || part.function_call;
   if (functionCall) {
@@ -68,6 +71,7 @@ export function applyAssistantMessagePart(message, part) {
       name: functionCall.name || "Unknown",
       args: functionCall.args || {},
       actionId: functionCall.action_id || functionCall.actionId,
+      activityId,
     };
     upsertTimelineEvent(message.items, normalized);
     message.revision += 1;
@@ -81,17 +85,248 @@ export function applyAssistantMessagePart(message, part) {
       name: functionResponse.name || "Unknown",
       response: functionResponse.response || {},
       actionId: functionResponse.action_id || functionResponse.actionId,
+      activityId,
     };
     upsertTimelineEvent(message.items, normalized);
     message.revision += 1;
     return normalized;
   }
   if (part.text) {
-    upsertTimelineText(message.items, part.text);
+    const item = upsertTimelineText(message.items, part.text);
     message.revision += 1;
-    return { type: "text", text: part.text };
+    return { type: "text", text: part.text, item };
   }
   return null;
+}
+
+function textPartKind(part) {
+  if (!part?.text) return null;
+  return part.thought ? "reasoning" : "text";
+}
+
+function setTimelineTextItem(item, kind, text) {
+  const nextText = compactRepeatedPrefixSnapshots(text);
+  let changed = false;
+  if (item.type !== kind) {
+    item.type = kind;
+    changed = true;
+  }
+  if (item.text !== nextText) {
+    item.text = nextText;
+    changed = true;
+  }
+  if (changed) item.renderRevision = (item.renderRevision || 0) + 1;
+  return changed;
+}
+
+function replayMatch(stream, finalText) {
+  if (!stream?.text || !finalText) return false;
+  const current = stream.text.replace(/^\s+/, "");
+  const final = finalText.replace(/^\s+/, "");
+  return current.startsWith(final) || final.startsWith(current);
+}
+
+function finalTextBlocks(parts) {
+  const blocks = [];
+  for (const part of parts) {
+    const kind = textPartKind(part);
+    if (!kind) continue;
+    const previous = blocks.at(-1);
+    if (previous?.kind === kind) {
+      previous.text = mergeReplayedText(previous.text, part.text);
+    } else {
+      blocks.push({ kind, text: part.text, part });
+    }
+  }
+  return blocks;
+}
+
+function comparableSnapshot(text) {
+  return String(text || "").replace(/^\s+/, "");
+}
+
+function commonPrefixLength(left, right) {
+  const limit = Math.min(left.length, right.length);
+  let index = 0;
+  while (index < limit && left[index] === right[index]) index += 1;
+  return index;
+}
+
+function isRevisedCumulativeSnapshot(current, incoming) {
+  const currentText = comparableSnapshot(current);
+  const incomingText = comparableSnapshot(incoming);
+  const shorterLength = Math.min(currentText.length, incomingText.length);
+  if (shorterLength < 32 || incomingText.length < currentText.length / 2) return false;
+  // A long common beginning is protocol evidence that `incoming` is a newer
+  // cumulative snapshot with a correction later in the message. Ordinary
+  // token deltas do not repeat an anchored paragraph-sized prefix.
+  const requiredPrefix = Math.min(96, Math.max(24, Math.ceil(shorterLength / 4)));
+  return commonPrefixLength(currentText, incomingText) >= requiredPrefix;
+}
+
+/**
+ * A provider can mark the whole partial stream as `thought`, then partition
+ * the authoritative event into reasoning followed by visible Markdown. Treat
+ * that final partition as a revision of the provisional slots. Otherwise the
+ * answer remains at the end of Agent activity and is also added as a second,
+ * rendered text block until durable history replaces the live message.
+ */
+function reconcileFinalTextSnapshot(message, authorStreams, parts) {
+  const blocks = finalTextBlocks(parts);
+  if (!blocks.length || !authorStreams.size) return null;
+
+  const streams = [...authorStreams.values()]
+    .filter((stream) => stream?.item)
+    .sort((left, right) => message.items.indexOf(left.item) - message.items.indexOf(right.item));
+  const streamItems = [...new Set(streams.map((stream) => stream.item))];
+  const indices = streamItems.map((item) => message.items.indexOf(item));
+  if (!indices.length || indices.some((index) => index < 0)) return null;
+  const firstIndex = indices[0];
+  if (indices.some((index, offset) => index !== firstIndex + offset)) return null;
+
+  const streamed = comparableSnapshot(streams.map((stream) => stream.text).join(""));
+  const finalized = comparableSnapshot(blocks.map((block) => block.text).join(""));
+  const sameSnapshot = streamed.startsWith(finalized)
+    || finalized.startsWith(streamed)
+    || streamed.endsWith(finalized)
+    || isRevisedCumulativeSnapshot(streamed, finalized);
+  if (!streamed || !finalized || !sameSnapshot) {
+    return null;
+  }
+
+  let changed = streamItems.length !== blocks.length;
+  const items = blocks.map((block, index) => {
+    const item = streamItems[index] || {
+      type: block.kind,
+      timelineId: nextTimelineItemId(message.items, block.kind),
+      text: "",
+      renderRevision: 0,
+    };
+    changed = setTimelineTextItem(item, block.kind, block.text) || changed;
+    return item;
+  });
+  message.items.splice(firstIndex, streamItems.length, ...items);
+  if (changed) message.revision += 1;
+  return blocks.map((block, index) => ({
+    part: block.part,
+    normalized: { type: block.kind, text: items[index].text, item: items[index] },
+  }));
+}
+
+function eventActivityId(message, event, parts) {
+  const hasActivity = parts.some((part) => (
+    part?.functionCall || part?.function_call || part?.functionResponse || part?.function_response
+  ));
+  if (!hasActivity) return null;
+  const explicit = event?.id ?? event?.event_id ?? event?.eventId;
+  if (explicit !== undefined && explicit !== null && String(explicit)) return String(explicit);
+  const sequence = message.activitySequence || 0;
+  message.activitySequence = sequence + 1;
+  return `${message.id}:activity:${sequence}`;
+}
+
+/**
+ * Reduce one provider event into the assistant timeline.
+ *
+ * Partial tokens and their final snapshot are two revisions of the same
+ * content slot, not two display events. The first token fixes the slot's
+ * chronological position; the final event updates that slot in place. This
+ * also handles providers that correct a streamed `thought` flag in the final
+ * snapshot: the existing slot changes presentation kind instead of appearing
+ * once as raw activity text and again as rendered Markdown.
+ */
+export function applyAssistantMessageEvent(message, event) {
+  const parts = event?.content?.parts || [];
+  const author = String(event?.author || "assistant");
+  const authorStreams = message.textStreams.get(author) || new Map();
+  const activityId = eventActivityId(message, event, parts);
+  const applyPart = (part) => applyAssistantMessagePart(message, part, { activityId });
+  const applied = [];
+
+  if (event?.partial === true) {
+    for (const part of parts) {
+      const normalized = applyPart(part);
+      if (!normalized) continue;
+      applied.push({ part, normalized });
+      const kind = textPartKind(part);
+      if (!kind) continue;
+      const previous = authorStreams.get(kind);
+      authorStreams.set(kind, {
+        item: normalized.item,
+        text: previous?.item === normalized.item
+          ? mergeReplayedText(previous.text, part.text)
+          : part.text,
+      });
+    }
+    if (authorStreams.size) message.textStreams.set(author, authorStreams);
+    return applied;
+  }
+
+  if (!authorStreams.size) {
+    for (const part of parts) {
+      const normalized = applyPart(part);
+      if (normalized) applied.push({ part, normalized });
+    }
+    return applied;
+  }
+
+  const reconciledSnapshot = reconcileFinalTextSnapshot(message, authorStreams, parts);
+  if (reconciledSnapshot) {
+    applied.push(...reconciledSnapshot);
+    for (const part of parts) {
+      if (textPartKind(part)) continue;
+      const normalized = applyPart(part);
+      if (normalized) applied.push({ part, normalized });
+    }
+    message.textStreams.delete(author);
+    return applied;
+  }
+
+  const finalTextByKind = new Map();
+  for (const part of parts) {
+    const kind = textPartKind(part);
+    if (!kind) continue;
+    finalTextByKind.set(kind, mergeReplayedText(finalTextByKind.get(kind) || "", part.text));
+  }
+
+  const matches = new Map();
+  const unmatchedStreams = new Set(authorStreams.keys());
+  for (const [kind, finalText] of finalTextByKind) {
+    let streamKind = replayMatch(authorStreams.get(kind), finalText) ? kind : null;
+    if (!streamKind) {
+      streamKind = [...unmatchedStreams].find((candidate) => replayMatch(authorStreams.get(candidate), finalText)) || null;
+    }
+    if (streamKind) {
+      matches.set(kind, authorStreams.get(streamKind));
+      unmatchedStreams.delete(streamKind);
+    }
+  }
+
+  const emittedTextKinds = new Set();
+  for (const part of parts) {
+    const kind = textPartKind(part);
+    if (!kind) {
+      const normalized = applyPart(part);
+      if (normalized) applied.push({ part, normalized });
+      continue;
+    }
+    if (emittedTextKinds.has(kind)) continue;
+    emittedTextKinds.add(kind);
+    const stream = matches.get(kind);
+    if (!stream) {
+      const normalized = applyPart({ ...part, text: finalTextByKind.get(kind) });
+      if (normalized) applied.push({ part, normalized });
+      continue;
+    }
+    const nextText = mergeReplayedText(stream.text, finalTextByKind.get(kind));
+    if (setTimelineTextItem(stream.item, kind, nextText)) message.revision += 1;
+    applied.push({ part, normalized: { type: kind, text: nextText, item: stream.item } });
+  }
+  // A tool-only non-partial event is not a text-stream boundary. Keep the
+  // provisional identity until an authoritative text snapshot reconciles it
+  // or the assistant message completes.
+  if (finalTextByKind.size) message.textStreams.delete(author);
+  return applied;
 }
 
 export function mergeReplayedText(current, incoming) {
@@ -107,6 +342,12 @@ export function mergeReplayedText(current, incoming) {
   const replayCandidate = incoming.replace(/^\s+/, "");
   if (replayCandidate !== incoming && replayCandidate.startsWith(current)) return replayCandidate;
   if (replayCandidate !== incoming && current.endsWith(replayCandidate)) return current;
+  // Some providers periodically replace an in-progress cumulative snapshot
+  // after correcting Markdown structure (most visibly an unfinished table or
+  // formula delimiter). The new snapshot shares a substantial anchored
+  // prefix but is not a byte-for-byte extension, so appending it would render
+  // the whole answer twice inside one Markdown element.
+  if (isRevisedCumulativeSnapshot(current, replayCandidate)) return replayCandidate;
   // Find the longest suffix/prefix overlap in linear time. The previous
   // descending slice/endsWith loop became quadratic for long streamed code
   // blocks when a provider delivered partially overlapping chunks.
@@ -154,11 +395,9 @@ function timelineLookup(timeline) {
     callById: new Map(),
     callByExecutorKey: new Map(),
     unresolvedByName: new Map(),
-    actionByBackendId: new Map(),
   };
   for (const action of timeline) {
     if (action.type !== "activity_action") continue;
-    if (action.backendActionId) lookup.actionByBackendId.set(action.backendActionId, action);
     for (const call of action.toolCalls || []) registerTimelineCall(lookup, call);
   }
   Object.defineProperty(timeline, "_lookup", { value: lookup, configurable: true });
@@ -188,7 +427,7 @@ function nextTimelineItemId(timeline, prefix) {
 }
 
 export function upsertTimelineThought(timeline, text) {
-  if (!text) return;
+  if (!text) return null;
   const compacted = compactRepeatedPrefixSnapshots(text);
   const last = timeline[timeline.length - 1];
   if (last?.type === "reasoning") {
@@ -197,15 +436,17 @@ export function upsertTimelineThought(timeline, text) {
       last.text = nextText;
       last.renderRevision = (last.renderRevision || 0) + 1;
     }
-    return;
+    return last;
   }
   // Reasoning remains a chronological timeline entry. It is intentionally
   // not inferred to belong to a later tool call without explicit metadata.
-  timeline.push({ type: "reasoning", timelineId: nextTimelineItemId(timeline, "reasoning"), text: compacted, renderRevision: 1 });
+  const item = { type: "reasoning", timelineId: nextTimelineItemId(timeline, "reasoning"), text: compacted, renderRevision: 1 };
+  timeline.push(item);
+  return item;
 }
 
 export function upsertTimelineText(timeline, text) {
-  if (!text) return;
+  if (!text) return null;
   const compacted = compactRepeatedPrefixSnapshots(text);
   const last = timeline[timeline.length - 1];
   if (last?.type === "text") {
@@ -217,25 +458,11 @@ export function upsertTimelineText(timeline, text) {
       last.text = nextText;
       last.renderRevision = (last.renderRevision || 0) + 1;
     }
-    return;
+    return last;
   }
-  // A provider can replay the cumulative assistant snapshot after a thought
-  // or tool event. In that shape the last timeline item is not text, so the
-  // normal contiguous merge above cannot see the replay and creates a second
-  // copy of the answer. Update the originating text block instead. A real
-  // follow-up message cannot begin with the entire earlier block.
-  const earlierText = [...timeline].reverse().find((item) => item.type === "text");
-  const replayCandidate = compacted.replace(/^\s+/, "");
-  const earlierCandidate = String(earlierText?.text || "").replace(/^\s+/, "");
-  if (earlierText && earlierCandidate.length >= 8 && replayCandidate.startsWith(earlierCandidate)) {
-    const nextText = compactRepeatedPrefixSnapshots(mergeReplayedText(earlierText.text || "", compacted));
-    if (nextText !== earlierText.text) {
-      earlierText.text = nextText;
-      earlierText.renderRevision = (earlierText.renderRevision || 0) + 1;
-    }
-    return;
-  }
-  timeline.push({ type: "text", timelineId: nextTimelineItemId(timeline, "text"), text: compacted, renderRevision: 1 });
+  const item = { type: "text", timelineId: nextTimelineItemId(timeline, "text"), text: compacted, renderRevision: 1 };
+  timeline.push(item);
+  return item;
 }
 
 function titleizeToolName(name = "") {
@@ -389,8 +616,15 @@ function findToolCall(timeline, event) {
     return unresolved?.size === 1 ? unresolved.values().next().value : undefined;
   }
 
-  // A call without an id or durable executor identity can only be paired by
-  // order. This keeps the existing best-effort behavior for ordinary tools.
+  // A provider id identifies one invocation, even when several invocations
+  // share the same tool name in one model turn. Falling through to the
+  // name-based compatibility path here collapses parallel executor calls into
+  // the first unresolved call and leaves their responses as phantom rows.
+  if (event.id) return undefined;
+
+  // Only legacy calls without an id or durable executor identity can be
+  // paired by order. This keeps the best-effort behavior scoped to the
+  // protocol shape that actually needs it.
   const unresolved = lookup.unresolvedByName.get(event.name);
   if (!unresolved) return undefined;
   let latest;
@@ -415,12 +649,6 @@ function refreshAction(action) {
   return action;
 }
 
-function findActionForNewCall(timeline, event) {
-  const metadataId = actionMetadata(event);
-  if (!metadataId) return null;
-  return timelineLookup(timeline).actionByBackendId.get(metadataId) || null;
-}
-
 /**
  * Adapter from backend protocol events to the presentation model. Components
  * only receive unified ToolCall objects; input and output remain available as
@@ -432,11 +660,15 @@ export function upsertTimelineEvent(timeline, event) {
   let call = findToolCall(timeline, event);
   let action = call?.action;
   if (!call) {
-    action = findActionForNewCall(timeline, event) || {
+    // Every invocation owns its chronological slot. Backend action ids remain
+    // metadata, but never merge a later invocation into an earlier slot: text
+    // or another activity may have appeared between the two calls.
+    action = {
       type: "activity_action",
       timelineId: nextTimelineItemId(timeline, "action"),
       id: event.id || nextTimelineItemId(timeline, "action-id"),
       backendActionId: actionMetadata(event),
+      activityId: event.activityId || null,
       toolCalls: [],
       rawEvents: [],
     };
@@ -453,10 +685,7 @@ export function upsertTimelineEvent(timeline, event) {
     };
     action.toolCalls.push(call);
     registerTimelineCall(lookup, call);
-    if (!timeline.includes(action)) {
-      timeline.push(action);
-      if (action.backendActionId) lookup.actionByBackendId.set(action.backendActionId, action);
-    }
+    timeline.push(action);
   }
   if (isInput) {
     call.id ||= event.id;

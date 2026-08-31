@@ -1,9 +1,13 @@
 import {
-  applyAssistantMessagePart,
+  applyAssistantMessageEvent,
   completeAssistantMessage,
   createAssistantMessage,
 } from "../chat/timeline.js";
 import { createMessageRenderScheduler, messageRenderInterval } from "../chat/messageRenderScheduler.js";
+import {
+  initializeRequestLifecycle,
+  markRequestTerminal,
+} from "./requestLifecycle.js";
 import { TranscriptStore } from "./TranscriptStore.js";
 import { VirtualTranscript } from "./VirtualTranscript.js";
 
@@ -11,12 +15,15 @@ import { VirtualTranscript } from "./VirtualTranscript.js";
 export function createSessionRuntime({
   session: { state, requestKey: sessionRequestKey, releaseRequest: releaseSessionRequest },
   timeline: {
-    chatArea, stepExecutionFeed, isExecutorLauncherTool, getFunctionResponse,
+    chatArea, stepExecutionFeed, getFunctionResponse,
     displayStoredUserText: displayMessageFromStoredUserText,
     addMessage, addAgentTimelineMessage, addPlanApprovalActions, renderTimeline,
     clearDisclosures: clearChatDisclosures,
   },
-  ui: { updateSendButtonState, renderSessionBanner, refreshSessionFiles, workdirDisplay },
+  ui: {
+    updateSendButtonState, renderSessionBanner, refreshSessionFiles, workdirDisplay,
+    onRequestStateChange,
+  },
   managedRun: { eventsUrl: managedRunEventsUrl },
 }) {
   const pageSize = 40;
@@ -74,9 +81,6 @@ export function createSessionRuntime({
     const durableUserIndex = records.findLastIndex(({ event }) => event?.author === "user"
       && (event.content?.parts || []).some((part) => String(part.text || "").includes(request.backendMessage || "\u0000")));
     const durableUserPresent = durableUserIndex >= 0;
-    const durableReplyPresent = durableUserPresent && records.slice(durableUserIndex + 1)
-      .some(({ event }) => event?.author !== "user" && (event.content?.parts || []).length);
-    if (request.message?.lifecycle === "completed" && durableReplyPresent) return;
     if (!durableUserPresent && request.userMessage) viewport.liveHost.appendChild(request.userMessage);
     viewport.liveHost.appendChild(request.messageView.element);
     if (request.message?.lifecycle !== "completed") {
@@ -86,17 +90,31 @@ export function createSessionRuntime({
 
   function refreshRows(context, { follow = false } = {}) {
     if (activeContext !== context || sessionRequestKey() !== context.viewKey) return;
-    const rows = context.store.rows().map((row) => {
-      if (row.type !== "assistant") return row;
-      const graphRevision = launcherNodeIds(row.records.map((record) => record.event))
-        .map((id) => context.graphRevisions.get(id) || "")
-        .join("|");
-      return {
-        ...row,
-        id: `${context.viewKey}:${row.id}`,
-        revision: `${row.revision}:g${graphRevision}:a${context.awaitingPlanApproval ? 1 : 0}`,
-      };
-    }).map((row) => row.type === "assistant" ? row : ({ ...row, id: `${context.viewKey}:${row.id}` }));
+    const request = state.activeRequests.get(context.viewKey);
+    // The active run always belongs to the newest persisted user turn. Do not
+    // compare text here: the durable message can contain upload context or
+    // other normalization that differs from `request.backendMessage`.
+    const activeUserIndex = request
+      ? [...context.store.records.values()].sort((left, right) => left.index - right.index)
+        .findLast(({ event }) => event?.author === "user")?.index
+      : null;
+    const rows = context.store.rows()
+      // The live message owns the active turn until the request is released.
+      // Session snapshots can arrive before then; rendering their partial
+      // assistant row as well creates a raw/Markdown duplicate.
+      .filter((row) => !(request && Number.isInteger(activeUserIndex)
+        && row.type === "assistant" && row.startIndex > activeUserIndex))
+      .map((row) => {
+        if (row.type !== "assistant") return row;
+        const graphRevision = launcherNodeIds(row.records.map((record) => record.event))
+          .map((id) => context.graphRevisions.get(id) || "")
+          .join("|");
+        return {
+          ...row,
+          id: `${context.viewKey}:${row.id}`,
+          revision: `${row.revision}:g${graphRevision}:a${context.awaitingPlanApproval ? 1 : 0}`,
+        };
+      }).map((row) => row.type === "assistant" ? row : ({ ...row, id: `${context.viewKey}:${row.id}` }));
     viewport.setRows(rows, { follow });
   }
 
@@ -119,7 +137,10 @@ export function createSessionRuntime({
     const ids = new Set();
     (events || []).forEach((event) => (event?.content?.parts || []).forEach((part) => {
       const call = part?.functionCall || part?.function_call;
-      if (!call || !isExecutorLauncherTool(call.name)) return;
+      // Child executors are included with their root executor's graph
+      // subtree. Fetching them by local step_number would match unrelated
+      // children from other parents (many have step number 1).
+      if (!call || !["run_flash_step", "run_node_executor"].includes(call.name)) return;
       const id = launcherNodeId(call.args || {});
       if (id) ids.add(id);
     }));
@@ -191,38 +212,14 @@ export function createSessionRuntime({
     return event?.createTime ? new Date(event.createTime).getTime() : fallback;
   }
 
-  function collectResponses(events) {
-    const responses = {};
-    events.forEach((event) => (event?.content?.parts || []).forEach((part) => {
-      const response = getFunctionResponse(part);
-      if (response?.id) responses[response.id] = response;
-    }));
-    return responses;
-  }
-
-  function appendEvent(message, event, responses = {}, paired = new Set()) {
-    (event?.content?.parts || []).forEach((part) => {
-      if (part.functionCall || part.function_call) {
-        const call = part.functionCall || part.function_call;
-        applyAssistantMessagePart(message, part);
-        const response = responses[call.id];
-        if (response) {
-          paired.add(response.id);
-          applyAssistantMessagePart(message, { functionResponse: response });
-        }
-      } else if (getFunctionResponse(part)) {
-        const response = getFunctionResponse(part);
-        if (!paired.has(response.id)) applyAssistantMessagePart(message, part);
-      } else {
-        applyAssistantMessagePart(message, part);
-      }
-    });
+  function appendEvent(message, event) {
+    applyAssistantMessageEvent(message, event);
   }
 
   function attachStepNodes(timeline, context) {
     const nodes = [...context.graphNodes.values()];
     timeline.filter((item) => item.type === "activity_action").flatMap((item) => item.toolCalls || [])
-      .filter((call) => isExecutorLauncherTool(call.name)).forEach((call) => {
+      .filter((call) => ["run_flash_step", "run_node_executor"].includes(call.name)).forEach((call) => {
         const id = launcherNodeId(call.input);
         const node = nodes.find((candidate) => id
           && (launcherNodeId(candidate.input) === id || candidate.id?.endsWith(`__node_${id}`)));
@@ -243,9 +240,7 @@ export function createSessionRuntime({
       id: row.id,
       startedAt: eventTimestamp(events[0]),
     });
-    const paired = new Set();
-    const responses = collectResponses(events);
-    events.forEach((event) => appendEvent(message, event, responses, paired));
+    events.forEach((event) => appendEvent(message, event));
     completeAssistantMessage(message, eventTimestamp(events.at(-1)));
     attachStepNodes(message.items, context);
     const view = addAgentTimelineMessage(message, new Set(), row.startIndex, host, {
@@ -302,12 +297,10 @@ export function createSessionRuntime({
       context.summary = sessionData.summary || state.sessionSummaries[sessionId] || "";
       context.awaitingPlanApproval = shouldShowApproval(sessionId, sessionData, events);
       mergeGraphNodes(context, nodes);
-      // The persisted rows below include the completed reply that has just
-      // streamed in `liveHost`. Remove that optimistic copy before notifying
-      // the transcript store, whose subscriber mounts the persisted copy.
-      // Mounting first and clearing afterwards briefly showed both messages
-      // (and made the final response appear to double in height).
-      viewport.clearLive();
+      // A live request remains the sole visible owner of its turn until it is
+      // released. Snapshot recovery is allowed to update the store but must
+      // not clear the live message before the durable handoff.
+      if (!state.activeRequests.get(viewKey)) viewport.clearLive();
       context.store.insertPage(sessionData);
       rememberContext(context);
       const changedContext = activeContext !== context;
@@ -364,6 +357,23 @@ export function createSessionRuntime({
     return viewport.liveHost;
   }
   function getLiveHost() { return viewport.liveHost; }
+  async function handoffLiveTurn(request) {
+    if (!request || state.activeRequests.get(request.key) !== request) return false;
+    const isVisible = sessionRequestKey(request.sessionId, request.owner) === sessionRequestKey();
+    // A live assistant view and its persisted transcript row are alternate
+    // representations of one turn.  Clear the live owner *before* releasing
+    // its request lock; otherwise a concurrent session refresh can mount the
+    // durable Markdown row while the live DOM is still present.
+    if (isVisible) viewport.clearLive();
+    releaseSessionRequest(request);
+    if (isVisible && activeContext?.viewKey === request.key) {
+      // `reloadSessionSnapshot({ handoff: true })` has already committed the
+      // durable events to this store. Removing the ownership filter mounts
+      // that row immediately, without a blank network round trip.
+      refreshRows(activeContext, { follow: true });
+    }
+    return true;
+  }
   function resetTranscript() {
     activeContext?.rangeControllers.forEach((controller) => controller.abort());
     activeContext?.rangeControllers.clear();
@@ -398,21 +408,35 @@ export function createSessionRuntime({
     if (!activeRun?.run_id) return;
     const key = sessionRequestKey(sessionId, owner);
     if (state.activeRequests.get(key)) return;
-    const request = {
+    const request = initializeRequestLifecycle({
       key, sessionId, owner, backendUserId: owner, controller: new AbortController(),
       lastSequence: activeRun.latest_sequence || 0, runId: activeRun.run_id, retryDelayMs: 500,
-    };
+    });
     state.activeRequests.set(key, request);
     updateSendButtonState();
     void streamManagedRunEvents(request);
   }
 
   function applyManagedPayload(live, payload) {
-    String(payload || "").split("\n").forEach((line) => {
+    let streamFinished = false;
+    live.lineBuffer = `${live.lineBuffer || ""}${String(payload || "")}`;
+    const lines = live.lineBuffer.split("\n");
+    live.lineBuffer = lines.pop() || "";
+    lines.forEach((line) => {
       if (!line.trim().startsWith("data: ")) return;
-      try { appendEvent(live.message, JSON.parse(line.trim().slice(6))); } catch (_) { /* malformed replay event */ }
+      const data = line.trim().slice(6);
+      if (data === "[DONE]") {
+        streamFinished = true;
+        return;
+      }
+      try { appendEvent(live.message, JSON.parse(data)); } catch (_) { /* malformed replay event */ }
     });
     live.scheduler.request();
+    if (streamFinished) {
+      completeAssistantMessage(live.message);
+      updateSendButtonState();
+      void live.scheduler.finish();
+    }
   }
 
   async function streamManagedRunEvents(request) {
@@ -429,7 +453,7 @@ export function createSessionRuntime({
       });
       stepExecutionFeed.startLiveTurn(null, message.startedAt, view.stepFeedLiveHost);
       live = {
-        message, shownPlots, view,
+        message, shownPlots, view, lineBuffer: "",
         scheduler: createMessageRenderScheduler({
           intervalMs: () => messageRenderInterval(message.items
             .filter((item) => item.type === "text" || item.type === "reasoning")
@@ -468,10 +492,16 @@ export function createSessionRuntime({
             } else if (envelope.type === "snapshot_required") {
               request.lastSequence = envelope.latest_sequence || request.lastSequence;
               metrics.managedSnapshotRecoveries += 1;
-              await loadSession(request.sessionId, request.owner);
+              await loadSession(request.sessionId, request.owner, { render: false });
             } else if (envelope.type === "terminal") {
               request.lastSequence = envelope.latest_sequence || request.lastSequence;
+              markRequestTerminal(request, envelope.status);
+              updateSendButtonState();
+              onRequestStateChange?.();
               if (live) {
+                // Flush a final unterminated line for runs recorded by an
+                // older server; current servers publish complete SSE records.
+                applyManagedPayload(live, "\n");
                 completeAssistantMessage(live.message);
                 updateSendButtonState();
                 await live.scheduler.finish();
@@ -497,7 +527,7 @@ export function createSessionRuntime({
   }
 
   return {
-    beginLiveOutput, getLiveHost, canRevealPlanApproval, discoverManagedRun, loadSession,
+    beginLiveOutput, getLiveHost, handoffLiveTurn, canRevealPlanApproval, discoverManagedRun, loadSession,
     renderSessionTimeline, resetTranscript, restorePlanApproval, restoreSessionSnapshot, startManagedRunReconnect,
     suppressPlanApproval, updateSessionWorkdirDisplay,
     metrics: () => ({ ...metrics, ...viewport.metrics(), totalEvents: activeContext?.store.totalCount || 0 }),
