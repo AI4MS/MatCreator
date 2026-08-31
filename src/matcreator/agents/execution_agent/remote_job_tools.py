@@ -24,12 +24,67 @@ from google.adk.tools.tool_context import ToolContext
 from ...control_plane.providers.e2b import E2BConnectionConfig
 from ...control_plane.remote_job_service import RemoteJobService
 from ...control_plane.remote_jobs import TERMINAL_REMOTE_JOB_STATUSES, RemoteJobStore
+from ...control_plane.remote_task_contract import (
+    RemoteTaskContractError,
+    build_remote_task_envelope,
+    make_public_input_record,
+    validate_task_run_id,
+    validate_workload_profile,
+)
 from ...workspace import ADK_DIR
 from .recovery import record_remote_job_reference
 
 # Every terminal status except "collected" (the successful end of a batch
 # job) means the submission is not usable and must not be reported as ready.
 _FAILED_SUBMISSION_STATUSES = TERMINAL_REMOTE_JOB_STATUSES - {"collected"}
+
+_PRESENTATION_VERSION = "mc.remote-task-presentation.v1"
+_TASK_PRESENTATION_PROFILES: dict[str, dict[str, Any]] = {
+    "md": {
+        "task_type": "Molecular dynamics",
+        "phase_plan": (
+            ("prepare", "Prepare MD inputs"),
+            ("submit", "Submit Sandbox"),
+            ("queue", "Stage runtime"),
+            ("execute", "Simulate"),
+            ("collect", "Collect outputs"),
+            ("validate", "Validate trajectory"),
+        ),
+    },
+    "vasp": {
+        "task_type": "VASP",
+        "phase_plan": (
+            ("prepare", "Prepare VASP inputs"),
+            ("submit", "Submit Sandbox"),
+            ("queue", "Stage runtime"),
+            ("execute", "Solve"),
+            ("collect", "Collect outputs"),
+            ("validate", "Verify calculation"),
+        ),
+    },
+    "training": {
+        "task_type": "Model training",
+        "phase_plan": (
+            ("prepare", "Prepare training inputs"),
+            ("submit", "Submit Sandbox"),
+            ("queue", "Stage runtime"),
+            ("execute", "Train"),
+            ("collect", "Collect checkpoints"),
+            ("validate", "Evaluate model"),
+        ),
+    },
+    "generic": {
+        "task_type": "Generic remote task",
+        "phase_plan": (
+            ("prepare", "Prepare inputs"),
+            ("submit", "Submit Sandbox"),
+            ("queue", "Stage runtime"),
+            ("execute", "Execute"),
+            ("collect", "Collect outputs"),
+            ("validate", "Verify task"),
+        ),
+    },
+}
 
 
 def _service() -> RemoteJobService:
@@ -49,6 +104,98 @@ def _node_id(tool_context: ToolContext) -> str:
 def _idempotency_key(session_id: str, node_id: str, discriminator: str) -> str:
     identity = f"{session_id}:{node_id}:{discriminator}"
     return f"remote-job:{hashlib.sha256(identity.encode()).hexdigest()}"
+
+
+def _bohr_provider_session_id(
+    tool_context: ToolContext,
+    *,
+    template: str,
+    stable_name: str,
+) -> str:
+    """Derive one scoped, opaque Bohrium association ID.
+
+    Public ``stable_name`` values are unique only inside the MC task
+    contract.  Hash the owning MC scope before using Bohrium's global-ish
+    session metadata so two users or sessions may safely choose the same
+    friendly task name without colliding or exposing those scope values.
+    """
+
+    identity = json.dumps(
+        [
+            _owner_id(tool_context),
+            str(tool_context.state.get("session_id") or ""),
+            _node_id(tool_context),
+            str(template),
+            str(stable_name),
+            1,
+        ],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    return "mc-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+
+
+def _default_task_run_id(session_id: str, node_id: str) -> str:
+    """Return a deterministic public identity without rejecting legacy node IDs."""
+    try:
+        return validate_task_run_id(node_id)
+    except RemoteTaskContractError:
+        digest = hashlib.sha256(f"{session_id}:{node_id}".encode()).hexdigest()[:20]
+        return f"task-{digest}"
+
+
+def _task_submission_metadata(
+    tool_context: ToolContext,
+    *,
+    stable_name: str | None,
+    workload_kind: str | None,
+) -> dict[str, Any]:
+    """Build provider-neutral, browser-safe task metadata for a Sandbox."""
+    session_id = str(tool_context.state.get("session_id") or "")
+    node_id = _node_id(tool_context)
+    task_run_id = (
+        validate_task_run_id(stable_name)
+        if stable_name is not None
+        else _default_task_run_id(session_id, node_id)
+    )
+    profile = validate_workload_profile(
+        "generic" if workload_kind is None else workload_kind
+    )
+    envelope = build_remote_task_envelope(
+        task_run_id=task_run_id,
+        attempt=1,
+        workload_profile=profile,
+        inputs=(),
+    )
+    profile_definition = _TASK_PRESENTATION_PROFILES[profile]
+    phase_plan = [
+        {
+            "key": key,
+            "label": label,
+            "group": (
+                "preparation"
+                if key in {"prepare", "submit", "queue"}
+                else "execution"
+                if key == "execute"
+                else "completion"
+            ),
+        }
+        for key, label in profile_definition["phase_plan"]
+    ]
+    presentation = {
+        "version": _PRESENTATION_VERSION,
+        "workload_kind": profile,
+        "task_type": profile_definition["task_type"],
+        "current_phase": "prepare",
+        "phase_plan": phase_plan,
+    }
+    return {
+        "stable_name": task_run_id,
+        "workload_kind": profile,
+        "task_type": profile_definition["task_type"],
+        "presentation": presentation,
+        "task_contract": envelope,
+    }
 
 
 def _submit(
@@ -131,12 +278,17 @@ def submit_e2b_sandbox(
     timeout: int = 7200,
     template: str = None,
     lifecycle: dict[str, Any] | str | None = None,
+    stable_name: str | None = None,
+    workload_kind: str | None = "generic",
 ) -> dict[str, Any]:
     """Create or reuse a tracked E2B sandbox for the current execution step.
 
     The configured E2B API key, endpoint, and project ID are used server-side.
     Never use shell commands or include credentials in tool inputs. A repeated
     call for the same step and template returns the existing sandbox record.
+    ``stable_name`` may name an independently tracked logical task, while
+    ``workload_kind`` selects ``md``, ``vasp``, ``training``, or ``generic``
+    presentation phases without changing the provider lifecycle.
     """
     session_id = str(tool_context.state.get("session_id") or "")
     if not session_id:
@@ -156,6 +308,14 @@ def submit_e2b_sandbox(
             "status": "error",
             "message": "lifecycle must be a JSON object such as {\"on_timeout\": \"pause\", \"auto_resume\": true}.",
         }
+    try:
+        task_metadata = _task_submission_metadata(
+            tool_context,
+            stable_name=stable_name,
+            workload_kind=workload_kind,
+        )
+    except RemoteTaskContractError as exc:
+        return {"status": "error", "message": f"Invalid remote task contract: {exc}"}
     connection = _connection()
     missing_config = [
         name
@@ -181,12 +341,19 @@ def submit_e2b_sandbox(
         template=template,
     )
     spec = connection.to_spec_dict(timeout=timeout, lifecycle=lifecycle or {"on_timeout": "pause", "auto_resume": True})
-    persisted_specification = {key: value for key, value in spec.items() if key != "api_key"}
+    persisted_specification = {
+        key: value for key, value in spec.items() if key != "api_key"
+    }
+    persisted_specification.update(task_metadata)
     result = _submit(
         tool_context,
         provider="e2b",
         spec=spec,
-        discriminator=template,
+        discriminator=(
+            template
+            if stable_name is None
+            else f"{template}:{task_metadata['stable_name']}"
+        ),
         persisted_specification=persisted_specification,
     )
     return _submission_response(
@@ -206,6 +373,8 @@ def submit_bohr_sandbox(
     gpu: str = None,
     never_timeout: bool = False,
     env: dict[str, str] | None = None,
+    stable_name: str | None = None,
+    workload_kind: str | None = "generic",
 ) -> dict[str, Any]:
     """Create or reuse a tracked Bohrium CLI sandbox (`bohr sandbox`) for the current step.
 
@@ -214,7 +383,12 @@ def submit_bohr_sandbox(
     is available in the current environment. An explicit ``template`` is
     required (e.g. ``doc-compiler``). ``gpu`` selects a GPU shortcut template
     (``4090``/``5090``/``l20``). Falls back to the `BOHRIUM_PROJECT_ID`
-    environment variable if ``project_id`` is omitted.
+    environment variable if ``project_id`` is omitted. ``stable_name`` and
+    ``workload_kind`` add public task identity/presentation metadata.  When a
+    ``stable_name`` is supplied, an opaque ID derived from the owning MC
+    scope is also sent to Bohrium so a disconnected submission can be found
+    without cross-user name collisions.  Environment values are never
+    persisted, and the provider association ID is not exposed by the Web API.
     """
     resolved_project_id = project_id or os.environ.get("BOHRIUM_PROJECT_ID", "")
     if not resolved_project_id:
@@ -227,6 +401,14 @@ def submit_bohr_sandbox(
                 "Use 'bohr sandbox template list' to see available templates."
             ),
         }
+    try:
+        task_metadata = _task_submission_metadata(
+            tool_context,
+            stable_name=stable_name,
+            workload_kind=workload_kind,
+        )
+    except RemoteTaskContractError as exc:
+        return {"status": "error", "message": f"Invalid remote task contract: {exc}"}
     spec = {
         "project_id": resolved_project_id,
         "template": template,
@@ -236,11 +418,33 @@ def submit_bohr_sandbox(
         "never_timeout": never_timeout,
         "env": env or {},
     }
+    provider_session_id = None
+    if stable_name is not None:
+        provider_session_id = _bohr_provider_session_id(
+            tool_context,
+            template=template,
+            stable_name=task_metadata["stable_name"],
+        )
+        spec["session_id"] = provider_session_id
+    persisted_specification = {
+        key: value
+        for key, value in spec.items()
+        if key not in {"env", "session_id"}
+    }
+    persisted_specification["env_variable_count"] = len(env or {})
+    if provider_session_id is not None:
+        persisted_specification["provider_session_id"] = provider_session_id
+    persisted_specification.update(task_metadata)
     result = _submit(
         tool_context,
         provider="bohr_sandbox",
         spec=spec,
-        discriminator=template,
+        discriminator=(
+            template
+            if stable_name is None
+            else f"{template}:{task_metadata['stable_name']}"
+        ),
+        persisted_specification=persisted_specification,
     )
     return _submission_response(
         result,
@@ -449,6 +653,42 @@ def poll_remote_job_command(job_id: str, tool_context: ToolContext) -> dict[str,
         return {"status": "error", "message": f"Failed to poll remote command: {exc}"}
 
 
+def publish_remote_job_progress(
+    job_id: str,
+    kind: str,
+    current: int,
+    total: int,
+    unit: str,
+    tool_context: ToolContext,
+) -> dict[str, Any]:
+    """Publish a real execution metric for one owned interactive remote job.
+
+    Use only when the workload exposes an explicit numerator and denominator,
+    such as MD step / target step or training epoch / target epoch. This does
+    not infer progress from provider liveness and is rejected for batch jobs.
+    """
+    owned = get_remote_job_status(job_id, tool_context)
+    if owned.get("status") == "error":
+        return owned
+    try:
+        updated = _service().publish_job_progress(
+            job_id,
+            kind=kind,
+            current=current,
+            total=total,
+            unit=unit,
+        )
+    except Exception as exc:
+        return {"status": "error", "message": f"Progress update failed: {exc}"}
+    progress = (updated.get("snapshot") or {}).get("progress") or {}
+    return {
+        "job_id": job_id,
+        "status": updated["status"],
+        "current_phase": "execution",
+        "progress": progress,
+    }
+
+
 def _resolve_workspace_child(
     tool_context: ToolContext,
     user_path: str,
@@ -470,17 +710,28 @@ def _resolve_workspace_child(
     return candidate, None
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def upload_remote_job_input(
     job_id: str,
     source_path: str,
     destination_path: str,
     tool_context: ToolContext,
+    role: str = "input",
+    required: bool = True,
 ) -> dict[str, Any]:
     """Upload a workspace input file into a tracked interactive remote job.
 
     ``source_path`` must resolve inside the current workspace. Use an
     absolute remote path for ``destination_path`` such as
-    ``/home/user/input.in``.
+    ``/home/user/input.in``. The local file's size and SHA-256 are recorded in
+    the public task contract; local paths and file contents are never stored.
     """
     job = get_remote_job_status(job_id, tool_context)
     if job.get("status") == "error":
@@ -489,9 +740,63 @@ def upload_remote_job_input(
     if error is not None:
         return {"status": "error", "message": f"Upload failed: {error}"}
     try:
-        return _service().upload_job_file(job_id, source, destination_path)
+        digest = _sha256_file(source)
+        input_record = make_public_input_record(
+            role=role,
+            remote_path=destination_path,
+            size=source.stat().st_size,
+            sha256=digest,
+            required=required,
+        )
+    except (OSError, RemoteTaskContractError) as exc:
+        return {"status": "error", "message": f"Upload failed: {exc}"}
+    service = _service()
+    try:
+        result = service.upload_job_file(job_id, source, destination_path)
     except Exception as exc:
         return {"status": "error", "message": f"Upload failed: {exc}"}
+    try:
+        durable = service.store.get_job(job_id) or {}
+        specification = durable.get("specification")
+        specification = specification if isinstance(specification, dict) else {}
+        existing_contract = specification.get("task_contract")
+        existing_contract = existing_contract if isinstance(existing_contract, dict) else {}
+        existing_inputs = existing_contract.get("inputs")
+        existing_inputs = existing_inputs if isinstance(existing_inputs, list) else []
+        inputs = [
+            item
+            for item in existing_inputs
+            if isinstance(item, dict) and item.get("remote_path") != destination_path
+        ]
+        inputs.append(input_record)
+        contract = build_remote_task_envelope(
+            task_run_id=(
+                existing_contract.get("task_run_id")
+                or specification.get("stable_name")
+                or job_id
+            ),
+            attempt=existing_contract.get("attempt") or 1,
+            workload_profile=(
+                existing_contract.get("workload_profile")
+                or specification.get("workload_kind")
+                or "generic"
+            ),
+            inputs=inputs,
+        )
+        presentation = specification.get("presentation")
+        presentation = dict(presentation) if isinstance(presentation, dict) else {}
+        presentation["current_phase"] = "queue"
+        service.store.merge_specification(
+            job_id,
+            {"task_contract": contract, "presentation": presentation},
+        )
+        result["input"] = input_record
+        result["contract_digest"] = contract["contract_digest"]
+    except Exception as exc:
+        # The remote upload already succeeded. Surface an observability warning
+        # instead of encouraging a caller to repeat the transfer blindly.
+        result["contract_warning"] = f"Input uploaded but its public manifest was not updated: {exc}"
+    return result
 
 
 def download_remote_job_output(

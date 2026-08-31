@@ -24,6 +24,7 @@ from .remote_job_tools import (
     get_remote_job_status,
     pause_remote_job,
     poll_remote_job_command,
+    publish_remote_job_progress,
     run_remote_job_command,
     start_remote_job_command,
     submit_bohr_job,
@@ -174,6 +175,9 @@ If your `prior_context` contains "REMOTE JOB ALREADY SUBMITTED", a tracked remot
   reporting the job is still running, rather than looping tool calls back-to-back) so a single
   step doesn't sit blocked. Re-attaching to the same `job_id` later always finds the same
   tracked command via `poll_remote_job_command`, so it's always safe even after a step timeout.
+- If the workload exposes a real numerator and denominator (for example MD step / target
+  step), call `publish_remote_job_progress`. Never invent a percentage from Sandbox or
+  provider liveness; tasks without an explicit metric remain indeterminate while executing.
 
 ## User controls for remote jobs
 `get_remote_job_status` may return `user_control` when the user paused or terminated
@@ -300,6 +304,7 @@ def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
             FunctionTool(run_remote_job_command),
             FunctionTool(start_remote_job_command),
             FunctionTool(poll_remote_job_command),
+            FunctionTool(publish_remote_job_progress),
             FunctionTool(upload_remote_job_input),
             FunctionTool(download_remote_job_output),
             FunctionTool(collect_remote_job_outputs),

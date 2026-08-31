@@ -10,11 +10,47 @@ provider means adding one adapter module plus one registration call (see
 """
 from __future__ import annotations
 
+import math
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+
+DEFAULT_PROVIDER_QUERY_TIMEOUT_SECONDS = 30.0
+PROVIDER_QUERY_TIMEOUT_ENV = "MATCREATOR_REMOTE_PROVIDER_QUERY_TIMEOUT_SECONDS"
+
+
+def provider_query_timeout_seconds(value: float | None = None) -> float:
+    """Return the finite timeout used for provider observations.
+
+    Long-running user commands deliberately retain their adapter-specific
+    unbounded behavior.  Status probes and the small task-monitor
+    bootstrap/sync commands use this separate bound so a provider transport
+    that never returns cannot freeze the durable monitor loop.
+    """
+
+    raw_value: object = (
+        value
+        if value is not None
+        else os.environ.get(
+            PROVIDER_QUERY_TIMEOUT_ENV,
+            str(DEFAULT_PROVIDER_QUERY_TIMEOUT_SECONDS),
+        )
+    )
+    try:
+        seconds = float(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{PROVIDER_QUERY_TIMEOUT_ENV} must be a positive finite number"
+        ) from exc
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError(
+            f"{PROVIDER_QUERY_TIMEOUT_ENV} must be a positive finite number"
+        )
+    return seconds
 
 
 class RemoteJobCapability(Enum):
@@ -41,6 +77,15 @@ class CapabilityError(NotImplementedError):
         super().__init__(f"Provider '{provider}' does not support '{capability.value}'")
         self.provider = provider
         self.capability = capability
+
+
+class RemoteJobPreflightError(ValueError):
+    """A local validation/setup failure known to precede provider creation.
+
+    Only this exception class is safe for the service to reset and retry with
+    the same idempotency key. Generic provider errors are ambiguous: the
+    remote resource may already exist even when its response was lost.
+    """
 
 
 @dataclass(frozen=True)
@@ -100,7 +145,20 @@ class RemoteJobAdapter(ABC):
     def resume(self, external_id: str) -> None:
         raise CapabilityError(self.provider, RemoteJobCapability.RESUME)
 
-    def run_command(self, external_id: str, command: str, *, user: str = "root") -> dict[str, Any]:
+    def run_command(
+        self,
+        external_id: str,
+        command: str,
+        *,
+        user: str = "root",
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Run one interactive command.
+
+        ``None`` preserves the unbounded contract required by explicit
+        long-running user commands.  Control-plane probes pass a finite
+        timeout so their failure is isolated from other jobs.
+        """
         raise CapabilityError(self.provider, RemoteJobCapability.INTERACTIVE_EXEC)
 
     def upload_file(self, external_id: str, source: str | Path, destination: str) -> None:

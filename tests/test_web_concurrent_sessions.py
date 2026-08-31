@@ -9,8 +9,10 @@ MAIN_JS = Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "main.js
 MESSAGE_STREAM_JS = Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "chat" / "messageStream.js"
 RUNTIME_JS = Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "session" / "runtime.js"
 SESSION_LIST_JS = Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "session" / "sessionList.js"
+SESSION_SELECTION_JS = Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "session" / "sessionSelection.js"
 EVALUATION_CONTROLLER_JS = Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "evaluation" / "EvaluationController.js"
 REMOTE_JOBS_CONTROLLER_JS = Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "remoteJobs" / "RemoteJobsController.js"
+REMOTE_JOBS_SESSION_JS = Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "features" / "session" / "remoteJobsSession.js"
 SESSIONS_CSS = Path(__file__).parents[1] / "web" / "vite-frontend" / "src" / "styles" / "sessions.css"
 INDEX_HTML = Path(__file__).parents[1] / "web" / "vite-frontend" / "index.html"
 WEB_MAIN_PY = Path(__file__).parents[1] / "web" / "main.py"
@@ -397,8 +399,11 @@ def test_server_mode_cancellation_uses_the_worker_workspace() -> None:
 def test_remote_job_polling_is_scoped_to_the_active_session() -> None:
     main = _main_js()
     content = _remote_jobs_controller_js()
+    session_activation = REMOTE_JOBS_SESSION_JS.read_text(encoding="utf-8")
 
-    assert "remoteJobsController.startPolling(sessionId, owner)" in main
+    assert "activateRemoteJobsSession({" in main
+    assert "controller.startPolling(sessionId, owner)" in session_activation
+    assert "sessionId !== state?.sessionId || owner !== state?.activeSessionUserId" in session_activation
     assert "pollTimer = windowRef.setInterval(() => void load(sessionId, owner), pollIntervalMs);" in content
     assert "sessionId !== state.sessionId || owner !== state.activeSessionUserId" in content
     assert "remote-jobs/${encodeURIComponent(job.job_id)}/${action}" in content
@@ -417,9 +422,20 @@ def test_remote_jobs_are_collapsed_and_keep_lifecycle_status_visible() -> None:
     assert "export function remoteJobLifecycle(status)" in content
     assert 'succeeded: "Completed"' in content
     assert 'collected: "Completed"' in content
-    assert '["Provider status", providerStatus]' in content
-    assert '["Sandbox", job.external_id || "—"]' in content
+    assert "export function remoteJobProgress" in content
+    assert "export function remoteJobConfiguration" in content
+    assert 'detailsTitle.textContent = "Task config"' in content
+    assert 'track.setAttribute("role", "progressbar")' in content
+    assert "SENSITIVE_CONFIG_KEY" in content
+    assert 'summary.className = "remote-job-face remote-job-face-summary"' in content
+    assert 'details.className = "remote-job-face remote-job-face-details"' in content
+    assert 'const flippedJobIds = new Set();' in content
+    assert 'setAttribute("inert", "")' in content
     assert ".remote-jobs-pane:not(.is-expanded) .remote-jobs-toggle" in styles
+    assert "perspective: 720px" in styles
+    assert "backface-visibility: hidden" in styles
+    assert "grid-column: 1 / -1" in styles
+    assert "height: clamp(166px, 21vh, 188px)" in styles
     assert "font-size: 0;" not in styles
 
 
@@ -443,7 +459,7 @@ def test_session_switch_loads_page_scoped_graph_after_the_transcript_page() -> N
         runtime.index("async function discoverManagedRun(")
     ]
 
-    assert "const [activeRun] = await Promise.all([" in switch_session
+    assert "const [activeRun, sessionLoad] = await Promise.all([" in switch_session
     assert "discoverManagedRun(sessionId, owner)" in switch_session
     assert "loadSession(sessionId, owner)" in switch_session
     assert "void loadSessions();" in switch_session
@@ -480,6 +496,8 @@ def test_reselecting_the_active_session_does_not_rebuild_the_view() -> None:
     ]
 
     assert "if (state.sessionReady && viewKey === sessionRequestKey()) return;" in switch_session
+    assert switch_session.index("state.sessionReady = false;") < switch_session.index("await Promise.all([")
+    assert "if (!sessionLoad)" in switch_session
 
 
 def test_stale_session_loads_cannot_replace_active_view() -> None:
@@ -527,13 +545,17 @@ def test_active_session_transitions_recompute_composer_state() -> None:
 def test_startup_restores_only_an_accessible_session_owner_tuple() -> None:
     main = _main_js()
     session_list = SESSION_LIST_JS.read_text(encoding="utf-8")
+    session_selection = SESSION_SELECTION_JS.read_text(encoding="utf-8")
 
     assert 'const SESSION_OWNER_KEY = "mat_sessionOwnerId";' in main
     assert "storeSessionSelection(sessionId, owner);" in main
     assert "const sessions = await loadSessions({ retries: 7 });" in main
     assert "validatedStoredSession(sessions, storedSessionId, storedSessionOwner)" in main
-    assert "state.deploymentMode === \"server\" && state.isAdmin" in main
-    assert "storedOwner !== state.userId" in main
+    assert "validateStoredSessionSelection({" in main
+    assert 'if (deploymentMode === "server")' in session_selection
+    assert "requestedOwner && requestedOwner !== currentOwner" in session_selection
+    assert "else if (requestedOwner)" in session_selection
+    assert "owners.size !== 1" in session_selection
     assert "await switchSession(storedSession.sessionId, storedSession.owner);" in main
     assert "clearStoredSessionSelection();" in main
     assert "return Array.isArray(sessions) ? sessions : [];" in session_list
@@ -549,6 +571,9 @@ def test_startup_keeps_session_api_ready_while_maintenance_runs_in_background() 
     assert "asyncio.create_task(_recover_local_evaluations_after_startup())" in startup
     assert "await asyncio.to_thread(refresh_skills)" not in startup
     assert "async function getStartupHealth()" in main
+    assert 'health?.mode || "local"' not in main
+    assert "void restoreStartupSession();" in main
+    assert "retrying without changing the saved session" in main
     assert "const sessions = await loadSessions({ retries: 7 });" in main
     assert "async function loadSessions({ retries = 0, retryDelayMs = 250 } = {})" in session_list
     assert "window.setTimeout(resolve, retryDelayMs * (attempt + 1))" in session_list

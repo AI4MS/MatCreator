@@ -1,0 +1,752 @@
+/*
+ * Skin component contract.
+ *
+ * Skin manifests may only provide allow-listed CSS custom properties. This
+ * file translates those properties into component appearance; downloaded
+ * skins never inject selectors or executable code into the application.
+ */
+
+body {
+  background-color: var(--skin-body-surface, var(--bg-canvas));
+}
+
+.graph-rail,
+.chat-card,
+.side-panel {
+  position: relative;
+  border-width: var(--skin-shell-border-width, 1px);
+  border-color: var(--skin-shell-border-color, var(--border));
+  border-radius: var(--skin-shell-radius, var(--radius));
+  box-shadow: var(--skin-shell-shadow, none);
+}
+
+.graph-rail { background: var(--skin-graph-surface, var(--panel)); }
+.chat-card { background: var(--skin-chat-surface, var(--panel)); }
+.side-panel { background: var(--skin-side-surface, var(--panel)); }
+
+.input-container,
+body[data-theme="dark"] .input-container,
+body[data-theme="dark"] .input-container[data-agent-mode="normal"] {
+  background: var(--skin-composer-surface, var(--bg-elevated));
+}
+
+.graph-rail::before,
+.chat-card::before,
+.side-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  border-radius: inherit;
+  opacity: var(--skin-screw-opacity, 0);
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 12px 12px,
+      var(--skin-screw-color) 0 3px,
+      var(--skin-shell-border-color) 3.5px 4px,
+      transparent 4.5px),
+    radial-gradient(circle at calc(100% - 12px) 12px,
+      var(--skin-screw-color) 0 3px,
+      var(--skin-shell-border-color) 3.5px 4px,
+      transparent 4.5px),
+    radial-gradient(circle at 12px calc(100% - 12px),
+      var(--skin-screw-color) 0 3px,
+      var(--skin-shell-border-color) 3.5px 4px,
+      transparent 4.5px),
+    radial-gradient(circle at calc(100% - 12px) calc(100% - 12px),
+      var(--skin-screw-color) 0 3px,
+      var(--skin-shell-border-color) 3.5px 4px,
+      transparent 4.5px);
+}
+
+/* Pre-reviewed Rack Lab recipe. Activated only by ThemeManager. */
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] {
+  background-image:
+    radial-gradient(circle at 1px 1px, rgba(23, 25, 31, 0.07) 1px, transparent 1.2px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.34), transparent 38%);
+  background-size: 18px 18px, 100% 100%;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .app-grid {
+  filter: drop-shadow(0 8px 14px rgba(23, 25, 31, 0.08));
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .graph-rail {
+  --text: #F7F4EA;
+  --muted: #C3C0B7;
+  --border: #1B1D22;
+  --panel-rgb: 52, 54, 64;
+  color: var(--text);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .brand-title,
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .block-header,
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .settings-header .brand-title {
+  font-family: var(--skin-display-font);
+  font-weight: 800;
+  letter-spacing: var(--skin-display-letter-spacing);
+  text-transform: uppercase;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] :is(
+  .brand-sub,
+  .graph-panel-title,
+  .eyebrow,
+  .settings-label,
+  .detail-key,
+  .plan-graph-thumbnail-label,
+  .agent-bubble-duration
+) {
+  font-family: var(--skin-label-font);
+  letter-spacing: 0.055em;
+  text-transform: var(--skin-label-transform);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .left-home-card {
+  border-bottom: 2px solid var(--skin-shell-border-color);
+  padding: 18px 20px 14px;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .brand-icon-original {
+  display: none;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .rack-lab-brand-logo {
+  display: block;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .brand-mark {
+  filter: drop-shadow(0 2px 2px rgba(2, 16, 38, 0.42));
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .brand-wordmark-scan,
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .brand-wordmark-signal {
+  animation: none;
+  opacity: 0;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .rack-brand-char {
+  display: inline-block;
+  box-sizing: border-box;
+  margin-inline: 0.018em;
+  padding: 0.06em 0.09em 0.08em;
+  border: 1px solid color-mix(in srgb, var(--accent) 68%, #d9f2ff 32%);
+  border-radius: 0.22em;
+  outline: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  background: color-mix(in srgb, var(--accent) 25%, var(--panel-bg) 75%);
+  color: color-mix(in srgb, var(--text-primary) 82%, #dff5ff 18%);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.2) inset,
+    0 0 8px color-mix(in srgb, var(--accent) 24%, transparent);
+  transform-origin: 50% 100%;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .rack-brand-char {
+    transform: none !important;
+  }
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tabs,
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .file-explorer-header,
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .left-settings-card,
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .settings-header,
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .settings-tabs {
+  border-color: var(--skin-shell-border-color);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tabs {
+  align-items: center;
+  min-height: 48px;
+  padding: 6px 12px 6px 16px;
+  background: color-mix(in srgb, var(--skin-chat-surface) 88%, white);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tabs-scroll {
+  align-items: center;
+  gap: 8px;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab {
+  --metal-tilt-x: 0deg;
+  --metal-tilt-y: 0deg;
+  --metal-stripe-position: 50%;
+  isolation: isolate;
+  min-width: 116px;
+  height: 34px;
+  margin: 0;
+  overflow: hidden;
+  padding: 0 16px 0 30px;
+  border: 1px solid rgba(231, 236, 240, 0.18);
+  border-radius: 8px 12px 12px 8px;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(255, 255, 255, 0.025) 0 1px,
+      rgba(0, 0, 0, 0.025) 1px 2px,
+      transparent 2px 4px
+    ),
+    linear-gradient(
+      112deg,
+      #888e96 0%,
+      #4b5057 18%,
+      #6a7078 36%,
+      #2c2f35 54%,
+      #747b83 76%,
+      #393d43 100%
+    );
+  background-position: 0 0, var(--metal-stripe-position) 50%;
+  background-size: 100% 100%, 176% 112%;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.38),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.78),
+    inset 1px 0 0 rgba(255, 255, 255, 0.12),
+    0 3px 8px rgba(13, 15, 18, 0.18);
+  color: #d8dce0;
+  font-family: var(--skin-label-font);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.16),
+    0 -1px 0 rgba(0, 0, 0, 0.88);
+  text-transform: uppercase;
+  transition:
+    color 150ms ease,
+    box-shadow 180ms ease,
+    transform 180ms cubic-bezier(0.2, 0.75, 0.28, 1),
+    background-position 170ms ease-out;
+  transform: perspective(280px) rotateX(var(--metal-tilt-x)) rotateY(var(--metal-tilt-y));
+  transform-style: preserve-3d;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 9px;
+  z-index: 2;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 43% 40%,
+    #111318 0 2.7px,
+    #777d84 3px 4px,
+    #24272c 4.4px 5.1px,
+    transparent 5.4px
+  );
+  box-shadow:
+    inset 1px 1px 1px rgba(255, 255, 255, 0.24),
+    0 0 0 1px rgba(0, 0, 0, 0.58);
+  translate: 0 -50%;
+  pointer-events: none;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab-title,
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab-close,
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .session-summary-input {
+  position: relative;
+  z-index: 1;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab:hover {
+  color: #edf0f2;
+  will-change: transform, background-position;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab.active {
+  height: 34px;
+  margin: 0;
+  border-width: 1px;
+  border-color: rgba(231, 236, 240, 0.2);
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(255, 255, 255, 0.028) 0 1px,
+      rgba(0, 0, 0, 0.03) 1px 2px,
+      transparent 2px 4px
+    ),
+    linear-gradient(
+      112deg,
+      #8f959c 0%,
+      #4d5259 18%,
+      #70767d 36%,
+      #30343a 54%,
+      #7c838a 76%,
+      #3b4046 100%
+    );
+  background-position: 0 0, var(--metal-stripe-position) 50%;
+  background-size: 100% 100%, 176% 112%;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.82),
+    inset 0 0 0 1px rgba(var(--accent-rgb), 0.1),
+    0 3px 8px rgba(13, 15, 18, 0.2);
+  translate: 0 0;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab.active .session-tab-title {
+  color: color-mix(in srgb, var(--accent) 72%, #edf0f2);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab:active:not(:disabled) {
+  box-shadow:
+    inset 0 2px 3px rgba(0, 0, 0, 0.55),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.18),
+    0 2px 5px rgba(13, 15, 18, 0.16);
+  translate: 0 1px;
+  transform: perspective(280px) rotateX(var(--metal-tilt-x)) rotateY(var(--metal-tilt-y)) scale(0.985);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -3px;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] :is(
+  .ghost,
+  .tool-btn,
+  .mode-trigger,
+  .send-btn,
+  .plan-approval-btn,
+  .evaluation-start-btn
+) {
+  border-width: 2px;
+  border-color: var(--skin-control-border-color);
+  background: var(--skin-control-background);
+  box-shadow: var(--skin-control-shadow);
+  font-family: var(--skin-label-font);
+  font-weight: 800;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] :is(
+  .ghost,
+  .tool-btn,
+  .mode-trigger,
+  .send-btn,
+  .plan-approval-btn,
+  .evaluation-start-btn
+):active:not(:disabled) {
+  translate: 0 2px;
+  box-shadow: var(--skin-control-pressed-shadow);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .left-action-row {
+  --action-control-surface: var(--skin-control-background);
+  --action-control-shadow-dark: rgba(15, 16, 20, 0.72);
+  --action-control-shadow-light: color-mix(in srgb, white 14%, transparent);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .left-action-row .icon-action-btn {
+  border-width: 1px;
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--skin-control-background) 91%, white 9%),
+    color-mix(in srgb, var(--skin-control-background) 88%, black 12%)
+  );
+  box-shadow:
+    4px 4px 8px var(--action-control-shadow-dark),
+    -3px -3px 7px var(--action-control-shadow-light),
+    inset 0 1px 0 color-mix(in srgb, white 15%, transparent);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .left-action-row .icon-action-btn:hover:not(:disabled) {
+  box-shadow:
+    5px 5px 10px var(--action-control-shadow-dark),
+    -4px -4px 8px var(--action-control-shadow-light),
+    inset 0 1px 0 color-mix(in srgb, white 18%, transparent),
+    0 0 0 1px rgba(var(--accent-rgb), 0.14);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .left-action-row .icon-action-btn:is(
+  :active:not(:disabled),
+  .is-active,
+  [aria-pressed="true"],
+  [aria-expanded="true"]
+) {
+  translate: 0 0;
+  background: color-mix(in srgb, var(--skin-control-background) 88%, black 12%);
+  box-shadow:
+    inset 3px 3px 7px var(--action-control-shadow-dark),
+    inset -2px -2px 5px var(--action-control-shadow-light),
+    0 1px 0 color-mix(in srgb, white 8%, transparent);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .composer-toolbar #file-upload-btn {
+  border: 1px solid #17191d;
+  border-radius: 9px;
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--skin-control-background) 86%, white 14%),
+    color-mix(in srgb, var(--skin-control-background) 82%, black 18%)
+  );
+  box-shadow:
+    4px 4px 8px rgba(15, 16, 20, 0.52),
+    -2px -2px 5px rgba(255, 255, 255, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  color: #f8f5ea;
+  font-size: 1.08rem;
+  font-weight: 700;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.72);
+  translate: 0 0;
+  transition:
+    translate 150ms ease,
+    box-shadow 180ms ease,
+    color 180ms ease;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .composer-toolbar #file-upload-btn:hover:not(:disabled) {
+  border-color: #17191d;
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--skin-control-background) 82%, white 18%),
+    color-mix(in srgb, var(--skin-control-background) 78%, black 22%)
+  );
+  box-shadow:
+    5px 5px 10px rgba(15, 16, 20, 0.56),
+    -3px -3px 7px rgba(255, 255, 255, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 0 0 1px rgba(var(--accent-rgb), 0.14);
+  color: color-mix(in srgb, var(--accent) 76%, #f8f5ea);
+  translate: 0 -1px;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .composer-toolbar #file-upload-btn:active:not(:disabled) {
+  border-color: #17191d;
+  background: color-mix(in srgb, var(--skin-control-background) 82%, black 18%);
+  box-shadow:
+    inset 3px 3px 7px rgba(15, 16, 20, 0.78),
+    inset -2px -2px 5px rgba(255, 255, 255, 0.12),
+    0 1px 0 rgba(255, 255, 255, 0.08);
+  color: #f8f5ea;
+  translate: 0 1px;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .composer-toolbar #file-upload-btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"][data-theme="light"]
+  .composer-toolbar #file-upload-btn {
+  color: #1b2632;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.76);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"][data-theme="light"]
+  .composer-toolbar #file-upload-btn:hover:not(:disabled) {
+  color: color-mix(in srgb, var(--accent) 42%, #14202b);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"][data-theme="light"]
+  .composer-toolbar #file-upload-btn:active:not(:disabled) {
+  color: #111820;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .composer-toolbar #send-btn {
+  --rack-send-surface: var(--skin-control-background);
+  width: 32px;
+  height: 32px;
+  flex-basis: 32px;
+  padding: 0;
+  border: 1px solid #17191d;
+  border-radius: 9px;
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--rack-send-surface) 86%, white 14%),
+    color-mix(in srgb, var(--rack-send-surface) 82%, black 18%)
+  );
+  box-shadow:
+    4px 4px 8px rgba(15, 16, 20, 0.52),
+    -2px -2px 5px rgba(255, 255, 255, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  color: #f8f5ea;
+  font-size: 1.04rem;
+  line-height: 1;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.72);
+  translate: 0 0;
+  transition:
+    translate 150ms ease,
+    box-shadow 180ms ease,
+    background 180ms ease,
+    color 180ms ease,
+    opacity 180ms ease;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .composer-toolbar #send-btn:hover:not(:disabled) {
+  border-color: #17191d;
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--rack-send-surface) 82%, white 18%),
+    color-mix(in srgb, var(--rack-send-surface) 78%, black 22%)
+  );
+  box-shadow:
+    5px 5px 10px rgba(15, 16, 20, 0.56),
+    -3px -3px 7px rgba(255, 255, 255, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 0 0 1px rgba(var(--accent-rgb), 0.14);
+  color: color-mix(in srgb, var(--accent) 76%, #f8f5ea);
+  translate: 0 -1px;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .composer-toolbar #send-btn:active:not(:disabled) {
+  border-color: #17191d;
+  background: color-mix(in srgb, var(--rack-send-surface) 82%, black 18%);
+  box-shadow:
+    inset 3px 3px 7px rgba(15, 16, 20, 0.78),
+    inset -2px -2px 5px rgba(255, 255, 255, 0.12),
+    0 1px 0 rgba(255, 255, 255, 0.08);
+  color: #f8f5ea;
+  translate: 0 1px;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .composer-toolbar #send-btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .composer-toolbar #send-btn.is-stopping {
+  --rack-send-surface: color-mix(in srgb, var(--danger) 30%, var(--skin-control-background));
+  border-color: color-mix(in srgb, var(--danger) 62%, #17191d);
+  color: #fff5f5;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .composer-toolbar #send-btn:disabled,
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .composer-toolbar #send-btn.is-finalizing {
+  background: color-mix(in srgb, var(--skin-control-background) 90%, black 10%);
+  border-color: #17191d;
+  box-shadow:
+    inset 2px 2px 5px rgba(15, 16, 20, 0.56),
+    inset -1px -1px 3px rgba(255, 255, 255, 0.1);
+  color: color-mix(in srgb, #f8f5ea 48%, var(--skin-control-background));
+  cursor: progress;
+  opacity: 0.72;
+  translate: 0 1px;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"][data-theme="light"]
+  .composer-toolbar #send-btn {
+  color: #1b2632;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.76);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .input-container {
+  border: 2px solid var(--skin-shell-border-color);
+  border-radius: 13px;
+  box-shadow: 0 4px 0 var(--skin-shell-border-color), 0 9px 16px rgba(23, 25, 31, 0.2);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .input-container .text-input {
+  color: #17191F;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .input-container .text-input::placeholder {
+  color: #66635A;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .message-bubble {
+  border-width: 2px;
+  box-shadow: 0 3px 0 rgba(23, 25, 31, 0.82), 0 7px 12px rgba(23, 25, 31, 0.12);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .session-item.active {
+  color: #17191F;
+  border-width: 2px;
+  font-weight: 800;
+  box-shadow: inset 5px 0 0 #17191F;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .remote-jobs-pane {
+  border-top: 2px solid var(--skin-shell-border-color);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .remote-jobs-toggle {
+  font-family: var(--skin-label-font);
+  font-weight: 800;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .remote-job {
+  border-width: 2px;
+  border-left-width: 4px;
+  border-radius: 10px;
+  background: var(--skin-shell-background);
+  box-shadow: 0 2px 0 var(--skin-shell-border-color), 0 6px 12px rgba(23, 25, 31, 0.16);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .remote-job:hover,
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .remote-job:focus-within {
+  border-color: rgba(125, 211, 252, 0.55);
+  border-left-color: var(--remote-job-status-color);
+  box-shadow:
+    0 2px 0 var(--skin-shell-border-color),
+    0 18px 36px rgba(2, 8, 23, 0.24),
+    0 1px 0 rgba(255, 255, 255, 0.14) inset;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .remote-job.is-flipped:hover,
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .remote-job.is-flipped:focus-within {
+  box-shadow:
+    0 2px 0 var(--skin-shell-border-color),
+    0 22px 44px rgba(2, 8, 23, 0.28),
+    0 1px 0 rgba(255, 255, 255, 0.16) inset;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .remote-job-face {
+  border-radius: 8px;
+  background:
+    linear-gradient(115deg, rgba(255, 255, 255, 0.1), transparent 32%),
+    var(--skin-shell-background);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .remote-job-face-details {
+  background:
+    linear-gradient(135deg, transparent 0 42%, rgba(255, 196, 0, 0.08) 42% 58%, transparent 58%),
+    var(--skin-shell-background);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .remote-job-stage-viewport {
+  border: 2px solid var(--skin-shell-border-color);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--skin-shell-background) 88%, #020817 12%);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 2px 4px rgba(2, 8, 23, 0.32);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .remote-job-stage-item {
+  color: var(--text-muted);
+  font-family: var(--skin-label-font);
+  font-weight: 800;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .remote-job-stage-item:is(.state-active, .state-paused) {
+  color: var(--text-primary);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .remote-job-action {
+  border: 2px solid var(--skin-shell-border-color);
+  background: var(--skin-shell-background);
+  box-shadow: var(--skin-control-shadow);
+  color: var(--text-primary);
+  font-family: var(--skin-label-font);
+  font-weight: 800;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .remote-job-action:active:not(:disabled) {
+  box-shadow: var(--skin-control-pressed-shadow);
+  translate: 0 2px;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .graph-viewport::before {
+  opacity: 0.42;
+  background-image: radial-gradient(circle, rgba(255, 196, 0, 0.46) 0.65px, transparent 0.9px);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .settings-card,
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"][data-theme="light"] .settings-card {
+  background: var(--skin-shell-background);
+  border: 2px solid var(--skin-shell-border-color);
+  border-radius: var(--skin-shell-radius);
+  box-shadow: var(--skin-shell-shadow);
+}
+
+@media (max-width: 1000px) {
+  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .app-grid { gap: 18px; }
+}
+
+@media (max-width: 640px) {
+  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .app-grid { gap: 8px; }
+
+  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .chat-card,
+  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .graph-rail,
+  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .side-panel {
+    border-width: 2px 0;
+    border-radius: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] :is(.ghost, .tool-btn, .mode-trigger, .send-btn) {
+    translate: none !important;
+  }
+
+  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .composer-toolbar #file-upload-btn {
+    transition: none;
+  }
+
+  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab {
+    transition: none;
+  }
+
+  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab {
+    --metal-tilt-x: 0deg !important;
+    --metal-tilt-y: 0deg !important;
+    --metal-stripe-position: 50% !important;
+    transform: none;
+  }
+
+  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .remote-job-action {
+    translate: none !important;
+  }
+}
+
+@media (forced-colors: active) {
+  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab {
+    border: 1px solid ButtonText;
+    background: ButtonFace;
+    box-shadow: none;
+    color: ButtonText;
+    text-shadow: none;
+  }
+
+  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab.active {
+    border: 2px solid Highlight;
+    background: Highlight;
+    color: HighlightText;
+  }
+
+  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab::before {
+    background: CanvasText;
+    box-shadow: 0 0 0 1px Canvas;
+  }
+
+  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: -4px;
+  }
+
+  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .composer-toolbar #file-upload-btn {
+    border: 1px solid ButtonText;
+    background: ButtonFace;
+    box-shadow: none;
+    color: ButtonText;
+    text-shadow: none;
+  }
+
+  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .remote-job {
+    border: 1px solid CanvasText;
+    border-left: 3px solid Highlight;
+    background: Canvas;
+    box-shadow: none;
+  }
+
+  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] :is(.remote-job-face, .remote-job-face-details) {
+    background: Canvas;
+  }
+
+  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .remote-job-stage-viewport {
+    border-color: CanvasText;
+    background: Canvas;
+    box-shadow: none;
+  }
+
+  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .remote-job-action {
+    border: 1px solid ButtonText;
+    background: ButtonFace;
+    box-shadow: none;
+    color: ButtonText;
+  }
+}

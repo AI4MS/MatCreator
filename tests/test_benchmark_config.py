@@ -72,7 +72,16 @@ def test_benchmark_client_registers_and_persists_missing_development_token(monke
 
     assert client.token == "registered-token"
     assert saved == [
-        ({"benchmark": {"server_url": "https://bench.example", "token": "registered-token"}}, "alice")
+        (
+            {
+                "benchmark": {
+                    "server_url": "https://bench.example",
+                    "token": "registered-token",
+                    "question_bank_root": "",
+                }
+            },
+            "alice",
+        )
     ]
 
 

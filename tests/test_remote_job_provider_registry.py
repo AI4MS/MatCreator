@@ -65,6 +65,25 @@ def test_run_bohr_json_returns_data_on_success(monkeypatch) -> None:
     assert run_bohr_json(["job", "list"]) == {"a": 1}
 
 
+def test_run_bohr_json_scopes_provider_specific_binary_overrides(monkeypatch) -> None:
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        return _FakeCompleted(stdout='{"ok": true, "data": {}}')
+
+    monkeypatch.setenv("BOHR_CLI_PATH", "general-bohr")
+    monkeypatch.setenv("BOHR_SANDBOX_CLI_PATH", "sandbox-bohr")
+    monkeypatch.setenv("BOHR_JOB_CLI_PATH", "job-bohr")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    run_bohr_json(["sandbox", "describe", "sandbox-1"])
+    run_bohr_json(["job", "describe", "-i", "job-1"])
+
+    assert commands[0][0] == "sandbox-bohr"
+    assert commands[1][0] == "job-bohr"
+
+
 class _DummyAdapter(RemoteJobAdapter):
     provider = "dummy"
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
+
 from matcreator.tools import workspace_tools
 
 
@@ -66,7 +68,13 @@ def test_set_session_output_dir_suffixes_existing_file_and_symlink(tmp_path, mon
     monkeypatch.setenv("MATCLAW_WORKSPACE", str(tmp_path))
     (tmp_path / "file_case").write_text("occupied", encoding="utf-8")
     (tmp_path / "link_target").mkdir()
-    (tmp_path / "link_case").symlink_to(tmp_path / "link_target", target_is_directory=True)
+    try:
+        (tmp_path / "link_case").symlink_to(
+            tmp_path / "link_target",
+            target_is_directory=True,
+        )
+    except OSError as exc:
+        pytest.skip(f"directory symlinks are unavailable in this environment: {exc}")
 
     file_result = workspace_tools.set_session_output_dir("file_case", _FakeToolContext())
     link_result = workspace_tools.set_session_output_dir("link_case", _FakeToolContext())

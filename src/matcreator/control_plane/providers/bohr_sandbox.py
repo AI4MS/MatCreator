@@ -13,12 +13,31 @@ from pathlib import Path
 from typing import Any
 
 from ._bohr_cli import BohrCLIError, extract_id, run_bohr_json
-from .base import RemoteJobAdapter, RemoteJobCapability, RemoteJobStatus
+from .base import (
+    RemoteJobAdapter,
+    RemoteJobCapability,
+    RemoteJobPreflightError,
+    RemoteJobStatus,
+    provider_query_timeout_seconds,
+)
 
 # Sandboxes reporting one of these as their describe-output status/state are
 # no longer usable; treat them the same as an E2B "unreachable" liveness
 # probe failure so the monitor marks the job lost rather than looping.
 _UNREACHABLE_STATUSES = {"deleted", "terminated", "stopped", "killed"}
+
+
+def _provider_absent(error: BohrCLIError) -> bool:
+    message = str(error).lower()
+    return (
+        error.code == "RESOURCE_NOT_FOUND"
+        or error.http_status == 404
+        or "sandbox not found" in message
+    )
+
+
+def _provider_destroying(error: BohrCLIError) -> bool:
+    return error.subtype == "sandbox_destroying"
 
 
 class BohrSandboxAdapter(RemoteJobAdapter):
@@ -29,12 +48,12 @@ class BohrSandboxAdapter(RemoteJobAdapter):
     def create(self, spec: dict[str, Any]) -> str:
         project_id = spec.get("project_id")
         if not project_id:
-            raise ValueError("bohr_sandbox spec requires 'project_id'")
+            raise RemoteJobPreflightError("bohr_sandbox spec requires 'project_id'")
         template = spec.get("template")
         if not template:
             # Never fall back to the CLI's default template (sdbxagent): it
             # silently creates the wrong (and possibly costlier) sandbox.
-            raise ValueError("bohr_sandbox spec requires 'template'")
+            raise RemoteJobPreflightError("bohr_sandbox spec requires 'template'")
         args = ["sandbox", "create", "--template", str(template), "--project-id", str(project_id)]
         if spec.get("timeout"):
             args += ["--timeout", str(spec["timeout"])]
@@ -66,7 +85,22 @@ class BohrSandboxAdapter(RemoteJobAdapter):
         return sandbox_id
 
     def status(self, external_id: str) -> RemoteJobStatus:
-        data = run_bohr_json(["sandbox", "describe", external_id]) or {}
+        try:
+            data = run_bohr_json(
+                ["sandbox", "describe", external_id],
+                timeout=provider_query_timeout_seconds(),
+            ) or {}
+        except BohrCLIError as exc:
+            if _provider_absent(exc):
+                return RemoteJobStatus(
+                    normalized_status="lost",
+                    snapshot={
+                        "provider_status": "unreachable",
+                        "raw_status": "deleted",
+                    },
+                    error=None,
+                )
+            raise
         raw_status = str(data.get("status") or data.get("state") or "").lower()
         normalized = "lost" if raw_status in _UNREACHABLE_STATUSES else None
         return RemoteJobStatus(
@@ -79,18 +113,49 @@ class BohrSandboxAdapter(RemoteJobAdapter):
         )
 
     def cancel(self, external_id: str) -> None:
-        run_bohr_json(["sandbox", "delete", external_id, "--force"])
+        try:
+            run_bohr_json(["sandbox", "delete", external_id, "--force"])
+        except BohrCLIError as exc:
+            # Delete expresses a desired state. Provider 404 means it is
+            # already absent; 409/sandbox_destroying means close is already
+            # irreversibly in progress. Both are successful idempotent replay.
+            if _provider_absent(exc) or _provider_destroying(exc):
+                return
+            raise
 
-    def run_command(self, external_id: str, command: str, *, user: str = "root") -> dict[str, Any]:
+    def run_command(
+        self,
+        external_id: str,
+        command: str,
+        *,
+        user: str = "root",
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         # `bohr sandbox exec` caps a command at 90s by default; pass
         # `--timeout 0` to disable that CLI-side cap, and also don't bound our
         # own subprocess wait, so a long-running command isn't silently
         # truncated. This matches the E2B adapter's `timeout=0` semantics
         # (see e2b.py run_command) so command duration behaves the same
         # regardless of which interactive sandbox provider is in use.
+        timeout = (
+            None
+            if timeout_seconds is None
+            else provider_query_timeout_seconds(timeout_seconds)
+        )
+        cli_timeout = "0" if timeout is None else f"{timeout:g}"
         data = run_bohr_json(
-            ["sandbox", "exec", external_id, "--command", command, "--user", user, "--timeout", "0"],
-            timeout=None,
+            [
+                "sandbox",
+                "exec",
+                external_id,
+                "--command",
+                command,
+                "--user",
+                user,
+                "--timeout",
+                cli_timeout,
+            ],
+            timeout=timeout,
         ) or {}
         return {
             "stdout": str(data.get("stdout", "")),

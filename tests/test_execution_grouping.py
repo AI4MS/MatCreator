@@ -1,129 +1,127 @@
-import unittest
+from types import SimpleNamespace
 
+import pytest
 from pydantic import ValidationError
 
-from agents.MatCreator.agents.execution_agent.agent import (
-    build_execution_groups,
-    build_execution_waves,
+from matcreator.agents.execution_agent.step_executor import StepExecutorInput
+from matcreator.agents.thinking_agent.planning import (
+    ExecutionGraph,
+    get_ready_nodes,
+    ready_nodes_from_graph,
 )
-from agents.MatCreator.agents.execution_agent.step_executor import StepExecutorInput
 
 
-class _DummyToolContext:
-    def __init__(self, state: dict):
-        self.state = state
-
-
-class TestExecutionGrouping(unittest.TestCase):
-    def test_groups_consecutive_same_skill(self) -> None:
-        ctx = _DummyToolContext(
-            {
-                "current_step_index": 0,
-                "plan": {
-                    "steps": [
-                        {"step_number": 1, "skill": "vasp", "action": "Prepare input files."},
-                        {"step_number": 2, "skill": "vasp", "action": "Run relaxation."},
-                        {"step_number": 3, "skill": "plot", "action": "Plot total energy."},
-                    ]
-                },
-            }
-        )
-
-        result = build_execution_groups(ctx)
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(len(result["groups"]), 2)
-        self.assertEqual(result["groups"][0]["step_numbers"], [1, 2])
-        self.assertEqual(result["groups"][0]["skill_name"], "vasp")
-        self.assertEqual(result["groups"][1]["step_numbers"], [3])
-        self.assertEqual(result["groups"][1]["skill_name"], "plot")
-
-    def test_dependency_marker_starts_new_group(self) -> None:
-        ctx = _DummyToolContext(
-            {
-                "current_step_index": 0,
-                "plan": {
-                    "steps": [
-                        {"step_number": 1, "skill": "vasp", "action": "Run static calculation."},
-                        {
-                            "step_number": 2,
-                            "skill": "vasp",
-                            "action": "Using previous step results, extract DOS.",
-                        },
-                    ]
-                },
-            }
-        )
-
-        result = build_execution_groups(ctx)
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(len(result["groups"]), 2)
-        self.assertEqual(result["groups"][0]["step_numbers"], [1])
-        self.assertEqual(result["groups"][1]["step_numbers"], [2])
-
-    def test_build_execution_waves_parallelizes_distinct_skills(self) -> None:
-        groups = [
-            {
-                "group_id": "group_1_2",
-                "skill_name": "vasp",
-                "step_numbers": [1, 2],
-                "actions": ["Prepare inputs.", "Run relax."],
+def _graph() -> dict:
+    return {
+        "nodes": {
+            "step_prepare": {
+                "node_id": "step_prepare",
+                "label": "Prepare",
+                "action": "Prepare calculation inputs.",
+                "suggested_skills": [],
+                "status": "pending",
             },
-            {
-                "group_id": "group_3_3",
-                "skill_name": "plot",
-                "step_numbers": [3],
-                "actions": ["Plot band structure."],
+            "step_analyze": {
+                "node_id": "step_analyze",
+                "label": "Analyze",
+                "action": "Analyze an independent reference dataset.",
+                "suggested_skills": [],
+                "status": "pending",
             },
-        ]
-
-        result = build_execution_waves(groups)
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(len(result["waves"]), 1)
-        self.assertEqual(len(result["waves"][0]), 2)
-
-    def test_build_execution_waves_serializes_dependency_marked_group(self) -> None:
-        groups = [
-            {
-                "group_id": "group_1_1",
-                "skill_name": "vasp",
-                "step_numbers": [1],
-                "actions": ["Run SCF."],
+            "step_report": {
+                "node_id": "step_report",
+                "label": "Report",
+                "action": "Combine the prepared and analyzed results.",
+                "suggested_skills": [],
+                "status": "pending",
             },
-            {
-                "group_id": "group_2_2",
-                "skill_name": "plot",
-                "step_numbers": [2],
-                "actions": ["Using previous step results, plot DOS."],
-            },
-        ]
-
-        result = build_execution_waves(groups)
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(len(result["waves"]), 2)
-        self.assertEqual(result["waves"][0][0]["group_id"], "group_1_1")
-        self.assertEqual(result["waves"][1][0]["group_id"], "group_2_2")
+        },
+        "edges": [
+            ["step_prepare", "step_report"],
+            ["step_analyze", "step_report"],
+        ],
+        "additional_notes": "The two root nodes may run concurrently.",
+    }
 
 
-class TestStepExecutorInputNormalization(unittest.TestCase):
-    def test_legacy_fields_are_normalized(self) -> None:
-        payload = StepExecutorInput(
-            step_number=2,
-            action="Run calculation.",
-            skill_name="vasp",
+def test_execution_graph_accepts_a_dag_and_rejects_a_cycle() -> None:
+    graph = ExecutionGraph(**_graph())
+
+    assert set(graph.nodes) == {"step_prepare", "step_analyze", "step_report"}
+    assert graph.edges == [
+        ["step_prepare", "step_report"],
+        ["step_analyze", "step_report"],
+    ]
+
+    cyclic = _graph()
+    cyclic["edges"].append(["step_report", "step_prepare"])
+    with pytest.raises(ValidationError, match="cycle"):
+        ExecutionGraph(**cyclic)
+
+
+def test_ready_nodes_from_graph_follows_all_dependencies() -> None:
+    graph = ExecutionGraph(**_graph()).model_dump(mode="json")
+
+    assert [node["node_id"] for node in ready_nodes_from_graph(graph)] == [
+        "step_prepare",
+        "step_analyze",
+    ]
+
+    graph["nodes"]["step_prepare"]["status"] = "success"
+    assert [node["node_id"] for node in ready_nodes_from_graph(graph)] == [
+        "step_analyze"
+    ]
+
+    graph["nodes"]["step_analyze"]["status"] = "success"
+    assert [node["node_id"] for node in ready_nodes_from_graph(graph)] == [
+        "step_report"
+    ]
+
+
+def test_get_ready_nodes_reads_the_current_atomic_session_graph() -> None:
+    graph = ExecutionGraph(**_graph()).model_dump(mode="json")
+    graph["nodes"]["step_prepare"]["status"] = "success"
+    tool_context = SimpleNamespace(state={"execution_graph": [graph]})
+
+    result = get_ready_nodes(tool_context)
+
+    assert result["status"] == "ok"
+    assert result["count"] == 1
+    assert result["ready_nodes"] == [
+        {
+            "node_id": "step_analyze",
+            "label": "Analyze",
+            "action": "Analyze an independent reference dataset.",
+            "suggested_skills": [],
+        }
+    ]
+    assert result["waiting_nodes"] == []
+
+
+def test_step_executor_input_uses_the_current_single_step_contract() -> None:
+    payload = StepExecutorInput(
+        step_number=2,
+        action="Run the calculation.",
+        suggested_skills=["vasp-pymatgen"],
+        workspace_dir="/tmp/work",
+        output_dir="/tmp/work/output",
+        prior_context="Inputs were prepared successfully.",
+    )
+
+    assert payload.model_dump() == {
+        "step_number": 2,
+        "action": "Run the calculation.",
+        "suggested_skills": ["vasp-pymatgen"],
+        "workspace_dir": "/tmp/work",
+        "output_dir": "/tmp/work/output",
+        "prior_context": "Inputs were prepared successfully.",
+    }
+
+
+def test_step_executor_input_requires_suggested_skills() -> None:
+    with pytest.raises(ValidationError, match="suggested_skills"):
+        StepExecutorInput(
+            step_number=1,
+            action="Run the calculation.",
             workspace_dir="/tmp/work",
         )
-        self.assertEqual(payload.step_numbers, [2])
-        self.assertEqual(payload.actions, ["Run calculation."])
-
-    def test_mismatched_lengths_fail_validation(self) -> None:
-        with self.assertRaises(ValidationError):
-            StepExecutorInput(
-                step_numbers=[1, 2],
-                actions=["one"],
-                skill_name="vasp",
-                workspace_dir="/tmp/work",
-            )
-
-
-if __name__ == "__main__":
-    unittest.main()

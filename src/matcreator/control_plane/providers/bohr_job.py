@@ -12,7 +12,13 @@ from pathlib import Path
 from typing import Any
 
 from ._bohr_cli import BohrCLIError, extract_id, run_bohr_json
-from .base import RemoteJobAdapter, RemoteJobCapability, RemoteJobStatus
+from .base import (
+    RemoteJobAdapter,
+    RemoteJobCapability,
+    RemoteJobPreflightError,
+    RemoteJobStatus,
+    provider_query_timeout_seconds,
+)
 
 # `bohr job list`/`describe` report a lowercase `phase` string. Map it onto
 # the canonical statuses defined in remote_jobs.py. Any phase not listed here
@@ -43,7 +49,9 @@ class BohrJobAdapter(RemoteJobAdapter):
     def create(self, spec: dict[str, Any]) -> str:
         missing = [name for name in _REQUIRED_SPEC_FIELDS if not spec.get(name)]
         if missing:
-            raise ValueError(f"bohr_job spec is missing required field(s): {', '.join(missing)}")
+            raise RemoteJobPreflightError(
+                f"bohr_job spec is missing required field(s): {', '.join(missing)}"
+            )
         args = [
             "job",
             "submit",
@@ -83,7 +91,10 @@ class BohrJobAdapter(RemoteJobAdapter):
         return bohr_id
 
     def status(self, external_id: str) -> RemoteJobStatus:
-        data = run_bohr_json(["job", "describe", "-i", str(external_id)]) or {}
+        data = run_bohr_json(
+            ["job", "describe", "-i", str(external_id)],
+            timeout=provider_query_timeout_seconds(),
+        ) or {}
         phase = str(data.get("phase", "")).lower()
         normalized = _PHASE_TO_NORMALIZED.get(phase)
         error = None

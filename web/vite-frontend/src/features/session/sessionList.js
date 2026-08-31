@@ -81,10 +81,14 @@ export function createSessionListController({
     const summary = typeof rawSummary === "string" ? rawSummary.trim() : "";
     const nameLine = document.createElement("span");
     nameLine.className = "session-item-name";
+    const statusIndicator = document.createElement("span");
+    statusIndicator.className = `session-status-indicator status-${status}`;
+    statusIndicator.setAttribute("aria-hidden", "true");
+    statusIndicator.title = status === "running" ? "Running" : "Idle";
     const nameText = document.createElement("span");
     nameText.className = "session-item-name-text";
     nameText.textContent = summary || "Unnamed session";
-    nameLine.appendChild(nameText);
+    nameLine.append(statusIndicator, nameText);
     content.append(nameLine);
     const buttons = [createLogButton(session.id, owner)];
     if (showDraft) buttons.push(createDraftButton(session.id, owner, status));

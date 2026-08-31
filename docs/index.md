@@ -10,6 +10,7 @@ MatCreator is an agentic AI platform for computational materials science. It hel
 - [Architecture Components](architecture_components.md): understand the frontend, middleware, agent framework, and how requests move between them.
 - [Deployment](deployment.md): run MatCreator as a personal application or deploy it as a shared server.
 - [Knowledge](knowledge/index.md): learn how MatCreator stores skills, guides, working memory, and distilled knowledge.
+- [Frontend Skin Framework](frontend-skin-framework.md): review the validated built-in skin contract and Rack Lab presentation boundary.
 
 ## Core Capabilities
 

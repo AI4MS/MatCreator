@@ -6,7 +6,13 @@ below — nothing else in the control plane needs to change.
 """
 from __future__ import annotations
 
-from .base import CapabilityError, RemoteJobAdapter, RemoteJobCapability, RemoteJobStatus
+from .base import (
+    CapabilityError,
+    RemoteJobAdapter,
+    RemoteJobCapability,
+    RemoteJobPreflightError,
+    RemoteJobStatus,
+)
 from .registry import get_adapter, register_adapter, registered_providers, reset_registry
 
 
@@ -40,6 +46,7 @@ __all__ = [
     "RemoteJobAdapter",
     "RemoteJobCapability",
     "RemoteJobStatus",
+    "RemoteJobPreflightError",
     "CapabilityError",
     "get_adapter",
     "register_adapter",

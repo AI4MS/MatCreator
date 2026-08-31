@@ -34,7 +34,9 @@ def test_repo_local_kdg_db_is_treated_as_legacy_source(monkeypatch) -> None:
 
 def test_legacy_minimax_env_is_normalized(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("MATCREATOR_HOME", raising=False)
+    monkeypatch.setenv("MATCREATOR_HOME", str(tmp_path / "matcreator-home"))
+    monkeypatch.delenv("MATCREATOR_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("MATCREATOR_MODE", raising=False)
     monkeypatch.delenv("KDG_DB_PATH", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_BASE_URL", raising=False)

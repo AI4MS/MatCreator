@@ -1,6 +1,6 @@
 import { createDialogController } from "../../shared/ui/dialog.js";
 
-export function createSettingsController({ state, applyLogin, getFontScale, applyFontScale }) {
+export function createSettingsController({ state, applyLogin, getFontScale, applyFontScale, appearanceController }) {
 
   const settingsModal = document.getElementById("settings-modal");
   const settingsBtn = document.getElementById("settings-btn");
@@ -269,12 +269,20 @@ export function createSettingsController({ state, applyLogin, getFontScale, appl
     return ["llm", "runtime", "compute", "env"].includes(tabName);
   }
 
+  function updateSettingsFooter(tabName = activeSettingsTabName()) {
+    const appearanceIsLocal = tabName === "appearance";
+    settingsSave?.classList.toggle("hidden", appearanceIsLocal);
+    settingsStatus?.classList.toggle("hidden", appearanceIsLocal);
+  }
+
   function openSettingsModal() {
     if (!settingsDialog.open()) return;
     settingsUsername.value = state.displayName || "";
     settingsUuid.value = state.userId || "";
     loadSettingsData();
     updateFontScaleOptions();
+    appearanceController?.sync();
+    updateSettingsFooter();
   }
 
   function updateFontScaleOptions() {
@@ -556,7 +564,7 @@ export function createSettingsController({ state, applyLogin, getFontScale, appl
           <div class="skill-upload-form">
             <label class="settings-label">Skill Name <span style="font-weight:400;text-transform:none;letter-spacing:0">(lowercase, hyphens/underscores only)</span></label>
             <input id="custom-skill-name" class="text-input settings-env-input" placeholder="e.g. my-custom-skill" autocomplete="off" />
-            <label class="settings-label" style="margin-top:8px">SKILL.md file <span style="color:#f87171">*</span></label>
+            <label class="settings-label" style="margin-top:8px">SKILL.md file <span style="color:var(--danger)">*</span></label>
             <input id="custom-skill-md" type="file" accept=".md,text/markdown,text/plain" class="skill-file-input" />
             <label class="settings-label" style="margin-top:8px">Reference files <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional, multiple)</span></label>
             <input id="custom-skill-refs" type="file" multiple class="skill-file-input" />
@@ -725,6 +733,7 @@ export function createSettingsController({ state, applyLogin, getFontScale, appl
       tab.classList.add("active");
       const pane = document.getElementById(`tab-${tab.dataset.tab}`);
       if (pane) pane.classList.remove("hidden");
+      updateSettingsFooter(tab.dataset.tab);
     });
   });
 

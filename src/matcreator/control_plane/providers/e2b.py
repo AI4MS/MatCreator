@@ -6,7 +6,13 @@ from pathlib import Path
 from typing import Any
 import os
 
-from .base import RemoteJobAdapter, RemoteJobCapability, RemoteJobStatus
+from .base import (
+    RemoteJobAdapter,
+    RemoteJobCapability,
+    RemoteJobPreflightError,
+    RemoteJobStatus,
+    provider_query_timeout_seconds,
+)
 
 # e2b SDK >=2.20 validates the API key format client-side (requires the
 # "e2b_" + hex pattern, see e2b.api.validate_api_key) and raises
@@ -18,11 +24,11 @@ from .base import RemoteJobAdapter, RemoteJobCapability, RemoteJobStatus
 os.environ.setdefault("E2B_VALIDATE_API_KEY", "false")
 
 
-class E2BConfigurationError(ValueError):
+class E2BConfigurationError(RemoteJobPreflightError):
     """Raised when a sandbox request lacks required E2B configuration."""
 
 
-class E2BUnavailableError(RuntimeError):
+class E2BUnavailableError(RemoteJobPreflightError):
     """Raised when the optional E2B SDK is unavailable at runtime."""
 
 
@@ -79,15 +85,18 @@ class E2BSandboxSpec:
     @classmethod
     def from_dict(cls, spec: dict[str, Any]) -> "E2BSandboxSpec":
         """Build a validated spec from the generic dict a submit tool provides."""
-        return cls(
-            template=str(spec.get("template", "")),
-            api_key=str(spec.get("api_key", "")),
-            api_url=str(spec.get("api_url", "")),
-            project_id=str(spec.get("project_id", "")),
-            timeout=int(spec.get("timeout", 600)),
-            lifecycle=dict(spec.get("lifecycle") or {}),
-            metadata=dict(spec.get("metadata") or {}),
-        )
+        try:
+            return cls(
+                template=str(spec.get("template", "")),
+                api_key=str(spec.get("api_key", "")),
+                api_url=str(spec.get("api_url", "")),
+                project_id=str(spec.get("project_id", "")),
+                timeout=int(spec.get("timeout", 600)),
+                lifecycle=dict(spec.get("lifecycle") or {}),
+                metadata=dict(spec.get("metadata") or {}),
+            )
+        except (TypeError, ValueError) as exc:
+            raise E2BConfigurationError(f"invalid E2B sandbox spec: {exc}") from exc
 
 # The backend E2B SDK is imported lazily to avoid a hard dependency on the SDK for users who don't need it. The E2BSandboxAdapter class wraps the SDK and provides a simple interface for creating, connecting to, and managing E2B sandboxes.
 class E2BSandboxAdapter(RemoteJobAdapter):
@@ -135,9 +144,21 @@ class E2BSandboxAdapter(RemoteJobAdapter):
             raise RuntimeError("E2B create returned a sandbox without sandbox_id")
         return str(sandbox_id)
 
-    def run_command(self, sandbox_id: str, command: str, *, user: str = "root") -> dict[str, Any]:
+    def run_command(
+        self,
+        sandbox_id: str,
+        command: str,
+        *,
+        user: str = "root",
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         sandbox = self._connect(sandbox_id)
-        result = sandbox.commands.run(command, user=user, timeout=0)
+        timeout = (
+            0
+            if timeout_seconds is None
+            else provider_query_timeout_seconds(timeout_seconds)
+        )
+        result = sandbox.commands.run(command, user=user, timeout=timeout)
         return {
             "stdout": str(getattr(result, "stdout", "")),
             "stderr": str(getattr(result, "stderr", "")),
@@ -233,9 +254,15 @@ class E2BSandboxAdapter(RemoteJobAdapter):
     def cancel(self, external_id: str) -> None:
         self.terminate(external_id)
 
-    def probe(self, sandbox_id: str) -> dict[str, Any]:
+    def probe(
+        self, sandbox_id: str, *, timeout_seconds: float | None = None
+    ) -> dict[str, Any]:
         """Confirm an active sandbox is reachable without changing its files."""
-        result = self.run_command(sandbox_id, "true")
+        result = self.run_command(
+            sandbox_id,
+            "true",
+            timeout_seconds=provider_query_timeout_seconds(timeout_seconds),
+        )
         if result["exit_code"] not in (0, None):
             raise RuntimeError(result["stderr"] or "E2B sandbox liveness probe failed")
         return {"provider_status": "reachable", "probe": result}

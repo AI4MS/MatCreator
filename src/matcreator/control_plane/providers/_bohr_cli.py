@@ -15,12 +15,37 @@ from typing import Any
 
 
 class BohrCLIError(RuntimeError):
-    """Raised when a `bohr` CLI invocation fails or returns unusable output."""
+    """Raised when a `bohr` CLI invocation fails or returns unusable output.
+
+    Bohrium's JSON envelope includes lifecycle fields needed to make describe
+    and delete idempotent. Preserve them while retaining the normal exception
+    string for existing callers.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        subtype: str | None = None,
+        http_status: int | None = None,
+        retryable: bool | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.subtype = subtype
+        self.http_status = http_status
+        self.retryable = retryable
 
 
-def resolve_bohr_binary() -> str:
-    """Resolve the `bohr` executable, honoring an explicit override."""
-    return os.environ.get("BOHR_CLI_PATH") or shutil.which("bohr") or "bohr"
+def resolve_bohr_binary(preferred_env: str | None = None) -> str:
+    """Resolve a `bohr` executable, honoring a provider-specific override."""
+    return (
+        (os.environ.get(preferred_env) if preferred_env else None)
+        or os.environ.get("BOHR_CLI_PATH")
+        or shutil.which("bohr")
+        or "bohr"
+    )
 
 
 def run_bohr_json(args: list[str], *, timeout: float | None = 120) -> Any:
@@ -31,7 +56,19 @@ def run_bohr_json(args: list[str], *, timeout: float | None = 120) -> Any:
     prompt. Raises :class:`BohrCLIError` with the CLI's own error message on
     failure, so callers never need to parse stderr or exit codes themselves.
     """
-    command = [resolve_bohr_binary(), *args, "-o", "json", "--no-interactive", "-y"]
+    command_group = args[0] if args else ""
+    provider_env = {
+        "sandbox": "BOHR_SANDBOX_CLI_PATH",
+        "job": "BOHR_JOB_CLI_PATH",
+    }.get(command_group)
+    command = [
+        resolve_bohr_binary(provider_env),
+        *args,
+        "-o",
+        "json",
+        "--no-interactive",
+        "-y",
+    ]
     try:
         completed = subprocess.run(
             command,
@@ -61,7 +98,25 @@ def run_bohr_json(args: list[str], *, timeout: float | None = 120) -> Any:
     if not isinstance(payload, dict) or not payload.get("ok", False):
         error = (payload or {}).get("error") if isinstance(payload, dict) else None
         message = (error or {}).get("message") if isinstance(error, dict) else None
-        raise BohrCLIError(message or f"bohr {' '.join(args)} failed")
+        raise BohrCLIError(
+            message or f"bohr {' '.join(args)} failed",
+            code=(str(error.get("code")) if isinstance(error, dict) and error.get("code") else None),
+            subtype=(
+                str(error.get("subtype"))
+                if isinstance(error, dict) and error.get("subtype")
+                else None
+            ),
+            http_status=(
+                int(error.get("http"))
+                if isinstance(error, dict) and error.get("http") is not None
+                else None
+            ),
+            retryable=(
+                bool(error.get("retryable"))
+                if isinstance(error, dict) and error.get("retryable") is not None
+                else None
+            ),
+        )
     return payload.get("data")
 
 

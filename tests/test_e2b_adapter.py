@@ -70,10 +70,12 @@ class _FakeSandbox:
 
     class commands:
         last_command: str | None = None
+        last_kwargs: dict = {}
 
         @staticmethod
         def run(command, user, **kwargs):
             _FakeSandbox.commands.last_command = command
+            _FakeSandbox.commands.last_kwargs = kwargs
             assert user == "root"
             return _FakeResult()
 
@@ -92,6 +94,8 @@ def fake_e2b_module(monkeypatch):
     _FakeSandbox.paused = False
     _FakeSandbox.killed = False
     _FakeSandbox.files = _FakeFiles()
+    _FakeSandbox.commands.last_command = None
+    _FakeSandbox.commands.last_kwargs = {}
     monkeypatch.setitem(sys.modules, "e2b_code_interpreter", types.SimpleNamespace(Sandbox=_FakeSandbox))
     # Reconnects require the endpoint configuration in the environment.
     monkeypatch.setenv("E2B_API_KEY", "secret")
@@ -125,6 +129,7 @@ def test_adapter_connects_for_command_and_controls() -> None:
         "exit_code": 0,
     }
     assert _FakeSandbox.commands.last_command == "echo hello"
+    assert _FakeSandbox.commands.last_kwargs["timeout"] == 0
     adapter.pause("sandbox-123")
     adapter.terminate("sandbox-123")
 
@@ -188,6 +193,26 @@ def test_adapter_status_reports_liveness_without_a_normalized_status() -> None:
 
     assert status.normalized_status is None
     assert status.snapshot["provider_status"] == "reachable"
+
+
+def test_adapter_status_uses_finite_configured_probe_timeout(monkeypatch) -> None:
+    monkeypatch.setenv("MATCREATOR_REMOTE_PROVIDER_QUERY_TIMEOUT_SECONDS", "0.25")
+
+    status = E2BSandboxAdapter().status("sandbox-123")
+
+    assert status.normalized_status is None
+    assert _FakeSandbox.commands.last_command == "true"
+    assert _FakeSandbox.commands.last_kwargs["timeout"] == 0.25
+
+
+def test_adapter_run_command_accepts_finite_control_plane_timeout() -> None:
+    E2BSandboxAdapter().run_command(
+        "sandbox-123",
+        "true",
+        timeout_seconds=2.5,
+    )
+
+    assert _FakeSandbox.commands.last_kwargs["timeout"] == 2.5
 
 
 def test_adapter_download_file_streams_to_local_destination(tmp_path) -> None:

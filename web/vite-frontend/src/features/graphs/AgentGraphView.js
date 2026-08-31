@@ -3,10 +3,20 @@ import { createDisclosureController } from "../ui/disclosureState.js";
 import { installNetworkWheelZoom } from "./networkWheelZoom.js";
 import { httpClient } from "../../shared/api/http.js";
 import { applyGraphUpdate } from "./graphUpdates.js";
+import {
+  AGENT_NODE_SHAPE,
+  agentNodeShapeForRecipe,
+  dropletGeometry,
+  dropletMotionForNode,
+  nodeShapeDimensions,
+  nodeShapeVerticalExtent,
+  runningMotionEnvelope,
+  traceDropletPath,
+} from "./agentNodeGeometry.js";
 
 // Node identity and execution state intentionally live in separate visual
 // vocabularies. Type owns the face and its letter; state only owns a compact
-// badge or the running orbit below.
+// badge or the running motion below.
 const NODE_TYPE_VISUALS = {
   orchestrator: {
     fill: "224, 231, 255", border: "129, 140, 248", text: "#1e1b4b",
@@ -59,6 +69,7 @@ const VINE_DESCENDANT_GAP = 70;
 const VINE_NODE_GAP = 64;
 const VINE_PLANNER_GAP = 460;
 const VINE_STEM_CLEARANCE = 42;
+const GRAPH_TITLE_CLEARANCE = 34;
 
 const STATUS_ALIASES = {
   completed: "success",
@@ -79,6 +90,7 @@ export class AgentGraphView {
     this._syncPanelResizerVisibility = dependencies.syncPanelResizerVisibility;
     this._container = document.getElementById(containerId);
     this._surfaceEl = document.getElementById("graph-surface");
+    this._remoteJobsPane = document.getElementById("remote-jobs-pane");
     this._nodes = new DataSet([]);
     this._edges = new DataSet([]);
     this._network = null;
@@ -95,7 +107,16 @@ export class AgentGraphView {
     this._nodeTransitions = new Map();
     this._lastNodeStatuses = new Map();
     this._runningNodeIds = new Set();
-    this._reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
+    this._touchState = null;
+    this._interactionFrame = null;
+    this._motionPreference = window.matchMedia?.("(prefers-reduced-motion: reduce)") ?? null;
+    this._reduceMotion = this._motionPreference?.matches ?? false;
+    this._motionPreference?.addEventListener?.("change", (event) => {
+      this._reduceMotion = Boolean(event.matches);
+      this._syncAnimation();
+      this._network?.redraw();
+    });
+    this._graphSurfaceIsLight = this._readGraphSurfaceTone();
     this._detailEl = document.getElementById("graph-detail");
     this._detailClose = document.getElementById("graph-detail-close");
     this._detailLabel = document.getElementById("detail-label");
@@ -172,8 +193,22 @@ export class AgentGraphView {
       if (params.nodes.length) this._showDetail(params.nodes[0]);
     });
     this._network.on("deselectNode", () => this._hideDetail());
-    this._network.on("beforeDrawing", (ctx) => this._drawVines(ctx));
+    this._network.on("beforeDrawing", (ctx) => this._drawGraphEdges(ctx));
     this._network.on("afterDrawing", (ctx) => this._drawActiveFlow(ctx));
+    this._network.on("blurNode", () => this._clearLiquidTouch());
+    // vis-network exposes hoverNode/blurNode, but it does not emit a
+    // continuous mousemove event with pointer coordinates. Listen on the
+    // actual graph surface so the liquid contact point follows every pointer
+    // move instead of only changing when vis-network's hover state changes.
+    const handleLiquidPointerMove = (event) => this._updateLiquidTouchFromPointerEvent(event);
+    this._container?.addEventListener("pointermove", handleLiquidPointerMove, { passive: true });
+    // Some embedded Chromium/WebView input bridges still synthesize only a
+    // MouseEvent. Keep that path equivalent so the contact dimple is not lost
+    // in the in-app browser or on older pen/tablet drivers.
+    this._container?.addEventListener("mousemove", handleLiquidPointerMove, { passive: true });
+    this._container?.addEventListener("pointerleave", () => {
+      this._clearLiquidTouch();
+    });
     window.addEventListener("matcreator-theme-change", () => this._applyTheme());
     this._detailClose?.addEventListener("click", () => {
       this._network.unselectAll();
@@ -185,19 +220,52 @@ export class AgentGraphView {
     // Keep these colors opaque. vis-network draws the arrowhead over the last
     // segment of its edge; translucent colors compound at that seam and create
     // a visibly darker/lighter patch.
-    return document.body.dataset.theme === "light"
+    return this._graphSurfaceIsLight
       ? { color: "#b8c2d0", highlight: "#64748b", hover: "#8290a3", inherit: false }
       : { color: "#526176", highlight: "#cbd5e1", hover: "#94a3b8", inherit: false };
   }
 
+  _readGraphSurfaceTone() {
+    const token = window.getComputedStyle?.(document.body)
+      ?.getPropertyValue("--skin-graph-surface-tone")
+      ?.trim()
+      ?.toLowerCase();
+    if (token === "light") return true;
+    if (token === "dark") return false;
+    return document.body.dataset.theme === "light";
+  }
+
   _applyTheme() {
+    this._graphSurfaceIsLight = this._readGraphSurfaceTone();
     const color = this._edgeColors();
-    const updates = this._edges.getIds().map((id) => ({ id, color }));
+    const useLiquidEdges = this._nodeShape() === AGENT_NODE_SHAPE.DROPLET;
+    const updates = this._edges.getIds().map((id) => ({
+      id,
+      color,
+      hidden: useLiquidEdges || this._cachedVineEdgeIds.has(id),
+    }));
     if (updates.length) this._edges.update(updates);
 
-    // Custom nodes read body[data-theme] while painting, so one immediate
-    // redraw keeps canvas pixels in lockstep with the surrounding CSS theme.
+    // A recipe can change custom-node geometry as well as colour. Updating the
+    // DataSet marks vis-network's CustomShape as refreshNeeded so its cached
+    // hit box is recalculated; redraw alone only repaints the old dimensions.
+    const nodeUpdates = Object.values(this._nodeData).map((raw) => {
+      const current = this._nodes.get(raw.id) || {};
+      const fallback = this._cachedPositions[raw.id] || { x: 0, y: 0 };
+      return {
+        ...this._visNode(raw),
+        x: Number.isFinite(current.x) ? current.x : fallback.x,
+        y: Number.isFinite(current.y) ? current.y : fallback.y,
+        fixed: current.fixed || { x: true, y: true },
+      };
+    });
+    if (nodeUpdates.length) this._nodes.update(nodeUpdates);
+
+    // The first redraw paints the recipe immediately; the next frame settles
+    // edge clipping after CustomShape consumes the refreshed dimensions.
+    this._syncAnimation();
     this._network?.redraw();
+    requestAnimationFrame(() => this._network?.redraw());
   }
 
   _nodeTooltip(raw) {
@@ -236,9 +304,29 @@ export class AgentGraphView {
   }
 
   _nodeRadius(raw) {
-    if (raw.type === "orchestrator") return 17;
-    if (raw.type === "planning") return 15;
-    return 13;
+    const baseRadius = raw.type === "orchestrator" ? 17 : raw.type === "planning" ? 15 : 13;
+    if (this._nodeShape() !== AGENT_NODE_SHAPE.DROPLET) return baseRadius;
+    return baseRadius + 2;
+  }
+
+  _nodeShape() {
+    return agentNodeShapeForRecipe(
+      document.body.dataset.styleRecipe,
+      document.body.dataset.styleRecipeVersion,
+    );
+  }
+
+  _traceNodePath(ctx, x, y, radius, shape = this._nodeShape(), motion = null) {
+    if (shape === AGENT_NODE_SHAPE.DROPLET) {
+      return traceDropletPath(ctx, x, y, radius, motion);
+    }
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    return null;
+  }
+
+  _nodeVerticalExtent(raw, direction) {
+    return nodeShapeVerticalExtent(this._nodeRadius(raw), this._nodeShape(), direction);
   }
 
   _nodeTransition(nodeId) {
@@ -247,6 +335,92 @@ export class AgentGraphView {
     const elapsed = performance.now() - transition.startedAt;
     if (elapsed >= STATUS_TRANSITION_MS) return null;
     return { ...transition, progress: Math.max(0, elapsed / STATUS_TRANSITION_MS) };
+  }
+
+  _liquidMotionForNode(raw, { hover = false } = {}) {
+    if (!raw || this._reduceMotion) return dropletMotionForNode(raw?.id, this._motionTime);
+    const status = raw.status || "idle";
+    const transition = this._nodeTransition(raw.id);
+    const runningStrength = runningMotionEnvelope(status, transition);
+    const hoverStrength = hover ? 0.34 : 0;
+    const touch = this._touchState?.nodeId === raw.id ? this._touchState : null;
+    return dropletMotionForNode(raw.id, this._motionTime, {
+      active: status === "running" || transition?.from === "running",
+      hover,
+      strength: Math.max(runningStrength, hoverStrength),
+      touch,
+    });
+  }
+
+  _scheduleInteractionPaint() {
+    if (this._interactionFrame !== null) return;
+    this._interactionFrame = requestAnimationFrame(() => {
+      this._interactionFrame = null;
+      this._network?.redraw();
+    });
+  }
+
+  _updateLiquidTouchFromPointerEvent(event) {
+    if (!this._container || !this._network || !event) {
+      this._clearLiquidTouch();
+      return;
+    }
+    const canvas = this._container.querySelector("canvas");
+    const rect = (canvas || this._container).getBoundingClientRect();
+    const DOM = {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    };
+    this._updateLiquidTouch({
+      pointer: {
+        DOM,
+        canvas: this._network.DOMtoCanvas(DOM),
+      },
+    });
+  }
+
+  _updateLiquidTouch(params) {
+    if (
+      this._nodeShape() !== AGENT_NODE_SHAPE.DROPLET
+      || !params?.pointer?.DOM
+      || !params?.pointer?.canvas
+    ) {
+      this._clearLiquidTouch();
+      return;
+    }
+    let nodeId = this._network?.getNodeAt(params.pointer.DOM);
+    let hasNode = nodeId !== undefined && nodeId !== null;
+    const raw = hasNode ? this._nodeData[nodeId] : null;
+    const position = hasNode ? this._network?.getPositions([nodeId])?.[nodeId] : null;
+    if (!raw || !position) {
+      this._clearLiquidTouch();
+      return;
+    }
+
+    if (this._reduceMotion) {
+      this._clearLiquidTouch();
+      this._scheduleInteractionPaint();
+      return;
+    }
+
+    const radius = this._nodeRadius(raw);
+    const localX = (params.pointer.canvas.x - position.x) / radius;
+    const localY = (params.pointer.canvas.y - position.y) / radius;
+    const distance = Math.hypot(localX, localY);
+    const penetration = Math.max(0, Math.min(1, 1 - distance / 1.08));
+    this._touchState = {
+      nodeId,
+      x: localX,
+      y: localY,
+      strength: 0.46 + Math.sqrt(penetration) * 0.54,
+    };
+    this._scheduleInteractionPaint();
+  }
+
+  _clearLiquidTouch() {
+    if (!this._touchState) return;
+    this._touchState = null;
+    this._scheduleInteractionPaint();
   }
 
   _hasLiveTransitions() {
@@ -373,38 +547,160 @@ export class AgentGraphView {
       ctx.moveTo(2.55, -2.55);
       ctx.lineTo(-2.55, 2.55);
       ctx.stroke();
+    } else if (symbol === "▶") {
+      ctx.beginPath();
+      ctx.moveTo(-1.7, -2.85);
+      ctx.lineTo(2.65, 0);
+      ctx.lineTo(-1.7, 2.85);
+      ctx.closePath();
+      ctx.fill();
     }
     ctx.restore();
   }
 
-  _drawStatusBadge(ctx, x, y, radius, status, transition) {
+  _drawStatusBadge(ctx, x, y, radius, status, transition, shape, motion = null) {
     const visual = STATUS_VISUALS[status] || STATUS_VISUALS.idle;
-    if (!visual.symbol) return;
+    const staticRunningCue = status === "running"
+      && shape === AGENT_NODE_SHAPE.DROPLET
+      && this._reduceMotion;
+    const symbol = visual.symbol || (staticRunningCue ? "▶" : null);
+    if (!symbol) return;
 
     const arrival = transition?.to === status ? Math.min(1, transition.progress / 0.62) : 1;
     const easedArrival = 1 - (1 - arrival) ** 3;
     const failurePulse = status === "failed" && transition?.to === status
       ? 1 + Math.sin(Math.min(1, transition.progress) * Math.PI) * 0.16
       : 1;
-    const badgeRadius = Math.max(5, radius * 0.34) * (0.72 + easedArrival * 0.28) * failurePulse;
-    const badgeX = x + radius * 0.73;
-    const badgeY = y - radius * 0.73;
+    const baseBadgeRadius = staticRunningCue
+      ? Math.max(4.2, radius * 0.26)
+      : Math.max(5, radius * 0.34);
+    const badgeRadius = baseBadgeRadius * (0.72 + easedArrival * 0.28) * failurePulse;
+    const dropletAnchor = shape === AGENT_NODE_SHAPE.DROPLET
+      ? dropletGeometry(radius, motion).statusAnchor
+      : null;
+    const badgeX = x + (dropletAnchor?.x ?? radius * 0.73);
+    const badgeY = y + (dropletAnchor?.y ?? -radius * 0.73);
 
     ctx.save();
-    ctx.globalAlpha = 0.78 + easedArrival * 0.22;
+    ctx.globalAlpha *= 0.78 + easedArrival * 0.22;
     ctx.beginPath();
     ctx.arc(badgeX, badgeY, badgeRadius, 0, Math.PI * 2);
     ctx.fillStyle = rgba(visual.color, 1);
     ctx.fill();
     ctx.lineWidth = 1;
-    ctx.strokeStyle = document.body.dataset.theme === "light"
+    ctx.strokeStyle = this._graphSurfaceIsLight
       ? "rgba(15, 23, 42, 0.16)"
       : "rgba(255, 255, 255, 0.42)";
     ctx.stroke();
     const glyphColor = status === "waiting" || status === "pending" || status === "idle" || status === "cancelled"
       ? "#f8fafc"
       : "#172033";
-    this._drawStatusGlyph(ctx, visual.symbol, badgeX, badgeY, badgeRadius, glyphColor);
+    this._drawStatusGlyph(ctx, symbol, badgeX, badgeY, badgeRadius, glyphColor);
+    ctx.restore();
+  }
+
+  _drawLiquidDroplet(ctx, {
+    raw,
+    x,
+    y,
+    radius,
+    palette,
+    isLight,
+    selected,
+    hover,
+    isCancelled,
+    isRunning,
+    motion,
+  }) {
+    const stateAlpha = isCancelled ? 0.48 : 1;
+
+    ctx.save();
+
+    // The body stays translucent so the graph grid and nearby edges remain
+    // visible through the coloured water instead of disappearing behind an
+    // opaque badge. Type colour is a tint; lifecycle colour stays outside.
+    this._traceNodePath(ctx, x, y, radius, AGENT_NODE_SHAPE.DROPLET, motion);
+    const body = ctx.createRadialGradient(
+      x - radius * 0.4,
+      y - radius * 0.48,
+      Math.max(0.8, radius * 0.06),
+      x + radius * 0.12,
+      y + radius * 0.16,
+      radius * 1.22,
+    );
+    body.addColorStop(0, `rgba(255, 255, 255, ${0.18 * stateAlpha})`);
+    body.addColorStop(0.18, `rgba(255, 255, 255, ${0.04 * stateAlpha})`);
+    body.addColorStop(0.62, rgba(palette.fill, 0.07 * stateAlpha));
+    body.addColorStop(1, rgba(palette.border, 0.11 * stateAlpha));
+    ctx.fillStyle = body;
+    ctx.shadowColor = `rgba(0, 0, 0, ${(isLight ? 0.14 : 0.22) * stateAlpha})`;
+    ctx.shadowBlur = selected ? 4 : hover ? 3.4 : 2.8;
+    ctx.shadowOffsetY = 1.2;
+    ctx.fill();
+    ctx.shadowColor = "transparent";
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+
+    ctx.save();
+    this._traceNodePath(ctx, x, y, radius - 1.2, AGENT_NODE_SHAPE.DROPLET, motion);
+    ctx.clip();
+
+    const highlightDx = (motion?.highlightX || 0) * radius;
+    const highlightDy = (motion?.highlightY || 0) * radius;
+
+    // The fallback keeps one compact reflection only. Multiple translucent
+    // films and a full caustic arc read as a glowing cell when WebGL is absent.
+    ctx.beginPath();
+    ctx.ellipse(
+      x - radius * 0.34 + highlightDx,
+      y - radius * 0.36 + highlightDy,
+      Math.max(1.15, radius * 0.105),
+      Math.max(2.6, radius * 0.3),
+      -0.55,
+      0,
+      Math.PI * 2,
+    );
+    ctx.fillStyle = `rgba(255, 255, 255, ${(hover || selected ? 0.82 : 0.68) * stateAlpha})`;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(
+      x - radius * 0.5 + highlightDx * 0.72,
+      y - radius * 0.58 + highlightDy * 0.72,
+      Math.max(0.72, radius * 0.055),
+      0,
+      Math.PI * 2,
+    );
+    ctx.fillStyle = `rgba(255, 255, 255, ${0.9 * stateAlpha})`;
+    ctx.fill();
+    ctx.restore();
+
+    if (motion?.touchDepth > 0) {
+      const contactAngle = motion.touchAngle || 0;
+      const contactDistance = Math.min(0.78, Math.hypot(motion.touchX, motion.touchY)) * radius;
+      const contactX = x + Math.cos(contactAngle) * contactDistance;
+      const contactY = y + Math.sin(contactAngle) * contactDistance;
+      const dimpleRadius = radius * (0.14 + motion.touchDepth * 0.19);
+      ctx.save();
+      this._traceNodePath(ctx, x, y, radius - 0.9, AGENT_NODE_SHAPE.DROPLET, motion);
+      ctx.clip();
+      const dimple = ctx.createRadialGradient(
+        contactX,
+        contactY,
+        0,
+        contactX,
+        contactY,
+        dimpleRadius,
+      );
+      dimple.addColorStop(0, `rgba(10, 18, 28, ${0.38 * motion.touchDepth})`);
+      dimple.addColorStop(0.58, rgba(palette.border, 0.08 * motion.touchDepth));
+      dimple.addColorStop(1, "rgba(255, 255, 255, 0)");
+      ctx.beginPath();
+      ctx.arc(contactX, contactY, dimpleRadius, 0, Math.PI * 2);
+      ctx.fillStyle = dimple;
+      ctx.fill();
+      ctx.restore();
+    }
     ctx.restore();
   }
 
@@ -415,6 +711,8 @@ export class AgentGraphView {
       const status = raw.status || "idle";
       const isRunning = status === "running";
       const isCancelled = status === "cancelled";
+      const shape = this._nodeShape();
+      const isDroplet = shape === AGENT_NODE_SHAPE.DROPLET;
       const drawRadius = radius + (selected ? 2 : hover ? 1 : 0);
       const borderWidth = selected ? 2.4 : hover ? 2.1 : 1.55;
 
@@ -426,77 +724,104 @@ export class AgentGraphView {
           // still returned and the following positioned redraw paints it.
           if (!Number.isFinite(x) || !Number.isFinite(y)) return;
           ctx.save();
-          const isLight = document.body.dataset.theme === "light";
+          const isLight = this._graphSurfaceIsLight;
+          const palette = isDroplet
+            ? typeVisual.dark || typeVisual
+            : isLight ? typeVisual : typeVisual.dark || typeVisual;
           const transition = this._reduceMotion ? null : this._nodeTransition(raw.id);
+          // vis-network may reuse drawNode between canvas redraws. Resolve the
+          // current phase here, not while creating the renderer closure.
+          const liquidMotion = isDroplet
+            ? this._liquidMotionForNode(raw, { hover })
+            : null;
 
-          // Preserve the established active-node treatment: a warm, breathing
-          // aura that is distinct from the quiet static status badges.
-          if (isRunning) this._drawRunningAura(ctx, x, y, drawRadius, isLight);
+          // Rack Lab communicates a running node through the liquid body's
+          // own low-amplitude deformation. Other recipes retain their halo.
+          if (isRunning && !isDroplet) this._drawRunningAura(ctx, x, y, drawRadius, isLight);
 
           // Selection is neutral and deliberately tight so it cannot be
           // mistaken for a lifecycle state.
           if (selected) {
-            ctx.beginPath();
-            ctx.arc(x, y, drawRadius + 3.4, 0, Math.PI * 2);
+            this._traceNodePath(ctx, x, y, drawRadius + 3.4, shape, liquidMotion);
             ctx.lineWidth = 1.45;
             ctx.strokeStyle = isLight ? "rgba(15, 23, 42, 0.72)" : "rgba(248, 250, 252, 0.78)";
             ctx.stroke();
           }
 
-          // First paint an opaque backing plate. Edges are rendered on the
-          // layer below nodes, so this makes connections terminate cleanly at
-          // the badge boundary instead of showing through its colored face.
-          ctx.beginPath();
-          ctx.arc(x, y, drawRadius, 0, Math.PI * 2);
-          ctx.fillStyle = isLight ? "#f8fafc" : "#172033";
-          ctx.fill();
+          if (isDroplet) {
+            this._drawLiquidDroplet(ctx, {
+              raw,
+              x,
+              y,
+              radius: drawRadius,
+              palette,
+              isLight,
+              selected,
+              hover,
+              isCancelled,
+              isRunning,
+              motion: liquidMotion,
+            });
+          } else {
+            // Circular nodes keep their opaque backing plate so existing
+            // default-skin edge clipping and contrast remain unchanged.
+            this._traceNodePath(ctx, x, y, drawRadius, shape);
+            ctx.fillStyle = isLight ? "#f8fafc" : "#172033";
+            ctx.fill();
+            this._traceNodePath(ctx, x, y, drawRadius - 0.7, shape);
+            const faceAlpha = isCancelled ? 0.55 : 1;
+            ctx.fillStyle = rgba(
+              palette.fill,
+              faceAlpha * (isLight ? (hover || selected ? 0.9 : 0.78) : 1),
+            );
+            ctx.fill();
+            ctx.lineWidth = borderWidth;
+            ctx.strokeStyle = rgba(
+              palette.border,
+              faceAlpha * (isLight ? (selected ? 1 : hover ? 0.96 : 0.82) : 1),
+            );
+            ctx.stroke();
+          }
 
-          // A flat type face keeps the identity legible without making
-          // lifecycle state compete through the same colour channel. Dark
-          // mode uses a more saturated palette and an opaque face; blending
-          // the light pastel colors into the backing plate made every node
-          // look like the same grey, translucent chip.
-          ctx.beginPath();
-          ctx.arc(x, y, drawRadius - 0.7, 0, Math.PI * 2);
-          const palette = isLight ? typeVisual : typeVisual.dark || typeVisual;
-          const faceAlpha = isCancelled ? 0.55 : 1;
-          ctx.fillStyle = rgba(palette.fill, faceAlpha * (isLight
-            ? (hover || selected ? 0.9 : 0.78)
-            : 1));
-          ctx.fill();
-          ctx.lineWidth = borderWidth;
-          ctx.strokeStyle = rgba(
-            palette.border,
-            faceAlpha * (isLight ? (selected ? 1 : hover ? 0.96 : 0.82) : 1),
-          );
-          ctx.stroke();
-
-          ctx.fillStyle = palette.text;
-          if (isCancelled) ctx.globalAlpha = 0.72;
-          ctx.font = `800 ${badge.length > 1 ? 11 : 12.5}px Manrope, system-ui, sans-serif`;
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          const metrics = ctx.measureText(badge);
-          const opticalOffset = metrics.actualBoundingBoxLeft !== undefined
-            ? (metrics.actualBoundingBoxLeft - metrics.actualBoundingBoxRight) / 2
-            : 0;
-          ctx.fillText(badge, x + opticalOffset, y);
-          this._drawStatusBadge(ctx, x, y, drawRadius, status, transition);
+          ctx.save();
+            ctx.fillStyle = isDroplet
+              ? isLight ? "#10243d" : "rgba(248, 250, 252, 0.96)"
+              : palette.text;
+            if (isCancelled) ctx.globalAlpha *= 0.72;
+            ctx.font = `800 ${badge.length > 1 ? 11 : 12.5}px Manrope, system-ui, sans-serif`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            const metrics = ctx.measureText(badge);
+            const opticalOffset = metrics.actualBoundingBoxLeft !== undefined
+              ? (metrics.actualBoundingBoxLeft - metrics.actualBoundingBoxRight) / 2
+              : 0;
+            const contentY = isDroplet
+              ? y + dropletGeometry(drawRadius, liquidMotion).opticalCenterY
+              : y;
+            ctx.fillText(badge, x + opticalOffset, contentY);
+            this._drawStatusBadge(
+              ctx,
+              x,
+              y,
+              drawRadius,
+              status,
+              transition,
+              shape,
+              liquidMotion,
+            );
+          ctx.restore();
           ctx.restore();
         },
-        nodeDimensions: {
-          width: (radius + 7) * 2,
-          height: (radius + 7) * 2,
-        },
+        nodeDimensions: nodeShapeDimensions(radius, shape),
       };
     };
   }
 
   _visNode(raw) {
     const typeVisual = NODE_TYPE_VISUALS[raw.type] || NODE_TYPE_VISUALS.step;
-    const palette = document.body.dataset.theme === "light"
-      ? typeVisual
-      : typeVisual.dark || typeVisual;
+    const palette = this._nodeShape() === AGENT_NODE_SHAPE.DROPLET
+      ? typeVisual.dark || typeVisual
+      : this._graphSurfaceIsLight ? typeVisual : typeVisual.dark || typeVisual;
     const badge = this._nodeBadge(raw);
     const radius = this._nodeRadius(raw);
     return {
@@ -581,8 +906,12 @@ export class AgentGraphView {
   }
 
   _syncAnimation() {
-    if (this._reduceMotion) this._nodeTransitions.clear();
-    const needsAnimation = !this._reduceMotion && (this._hasRunningNodes || this._hasLiveTransitions());
+    if (this._reduceMotion) {
+      this._nodeTransitions.clear();
+    }
+    const hasLiveTransitions = this._hasLiveTransitions();
+    const needsAnimation = !this._reduceMotion
+      && (this._hasRunningNodes || hasLiveTransitions);
     if (!needsAnimation) {
       if (this._animationFrame !== null) cancelAnimationFrame(this._animationFrame);
       this._animationFrame = null;
@@ -593,16 +922,22 @@ export class AgentGraphView {
 
     const animate = (time) => {
       this._motionTime = time;
-      // 30fps is smooth for slow orbital/flow motion and avoids paying for a
+      // 30fps is smooth for slow liquid/flow motion and avoids paying for a
       // full vis-network canvas redraw on every display refresh.
       if (time - this._lastAnimationPaint >= 32) {
         this._network?.redraw();
         this._lastAnimationPaint = time;
       }
-      if (!this._reduceMotion && (this._hasRunningNodes || this._hasLiveTransitions())) {
+      if (
+        !this._reduceMotion
+        && (
+          this._hasLiveTransitions()
+          || this._hasRunningNodes
+        )
+      ) {
         this._animationFrame = requestAnimationFrame(animate);
       } else {
-        // The final redraw commits the static badge/orbit after a short
+        // The final redraw commits the static badge/liquid state after a short
         // transition has ended, even if the last throttled paint was early.
         this._network?.redraw();
         this._animationFrame = null;
@@ -839,7 +1174,7 @@ export class AgentGraphView {
   _drawVines(ctx) {
     if (!this._network || !this._vineEdges.length) return;
     const positions = this._network.getPositions();
-    const isLight = document.body.dataset.theme === "light";
+    const isLight = this._graphSurfaceIsLight;
     const color = isLight ? "#8290a3" : "#64748b";
     ctx.save();
     ctx.strokeStyle = color;
@@ -851,10 +1186,10 @@ export class AgentGraphView {
     this._vineEdges.forEach(({ from, branches }) => {
       const source = positions[from];
       if (!source || !branches.length) return;
-      const sourceY = source.y + this._nodeRadius(this._nodeData[from]) + 1;
+      const sourceY = source.y + this._nodeVerticalExtent(this._nodeData[from], "bottom") + 1;
       const stemEndY = Math.max(...branches.map(({ to }) => {
         const target = positions[to];
-        return target ? target.y - this._nodeRadius(this._nodeData[to]) - 34 : sourceY;
+        return target ? target.y - this._nodeVerticalExtent(this._nodeData[to], "top") - 34 : sourceY;
       }));
 
       // The stem is drawn once, so later planning rounds visibly extend the
@@ -867,7 +1202,7 @@ export class AgentGraphView {
       branches.forEach(({ to }) => {
         const target = positions[to];
         if (!target) return;
-        const targetY = target.y - this._nodeRadius(this._nodeData[to]) - 1;
+        const targetY = target.y - this._nodeVerticalExtent(this._nodeData[to], "top") - 1;
         const branchY = targetY - 34;
         ctx.beginPath();
         ctx.moveTo(source.x, branchY);
@@ -887,6 +1222,164 @@ export class AgentGraphView {
       });
     });
     ctx.restore();
+  }
+
+  _liquidEdgeEndpoints(fromId, toId, positions) {
+    const from = positions[fromId];
+    const to = positions[toId];
+    const fromRaw = this._nodeData[fromId];
+    const toRaw = this._nodeData[toId];
+    if (!from || !to || !fromRaw || !toRaw) return null;
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    if (!Number.isFinite(dx) || !Number.isFinite(dy) || Math.hypot(dx, dy) < 1) return null;
+
+    const boundaryPoint = (center, raw, directionX, directionY, invert = false) => {
+      const radius = this._nodeRadius(raw);
+      const motion = this._liquidMotionForNode(raw);
+      const bounds = dropletGeometry(radius, motion).bounds;
+      const rx = Math.max(1, Math.max(Math.abs(bounds.left), bounds.right));
+      const ry = Math.max(1, Math.max(Math.abs(bounds.top), bounds.bottom));
+      const scale = 1 / Math.sqrt((directionX / rx) ** 2 + (directionY / ry) ** 2);
+      const sign = invert ? -1 : 1;
+      return {
+        x: center.x + directionX * scale * sign,
+        y: center.y + directionY * scale * sign,
+      };
+    };
+
+    return {
+      start: boundaryPoint(from, fromRaw, dx, dy),
+      end: boundaryPoint(to, toRaw, dx, dy, true),
+    };
+  }
+
+  _drawLiquidArrow(ctx, end, tangent, gradient) {
+    const tangentLength = Math.hypot(tangent.x, tangent.y);
+    const safeTangent = tangentLength >= 1
+      ? tangent
+      : { x: 0, y: 1 };
+    const length = Math.max(1, Math.hypot(safeTangent.x, safeTangent.y));
+    const ux = safeTangent.x / length;
+    const uy = safeTangent.y / length;
+    const nx = -uy;
+    const ny = ux;
+    const arrowLength = 9.5;
+    const arrowWidth = 5.2;
+    const baseX = end.x - ux * arrowLength;
+    const baseY = end.y - uy * arrowLength;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(end.x, end.y);
+    ctx.quadraticCurveTo(
+      baseX + nx * arrowWidth,
+      baseY + ny * arrowWidth,
+      baseX,
+      baseY + arrowWidth * 0.18,
+    );
+    ctx.quadraticCurveTo(
+      baseX - nx * arrowWidth,
+      baseY - ny * arrowWidth,
+      end.x,
+      end.y,
+    );
+    ctx.closePath();
+    ctx.fillStyle = gradient;
+    ctx.shadowColor = this._graphSurfaceIsLight
+      ? "rgba(71, 85, 105, 0.24)"
+      : "rgba(186, 230, 253, 0.3)";
+    ctx.shadowBlur = 4;
+    ctx.fill();
+    ctx.lineWidth = 0.85;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.42)";
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  _drawLiquidGraphEdges(ctx) {
+    if (!this._network || !this._cachedDisplayEdges.length) return;
+    const positions = this._network.getPositions();
+    const isLight = this._graphSurfaceIsLight;
+
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    this._cachedDisplayEdges.forEach((edge) => {
+      const fromPosition = positions[edge.from];
+      const toPosition = positions[edge.to];
+      if (!fromPosition || !toPosition) return;
+      const displayPositions = {
+        [edge.from]: fromPosition,
+        [edge.to]: toPosition,
+      };
+      const endpoints = this._liquidEdgeEndpoints(edge.from, edge.to, displayPositions);
+      if (!endpoints) return;
+      const { start, end } = endpoints;
+      const midY = (start.y + end.y) / 2;
+      const cp1 = { x: start.x, y: midY };
+      const cp2 = { x: end.x, y: midY };
+      const gradient = ctx.createLinearGradient(start.x, start.y, end.x, end.y);
+      gradient.addColorStop(
+        0,
+        isLight ? "rgba(100, 116, 139, 0.48)" : "rgba(125, 211, 252, 0.32)",
+      );
+      gradient.addColorStop(
+        0.46,
+        isLight ? "rgba(148, 163, 184, 0.74)" : "rgba(203, 213, 225, 0.58)",
+      );
+      gradient.addColorStop(
+        1,
+        isLight ? "rgba(71, 85, 105, 0.64)" : "rgba(186, 230, 253, 0.52)",
+      );
+      const trace = () => {
+        ctx.beginPath();
+        ctx.moveTo(start.x, start.y);
+        ctx.bezierCurveTo(cp1.x, cp1.y, cp2.x, cp2.y, end.x, end.y);
+      };
+
+      ctx.save();
+      ctx.setLineDash([]);
+      ctx.lineDashOffset = 0;
+      trace();
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = isLight ? "rgba(51, 65, 85, 0.16)" : "rgba(6, 12, 22, 0.34)";
+      ctx.shadowColor = isLight ? "rgba(51, 65, 85, 0.16)" : "rgba(125, 211, 252, 0.2)";
+      ctx.shadowBlur = 4;
+      ctx.stroke();
+
+      trace();
+      ctx.lineWidth = 3.8;
+      ctx.strokeStyle = gradient;
+      ctx.shadowBlur = 0;
+      ctx.stroke();
+
+      trace();
+      ctx.lineWidth = 1.05;
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.52)";
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.lineDashOffset = 0;
+      const endTangent = {
+        x: Math.abs(end.x - cp2.x) + Math.abs(end.y - cp2.y) < 1
+          ? end.x - start.x
+          : end.x - cp2.x,
+        y: Math.abs(end.x - cp2.x) + Math.abs(end.y - cp2.y) < 1
+          ? end.y - start.y
+          : end.y - cp2.y,
+      };
+      this._drawLiquidArrow(ctx, end, endTangent, gradient);
+      ctx.restore();
+    });
+    ctx.restore();
+  }
+
+  _drawGraphEdges(ctx) {
+    if (this._nodeShape() === AGENT_NODE_SHAPE.DROPLET) {
+      this._drawLiquidGraphEdges(ctx);
+      return;
+    }
+    this._drawVines(ctx);
   }
 
   _buildDisplayEdges(rawNodes, edges) {
@@ -970,21 +1463,56 @@ export class AgentGraphView {
     // Match the canvas to the visible viewport exactly; larger off-screen
     // surfaces make fit() center against hidden space instead of the panel.
     const targetWidth = Math.max(1, Math.round(this._graphViewport.clientWidth || 1));
-    const targetHeight = Math.max(1, Math.round(this._graphViewport.clientHeight || 1));
+    const viewportHeight = Math.max(1, Math.round(this._graphViewport.clientHeight || 1));
+    const viewportRect = this._graphViewport.getBoundingClientRect?.();
+    const remoteJobsRect = this._remoteJobsPane?.getBoundingClientRect?.();
+    const remoteJobsOverlap = viewportRect && remoteJobsRect
+      ? Math.max(
+        0,
+        Math.min(viewportRect.bottom, remoteJobsRect.bottom)
+          - Math.max(viewportRect.top, remoteJobsRect.top),
+      )
+      : 0;
+    // At the compact breakpoint Remote Jobs expands as an overlay within the
+    // graph rail. Size vis-network to the portion that remains visible so its
+    // fit calculation cannot centre nodes behind that overlay.
+    const visibleViewportHeight = Math.max(1, viewportHeight - Math.round(remoteJobsOverlap));
+    const configuredTitleClearance = Number.parseFloat(
+      window.getComputedStyle?.(this._graphViewport)
+        ?.getPropertyValue("--skin-graph-title-clearance"),
+    );
+    const requestedTitleClearance = Number.isFinite(configuredTitleClearance)
+      ? configuredTitleClearance
+      : GRAPH_TITLE_CLEARANCE;
+    const titleClearance = Math.min(
+      Math.max(0, requestedTitleClearance),
+      Math.max(0, visibleViewportHeight - 1),
+    );
+    const targetHeight = Math.max(1, visibleViewportHeight - titleClearance);
     const width = `${targetWidth}px`;
     const height = `${targetHeight}px`;
-    if (this._surfaceEl.style.width === width && this._surfaceEl.style.height === height) return null;
+    const marginTop = `${titleClearance}px`;
+    if (
+      this._surfaceEl.style.width === width
+      && this._surfaceEl.style.height === height
+      && this._surfaceEl.style.marginTop === marginTop
+    ) return null;
     this._surfaceEl.style.width = width;
     this._surfaceEl.style.height = height;
+    this._surfaceEl.style.marginTop = marginTop;
     return { width, height };
   }
 
-  _fitGraph() {
+  _fitGraph({ animate = true } = {}) {
     if (!this._network || this._nodes.length === 0) return;
     requestAnimationFrame(() => {
       if (!this._network || this._nodes.length === 0) return;
       this._network.redraw();
-      this._network.fit({ animation: { duration: 300, easingFunction: "easeInOutQuad" } });
+      this._network.fit({
+        animation: animate
+          ? { duration: 300, easingFunction: "easeInOutQuad" }
+          : false,
+      });
       this._didInitialFit = true;
       this._pendingFit = false;
     });
@@ -1198,7 +1726,7 @@ export class AgentGraphView {
         // Planner -> execution links are painted as routed vines in
         // beforeDrawing. The edge itself stays in the DataSet, preserving the
         // real graph topology for interaction and future consumers.
-        hidden: vineEdgeIds.has(edgeId),
+        hidden: this._nodeShape() === AGENT_NODE_SHAPE.DROPLET || vineEdgeIds.has(edgeId),
         physics: false,
         width: 1.35,
         color: this._edgeColors(),
@@ -1300,7 +1828,9 @@ export class AgentGraphView {
     this._pendingFit = true;
     this._hasRunningNodes = false;
     this._activeEdges = [];
+    this._nodeTransitions.clear();
     this._runningNodeIds.clear();
+    this._touchState = null;
     this._detailDisclosures.clear();
     if (this._animationFrame !== null) cancelAnimationFrame(this._animationFrame);
     this._animationFrame = null;
@@ -1428,6 +1958,11 @@ export class AgentGraphView {
       // a frame. Resize its canvas explicitly so it never paints below the
       // adjacent Remote Jobs pane while the pane is moving.
       this._network.setSize(size.width, size.height);
+      // A responsive breakpoint can shrink the graph surface far more than a
+      // rail drag. Refit after the new canvas dimensions land so larger Mental
+      // Lab liquid nodes and their edge endpoints cannot be clipped above or
+      // behind the Remote Jobs pane.
+      this._fitGraph({ animate: false });
       return;
     }
     this._network.redraw();

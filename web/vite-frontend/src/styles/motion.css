@@ -166,26 +166,6 @@
   pointer-events: none;
 }
 
-/* Small popovers can use the same enter/exit treatment without JS timers. */
-.remote-job-detail {
-  opacity: 0;
-  pointer-events: none;
-  translate: 0 -5px;
-  scale: 0.985;
-  transition:
-    opacity var(--motion-fast) ease,
-    translate var(--motion-fast) var(--motion-ease-out),
-    scale var(--motion-fast) var(--motion-ease-out),
-    display var(--motion-fast) allow-discrete;
-}
-
-.remote-job-detail.is-visible {
-  opacity: 1;
-  pointer-events: auto;
-  translate: 0 0;
-  scale: 1;
-}
-
 /* Tab contents appear gently; their old pane remains an immediate swap. */
 :is(.settings-pane:not(.hidden), .center-tab-panel.active, .skill-graph-tab-panel.has-selection .skill-graph-detail) {
   animation: motion-content-in var(--motion-panel) var(--motion-ease-out) both;
@@ -262,11 +242,6 @@
     opacity: 0;
   }
 
-  .remote-job-detail.is-visible {
-    opacity: 0;
-    translate: 0 -5px;
-    scale: 0.985;
-  }
 }
 
 @keyframes motion-content-in {
@@ -309,6 +284,38 @@
   to { opacity: 1; translate: 0 0; scale: 1; }
 }
 
+.brand-icon {
+  animation: brand-mark-breathe 3.8s ease-in-out infinite;
+}
+
+.brand-wordmark-scan {
+  animation: brand-wordmark-scan 4.8s var(--motion-ease-out) infinite;
+}
+
+.brand-wordmark-signal {
+  animation: brand-wordmark-signal 6.4s steps(1, end) infinite;
+}
+
+@keyframes brand-mark-breathe {
+  0%, 100% { transform: translateY(0) scale(1); opacity: 0.9; }
+  50% { transform: translateY(-1px) scale(1.035); opacity: 1; }
+}
+
+@keyframes brand-wordmark-scan {
+  0%, 28% { background-position: 130% 0; opacity: 0; }
+  36% { opacity: 0.9; }
+  58% { background-position: -45% 0; opacity: 0.9; }
+  66%, 100% { background-position: -45% 0; opacity: 0; }
+}
+
+@keyframes brand-wordmark-signal {
+  0%, 46%, 50%, 78%, 82%, 100% { opacity: 0; transform: translateX(0); }
+  47% { opacity: 0.42; transform: translateX(1px); }
+  48% { opacity: 0.18; transform: translateX(-1px); }
+  79% { opacity: 0.32; transform: translateX(-1px); }
+  80% { opacity: 0.16; transform: translateX(1px); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   :root {
     --motion-fast: 1ms;
@@ -325,9 +332,22 @@
     .login-card,
     .graph-detail,
     .plan-graph-popup,
-    .workspace-cli,
-    .remote-job-detail
+    .workspace-cli
   ) {
     transition-duration: 1ms;
   }
+
+  :is(
+    .brand-icon,
+    .brand-wordmark-scan,
+    .brand-wordmark-signal
+  ) {
+    animation: none;
+  }
+
+  .brand-wordmark-scan,
+  .brand-wordmark-signal {
+    opacity: 0;
+  }
+
 }

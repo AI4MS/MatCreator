@@ -53,11 +53,48 @@
           <div class="graph-column">
             <section class="card left-home-card">
               <div class="brand">
-                <img class="brand-icon" src="/favicon.png" alt="MatCreator project icon">
-                <div>
-                  <div class="brand-title">MatCreator</div>
-                  <div class="brand-sub">Plan · Execute · Review</div>
-                </div>
+                <span class="brand-mark" aria-hidden="true">
+                  <svg class="brand-icon" viewBox="70 35 408 435" focusable="false">
+                    <defs>
+                      <clipPath id="brand-logo-clip" clipPathUnits="userSpaceOnUse">
+                        <path d="M274 46 456 151 456 354 274 459 92 354 92 151Z"></path>
+                      </clipPath>
+                      <filter id="brand-white-to-alpha" color-interpolation-filters="sRGB">
+                        <feColorMatrix type="matrix" values="
+                          1 0 0 0 0
+                          0 1 0 0 0
+                          0 0 1 0 0
+                          -1 -1 -1 0 3
+                        "></feColorMatrix>
+                        <feComponentTransfer>
+                          <feFuncA type="discrete" tableValues="0 0 1 1"></feFuncA>
+                        </feComponentTransfer>
+                      </filter>
+                    </defs>
+                    <image
+                      class="brand-icon-original"
+                      href="/favicon.png"
+                      width="548"
+                      height="505"
+                      clip-path="url(#brand-logo-clip)"
+                      filter="url(#brand-white-to-alpha)"
+                    ></image>
+                    <g class="rack-lab-brand-logo">
+                      <image
+                        class="rack-lab-brand-base"
+                        href="/rack-lab-brand.svg"
+                        width="548"
+                        height="505"
+                        preserveAspectRatio="xMidYMid meet"
+                      ></image>
+                    </g>
+                  </svg>
+                </span>
+                <h1 class="brand-title brand-wordmark" aria-label="MatCreator">
+                  <span class="brand-wordmark-base" aria-hidden="true">MATCREATOR</span>
+                  <span class="brand-wordmark-layer brand-wordmark-scan" aria-hidden="true">MATCREATOR</span>
+                  <span class="brand-wordmark-layer brand-wordmark-signal" aria-hidden="true">MATCREATOR</span>
+                </h1>
               </div>
             </section>
             <section class="card graph-card">
@@ -79,7 +116,6 @@
                 <button class="remote-jobs-toggle" id="remote-jobs-toggle" type="button" aria-expanded="false" aria-controls="remote-job-list">
                   <span aria-hidden="true" class="remote-jobs-caret">&#9656;</span>
                   <span>Remote Jobs</span>
-                  <span class="remote-jobs-demo-badge hidden" id="remote-jobs-demo-badge">Demo</span>
                 </button>
                 <button class="ghost refresh-button" id="refresh-remote-jobs" type="button" title="Refresh remote jobs" aria-label="Refresh remote jobs"><svg class="refresh-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M18.5 9A7 7 0 1 0 19 15"></path><path d="M18.5 5v4h-4"></path></svg></button>
               </div>
@@ -99,7 +135,12 @@
           ></div>
 
           <section class="card left-settings-card">
-            <div class="left-action-row">
+            <div class="left-control-strip">
+              <div class="user-identity-chip">
+                <button id="avatar-upload-btn" class="message-avatar user-avatar avatar-upload-btn" type="button" title="Upload your avatar" aria-label="Upload your avatar"></button>
+                <span id="user-display">—</span>
+              </div>
+              <div class="left-action-row">
               <button class="ghost icon-action-btn" id="skill-graph-open" type="button" title="Open skill graph" aria-label="Open skill graph">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <circle cx="6" cy="7" r="2.4"></circle>
@@ -147,16 +188,13 @@
                   <path d="M12 3.5h0a1.35 1.35 0 0 1 1.35 1.19l.14 1.17a6.7 6.7 0 0 1 1.22.5l.92-.73a1.35 1.35 0 0 1 1.8.1h0a1.35 1.35 0 0 1 .1 1.8l-.73.92c.2.39.37.8.5 1.22l1.17.14A1.35 1.35 0 0 1 19.66 11h0v2h0a1.35 1.35 0 0 1-1.19 1.35l-1.17.14a6.7 6.7 0 0 1-.5 1.22l.73.92a1.35 1.35 0 0 1-.1 1.8h0a1.35 1.35 0 0 1-1.8.1l-.92-.73c-.39.2-.8.37-1.22.5l-.14 1.17A1.35 1.35 0 0 1 12 20.66h0a1.35 1.35 0 0 1-1.35-1.19l-.14-1.17a6.7 6.7 0 0 1-1.22-.5l-.92.73a1.35 1.35 0 0 1-1.8-.1h0a1.35 1.35 0 0 1-.1-1.8l.73-.92a6.7 6.7 0 0 1-.5-1.22l-1.17-.14A1.35 1.35 0 0 1 4.34 13h0v-2h0a1.35 1.35 0 0 1 1.19-1.35l1.17-.14c.13-.42.3-.83.5-1.22l-.73-.92a1.35 1.35 0 0 1 .1-1.8h0a1.35 1.35 0 0 1 1.8-.1l.92.73c.39-.2.8-.37 1.22-.5l.14-1.17A1.35 1.35 0 0 1 12 3.5Z"></path>
                 </svg>
               </button>
-            </div>
-            <div class="left-user-row">
-              <div class="user-identity-chip">
-                <button id="avatar-upload-btn" class="message-avatar user-avatar avatar-upload-btn" type="button" title="Upload your avatar" aria-label="Upload your avatar"></button>
-                <span id="user-display">—</span>
               </div>
+            </div>
+            <div class="left-user-auth-actions" id="left-user-auth-actions">
               <button class="ghost icon-ghost" id="edit-user" type="button" title="Switch user" aria-label="Switch user">✎</button>
               <button class="ghost icon-ghost" id="logout-btn" type="button" title="Log out" aria-label="Log out">⏏</button>
-              <input type="file" id="avatar-upload-input" accept="image/*" style="display:none">
             </div>
+            <input type="file" id="avatar-upload-input" accept="image/*" style="display:none">
           </section>
         </div>
 
@@ -457,7 +495,7 @@
           <p style="color:var(--muted);margin:0 0 8px;font-size:0.875rem">Sign in to continue</p>
           <input id="login-input" class="text-input" placeholder="Username" style="width:100%;box-sizing:border-box" autocomplete="username" />
           <input id="login-password" type="password" class="text-input" placeholder="Password" style="width:100%;box-sizing:border-box;margin-top:8px" autocomplete="current-password" />
-          <p id="login-error" style="color:#f87171;font-size:0.8rem;margin:4px 0 0;min-height:1.2em"></p>
+          <p id="login-error" style="color:var(--danger);font-size:0.8rem;margin:4px 0 0;min-height:1.2em"></p>
           <p id="login-uuid-display" style="color:var(--muted);font-size:0.75rem;font-family:var(--mono);margin:2px 0 0;min-height:1.1em;word-break:break-all"></p>
           <button id="login-submit" class="send-btn" type="button" style="width:100%;justify-content:center;margin-top:4px">Sign in →</button>
           <p style="text-align:center;margin:10px 0 0;font-size:0.8rem;color:var(--muted)">
@@ -470,7 +508,7 @@
           <input id="reg-input" class="text-input" placeholder="Username" style="width:100%;box-sizing:border-box" autocomplete="username" />
           <input id="reg-password" type="password" class="text-input" placeholder="Password" style="width:100%;box-sizing:border-box;margin-top:8px" autocomplete="new-password" />
           <input id="reg-confirm" type="password" class="text-input" placeholder="Confirm password" style="width:100%;box-sizing:border-box;margin-top:8px" autocomplete="new-password" />
-          <p id="reg-error" style="color:#f87171;font-size:0.8rem;margin:4px 0 0;min-height:1.2em"></p>
+          <p id="reg-error" style="color:var(--danger);font-size:0.8rem;margin:4px 0 0;min-height:1.2em"></p>
           <button id="reg-submit" class="send-btn" type="button" style="width:100%;justify-content:center;margin-top:4px">Register →</button>
           <p style="text-align:center;margin:10px 0 0;font-size:0.8rem;color:var(--muted)">
             Have an account? <button id="switch-to-login" class="ghost" type="button" style="padding:0;font-size:0.8rem;color:var(--accent)">Sign in</button>
@@ -497,6 +535,17 @@
         </div>
         <div class="settings-body">
           <div class="settings-pane hidden" id="tab-appearance">
+            <fieldset class="settings-choice-fieldset">
+              <legend class="settings-label">Skin</legend>
+              <p class="settings-hint">Changes the visual language without changing workflow behavior. Selection applies immediately and is saved on this device.</p>
+              <div id="settings-skin-options" class="settings-skin-options"></div>
+            </fieldset>
+            <fieldset class="settings-choice-fieldset">
+              <legend class="settings-label">Color Variant</legend>
+              <div id="settings-skin-variant-options" class="settings-variant-options"></div>
+            </fieldset>
+            <p id="settings-appearance-status" class="settings-appearance-status" role="status" aria-live="polite"></p>
+            <div class="settings-section-divider">Interface</div>
             <label class="settings-label">Interface Scale</label>
             <p class="settings-hint">Scales the interface text while preserving the typography hierarchy. Applies immediately and is saved on this device.</p>
             <div id="settings-font-scale-options" class="settings-font-scale-options" role="group" aria-label="Interface scale">
@@ -512,7 +561,7 @@
             <input id="settings-username" class="text-input" placeholder="your username" style="width:100%;box-sizing:border-box" />
             <label class="settings-label" style="margin-top:12px">User ID (UUID)</label>
             <input id="settings-uuid" class="text-input" readonly style="width:100%;box-sizing:border-box;font-family:var(--mono);font-size:0.8rem;opacity:0.7;cursor:text" />
-            <div style="margin-top:20px;border-top:1px solid #ffffff18;padding-top:16px">
+            <div style="margin-top:20px;border-top:1px solid var(--border);padding-top:16px">
               <label class="settings-label">Change Password</label>
               <input type="password" id="settings-current-password" class="text-input" aria-label="Current password" placeholder="Current password (leave blank if none)" style="width:100%;box-sizing:border-box;margin-top:6px" />
               <input type="password" id="settings-new-password" class="text-input" aria-label="New password" placeholder="New password" style="width:100%;box-sizing:border-box;margin-top:6px" />
@@ -520,8 +569,8 @@
               <button id="settings-save-password-btn" class="ghost" type="button" style="margin-top:8px;width:100%;justify-content:center">Save Password</button>
               <span id="settings-password-msg" role="status" style="display:block;margin-top:6px;font-size:0.8rem;min-height:1.2em"></span>
             </div>
-            <button id="settings-logout-btn" class="ghost" type="button" style="margin-top:16px;width:100%;justify-content:center;color:#f87171;border:1px solid #f8717144">Log out</button>
-            <div style="margin-top:20px;border-top:1px solid #ffffff18;padding-top:16px">
+            <button id="settings-logout-btn" class="ghost" type="button" style="margin-top:16px;width:100%;justify-content:center;color:var(--danger);border-color:var(--danger)">Log out</button>
+            <div style="margin-top:20px;border-top:1px solid var(--border);padding-top:16px">
               <label class="settings-label">Default Workdir</label>
               <p class="settings-hint">Used as the working directory for every new session. Leave empty to use the global workspace default.</p>
               <div style="display:flex;gap:6px;align-items:center">

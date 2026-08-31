@@ -8,19 +8,26 @@ import { createTimelineArtifactRenderer } from "./features/chat/timelineArtifact
 import { createSessionListController } from "./features/session/sessionList.js";
 import { createSessionDetailsController } from "./features/session/sessionDetails.js";
 import { createSessionRuntime } from "./features/session/runtime.js";
+import { validateStoredSessionSelection } from "./features/session/sessionSelection.js";
 import {
   finishRequestCleanup,
   requestHasActiveRun,
 } from "./features/session/requestLifecycle.js";
+import { activateRemoteJobsSession } from "./features/session/remoteJobsSession.js";
 import { createWorkspaceTerminalController } from "./features/workspace/terminal.js";
 import { AgentGraphView, StepExecutionFeed } from "./features/graphs/AgentGraphView.js";
 import { ExecutionPlanView } from "./features/graphs/ExecutionPlanView.js";
 import { createSkillGraphController } from "./features/skills/SkillGraphController.js";
+import { createAppearanceController } from "./features/settings/AppearanceController.js";
 import { createSettingsController } from "./features/settings/SettingsController.js";
 import { createEvaluationController } from "./features/evaluation/EvaluationController.js";
 import { createRemoteJobsController } from "./features/remoteJobs/RemoteJobsController.js";
+import { createRackLabBrandMotion } from "./features/brand/RackLabBrandMotion.js";
 import { mountOrbitalAgentIndicator } from "./components/mountOrbitalAgentIndicator.js";
 import { createDisclosureController } from "./features/ui/disclosureState.js";
+import { BUILTIN_SKINS } from "./theme/builtinSkins.js";
+import { createThemeManager } from "./theme/ThemeManager.js";
+import { createThemeRegistry } from "./theme/ThemeRegistry.js";
 import {
   activityToolCalls,
   executorNodeId,
@@ -41,11 +48,15 @@ import "./styles/index.css";
 // ---------------------------------------------------------------------------
 
 const APP_NAME = "MatCreator";
+const visualFixture = import.meta.env.DEV
+  ? new URLSearchParams(window.location.search).get("visual-fixture")
+  : null;
+const agentGraphVisualFixtureActive = import.meta.env.DEV
+  && ["agent-droplets", "agent-droplet-split"].includes(visualFixture);
 
 const AGENT_MODE_KEY = "mat_agentMode";
 const SESSION_ID_KEY = "mat_sessionId";
 const SESSION_OWNER_KEY = "mat_sessionOwnerId";
-const THEME_KEY = "mat_theme";
 const FONT_SCALE_KEY = "mat_fontScale";
 const FONT_SCALE_PRESETS = [90, 100, 110, 125, 150];
 
@@ -105,7 +116,9 @@ const state = {
   activeRequests: new Map(),
   sessionViewCache: new Map(),
   agentMode: localStorage.getItem(AGENT_MODE_KEY) || "normal",
-  theme: localStorage.getItem(THEME_KEY) || "dark",
+  theme: "dark",
+  skinId: "matcreator-default",
+  styleRecipeId: "standard",
   customWorkdir: "",
   sessionSummaries: {},   // { sessionId: "summary text" }
   summaryGeneratedFor: new Set(),  // sessionIds that have triggered summary generation
@@ -170,6 +183,7 @@ const switchToLogin = document.getElementById("switch-to-login");
 const userDisplay = document.getElementById("user-display");
 const editUserBtn = document.getElementById("edit-user");
 const logoutBtn = document.getElementById("logout-btn");
+const leftUserAuthActions = document.getElementById("left-user-auth-actions");
 const settingsLogoutBtn = document.getElementById("settings-logout-btn");
 const benchToggle = null; // removed — replaced by mode-selector
 const modeSelector = document.getElementById("mode-selector");
@@ -215,11 +229,39 @@ const {
 const createChatDisclosureController = () => createDisclosureController();
 const chatDisclosureController = createChatDisclosureController();
 
+const themeRegistry = createThemeRegistry(BUILTIN_SKINS);
+const themeManager = createThemeManager({
+  registry: themeRegistry,
+  target: document.body,
+  eventTarget: window,
+  storage: localStorage,
+});
+
+function syncThemeSelection(selection) {
+  state.skinId = selection.skinId;
+  state.styleRecipeId = selection.styleRecipeId;
+  state.theme = selection.colorScheme;
+  themeToggle?.setAttribute("aria-pressed", String(selection.colorScheme === "light"));
+  themeToggle?.setAttribute("title", selection.colorScheme === "light" ? "Toggle dark mode" : "Toggle light mode");
+  themeToggle?.setAttribute("aria-label", selection.colorScheme === "light" ? "Toggle dark mode" : "Toggle light mode");
+}
+
+themeManager.subscribe(syncThemeSelection);
+themeManager.initialize();
+
+createRackLabBrandMotion();
+
+const appearanceController = createAppearanceController({
+  themeManager,
+  document,
+});
+
 const settingsController = createSettingsController({
   state,
   applyLogin,
   getFontScale,
   applyFontScale,
+  appearanceController,
 });
 
 const skillGraphController = createSkillGraphController({
@@ -277,22 +319,9 @@ function autoResizeTextInput() {
 autoResizeTextInput();
 textInput?.addEventListener("input", autoResizeTextInput);
 
-function applyTheme(theme) {
-  const nextTheme = theme === "light" ? "light" : "dark";
-  state.theme = nextTheme;
-  document.body.dataset.theme = nextTheme;
-  window.dispatchEvent(new CustomEvent("matcreator-theme-change", { detail: nextTheme }));
-  themeToggle?.setAttribute("aria-pressed", String(nextTheme === "light"));
-  themeToggle?.setAttribute("title", nextTheme === "light" ? "Toggle dark mode" : "Toggle light mode");
-  themeToggle?.setAttribute("aria-label", nextTheme === "light" ? "Toggle dark mode" : "Toggle light mode");
-}
-
-applyTheme(state.theme);
 applyFontScale(getFontScale());
 themeToggle?.addEventListener("click", () => {
-  const nextTheme = state.theme === "light" ? "dark" : "light";
-  localStorage.setItem(THEME_KEY, nextTheme);
-  applyTheme(nextTheme);
+  themeManager.toggleVariant();
 });
 
 sessionIdEl.textContent = state.sessionId;
@@ -475,18 +504,14 @@ function clearStoredSessionSelection() {
 }
 
 function validatedStoredSession(sessions, sessionId, storedOwner) {
-  if (!sessionId || !Array.isArray(sessions)) return null;
-  let owner = state.userId;
-  if (state.deploymentMode === "server" && state.isAdmin) {
-    if (!storedOwner) return null;
-    owner = storedOwner;
-  } else if (state.deploymentMode === "server" && storedOwner && storedOwner !== state.userId) {
-    return null;
-  }
-  const found = sessions.some((session) => (
-    session.id === sessionId && (session.userId || state.userId) === owner
-  ));
-  return found ? { sessionId, owner } : null;
+  return validateStoredSessionSelection({
+    sessions,
+    sessionId,
+    storedOwner,
+    deploymentMode: state.deploymentMode,
+    isAdmin: state.isAdmin,
+    currentUserId: state.userId,
+  });
 }
 
 function managedRunEventsUrl(request) {
@@ -782,7 +807,7 @@ async function savePassword() {
   const oldPw = document.getElementById("settings-current-password").value || null;
   const newPw = document.getElementById("settings-new-password").value;
   const confirmPw = document.getElementById("settings-confirm-password").value;
-  passwordMsg.style.color = "#f87171";
+  passwordMsg.style.color = "var(--danger)";
   if (!newPw) { passwordMsg.textContent = "New password cannot be empty."; return; }
   if (newPw !== confirmPw) { passwordMsg.textContent = "Passwords do not match."; return; }
   try {
@@ -796,7 +821,7 @@ async function savePassword() {
       passwordMsg.textContent = data.detail || "Failed to update password.";
       return;
     }
-    passwordMsg.style.color = "#4ade80";
+    passwordMsg.style.color = "var(--success)";
     passwordMsg.textContent = "Password updated.";
     document.getElementById("settings-current-password").value = "";
     document.getElementById("settings-new-password").value = "";
@@ -832,6 +857,7 @@ function applyLocalIdentity(resetSession = false) {
 }
 
 function hideLocalAuthControls() {
+  if (leftUserAuthActions) leftUserAuthActions.style.display = "none";
   if (editUserBtn) editUserBtn.style.display = "none";
   if (logoutBtn) logoutBtn.style.display = "none";
   if (settingsLogoutBtn) settingsLogoutBtn.style.display = "none";
@@ -845,7 +871,7 @@ async function getStartupHealth() {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     try {
       const response = await fetch("/api/health");
-      if (response.ok) return response.json();
+      if (response.ok) return await response.json();
     } catch (_) {
       // Retry below.
     }
@@ -857,9 +883,18 @@ async function getStartupHealth() {
 }
 
 // On load: in local mode force passwordless "user"; in server mode require server auth.
-(async () => {
+let startupRetryTimer = null;
+async function restoreStartupSession() {
   const health = await getStartupHealth();
-  const serverMode = health?.mode || "local";
+  if (!health || !["local", "server"].includes(health.mode)) {
+    sessionListEl.innerHTML = '<li class="empty" role="status">API unavailable — retrying without changing the saved session…</li>';
+    startupRetryTimer = window.setTimeout(() => {
+      startupRetryTimer = null;
+      void restoreStartupSession();
+    }, 2000);
+    return;
+  }
+  const serverMode = health.mode;
 
   state.deploymentMode = serverMode === "server" ? "server" : "local";
   const storedMode = localStorage.getItem("mat_deploymentMode") || "";
@@ -890,9 +925,9 @@ async function getStartupHealth() {
   sessionListEl.innerHTML = '<li class="empty">Loading saved sessions…</li>';
   const sessions = await loadSessions({ retries: 7 });
   const storedSession = validatedStoredSession(sessions, storedSessionId, storedSessionOwner);
-  if (storedSession) {
+  if (storedSession && !agentGraphVisualFixtureActive) {
     await switchSession(storedSession.sessionId, storedSession.owner);
-  } else if (sessions && storedSessionId) {
+  } else if (!agentGraphVisualFixtureActive && sessions && storedSessionId) {
     clearStoredSessionSelection();
     state.sessionId = newSessionId();
     state.activeSessionUserId = state.userId;
@@ -900,7 +935,8 @@ async function getStartupHealth() {
     sessionIdEl.textContent = state.sessionId;
     updateSendButtonState();
   }
-})();
+}
+void restoreStartupSession();
 
 // ---------------------------------------------------------------------------
 // Session list management
@@ -925,6 +961,7 @@ const remoteJobsController = createRemoteJobsController({
   state,
   dummyMode: import.meta.env.VITE_DUMMY_REMOTE_JOBS === "true",
   onJobsChanged: rerenderSessionList,
+  onLayoutChanged: () => agentGraph.notifyLayoutChanged(),
 });
 
 function sessionDisplayStatus(session, owner) {
@@ -945,7 +982,7 @@ async function switchSession(sessionId, owner = state.userId) {
   if (state.sessionReady && viewKey === sessionRequestKey()) return;
   state.sessionId = sessionId;
   state.activeSessionUserId = owner;
-  state.sessionReady = true;
+  state.sessionReady = false;
   updateSendButtonState();
   storeSessionSelection(sessionId, owner);
   sessionIdEl.textContent = sessionId;
@@ -957,12 +994,24 @@ async function switchSession(sessionId, owner = state.userId) {
   agentGraph.reset();
   planGraph.reset();
   hidePlanGraph();
-  remoteJobsController.startPolling(sessionId, owner);
-  const [activeRun] = await Promise.all([
+  const remoteJobsLoad = activateRemoteJobsSession({
+    state,
+    controller: remoteJobsController,
+    sessionId,
+    owner,
+  });
+  const [activeRun, sessionLoad] = await Promise.all([
     sessionRuntime.discoverManagedRun(sessionId, owner),
     sessionRuntime.loadSession(sessionId, owner),
-    remoteJobsController.load(sessionId, owner),
+    remoteJobsLoad,
   ]);
+  if (viewKey !== sessionRequestKey()) return;
+  if (!sessionLoad) {
+    state.sessionReady = false;
+    updateSendButtonState();
+    void loadSessions();
+    return;
+  }
   if (activeRun) sessionRuntime.startManagedRunReconnect(activeRun, sessionId, owner);
   void loadSessions();
   agentGraph.startPolling(sessionId);
@@ -1892,7 +1941,7 @@ skillGraphOpenBtn?.addEventListener("click", () => {
 });
 
 async function refreshSessionFiles(sessionId = state.sessionId, owner = state.activeSessionUserId || state.userId) {
-  if (!sessionId || !state.sessionReady) return;
+  if (!sessionId || sessionRequestKey(sessionId, owner) !== sessionRequestKey()) return;
   try {
     const resp = await fetch(`/api/sessions/${sessionId}/files`);
     if (!resp.ok) return;
@@ -2274,7 +2323,8 @@ async function generateSessionSummary(sessionId) {
 // ---------------------------------------------------------------------------
 
 async function createSession() {
-  state.activeSessionUserId = state.userId;
+  const owner = state.userId;
+  state.activeSessionUserId = owner;
   const sessionId = state.sessionId;
   const url = `/apps/${APP_NAME}/users/${activeSessionBackendUserId()}/sessions/${sessionId}`;
   const defaultWorkdir = (state.defaultWorkdir || "").trim();
@@ -2296,9 +2346,21 @@ async function createSession() {
         return;
       }
     }
+    // Ignore a delayed create response after the user has moved to another
+    // owner/session. Starting its poller would otherwise leak stale jobs into
+    // the newly active view.
+    if (sessionId !== state.sessionId || owner !== state.activeSessionUserId) return;
     state.sessionReady = true;
-    storeSessionSelection(sessionId, state.activeSessionUserId);
-    await loadSessions();
+    storeSessionSelection(sessionId, owner);
+    await Promise.all([
+      loadSessions(),
+      activateRemoteJobsSession({
+        state,
+        controller: remoteJobsController,
+        sessionId,
+        owner,
+      }),
+    ]);
   } catch (err) {
     console.error("Failed to create session:", err);
   }
@@ -2570,6 +2632,30 @@ centerTabs?.addEventListener("click", (event) => {
   if (tab?.dataset.tabId) activateCenterTab(tab.dataset.tabId);
 });
 
+centerTabs?.addEventListener("pointermove", (event) => {
+  const tab = event.target.closest(".center-tab");
+  if (!tab || !centerTabs.contains(tab)) return;
+
+  const bounds = tab.getBoundingClientRect();
+  const pointerX = ((event.clientX - bounds.left) / bounds.width) * 100;
+  const pointerY = ((event.clientY - bounds.top) / bounds.height) * 100;
+  const clampedX = Math.max(0, Math.min(100, pointerX));
+  const clampedY = Math.max(0, Math.min(100, pointerY));
+  const normalizedX = clampedX / 50 - 1;
+  const normalizedY = clampedY / 50 - 1;
+  tab.style.setProperty("--metal-tilt-x", `${(-normalizedY * 4.2).toFixed(2)}deg`);
+  tab.style.setProperty("--metal-tilt-y", `${(normalizedX * 5.4).toFixed(2)}deg`);
+  tab.style.setProperty("--metal-stripe-position", `${(50 - normalizedX * 34).toFixed(1)}%`);
+});
+
+centerTabs?.addEventListener("pointerout", (event) => {
+  const tab = event.target.closest(".center-tab");
+  if (!tab || tab.contains(event.relatedTarget)) return;
+  tab.style.removeProperty("--metal-tilt-x");
+  tab.style.removeProperty("--metal-tilt-y");
+  tab.style.removeProperty("--metal-stripe-position");
+});
+
 async function openViewer(item) {
   graphDetail.classList.add("hidden");
   const tab = ensureStructureTab(item);
@@ -2690,6 +2776,40 @@ const lightbox = createImageLightbox();
 
 layoutController.init();
 
+// Visual QA fixtures are opt-in and development-only. Dynamic loading keeps
+// fixture data and code out of normal startup and production behavior.
+if (agentGraphVisualFixtureActive) {
+  void import("./dev/agentGraphVisualFixture.js").then(({
+    AGENT_GRAPH_SPLIT_BASE_FIXTURE,
+    AGENT_GRAPH_SPLIT_CHILD_FIXTURE,
+    AGENT_GRAPH_SPLIT_UPDATE_FIXTURE,
+    AGENT_GRAPH_VISUAL_FIXTURE,
+  }) => {
+    // Keep a selected real session from racing the deterministic QA data via
+    // EventSource or its polling fallback while this opt-in fixture is open.
+    // Reset first as a selected session can finish one in-flight fetch before
+    // the dynamic fixture module resolves. Without the reset, those historic
+    // nodes can be mistaken for a split source and remain in the first paint.
+    agentGraph.reset();
+    agentGraph.stopPolling();
+    const initialGraph = visualFixture === "agent-droplet-split"
+      ? AGENT_GRAPH_SPLIT_BASE_FIXTURE
+      : AGENT_GRAPH_VISUAL_FIXTURE;
+    const nextGraph = visualFixture === "agent-droplet-split"
+      ? AGENT_GRAPH_SPLIT_CHILD_FIXTURE
+      : AGENT_GRAPH_SPLIT_UPDATE_FIXTURE;
+    agentGraph.update(initialGraph);
+    window.setTimeout(() => {
+      agentGraph.update(nextGraph);
+    }, 1200);
+  });
+} else if (import.meta.env.DEV && visualFixture === "remote-job-cards") {
+  void import("./dev/remoteJobsVisualFixture.js").then(({ REMOTE_JOBS_VISUAL_FIXTURE }) => {
+    remoteJobsController.setPresentationJobs(REMOTE_JOBS_VISUAL_FIXTURE);
+    remoteJobsController.setExpanded(true);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Event listeners
 // ---------------------------------------------------------------------------
@@ -2756,6 +2876,15 @@ if (modeSelector && modeTrigger && modeMenu) {
   let closeTimer = null;
   let menuPinned = false;
 
+  function syncModeTriggerSemantics(mode = state.agentMode) {
+    modeMenu.hidden = false;
+    modeTrigger.setAttribute("aria-haspopup", "menu");
+    modeTrigger.setAttribute("aria-controls", "mode-menu");
+    modeTrigger.setAttribute("aria-expanded", String(modeSelector.classList.contains("is-open")));
+    modeTrigger.removeAttribute("aria-valuetext");
+    modeTrigger.removeAttribute("aria-label");
+  }
+
   function setMenuOpen(open, { pinned = menuPinned, focusSelected = false } = {}) {
     window.clearTimeout(closeTimer);
     menuPinned = open && pinned;
@@ -2776,6 +2905,7 @@ if (modeSelector && modeTrigger && modeMenu) {
       btn.classList.toggle("mode-btn-active", selected);
       btn.setAttribute("aria-checked", String(selected));
     });
+    syncModeTriggerSemantics(mode);
   }
 
   function selectMode(mode) {

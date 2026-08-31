@@ -1,5 +1,26 @@
 let terminalRuntimePromise = null;
 
+const TERMINAL_THEME_FALLBACK = Object.freeze({
+  background: "#030712",
+  foreground: "#d1fae5",
+  cursor: "#7dd3fc",
+  selectionBackground: "#1e40af88",
+});
+
+export function createWorkspaceTerminalTheme(
+  body = document.body,
+  readComputedStyle = (element) => window.getComputedStyle(element),
+) {
+  const styles = readComputedStyle(body);
+  const token = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
+  return {
+    background: token("--terminal-bg", TERMINAL_THEME_FALLBACK.background),
+    foreground: token("--terminal-text", TERMINAL_THEME_FALLBACK.foreground),
+    cursor: token("--accent-primary", TERMINAL_THEME_FALLBACK.cursor),
+    selectionBackground: token("--selection", TERMINAL_THEME_FALLBACK.selectionBackground),
+  };
+}
+
 function loadTerminalRuntime() {
   terminalRuntimePromise ||= Promise.all([
     import("@xterm/xterm"),
@@ -88,6 +109,11 @@ export function createWorkspaceTerminalController({ state, container, panel, tog
     return now - selectionReleasedAt < 500 && now - ctrlCKeyAt >= 500;
   }
 
+  function applyTerminalTheme() {
+    if (!terminal) return;
+    terminal.options.theme = createWorkspaceTerminalTheme();
+  }
+
   async function start() {
     if (!container) return;
     if (socket?.readyState === WebSocket.OPEN) {
@@ -118,7 +144,7 @@ export function createWorkspaceTerminalController({ state, container, panel, tog
       convertEol: true,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
       fontSize: 12,
-      theme: { background: "#030712", foreground: "#d1fae5", cursor: "#7dd3fc", selectionBackground: "#1e40af88" },
+      theme: createWorkspaceTerminalTheme(),
     });
     const fitAddonInstance = new FitAddon();
     terminal = terminalInstance;
@@ -192,8 +218,10 @@ export function createWorkspaceTerminalController({ state, container, panel, tog
   function destroy() {
     stop();
     window.removeEventListener("resize", resize);
+    window.removeEventListener("matcreator-skin-change", applyTerminalTheme);
   }
 
   window.addEventListener("resize", resize);
+  window.addEventListener("matcreator-skin-change", applyTerminalTheme);
   return { setOpen, resize, destroy };
 }

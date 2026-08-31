@@ -1,4 +1,4 @@
-const MOBILE_LAYOUT_QUERY = window.matchMedia("(max-width: 900px)");
+const MOBILE_LAYOUT_QUERY = window.matchMedia("(max-width: 1000px)");
 
 const PANEL_HEIGHT_DEFAULTS = {};
 const PANEL_HEIGHT_BOUNDS = {};

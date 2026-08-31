@@ -4,14 +4,15 @@
   flex-direction: column;
   gap: 0;
   align-items: stretch;
-  height: calc(100vh - 32px);
-  width: 360px;
+  height: var(--shell-height);
+  width: var(--rail-left-width);
+  max-width: min(42vw, 600px);
   flex: 0 0 auto;
   overflow: visible;
   background: rgba(var(--panel-rgb), 0.9);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: var(--panel-shadow);
+  box-shadow: none;
 }
 
 .graph-column {
@@ -43,23 +44,35 @@
 .left-settings-card {
   margin-top: auto;
   padding-top: 12px;
+  gap: 8px;
   border-top: 1px solid var(--border);
+  container-type: inline-size;
 }
 
-.left-user-row {
-  display: flex;
+.left-control-strip {
+  display: grid;
+  grid-template-columns: minmax(64px, 1fr) auto;
   align-items: center;
   gap: 8px;
+  width: 100%;
   min-width: 0;
 }
 
+.left-user-auth-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+}
+
 .user-identity-chip {
-  flex: 1;
+  position: relative;
+  width: 100%;
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 10px 4px 4px;
+  padding: 2px 8px 2px 2px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid var(--border);
@@ -83,9 +96,13 @@
 }
 
 .left-action-row {
+  --action-control-surface: var(--bg-elevated);
+  --action-control-shadow-dark: color-mix(in srgb, var(--bg-canvas) 76%, transparent);
+  --action-control-shadow-light: color-mix(in srgb, white 13%, transparent);
   display: flex;
-  gap: 8px;
-  justify-content: center;
+  gap: 6px;
+  justify-content: flex-end;
+  min-width: 0;
 }
 
 .left-action-row .ghost {
@@ -96,10 +113,54 @@
   width: 36px;
   height: 36px;
   padding: 0;
+  color: var(--text-secondary, var(--text));
+  border: 1px solid color-mix(in srgb, var(--border) 72%, white 8%);
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--action-control-surface) 92%, white 8%),
+    color-mix(in srgb, var(--action-control-surface) 90%, black 10%)
+  );
+  box-shadow:
+    4px 4px 9px var(--action-control-shadow-dark),
+    -3px -3px 7px var(--action-control-shadow-light),
+    inset 0 1px 0 color-mix(in srgb, white 10%, transparent);
+  transform: translateY(0);
+  transition:
+    color var(--motion-fast, 140ms) ease,
+    border-color var(--motion-fast, 140ms) ease,
+    box-shadow var(--motion-fast, 140ms) ease,
+    transform var(--motion-fast, 140ms) var(--motion-ease-out, ease);
+}
+
+.left-action-row .icon-action-btn:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+  box-shadow:
+    5px 5px 11px var(--action-control-shadow-dark),
+    -4px -4px 9px var(--action-control-shadow-light),
+    inset 0 1px 0 color-mix(in srgb, white 14%, transparent),
+    0 0 0 1px rgba(var(--accent-rgb), 0.08);
+  transform: translateY(-1px);
+}
+
+.left-action-row .icon-action-btn:is(
+  :active:not(:disabled),
+  .is-active,
+  [aria-pressed="true"],
+  [aria-expanded="true"]
+) {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  background: color-mix(in srgb, var(--action-control-surface) 92%, black 8%);
+  box-shadow:
+    inset 3px 3px 7px var(--action-control-shadow-dark),
+    inset -2px -2px 5px var(--action-control-shadow-light),
+    0 1px 0 color-mix(in srgb, white 7%, transparent);
+  transform: translateY(1px);
 }
 
 .left-action-row a.icon-action-btn {
@@ -109,6 +170,49 @@
 .left-action-row .icon-action-btn:disabled {
   cursor: progress;
   opacity: 0.55;
+  box-shadow:
+    2px 2px 5px var(--action-control-shadow-dark),
+    -2px -2px 4px var(--action-control-shadow-light);
+}
+
+@container (max-width: 280px) {
+  .left-control-strip {
+    grid-template-columns: minmax(36px, 1fr) auto;
+    gap: 4px;
+  }
+
+  .left-action-row {
+    gap: 2px;
+  }
+
+  .left-action-row .icon-action-btn {
+    width: 32px;
+    height: 32px;
+  }
+
+  .user-identity-chip {
+    min-width: 36px;
+    gap: 0;
+    justify-content: center;
+    padding: 1px;
+  }
+
+  .user-identity-chip .avatar-upload-btn {
+    width: 32px;
+    height: 32px;
+  }
+
+  .user-identity-chip #user-display {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
 }
 
 .icon-action-btn svg {

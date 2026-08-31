@@ -35,6 +35,7 @@ export class ExecutionPlanView {
     this._planNodes = new DataSet([]);
     this._planEdges = new DataSet([]);
     this._network = null;
+    this._removeWheelZoom = null;
     this._pollInterval = null;
     this._eventStream = null;
     this._didInitialFit = false;
@@ -47,6 +48,15 @@ export class ExecutionPlanView {
     this._nodeLayoutKey = null;
     this._nodeVisualKeys = new Map();
     this._graphSnapshot = null;
+    this._appearanceRedrawQueued = false;
+    this._handleAppearanceChange = () => {
+      if (this._appearanceRedrawQueued) return;
+      this._appearanceRedrawQueued = true;
+      queueMicrotask(() => {
+        this._appearanceRedrawQueued = false;
+        this._network?.redraw();
+      });
+    };
     this._init();
   }
 
@@ -67,7 +77,7 @@ export class ExecutionPlanView {
         shape: "box",
         borderWidth: 2,
         borderWidthSelected: 3,
-        font: { size: 14, face: "Manrope, sans-serif", bold: true },
+        font: { size: 14, face: "Manrope, sans-serif" },
         margin: { top: 8, bottom: 8, left: 12, right: 12 },
       },
       interaction: {
@@ -86,10 +96,12 @@ export class ExecutionPlanView {
       options
     );
     this._network.on("beforeDrawing", (ctx) => this._drawCanvasGrid(ctx));
-    installNetworkWheelZoom(this._container, this._network, {
+    this._removeWheelZoom = installNetworkWheelZoom(this._container, this._network, {
       minScale: PLAN_GRAPH_MIN_SCALE,
       maxScale: PLAN_GRAPH_MAX_SCALE,
     });
+    window.addEventListener("matcreator-theme-change", this._handleAppearanceChange);
+    window.addEventListener("matcreator-skin-change", this._handleAppearanceChange);
   }
 
   _computeLevels(nodeIds, rawEdges) {
@@ -221,7 +233,7 @@ export class ExecutionPlanView {
         border: colors.border,
         highlight: { background: colors.border, border: colors.border },
       },
-      font: { color: colors.font, size: 14, bold: true, face: "Manrope, sans-serif" },
+      font: { color: colors.font, size: 14, face: "Manrope, sans-serif" },
       shapeProperties: isRunning ? { borderDashes: [4, 3] } : {},
       borderWidth: isRunning ? 2.5 : 2,
     };
@@ -741,5 +753,15 @@ export class ExecutionPlanView {
     this._network.fit({
       animation: animate ? { duration: 300, easingFunction: "easeInOutQuad" } : false,
     });
+  }
+
+  destroy() {
+    window.removeEventListener("matcreator-theme-change", this._handleAppearanceChange);
+    window.removeEventListener("matcreator-skin-change", this._handleAppearanceChange);
+    this.stopPolling();
+    this._removeWheelZoom?.();
+    this._removeWheelZoom = null;
+    this._network?.destroy();
+    this._network = null;
   }
 }

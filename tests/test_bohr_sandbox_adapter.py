@@ -25,6 +25,10 @@ def _err(message: str) -> str:
     return json.dumps({"ok": False, "error": {"message": message}})
 
 
+def _provider_err(**error) -> str:
+    return json.dumps({"ok": False, "error": error})
+
+
 def test_create_builds_command_and_extracts_sandbox_id(monkeypatch) -> None:
     captured = {}
 
@@ -51,6 +55,7 @@ def test_create_builds_command_and_extracts_sandbox_id(monkeypatch) -> None:
             "project_id": 1234,
             "template": "sdbxagent",
             "timeout": 3600,
+            "session_id": "mc-probe-001",
             "env": {"FOO": "bar"},
         }
     )
@@ -61,6 +66,7 @@ def test_create_builds_command_and_extracts_sandbox_id(monkeypatch) -> None:
     assert "--template" in command and "sdbxagent" in command
     assert "--project-id" in command and "1234" in command
     assert "--timeout" in command and "3600" in command
+    assert "--session-id" in command and "mc-probe-001" in command
     assert "--env" in command and "FOO=bar" in command
 
 
@@ -101,16 +107,21 @@ def test_create_raises_when_no_sandbox_id_returned(monkeypatch) -> None:
 
 
 def test_status_reports_liveness_without_normalized_status_by_default(monkeypatch) -> None:
+    captured = {}
+
     def fake_run(command, **kwargs):
+        captured["kwargs"] = kwargs
         return _FakeCompleted(_ok({"status": "running"}))
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setenv("MATCREATOR_REMOTE_PROVIDER_QUERY_TIMEOUT_SECONDS", "0.25")
     adapter = BohrSandboxAdapter()
 
     status = adapter.status("sbx-1")
 
     assert status.normalized_status is None
     assert status.snapshot["provider_status"] == "reachable"
+    assert captured["kwargs"]["timeout"] == 0.25
 
 
 def test_status_maps_unreachable_states_to_lost(monkeypatch) -> None:
@@ -124,6 +135,29 @@ def test_status_maps_unreachable_states_to_lost(monkeypatch) -> None:
 
     assert status.normalized_status == "lost"
     assert status.snapshot["provider_status"] == "unreachable"
+
+
+def test_status_maps_provider_404_to_lost(monkeypatch) -> None:
+    def fake_run(command, **kwargs):
+        return _FakeCompleted(
+            _provider_err(
+                code="RESOURCE_NOT_FOUND",
+                http=404,
+                message="sandbox not found",
+                retryable=False,
+            ),
+            returncode=1,
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    status = BohrSandboxAdapter().status("sbx-gone")
+
+    assert status.normalized_status == "lost"
+    assert status.snapshot == {
+        "provider_status": "unreachable",
+        "raw_status": "deleted",
+    }
 
 
 def test_cancel_invokes_delete_with_force(monkeypatch) -> None:
@@ -141,6 +175,35 @@ def test_cancel_invokes_delete_with_force(monkeypatch) -> None:
     command = captured["command"]
     assert command[1:4] == ["sandbox", "delete", "sbx-1"]
     assert "--force" in command
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        {
+            "code": "RESOURCE_NOT_FOUND",
+            "http": 404,
+            "message": "sandbox not found",
+            "retryable": False,
+        },
+        {
+            "code": "INVALID_REQUEST",
+            "subtype": "sandbox_destroying",
+            "http": 409,
+            "message": "sandbox is not available for operation",
+            "retryable": True,
+        },
+    ],
+)
+def test_cancel_is_idempotent_when_sandbox_is_absent_or_destroying(
+    monkeypatch, error
+) -> None:
+    def fake_run(command, **kwargs):
+        return _FakeCompleted(_provider_err(**error), returncode=1)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    BohrSandboxAdapter().cancel("sbx-closing")
 
 
 def test_run_command_parses_stdout_stderr_exit_code(monkeypatch) -> None:
@@ -182,6 +245,28 @@ def test_run_command_disables_both_cli_and_subprocess_timeouts(monkeypatch) -> N
     timeout_index = command.index("--timeout")
     assert command[timeout_index + 1] == "0"
     assert captured["kwargs"]["timeout"] is None
+
+
+def test_run_command_applies_finite_control_plane_timeout(monkeypatch) -> None:
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return _FakeCompleted(_ok({"stdout": "", "stderr": "", "exit_code": 0}))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    BohrSandboxAdapter().run_command(
+        "sbx-1",
+        "true",
+        timeout_seconds=2.5,
+    )
+
+    command = captured["command"]
+    timeout_index = command.index("--timeout")
+    assert command[timeout_index + 1] == "2.5"
+    assert captured["kwargs"]["timeout"] == 2.5
 
 
 def test_upload_file_rejects_missing_source(tmp_path) -> None:

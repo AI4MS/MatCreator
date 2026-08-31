@@ -2,11 +2,13 @@
 .chat-card {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 32px);
-  min-height: 640px;
+  height: var(--shell-height);
+  min-height: 0;
   flex: 1 1 0;
   min-width: 280px;
   overflow: hidden;
+  border-color: var(--border-default);
+  box-shadow: 0 18px 54px rgba(0, 0, 0, 0.22);
 }
 
 .center-tabs {
@@ -976,7 +978,7 @@
   --chat-avatar-size: 34px;
   --chat-message-gap: 10px;
   flex: 0 0 auto;
-  width: min(100%, 968px);
+  width: 100%;
   margin: 0 auto 12px;
   display: grid;
   grid-template-columns: var(--chat-avatar-size) minmax(0, 1fr) var(--chat-avatar-size);
@@ -1001,7 +1003,7 @@
 .agent-message .message-bubble {
   justify-self: start;
   width: 100%;
-  max-width: 880px;
+  max-width: none;
   background: var(--agent-bg-1);
   border: 1px solid var(--agent-border);
   box-shadow: var(--msg-box-shadow-offset) var(--agent-box-shadow-color);
@@ -1088,6 +1090,12 @@
   grid-column: 1;
 }
 
+.step-feed-inline-region {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .delegation-group {
   margin: 10px 0;
   padding: 8px 0 0 12px;
@@ -1135,6 +1143,14 @@
   flex: 1 1 auto;
   width: 100%;
   max-width: none;
+}
+
+.delegation-task-host {
+  margin: 0;
+}
+
+.delegation-task-host > .step-feed-message {
+  margin-bottom: 0;
 }
 
 .step-feed-child-list {
@@ -1605,12 +1621,11 @@ details.step-feed-nested {
 
 .input-area {
   position: absolute;
-  left: 50%;
-  right: auto;
+  inset-inline: 16px;
   bottom: 0;
-  width: min(calc(100% - 32px), 980px);
+  width: auto;
   margin: 0 0 16px;
-  transform: translateX(-50%);
+  transform: none;
   padding: 0;
   border-top: none;
   background: transparent;

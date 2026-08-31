@@ -27,6 +27,7 @@ export function installNetworkWheelZoom(container, network, {
   minScale = DEFAULT_MIN_SCALE,
   maxScale = DEFAULT_MAX_SCALE,
   zoomFactor = DEFAULT_ZOOM_FACTOR,
+  onBeforeZoom = null,
 } = {}) {
   if (!container || !network) return () => {};
 
@@ -51,6 +52,7 @@ export function installNetworkWheelZoom(container, network, {
     });
     const position = network.getViewPosition();
     const scaleRatio = oldScale / newScale;
+    onBeforeZoom?.({ event, oldScale, newScale });
     network.moveTo({
       position: {
         x: pointer.x - (pointer.x - position.x) * scaleRatio,
@@ -64,4 +66,3 @@ export function installNetworkWheelZoom(container, network, {
   container.addEventListener("wheel", onWheel, { passive: false });
   return () => container.removeEventListener("wheel", onWheel);
 }
-

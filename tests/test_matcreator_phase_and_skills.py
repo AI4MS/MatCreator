@@ -1,48 +1,51 @@
-import unittest
+from types import SimpleNamespace
 
-from agents.MatCreator.agent import before_agent_callback_root
-from agents.MatCreator.planning_agent import planning_agent
-from agents.MatCreator.prompts.workflow import get_all_workflow_types, search_skills
-
-
-class _DummySession:
-    def __init__(self):
-        self.id = "test-session"
-        self.user_id = "test-user"
-        self.app_name = "test-app"
-        self.state = {}
+from matcreator.agent import app, orchestrator
+from matcreator.agents.execution_agent.agent import execution_agent
+from matcreator.agents.orchestrator.agent import PlanningExecutionOrchestrator
+from matcreator.agents.thinking_agent.agent import (
+    before_agent_callback,
+    thinking_agent,
+)
+from matcreator.skill import ALL_SKILLS, get_default_skill_names, load_skills
 
 
-class _DummyInvocationContext:
-    def __init__(self):
-        self.session = _DummySession()
+def test_before_agent_callback_initializes_thinking_context() -> None:
+    state = {
+        "session_id": "test-session",
+        "workdir": "/tmp/matcreator-test",
+    }
+    callback_context = SimpleNamespace(
+        state=state,
+        _invocation_context=SimpleNamespace(
+            session=SimpleNamespace(state=state),
+        ),
+    )
+
+    before_agent_callback(callback_context)
+
+    assert state["execution_graph"] is None
+    assert state["goal"] is None
+    assert state["summarize"] is None
+    assert state["trajectory_step"] == 0
+    assert state["workspace_dir"] == "/tmp/matcreator-test"
+    assert "PLANNING ONLY" in state["instruction_body"]
+    assert "Wait for explicit user confirmation" in state["instruction_body"]
 
 
-class _DummyCallbackContext:
-    def __init__(self):
-        self._invocation_context = _DummyInvocationContext()
+def test_skill_registry_contains_all_bundled_skills() -> None:
+    default_names = get_default_skill_names()
+    loaded_names = {skill.name for skill in load_skills()}
+    registry_names = {skill.name for skill in ALL_SKILLS}
+
+    assert default_names
+    assert default_names <= loaded_names
+    assert default_names <= registry_names
+    assert len(registry_names) == len(ALL_SKILLS)
 
 
-class TestMatCreatorPhaseAndSkills(unittest.TestCase):
-    def test_before_agent_callback_sets_default_phase(self) -> None:
-        callback_context = _DummyCallbackContext()
-        before_agent_callback_root(callback_context)
-        self.assertEqual(callback_context._invocation_context.session.state["phase"], "thinking")
-
-    def test_skill_registry_loads_expected_workflows(self) -> None:
-        workflow_types = get_all_workflow_types()
-        self.assertIn("default", workflow_types)
-        self.assertIn("pfd", workflow_types)
-
-    def test_skill_search_returns_matching_workflow(self) -> None:
-        results = search_skills("fine-tune distillation active learning", workflow_type="pfd", top_k=2)
-        self.assertGreaterEqual(len(results), 1)
-        self.assertEqual(results[0].workflow_type, "pfd")
-
-    def test_planning_agent_has_toolized_subagents(self) -> None:
-        tools = getattr(planning_agent, "tools", []) or []
-        self.assertGreaterEqual(len(tools), 3)
-
-
-if __name__ == "__main__":
-    unittest.main()
+def test_thinking_agent_is_the_orchestrator_planning_agent() -> None:
+    assert isinstance(orchestrator, PlanningExecutionOrchestrator)
+    assert app.root_agent is orchestrator
+    assert orchestrator.planning_agent is thinking_agent
+    assert orchestrator.execution_agent is execution_agent
