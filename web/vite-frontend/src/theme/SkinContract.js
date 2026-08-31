@@ -49,7 +49,10 @@ const LENGTH_TOKENS = [
   "--skin-graph-title-height", "--skin-graph-title-clearance",
 ];
 
-const NUMBER_TOKENS = ["--skin-screw-opacity"];
+const NUMBER_TOKENS = [
+  "--skin-screw-opacity",
+  "--skin-graph-droplet-fill-alpha",
+];
 const RGB_TRIPLET_TOKENS = ["--panel-rgb", "--accent-rgb"];
 const SHADOW_TOKENS = [
   "--panel-shadow", "--popup-shadow", "--step-feed-message-box-shadow",

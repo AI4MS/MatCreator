@@ -45,7 +45,6 @@ nav:
   - Remote Job Monitoring: remote_job_monitoring.md
   - Frontend Design:
       - Skin Framework: frontend-skin-framework.md
-      - Rack Lab Metal Tabs: frontend-pattern-metal-dog-tag-tabs.md
       - Remote Job Flip Cards: frontend-pattern-flip-card-elsombrero2.md
       - Rack Lab Remote Jobs: frontend-pattern-rack-liquid-glass-remote-jobs.md
   - Deployment:

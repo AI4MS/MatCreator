@@ -2632,30 +2632,6 @@ centerTabs?.addEventListener("click", (event) => {
   if (tab?.dataset.tabId) activateCenterTab(tab.dataset.tabId);
 });
 
-centerTabs?.addEventListener("pointermove", (event) => {
-  const tab = event.target.closest(".center-tab");
-  if (!tab || !centerTabs.contains(tab)) return;
-
-  const bounds = tab.getBoundingClientRect();
-  const pointerX = ((event.clientX - bounds.left) / bounds.width) * 100;
-  const pointerY = ((event.clientY - bounds.top) / bounds.height) * 100;
-  const clampedX = Math.max(0, Math.min(100, pointerX));
-  const clampedY = Math.max(0, Math.min(100, pointerY));
-  const normalizedX = clampedX / 50 - 1;
-  const normalizedY = clampedY / 50 - 1;
-  tab.style.setProperty("--metal-tilt-x", `${(-normalizedY * 4.2).toFixed(2)}deg`);
-  tab.style.setProperty("--metal-tilt-y", `${(normalizedX * 5.4).toFixed(2)}deg`);
-  tab.style.setProperty("--metal-stripe-position", `${(50 - normalizedX * 34).toFixed(1)}%`);
-});
-
-centerTabs?.addEventListener("pointerout", (event) => {
-  const tab = event.target.closest(".center-tab");
-  if (!tab || tab.contains(event.relatedTarget)) return;
-  tab.style.removeProperty("--metal-tilt-x");
-  tab.style.removeProperty("--metal-tilt-y");
-  tab.style.removeProperty("--metal-stripe-position");
-});
-
 async function openViewer(item) {
   graphDetail.classList.add("hidden");
   const tab = ensureStructureTab(item);

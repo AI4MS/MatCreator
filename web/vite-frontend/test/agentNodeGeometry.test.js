@@ -11,6 +11,13 @@ import {
   runningMotionEnvelope,
   traceDropletPath,
 } from "../src/features/graphs/agentNodeGeometry.js";
+import {
+  DEFAULT_AGENT_DROPLET_FILL_ALPHA,
+  agentDropletBodyAlphas,
+  resolveAgentDropletFillAlpha,
+} from "../src/features/graphs/agentNodeLiquidStyle.js";
+import { RACK_LAB_SKIN } from "../src/theme/builtinSkins.js";
+import { SKIN_TOKEN_SCHEMA } from "../src/theme/SkinContract.js";
 
 test("activates droplet nodes only for the reviewed Rack Lab recipe version", () => {
   assert.equal(agentNodeShapeForRecipe("rack-lab", 1), AGENT_NODE_SHAPE.DROPLET);
@@ -18,6 +25,39 @@ test("activates droplet nodes only for the reviewed Rack Lab recipe version", ()
   assert.equal(agentNodeShapeForRecipe("standard", 1), AGENT_NODE_SHAPE.CIRCLE);
   assert.equal(agentNodeShapeForRecipe("rack-lab", 2), AGENT_NODE_SHAPE.CIRCLE);
   assert.equal(agentNodeShapeForRecipe("downloaded-css", 1), AGENT_NODE_SHAPE.CIRCLE);
+});
+
+test("raises only the Rack Lab liquid body tint through validated variant tokens", () => {
+  const token = "--skin-graph-droplet-fill-alpha";
+  const creamToken = RACK_LAB_SKIN.variants.light.tokens[token];
+  const graphiteToken = RACK_LAB_SKIN.variants.dark.tokens[token];
+
+  assert.equal(SKIN_TOKEN_SCHEMA[token], "number");
+  assert.equal(DEFAULT_AGENT_DROPLET_FILL_ALPHA, 0.07);
+  assert.equal(resolveAgentDropletFillAlpha(creamToken), 0.11);
+  assert.equal(resolveAgentDropletFillAlpha(graphiteToken), 0.12);
+  assert.equal(resolveAgentDropletFillAlpha(""), 0.07);
+  assert.equal(resolveAgentDropletFillAlpha("1.1"), 0.07);
+
+  const cream = agentDropletBodyAlphas(creamToken);
+  const graphite = agentDropletBodyAlphas(graphiteToken);
+  assert.deepEqual(cream, {
+    highlight: 0.18,
+    sheen: 0.04,
+    fill: 0.11,
+    rim: 0.11,
+  });
+  assert.deepEqual(graphite, {
+    highlight: 0.18,
+    sheen: 0.04,
+    fill: 0.12,
+    rim: 0.11,
+  });
+
+  const cancelled = agentDropletBodyAlphas(graphiteToken, 0.48);
+  assert.equal(cancelled.fill, 0.12 * 0.48);
+  assert.equal(cancelled.highlight, 0.18 * 0.48);
+  assert.equal(cancelled.rim, 0.11 * 0.48);
 });
 
 test("gives active droplets deterministic independent motion without a layout pulse", () => {

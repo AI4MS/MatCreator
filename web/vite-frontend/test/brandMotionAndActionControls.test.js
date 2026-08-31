@@ -66,6 +66,29 @@ test("Rack Lab alone replaces the raster favicon with a clean local vector mark"
   assert.doesNotMatch(rackLabBrandSvg, /<(?:image|filter)\b|feTurbulence|data:image|\.png/i);
 });
 
+test("Rack Lab wordmark keeps Cream and Graphite base and animated characters legible without duplicate layers", async () => {
+  const skinsCss = await readFile(skinsCssUrl, "utf8");
+
+  assert.match(
+    skinsCss,
+    /\[data-style-recipe="rack-lab"\]\[data-style-recipe-version="1"\]\[data-theme="light"\] \.brand-wordmark \{[\s\S]*--rack-brand-ink:\s*#FFFFFF/,
+  );
+  assert.match(
+    skinsCss,
+    /\[data-style-recipe="rack-lab"\]\[data-style-recipe-version="1"\]\[data-theme="dark"\] \.brand-wordmark \{[\s\S]*--rack-brand-ink:\s*#F7F4EA/,
+  );
+  assert.match(skinsCss, /\.brand-wordmark-base \{[\s\S]*color:\s*var\(--rack-brand-ink\)/);
+  assert.match(
+    skinsCss,
+    /\.brand-wordmark-scan,[\s\S]*\.brand-wordmark-signal \{[\s\S]*opacity:\s*0;[\s\S]*background:\s*none;[\s\S]*-webkit-text-fill-color:\s*transparent/,
+  );
+  assert.match(
+    skinsCss,
+    /\.rack-brand-char \{[\s\S]*background:\s*color-mix\([\s\S]*var\(--skin-graph-surface, var\(--panel\)\)[\s\S]*color:\s*var\(--rack-brand-ink\)/,
+  );
+  assert.doesNotMatch(skinsCss, /--panel-bg/);
+});
+
 test("Rack Lab bundles Anime.js and staggers locally split wordmark characters", async () => {
   const [source, skinsCss, packageJson] = await Promise.all([
     readFile(rackLabBrandMotionUrl, "utf8"),
@@ -79,8 +102,71 @@ test("Rack Lab bundles Anime.js and staggers locally split wordmark characters",
   assert.match(source, /delay: staggerImpl\(65\)/);
   assert.match(source, /y: \["0em", "-0\.22em", "0em"\]/);
   assert.match(source, /scale: \[1, 1\.025, 1\]/);
+  assert.match(source, /loop:\s*false/);
+  assert.doesNotMatch(source, /loop:\s*true/);
   assert.match(source, /prefers-reduced-motion: reduce/);
   assert.match(skinsCss, /\.rack-brand-char\s*\{[\s\S]*display:\s*inline-block[\s\S]*border-radius:\s*0\.22em/);
+});
+
+test("Rack Lab brand motion cancels and reverts across recipe and reduced-motion changes", async () => {
+  const { createRackLabBrandMotion } = await import(rackLabBrandMotionUrl);
+  const target = {};
+  const dataset = { styleRecipe: "rack-lab", styleRecipeVersion: "1" };
+  const windowListeners = new Map();
+  const motionListeners = new Map();
+  const reducedMotion = {
+    matches: false,
+    addEventListener: (name, listener) => motionListeners.set(name, listener),
+    removeEventListener: (name) => motionListeners.delete(name),
+  };
+  const documentRef = {
+    body: { dataset },
+    querySelector: (selector) => selector === ".brand-wordmark-base" ? target : null,
+  };
+  const windowRef = {
+    matchMedia: () => reducedMotion,
+    addEventListener: (name, listener) => windowListeners.set(name, listener),
+    removeEventListener: (name) => windowListeners.delete(name),
+  };
+  const calls = { split: 0, revert: 0, animate: 0, cancel: 0, options: null };
+  const splitTextImpl = (receivedTarget) => {
+    assert.equal(receivedTarget, target);
+    calls.split += 1;
+    return { chars: [{}], revert: () => { calls.revert += 1; } };
+  };
+  const animateImpl = (_chars, options) => {
+    calls.animate += 1;
+    calls.options = options;
+    return { cancel: () => { calls.cancel += 1; } };
+  };
+
+  const controller = createRackLabBrandMotion({
+    documentRef,
+    windowRef,
+    animateImpl,
+    splitTextImpl,
+    staggerImpl: () => 0,
+  });
+  assert.equal(calls.split, 1);
+  assert.equal(calls.animate, 1);
+  assert.equal(calls.options.loop, false);
+
+  dataset.styleRecipe = "default";
+  controller.sync();
+  assert.equal(calls.cancel, 1);
+  assert.equal(calls.revert, 1);
+
+  dataset.styleRecipe = "rack-lab";
+  controller.sync();
+  assert.equal(calls.split, 2);
+  reducedMotion.matches = true;
+  motionListeners.get("change")();
+  assert.equal(calls.cancel, 2);
+  assert.equal(calls.revert, 2);
+
+  controller.destroy();
+  assert.equal(windowListeners.size, 0);
+  assert.equal(motionListeners.size, 0);
 });
 
 test("all five left controls share the neumorphic shell and semantic pressed states", async () => {

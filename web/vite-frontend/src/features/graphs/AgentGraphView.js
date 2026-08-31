@@ -13,6 +13,10 @@ import {
   runningMotionEnvelope,
   traceDropletPath,
 } from "./agentNodeGeometry.js";
+import {
+  agentDropletBodyAlphas,
+  resolveAgentDropletFillAlpha,
+} from "./agentNodeLiquidStyle.js";
 
 // Node identity and execution state intentionally live in separate visual
 // vocabularies. Type owns the face and its letter; state only owns a compact
@@ -117,6 +121,7 @@ export class AgentGraphView {
       this._network?.redraw();
     });
     this._graphSurfaceIsLight = this._readGraphSurfaceTone();
+    this._graphDropletFillAlpha = this._readGraphDropletFillAlpha();
     this._detailEl = document.getElementById("graph-detail");
     this._detailClose = document.getElementById("graph-detail-close");
     this._detailLabel = document.getElementById("detail-label");
@@ -235,8 +240,16 @@ export class AgentGraphView {
     return document.body.dataset.theme === "light";
   }
 
+  _readGraphDropletFillAlpha() {
+    const token = window.getComputedStyle?.(document.body)
+      ?.getPropertyValue("--skin-graph-droplet-fill-alpha")
+      ?.trim();
+    return resolveAgentDropletFillAlpha(token);
+  }
+
   _applyTheme() {
     this._graphSurfaceIsLight = this._readGraphSurfaceTone();
+    this._graphDropletFillAlpha = this._readGraphDropletFillAlpha();
     const color = this._edgeColors();
     const useLiquidEdges = this._nodeShape() === AGENT_NODE_SHAPE.DROPLET;
     const updates = this._edges.getIds().map((id) => ({
@@ -611,8 +624,10 @@ export class AgentGraphView {
     isCancelled,
     isRunning,
     motion,
+    fillAlpha,
   }) {
     const stateAlpha = isCancelled ? 0.48 : 1;
+    const bodyAlphas = agentDropletBodyAlphas(fillAlpha, stateAlpha);
 
     ctx.save();
 
@@ -628,10 +643,10 @@ export class AgentGraphView {
       y + radius * 0.16,
       radius * 1.22,
     );
-    body.addColorStop(0, `rgba(255, 255, 255, ${0.18 * stateAlpha})`);
-    body.addColorStop(0.18, `rgba(255, 255, 255, ${0.04 * stateAlpha})`);
-    body.addColorStop(0.62, rgba(palette.fill, 0.07 * stateAlpha));
-    body.addColorStop(1, rgba(palette.border, 0.11 * stateAlpha));
+    body.addColorStop(0, `rgba(255, 255, 255, ${bodyAlphas.highlight})`);
+    body.addColorStop(0.18, `rgba(255, 255, 255, ${bodyAlphas.sheen})`);
+    body.addColorStop(0.62, rgba(palette.fill, bodyAlphas.fill));
+    body.addColorStop(1, rgba(palette.border, bodyAlphas.rim));
     ctx.fillStyle = body;
     ctx.shadowColor = `rgba(0, 0, 0, ${(isLight ? 0.14 : 0.22) * stateAlpha})`;
     ctx.shadowBlur = selected ? 4 : hover ? 3.4 : 2.8;
@@ -761,6 +776,7 @@ export class AgentGraphView {
               isCancelled,
               isRunning,
               motion: liquidMotion,
+              fillAlpha: this._graphDropletFillAlpha,
             });
           } else {
             // Circular nodes keep their opaque backing plate so existing

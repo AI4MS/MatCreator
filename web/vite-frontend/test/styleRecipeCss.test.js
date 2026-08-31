@@ -11,12 +11,18 @@ test("scopes structural Rack Lab CSS to its pre-reviewed recipe contract", async
   assert.match(css, /body\[data-style-recipe="rack-lab"\]\[data-style-recipe-version="1"\]/);
   assert.doesNotMatch(css, /body\[data-skin="rack-lab"\]/);
   assert.doesNotMatch(css, /@import\s+url|url\s*\(\s*["']?https?:/i);
-  assert.match(css, /\.center-tab::before[\s\S]*radial-gradient/);
+  assert.doesNotMatch(css, /\.center-tab::before/);
   assert.doesNotMatch(css, /\.center-tab::after/);
-  assert.doesNotMatch(css, /--metal-sheen-opacity|--metal-pointer-[xy]/);
-  assert.match(css, /rotateX\(var\(--metal-tilt-x\)\) rotateY\(var\(--metal-tilt-y\)\)/);
-  assert.match(css, /background-position:\s*0 0, var\(--metal-stripe-position\) 50%/);
-  assert.match(css, /\.center-tab:focus-visible[\s\S]*outline-offset:\s*-3px/);
+  assert.doesNotMatch(css, /--metal-|perspective\(280px\)|repeating-linear-gradient/);
+  assert.match(
+    css,
+    /\.center-tab \{[\s\S]*height:\s*30px[\s\S]*border-radius:\s*3px[\s\S]*background:\s*transparent[\s\S]*text-shadow:\s*none/,
+  );
+  assert.match(
+    css,
+    /\.center-tab\.active \{[\s\S]*background:\s*color-mix\(in srgb, var\(--accent\) 9%, var\(--skin-chat-surface\)\)[\s\S]*box-shadow:\s*inset 0 -2px 0 var\(--accent\)/,
+  );
+  assert.match(css, /\.center-tab:focus-visible[\s\S]*outline-offset:\s*-2px/);
   assert.match(css, /\.composer-toolbar #file-upload-btn[\s\S]*box-shadow:/);
   assert.match(css, /#file-upload-btn:active:not\(:disabled\)[\s\S]*inset/);
   assert.match(css, /\.composer-toolbar #send-btn \{[\s\S]*linear-gradient[\s\S]*box-shadow:/);
@@ -36,20 +42,17 @@ test("scopes structural Rack Lab CSS to its pre-reviewed recipe contract", async
     css,
     /\[data-theme="light"\][\s\S]*#file-upload-btn[\s\S]*color:\s*#1b2632/,
   );
-  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.center-tab[\s\S]*transform:\s*none/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.center-tab[\s\S]*transition:\s*none/);
   assert.match(
     css,
     /@media \(forced-colors: active\)[\s\S]*\.center-tab\.active[\s\S]*background:\s*Highlight/,
   );
 });
 
-test("Rack Lab dog tags track pointer position through local CSS variables", async () => {
+test("Rack Lab center tabs carry no dog-tag pointer runtime", async () => {
   const source = await readFile(mainJsUrl, "utf8");
 
-  assert.match(source, /centerTabs\?\.addEventListener\("pointermove"/);
-  assert.doesNotMatch(source, /--metal-pointer-[xy]/);
-  assert.match(source, /--metal-tilt-x/);
-  assert.match(source, /--metal-tilt-y/);
-  assert.match(source, /--metal-stripe-position/);
-  assert.match(source, /centerTabs\?\.addEventListener\("pointerout"/);
+  assert.match(source, /centerTabs\?\.addEventListener\("click"/);
+  assert.doesNotMatch(source, /centerTabs\?\.addEventListener\("pointer(?:move|out)"/);
+  assert.doesNotMatch(source, /--metal-/);
 });

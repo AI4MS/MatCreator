@@ -170,6 +170,7 @@ export const RACK_LAB_SKIN = Object.freeze({
         "--skin-control-background": "#F4F3EE",
         ...rackFrame,
         "--skin-graph-surface-tone": "light",
+        "--skin-graph-droplet-fill-alpha": "0.11",
       },
     },
     dark: {
@@ -228,6 +229,7 @@ export const RACK_LAB_SKIN = Object.freeze({
         "--skin-control-background": "#41434E",
         ...rackFrame,
         "--skin-graph-surface-tone": "dark",
+        "--skin-graph-droplet-fill-alpha": "0.12",
       },
     },
   },

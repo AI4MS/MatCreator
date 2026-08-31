@@ -119,10 +119,35 @@ body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .brand-mark {
   filter: drop-shadow(0 2px 2px rgba(2, 16, 38, 0.42));
 }
 
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .brand-wordmark {
+  --rack-brand-ink: #F7F4EA;
+  color: var(--rack-brand-ink);
+  text-shadow: 0 0 12px rgba(221, 240, 255, 0.22);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"][data-theme="light"] .brand-wordmark {
+  --rack-brand-ink: #FFFFFF;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"][data-theme="dark"] .brand-wordmark {
+  --rack-brand-ink: #F7F4EA;
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .brand-wordmark-base {
+  z-index: 2;
+  color: var(--rack-brand-ink);
+}
+
+/* Rack Lab uses Anime.js character motion on the base wordmark. Hide the
+ * unsplit scan/signal copies so the padded character layer cannot expose a
+ * differently spaced word underneath while characters lift. */
 body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .brand-wordmark-scan,
 body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .brand-wordmark-signal {
   animation: none;
   opacity: 0;
+  background: none;
+  -webkit-text-fill-color: transparent;
+  clip-path: none;
 }
 
 body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .rack-brand-char {
@@ -133,8 +158,12 @@ body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .rack-brand-ch
   border: 1px solid color-mix(in srgb, var(--accent) 68%, #d9f2ff 32%);
   border-radius: 0.22em;
   outline: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
-  background: color-mix(in srgb, var(--accent) 25%, var(--panel-bg) 75%);
-  color: color-mix(in srgb, var(--text-primary) 82%, #dff5ff 18%);
+  background: color-mix(
+    in srgb,
+    var(--accent) 25%,
+    var(--skin-graph-surface, var(--panel)) 75%
+  );
+  color: var(--rack-brand-ink);
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.2) inset,
     0 0 8px color-mix(in srgb, var(--accent) 24%, transparent);
@@ -158,89 +187,36 @@ body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .settings-tabs
 
 body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tabs {
   align-items: center;
-  min-height: 48px;
-  padding: 6px 12px 6px 16px;
-  background: color-mix(in srgb, var(--skin-chat-surface) 88%, white);
+  min-height: 44px;
+  padding: 6px 12px;
+  background: color-mix(in srgb, var(--skin-chat-surface) 94%, var(--text-primary) 6%);
 }
 
 body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tabs-scroll {
   align-items: center;
-  gap: 8px;
+  gap: 4px;
 }
 
 body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab {
-  --metal-tilt-x: 0deg;
-  --metal-tilt-y: 0deg;
-  --metal-stripe-position: 50%;
-  isolation: isolate;
-  min-width: 116px;
-  height: 34px;
+  min-width: 100px;
+  height: 30px;
   margin: 0;
-  overflow: hidden;
-  padding: 0 16px 0 30px;
-  border: 1px solid rgba(231, 236, 240, 0.18);
-  border-radius: 8px 12px 12px 8px;
-  background:
-    repeating-linear-gradient(
-      0deg,
-      rgba(255, 255, 255, 0.025) 0 1px,
-      rgba(0, 0, 0, 0.025) 1px 2px,
-      transparent 2px 4px
-    ),
-    linear-gradient(
-      112deg,
-      #888e96 0%,
-      #4b5057 18%,
-      #6a7078 36%,
-      #2c2f35 54%,
-      #747b83 76%,
-      #393d43 100%
-    );
-  background-position: 0 0, var(--metal-stripe-position) 50%;
-  background-size: 100% 100%, 176% 112%;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.38),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.78),
-    inset 1px 0 0 rgba(255, 255, 255, 0.12),
-    0 3px 8px rgba(13, 15, 18, 0.18);
-  color: #d8dce0;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--text-primary) 18%, transparent);
+  border-radius: 3px;
+  background: transparent;
+  box-shadow: none;
+  color: color-mix(in srgb, var(--text-primary) 68%, var(--skin-chat-surface));
   font-family: var(--skin-label-font);
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  text-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.16),
-    0 -1px 0 rgba(0, 0, 0, 0.88);
+  font-weight: 750;
+  letter-spacing: 0.075em;
+  text-shadow: none;
   text-transform: uppercase;
   transition:
     color 150ms ease,
-    box-shadow 180ms ease,
-    transform 180ms cubic-bezier(0.2, 0.75, 0.28, 1),
-    background-position 170ms ease-out;
-  transform: perspective(280px) rotateX(var(--metal-tilt-x)) rotateY(var(--metal-tilt-y));
-  transform-style: preserve-3d;
-}
-
-body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab::before {
-  content: "";
-  position: absolute;
-  top: 50%;
-  left: 9px;
-  z-index: 2;
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  background: radial-gradient(
-    circle at 43% 40%,
-    #111318 0 2.7px,
-    #777d84 3px 4px,
-    #24272c 4.4px 5.1px,
-    transparent 5.4px
-  );
-  box-shadow:
-    inset 1px 1px 1px rgba(255, 255, 255, 0.24),
-    0 0 0 1px rgba(0, 0, 0, 0.58);
-  translate: 0 -50%;
-  pointer-events: none;
+    background-color 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease;
 }
 
 body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab-title,
@@ -251,57 +227,33 @@ body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .session-summa
 }
 
 body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab:hover {
-  color: #edf0f2;
-  will-change: transform, background-position;
+  border-color: color-mix(in srgb, var(--text-primary) 34%, transparent);
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  color: var(--text-primary);
 }
 
 body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab.active {
-  height: 34px;
+  height: 30px;
   margin: 0;
   border-width: 1px;
-  border-color: rgba(231, 236, 240, 0.2);
-  background:
-    repeating-linear-gradient(
-      0deg,
-      rgba(255, 255, 255, 0.028) 0 1px,
-      rgba(0, 0, 0, 0.03) 1px 2px,
-      transparent 2px 4px
-    ),
-    linear-gradient(
-      112deg,
-      #8f959c 0%,
-      #4d5259 18%,
-      #70767d 36%,
-      #30343a 54%,
-      #7c838a 76%,
-      #3b4046 100%
-    );
-  background-position: 0 0, var(--metal-stripe-position) 50%;
-  background-size: 100% 100%, 176% 112%;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.42),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.82),
-    inset 0 0 0 1px rgba(var(--accent-rgb), 0.1),
-    0 3px 8px rgba(13, 15, 18, 0.2);
+  border-color: color-mix(in srgb, var(--accent) 54%, var(--text-primary));
+  background: color-mix(in srgb, var(--accent) 9%, var(--skin-chat-surface));
+  box-shadow: inset 0 -2px 0 var(--accent);
+  color: var(--text-primary);
   translate: 0 0;
 }
 
 body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab.active .session-tab-title {
-  color: color-mix(in srgb, var(--accent) 72%, #edf0f2);
+  color: var(--text-primary);
 }
 
 body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab:active:not(:disabled) {
-  box-shadow:
-    inset 0 2px 3px rgba(0, 0, 0, 0.55),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.18),
-    0 2px 5px rgba(13, 15, 18, 0.16);
-  translate: 0 1px;
-  transform: perspective(280px) rotateX(var(--metal-tilt-x)) rotateY(var(--metal-tilt-y)) scale(0.985);
+  background: color-mix(in srgb, var(--accent) 14%, var(--skin-chat-surface));
 }
 
 body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab:focus-visible {
   outline: 2px solid var(--focus-ring);
-  outline-offset: -3px;
+  outline-offset: -2px;
 }
 
 body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] :is(
@@ -681,13 +633,6 @@ body[data-style-recipe="rack-lab"][data-style-recipe-version="1"][data-theme="li
     transition: none;
   }
 
-  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab {
-    --metal-tilt-x: 0deg !important;
-    --metal-tilt-y: 0deg !important;
-    --metal-stripe-position: 50% !important;
-    transform: none;
-  }
-
   body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .remote-job-action {
     translate: none !important;
   }
@@ -706,11 +651,6 @@ body[data-style-recipe="rack-lab"][data-style-recipe-version="1"][data-theme="li
     border: 2px solid Highlight;
     background: Highlight;
     color: HighlightText;
-  }
-
-  body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab::before {
-    background: CanvasText;
-    box-shadow: 0 0 0 1px Canvas;
   }
 
   body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .center-tab:focus-visible {

@@ -79,6 +79,9 @@ test("running droplets retain a static reduced-motion cue and a live preference 
 test("Rack Lab droplets track pointer contact and render routed liquid arrows", async () => {
   const source = await readFile(agentGraphViewUrl, "utf8");
 
+  assert.match(source, /getPropertyValue\("--skin-graph-droplet-fill-alpha"\)/);
+  assert.match(source, /agentDropletBodyAlphas\(fillAlpha, stateAlpha\)/);
+  assert.match(source, /body\.addColorStop\(0\.62, rgba\(palette\.fill, bodyAlphas\.fill\)\)/);
   assert.match(source, /this\._container\?\.addEventListener\(\s*"pointermove"/);
   assert.match(source, /addEventListener\("mousemove", handleLiquidPointerMove/);
   assert.match(source, /this\._network\.on\("blurNode", \(\) => this\._clearLiquidTouch\(\)\)/);

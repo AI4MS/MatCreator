@@ -46,8 +46,7 @@ export function createRackLabBrandMotion({
       duration: 900,
       delay: staggerImpl(65),
       ease: "inOut(2)",
-      loop: true,
-      loopDelay: 1450,
+      loop: false,
     });
   }
 

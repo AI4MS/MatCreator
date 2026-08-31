@@ -236,6 +236,7 @@ test("applies, persists, and toggles the Rack Lab variants with compatible event
   assert.equal(fixture.target.dataset.theme, "light");
   assert.equal(fixture.target.style.getPropertyValue("--skin-shell-border-width"), "2px");
   assert.equal(fixture.target.style.getPropertyValue("--skin-graph-surface-tone"), "light");
+  assert.equal(fixture.target.style.getPropertyValue("--skin-graph-droplet-fill-alpha"), "0.11");
   assert.equal(fixture.target.style.getPropertyValue("--accent-primary"), "#8A6500");
   assert.equal(fixture.storage.values.get(SKIN_STORAGE_KEY), "rack-lab");
   assert.equal(fixture.storage.values.get(SKIN_VARIANT_STORAGE_KEY), "light");
@@ -254,6 +255,7 @@ test("applies, persists, and toggles the Rack Lab variants with compatible event
   assert.equal(fixture.target.dataset.theme, "dark");
   assert.equal(fixture.target.style.getPropertyValue("--bg-canvas"), "#20222A");
   assert.equal(fixture.target.style.getPropertyValue("--skin-graph-surface-tone"), "dark");
+  assert.equal(fixture.target.style.getPropertyValue("--skin-graph-droplet-fill-alpha"), "0.12");
   assert.equal(fixture.storage.values.get(SKIN_VARIANT_STORAGE_KEY), "dark");
   assert.equal(fixture.storage.values.get(LEGACY_THEME_STORAGE_KEY), "dark");
   assert.equal(fixture.eventTarget.events[0].detail, "dark");
