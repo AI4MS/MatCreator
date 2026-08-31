@@ -56,7 +56,7 @@ def test_plan_approval_uses_live_validation_and_consumes_stale_prompt() -> None:
     assert "const suppressedPlanApprovalTurns = new Map();" in runtime
     assert "suppressed.userText === text" in runtime
     assert "function canRevealPlanApproval(sessionId, userText = \"\")" in runtime
-    assert "function latestPendingPlan(events)" in runtime
+    assert "function latestPendingPlan(events" in runtime
     assert '"confirm_plan_and_start_execution"' in runtime
     assert "pending = null;" in runtime
 
@@ -69,7 +69,7 @@ def test_frontend_tracks_requests_per_session() -> None:
     assert "activeRequests: new Map()" in main
     assert "state.activeRequests.set(request.key, request);" in streams
     assert "state.activeRequests.set(key, request);" in runtime
-    assert "state.activeRequests.get(sessionRequestKey())" in main
+    assert "findConversationRequest(state.activeRequests" in main
     assert "if (activeSessionRequest()) return;" in main
 
 
@@ -320,7 +320,7 @@ def test_chat_messages_use_one_model_scheduler_and_stable_regions() -> None:
     assert "createMessageRenderScheduler({" in streams
     assert "createMessageRenderScheduler({" in runtime
     assert "completeAssistantMessage(assistantMessage);" in streams
-    assert 'request.message?.lifecycle !== "completed"' in main
+    assert "requestPresentsLiveTurn(request)" in main
     assert "request.presentationFinished" not in streams
     assert "_timelinePresentationFinished" not in main
     assert "new MutationObserver" not in main[main.index("function addAgentTimelineMessage("):main.index("function addPlanApprovalActions(")]
@@ -443,8 +443,8 @@ def test_session_switch_loads_page_scoped_graph_after_the_transcript_page() -> N
         runtime.index("async function discoverManagedRun(")
     ]
 
-    assert "const [activeRun] = await Promise.all([" in switch_session
-    assert "discoverManagedRun(sessionId, owner)" in switch_session
+    assert "sessionRuntime.discoverManagedRun(sessionId, owner).then" in switch_session
+    assert "if (activeRun) sessionRuntime.startManagedRunReconnect" in switch_session
     assert "loadSession(sessionId, owner)" in switch_session
     assert "void loadSessions();" in switch_session
     assert "const sessionData = await fetchSessionData(sessionId, owner" in load_session
@@ -534,7 +534,7 @@ def test_startup_restores_only_an_accessible_session_owner_tuple() -> None:
     assert "validatedStoredSession(sessions, storedSessionId, storedSessionOwner)" in main
     assert "state.deploymentMode === \"server\" && state.isAdmin" in main
     assert "storedOwner !== state.userId" in main
-    assert "await switchSession(storedSession.sessionId, storedSession.owner);" in main
+    assert "await switchSession(storedSession.sessionId, storedSession.owner" in main
     assert "clearStoredSessionSelection();" in main
     assert "return Array.isArray(sessions) ? sessions : [];" in session_list
 

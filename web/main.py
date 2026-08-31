@@ -1433,6 +1433,13 @@ def _session_row_to_summary(row: sqlite3.Row, summaries: dict[str, dict] | None 
             result["summary"] = entry.get("summary", "")
         else:
             result["summary"] = entry
+    # Session selection must be able to present reconnect progress before the
+    # separate active-run detail request returns. The registry lookup is
+    # in-memory and makes this list response the fast recovery hint; the
+    # frontend still confirms the exact run through /api/runs/active.
+    registry = globals().get("_run_registry")
+    active_run = registry.active_for(result["userId"], result["id"]) if registry is not None else None
+    result["status"] = "running" if active_run is not None else "idle"
     return result
 
 

@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { TranscriptStore } from "../src/features/session/TranscriptStore.js";
+import {
+  latestConversationTurn,
+  shouldShowApproval,
+} from "../src/features/session/runtime.js";
 
 function page(start, total, events) {
   return {
@@ -67,3 +71,52 @@ test("bounds cached event pages independently of logical transcript length", () 
   assert.ok(store.rows().some((row) => row.type === "gap"));
 });
 
+test("reconnect rehydrates the newest pending user prompt before the live agent bubble", () => {
+  const events = [
+    { author: "user", content: { parts: [{ text: "first prompt" }] } },
+    { author: "agent", content: { parts: [{ text: "first answer" }] } },
+    { author: "user", content: { parts: [{ text: "second prompt" }] } },
+    { author: "agent", content: { parts: [{ text: "partial second answer" }] } },
+  ];
+
+  const turn = latestConversationTurn(events);
+  assert.equal(turn.userEvent.content.parts[0].text, "second prompt");
+  assert.deepEqual(turn.assistantEvents.map((event) => event.content.parts[0].text), ["partial second answer"]);
+});
+
+test("reconnect hydration never borrows assistant output from an earlier turn", () => {
+  const { assistantEvents } = latestConversationTurn([
+    { author: "agent", content: { parts: [{ text: "orphaned old answer" }] } },
+    { author: "user", content: { parts: [{ text: "pending prompt" }] } },
+  ]);
+  assert.deepEqual(assistantEvents, []);
+});
+
+test("suppressed approval prompts do not reappear when the final transcript row is rerendered", () => {
+  const events = [
+    { author: "user", content: { parts: [{ text: "Please plan this for me" }] } },
+    { author: "agent", content: { parts: [{ functionCall: { name: "validate_plan", args: {}, }, }, { functionResponse: { name: "validate_plan", response: { status: "ok" } } }] } },
+  ];
+
+  const renderable = shouldShowApproval(
+    "session-1",
+    { state: { agent_mode: "normal" } },
+    events,
+    {
+      suppressedPlanApprovalTurns: new Map([["session-1", { userText: "" }]]),
+    },
+  );
+
+  assert.equal(renderable, false);
+});
+
+test("a newly validated plan can replace the prompt suppressed by its own user turn", () => {
+  const text = "Please revise the plan";
+  const events = [
+    { author: "user", content: { parts: [{ text }] } },
+    { author: "agent", content: { parts: [{ functionResponse: { name: "validate_plan", response: { status: "ok" } } }] } },
+  ];
+  assert.equal(shouldShowApproval("session-2", { state: { agent_mode: "normal" } }, events, {
+    suppressedPlanApprovalTurns: new Map([["session-2", { userText: text }]]),
+  }), true);
+});

@@ -5,11 +5,48 @@ import {
 } from "../chat/timeline.js";
 import { createMessageRenderScheduler, messageRenderInterval } from "../chat/messageRenderScheduler.js";
 import {
+  findConversationRequest,
   initializeRequestLifecycle,
   markRequestTerminal,
 } from "./requestLifecycle.js";
 import { TranscriptStore } from "./TranscriptStore.js";
 import { VirtualTranscript } from "./VirtualTranscript.js";
+
+function latestPendingPlan(events, getResponse = (part) => part?.functionResponse || part?.function_response || null) {
+  const userIndex = events.reduce((result, event, index) => event?.author === "user" ? index : result, -1);
+  if (userIndex < 0) return null;
+  let pending = null;
+  events.slice(userIndex + 1).forEach((event) => (event?.content?.parts || []).forEach((part) => {
+    const response = getResponse(part);
+    if (["validate_graph", "validate_plan"].includes(response?.name) && response.response?.status === "ok") pending = events[userIndex];
+    if (["confirm_plan_and_start_execution", "resume_execution"].includes(response?.name) && response.response?.status === "ok") pending = null;
+  }));
+  return pending;
+}
+
+/** Return the durable events that belong to the newest conversational turn. */
+export function latestConversationTurn(events = []) {
+  const userIndex = events.findLastIndex((event) => event?.author === "user");
+  if (userIndex < 0) return { userEvent: null, assistantEvents: [] };
+  return {
+    userEvent: events[userIndex],
+    assistantEvents: events.slice(userIndex + 1).filter((event) => event?.author !== "user"),
+  };
+}
+
+export function shouldShowApproval(sessionId, sessionData, events, options = {}) {
+  const normalized = typeof options === "function" ? { isSuppressed: options } : (options || {});
+  const suppressedPlanApprovalTurns = normalized.suppressedPlanApprovalTurns || new Map();
+  const getResponse = normalized.getResponse || ((part) => part?.functionResponse || part?.function_response || null);
+  const userEvent = latestPendingPlan(events, getResponse);
+  const text = (userEvent?.content?.parts || []).map((part) => part.text || "").join("");
+  const suppressed = typeof normalized.isSuppressed === "function"
+    ? normalized.isSuppressed(sessionId, text)
+    : suppressedPlanApprovalTurns.get(sessionId);
+  return (sessionData?.state?.agent_mode || "normal") === "normal"
+    && userEvent !== null
+    && (!suppressed || Boolean(suppressed.userText && suppressed.userText === text));
+}
 
 /** Persisted history mutates a store; VirtualTranscript alone owns geometry. */
 export function createSessionRuntime({
@@ -22,7 +59,7 @@ export function createSessionRuntime({
   },
   ui: {
     updateSendButtonState, renderSessionBanner, refreshSessionFiles, workdirDisplay,
-    onRequestStateChange,
+    onRequestStateChange, attachAgentRunningIndicator, updateAgentRunningStatus,
   },
   managedRun: { eventsUrl: managedRunEventsUrl },
 }) {
@@ -52,8 +89,18 @@ export function createSessionRuntime({
     while (contexts.size > contextLimit) contexts.delete(contexts.keys().next().value);
   }
 
+  function activeRequestForContext(context) {
+    if (!context) return null;
+    return findConversationRequest(state.activeRequests, {
+      key: context.viewKey,
+      sessionId: context.sessionId,
+      owner: context.owner,
+    });
+  }
+
   function activateContext(context, { follow = false } = {}) {
     const switching = activeContext !== context;
+    const preserveLiveTurn = Boolean(activeRequestForContext(context));
     if (switching) {
       if (activeContext) {
         activeContext.viewportOffset = viewport.currentOffset();
@@ -63,7 +110,7 @@ export function createSessionRuntime({
       unsubscribeStore?.();
       activeContext = context;
       unsubscribeStore = context.store.subscribe(() => refreshRows(context));
-      viewport.clearLive();
+      if (!preserveLiveTurn) viewport.clearLive();
       clearChatDisclosures?.();
       stepExecutionFeed.reset({ preserveDisclosures: false });
     }
@@ -71,26 +118,34 @@ export function createSessionRuntime({
     const hasSavedOffset = Number.isFinite(context.viewportOffset);
     refreshRows(context, { follow: follow && !hasSavedOffset });
     if (switching && hasSavedOffset) viewport.restoreOffset(context.viewportOffset);
-    restoreActiveLiveView(context);
+    if (preserveLiveTurn || !switching) restoreActiveLiveView(context);
   }
 
   function restoreActiveLiveView(context) {
-    const request = state.activeRequests.get(context.viewKey);
-    if (!request?.messageView) return;
+    const request = activeRequestForContext(context);
+    if (!request) return;
     const records = [...context.store.records.values()].sort((left, right) => left.index - right.index);
     const durableUserIndex = records.findLastIndex(({ event }) => event?.author === "user"
-      && (event.content?.parts || []).some((part) => String(part.text || "").includes(request.backendMessage || "\u0000")));
+      && (event.content?.parts || []).some((part) => {
+        const text = String(part.text || "").trim();
+        const backendText = String(request.backendMessage || "").trim();
+        return !backendText || text.includes(backendText) || backendText.includes(text);
+      }));
     const durableUserPresent = durableUserIndex >= 0;
-    if (!durableUserPresent && request.userMessage) viewport.liveHost.appendChild(request.userMessage);
-    viewport.liveHost.appendChild(request.messageView.element);
-    if (request.message?.lifecycle !== "completed") {
+    if (request.userMessage && !request.userMessage.isConnected && !durableUserPresent) {
+      viewport.liveHost.appendChild(request.userMessage);
+    }
+    if (request.messageView && !request.messageView.element.isConnected) {
+      viewport.liveHost.appendChild(request.messageView.element);
+    }
+    if (request.messageView && request.message?.lifecycle !== "completed") {
       stepExecutionFeed.resumeLiveTurn(request.messageView.stepFeedLiveHost, request.message.startedAt);
     }
   }
 
   function refreshRows(context, { follow = false } = {}) {
     if (activeContext !== context || sessionRequestKey() !== context.viewKey) return;
-    const request = state.activeRequests.get(context.viewKey);
+    const request = activeRequestForContext(context);
     // The active run always belongs to the newest persisted user turn. Do not
     // compare text here: the durable message can contain upload context or
     // other normalization that differs from `request.backendMessage`.
@@ -246,33 +301,18 @@ export function createSessionRuntime({
     const view = addAgentTimelineMessage(message, new Set(), row.startIndex, host, {
       startedAt: message.startedAt, endedAt: message.endedAt, messageKey: row.id,
     });
-    if (context.awaitingPlanApproval && row.endIndex === context.store.totalCount) addPlanApprovalActions(view);
-  }
-
-  function latestPendingPlan(events) {
-    const userIndex = events.reduce((result, event, index) => event?.author === "user" ? index : result, -1);
-    if (userIndex < 0) return null;
-    let pending = null;
-    events.slice(userIndex + 1).forEach((event) => (event?.content?.parts || []).forEach((part) => {
-      const response = getFunctionResponse(part);
-      if (["validate_graph", "validate_plan"].includes(response?.name) && response.response?.status === "ok") pending = events[userIndex];
-      if (["confirm_plan_and_start_execution", "resume_execution"].includes(response?.name) && response.response?.status === "ok") pending = null;
-    }));
-    return pending;
-  }
-
-  function shouldShowApproval(sessionId, sessionData, events) {
-    const userEvent = latestPendingPlan(events);
-    const suppressed = suppressedPlanApprovalTurns.get(sessionId);
-    const text = (userEvent?.content?.parts || []).map((part) => part.text || "").join("");
-    return (sessionData?.state?.agent_mode || "normal") === "normal"
-      && userEvent !== null && (!suppressed || (suppressed.userText && suppressed.userText === text));
+    if (context.awaitingPlanApproval && row.endIndex === context.store.totalCount) {
+      const pendingUserText = context.pendingPlanUserText;
+      if (pendingUserText && canRevealPlanApproval(context.sessionId, pendingUserText)) {
+        addPlanApprovalActions(view);
+      }
+    }
   }
 
   function makeContext(sessionId, owner, viewKey) {
     return {
       sessionId, owner, viewKey, store: new TranscriptStore(), graphNodes: new Map(), graphRevisions: new Map(),
-      graphRevision: 0, sessionData: null, summary: "", awaitingPlanApproval: false, viewportOffset: null,
+      graphRevision: 0, sessionData: null, summary: "", awaitingPlanApproval: false, pendingPlanUserText: "", viewportOffset: null,
       rangeControllers: new Map(),
     };
   }
@@ -295,13 +335,19 @@ export function createSessionRuntime({
       let context = contexts.get(viewKey) || makeContext(sessionId, owner, viewKey);
       context.sessionData = sessionData;
       context.summary = sessionData.summary || state.sessionSummaries[sessionId] || "";
-      context.awaitingPlanApproval = shouldShowApproval(sessionId, sessionData, events);
+      const pendingPlan = latestPendingPlan(events, getFunctionResponse);
+      context.pendingPlanUserText = (pendingPlan?.content?.parts || []).map((part) => part.text || "").join("");
+      context.awaitingPlanApproval = shouldShowApproval(sessionId, sessionData, events, {
+        suppressedPlanApprovalTurns,
+        getResponse: getFunctionResponse,
+      });
       mergeGraphNodes(context, nodes);
-      // A live request remains the sole visible owner of its turn until it is
-      // released. Snapshot recovery is allowed to update the store but must
-      // not clear the live message before the durable handoff.
-      if (!state.activeRequests.get(viewKey)) viewport.clearLive();
+      // Snapshot loading only mutates durable state. It never removes live
+      // DOM: context activation, explicit handoff, and reset are the sole
+      // owners of that destructive transition.
+      const liveRequest = activeRequestForContext(context);
       context.store.insertPage(sessionData);
+      hydrateManagedPresentation(liveRequest, events, sessionData.revision);
       rememberContext(context);
       const changedContext = activeContext !== context;
       activateContext(context, { follow: changedContext });
@@ -331,6 +377,13 @@ export function createSessionRuntime({
 
   function restoreSessionSnapshot(snapshot) {
     if (!snapshot?.transcriptContext) return false;
+    // Cached recovery must also repair a detached live view. Merely declining
+    // the snapshot leaves an active request with no DOM owner—the exact state
+    // represented by a stop button alongside a missing running bubble.
+    if (activeRequestForContext(snapshot.transcriptContext)) {
+      activateContext(snapshot.transcriptContext);
+      return true;
+    }
     activateContext(snapshot.transcriptContext);
     renderSessionBanner(snapshot.summary || "");
     updateSessionWorkdirDisplay(snapshot.sessionData || {});
@@ -340,6 +393,8 @@ export function createSessionRuntime({
   function renderSessionTimeline(events, graphNodes = [], awaitingPlanApproval = false) {
     const context = makeContext(state.sessionId, state.activeSessionUserId || state.userId, sessionRequestKey());
     context.awaitingPlanApproval = awaitingPlanApproval;
+    const pendingPlan = latestPendingPlan(events, getFunctionResponse);
+    context.pendingPlanUserText = (pendingPlan?.content?.parts || []).map((part) => part.text || "").join("");
     mergeGraphNodes(context, graphNodes);
     context.store.insertPage({
       events,
@@ -383,11 +438,14 @@ export function createSessionRuntime({
     viewport.reset();
   }
 
-  function suppressPlanApproval(sessionId, userText = "") { if (sessionId) suppressedPlanApprovalTurns.set(sessionId, { userText }); }
+  function suppressPlanApproval(sessionId, userText = "") {
+    if (!sessionId) return;
+    suppressedPlanApprovalTurns.set(sessionId, { userText });
+  }
   function restorePlanApproval(sessionId) { if (sessionId) suppressedPlanApprovalTurns.delete(sessionId); }
   function canRevealPlanApproval(sessionId, userText = "") {
     const suppressed = suppressedPlanApprovalTurns.get(sessionId);
-    return !suppressed || suppressed.userText === userText;
+    return !suppressed || Boolean(suppressed.userText && suppressed.userText === userText);
   }
   function updateSessionWorkdirDisplay(sessionData) {
     if (!workdirDisplay) return;
@@ -404,17 +462,114 @@ export function createSessionRuntime({
     } catch (_) { return null; }
   }
 
+  function beginManagedRunDiscovery(sessionId, owner = state.activeSessionUserId || state.userId) {
+    const key = sessionRequestKey(sessionId, owner);
+    const existing = state.activeRequests.get(key);
+    if (existing) return existing;
+    const request = initializeRequestLifecycle({
+      key, sessionId, owner, backendUserId: owner, controller: new AbortController(),
+      lastSequence: 0, runId: null, retryDelayMs: 500,
+      managedReconnect: true, liveTurnClaimed: true, awaitingRunDiscovery: true,
+    });
+    state.activeRequests.set(key, request);
+    createManagedPresentation(request);
+    updateAgentRunningStatus?.("connecting");
+    updateSendButtonState();
+    return request;
+  }
+
+  function discardManagedRunDiscovery(sessionId, owner = state.activeSessionUserId || state.userId) {
+    const key = sessionRequestKey(sessionId, owner);
+    const request = state.activeRequests.get(key);
+    if (!request?.awaitingRunDiscovery) return false;
+    const isVisible = sessionRequestKey() === key;
+    if (isVisible) viewport.clearLive();
+    releaseSessionRequest(request);
+    if (isVisible && activeContext?.viewKey === key) refreshRows(activeContext, { follow: true });
+    return true;
+  }
+
   function startManagedRunReconnect(activeRun, sessionId, owner = state.activeSessionUserId || state.userId) {
     if (!activeRun?.run_id) return;
     const key = sessionRequestKey(sessionId, owner);
-    if (state.activeRequests.get(key)) return;
-    const request = initializeRequestLifecycle({
-      key, sessionId, owner, backendUserId: owner, controller: new AbortController(),
-      lastSequence: activeRun.latest_sequence || 0, runId: activeRun.run_id, retryDelayMs: 500,
-    });
-    state.activeRequests.set(key, request);
+    let request = state.activeRequests.get(key);
+    if (request && !request.awaitingRunDiscovery) return request;
+    if (request) {
+      request.runId = activeRun.run_id;
+      request.lastSequence = activeRun.latest_sequence || 0;
+      request.awaitingRunDiscovery = false;
+    } else {
+      request = initializeRequestLifecycle({
+        key, sessionId, owner, backendUserId: owner, controller: new AbortController(),
+        lastSequence: activeRun.latest_sequence || 0, runId: activeRun.run_id, retryDelayMs: 500,
+        managedReconnect: true, liveTurnClaimed: true, awaitingRunDiscovery: false,
+      });
+      state.activeRequests.set(key, request);
+    }
+    // Claim the newest assistant row before mounting its live representation.
+    // This makes persisted history and reconnect mutually exclusive render
+    // owners regardless of which refresh request finished first.
+    if (activeContext?.viewKey === key) refreshRows(activeContext);
+    createManagedPresentation(request);
     updateSendButtonState();
     void streamManagedRunEvents(request);
+    return request;
+  }
+
+  function createManagedPresentation(request) {
+    if (!request || request.messageView || sessionRequestKey() !== request.key) return null;
+    const message = createAssistantMessage({
+      id: `managed:${request.runId}`,
+      startedAt: Date.now(),
+    });
+    const shownPlots = new Set();
+    const view = addAgentTimelineMessage(message, shownPlots, undefined, beginLiveOutput(), {
+      startedAt: message.startedAt, live: true, messageKey: message.id,
+    });
+    const scheduler = createMessageRenderScheduler({
+      intervalMs: () => messageRenderInterval(message.items
+        .filter((item) => item.type === "text" || item.type === "reasoning")
+        .reduce((total, item) => total + String(item.text || "").length, 0)),
+      render: () => {
+        if (view.element.isConnected) renderTimeline(view, message, shownPlots);
+      },
+    });
+    Object.assign(request, {
+      message, messageView: view,
+      managedPresentation: { message, shownPlots, view, scheduler, lineBuffer: "", hydratedRevision: null },
+    });
+    stepExecutionFeed.startLiveTurn(null, message.startedAt, view.stepFeedLiveHost);
+    const storedEvents = activeContext?.viewKey === request.key
+      ? [...activeContext.store.records.values()].sort((left, right) => left.index - right.index).map(({ event }) => event)
+      : [];
+    hydrateManagedPresentation(request, storedEvents, activeContext?.store.revision);
+    attachAgentRunningIndicator?.(view);
+    updateAgentRunningStatus?.("working");
+    return request.managedPresentation;
+  }
+
+  function hydrateManagedPresentation(request, events, revision = null) {
+    const live = request?.managedPresentation;
+    if (!live || live.message.lifecycle === "completed") return false;
+    if (revision && live.hydratedRevision === revision) return false;
+    const { assistantEvents } = latestConversationTurn(events || []);
+    assistantEvents.forEach((event) => appendEvent(live.message, event));
+    if (revision) live.hydratedRevision = revision;
+    // Snapshot hydration is a recovery transaction, not a streamed update:
+    // commit it synchronously so the recovered bubble never waits for a
+    // throttle interval or another SSE token before becoming visible.
+    renderTimeline(live.view, live.message, live.shownPlots);
+    if (live.streamFinished && live.message.items.length) finishManagedPresentation(live);
+    return assistantEvents.length > 0;
+  }
+
+  function finishManagedPresentation(live) {
+    if (!live || !live.message.items.length) return null;
+    if (live.finishPromise) return live.finishPromise;
+    completeAssistantMessage(live.message);
+    updateSendButtonState();
+    live.finishPromise = live.scheduler.finish();
+    return live.finishPromise;
   }
 
   function applyManagedPayload(live, payload) {
@@ -433,46 +588,24 @@ export function createSessionRuntime({
     });
     live.scheduler.request();
     if (streamFinished) {
-      completeAssistantMessage(live.message);
-      updateSendButtonState();
-      void live.scheduler.finish();
+      live.streamFinished = true;
+      // `[DONE]` only means the model stream ended. A refreshed client can
+      // receive it before replay/snapshot hydration supplies any visible
+      // content, so keep the waiting presentation alive in that interval.
+      if (!finishManagedPresentation(live)) updateAgentRunningStatus?.("saving");
     }
   }
 
   async function streamManagedRunEvents(request) {
     const isCurrent = () => state.activeRequests.get(request.key) === request;
-    let live = null;
-    if (sessionRequestKey() === request.key) {
-      const message = createAssistantMessage({
-        id: `managed:${request.runId}`,
-        startedAt: Date.now(),
-      });
-      const shownPlots = new Set();
-      const view = addAgentTimelineMessage(message, shownPlots, undefined, beginLiveOutput(), {
-        startedAt: message.startedAt, live: true, messageKey: message.id,
-      });
-      stepExecutionFeed.startLiveTurn(null, message.startedAt, view.stepFeedLiveHost);
-      live = {
-        message, shownPlots, view, lineBuffer: "",
-        scheduler: createMessageRenderScheduler({
-          intervalMs: () => messageRenderInterval(message.items
-            .filter((item) => item.type === "text" || item.type === "reasoning")
-            .reduce((total, item) => total + String(item.text || "").length, 0)),
-          render: () => {
-            if (view.element.isConnected) renderTimeline(view, message, shownPlots);
-          },
-        }),
-      };
-      request.message = message;
-      request.messageView = view;
-      updateSendButtonState();
-    }
+    const live = request.managedPresentation || createManagedPresentation(request);
     try {
       while (isCurrent() && !request.controller.signal.aborted) {
         const response = await fetch(managedRunEventsUrl(request), {
           headers: { Accept: "text/event-stream" }, signal: request.controller.signal,
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        updateAgentRunningStatus?.("connected");
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
@@ -492,7 +625,11 @@ export function createSessionRuntime({
             } else if (envelope.type === "snapshot_required") {
               request.lastSequence = envelope.latest_sequence || request.lastSequence;
               metrics.managedSnapshotRecoveries += 1;
-              await loadSession(request.sessionId, request.owner, { render: false });
+              // Reconnect requests have no optimistic user node, so the full
+              // snapshot can safely restore history while live ownership
+              // filters only the newest assistant row. Hydration happens as
+              // part of that same load transaction.
+              await loadSession(request.sessionId, request.owner);
             } else if (envelope.type === "terminal") {
               request.lastSequence = envelope.latest_sequence || request.lastSequence;
               markRequestTerminal(request, envelope.status);
@@ -502,9 +639,8 @@ export function createSessionRuntime({
                 // Flush a final unterminated line for runs recorded by an
                 // older server; current servers publish complete SSE records.
                 applyManagedPayload(live, "\n");
-                completeAssistantMessage(live.message);
-                updateSendButtonState();
-                await live.scheduler.finish();
+                const presentationFinished = finishManagedPresentation(live);
+                if (presentationFinished) await presentationFinished;
               }
               terminal = true;
             }
@@ -520,16 +656,28 @@ export function createSessionRuntime({
       live?.scheduler.cancel();
       if (live) stepExecutionFeed.finishLiveTurn();
       if (isCurrent()) {
-        releaseSessionRequest(request);
-        await loadSession(request.sessionId, request.owner);
+        // Load durable history while the live turn still owns visibility,
+        // then swap owners in one synchronous handoff. If persistence is not
+        // available, release without clearing the already rendered response.
+        let restored = null;
+        let durableReady = false;
+        for (let attempt = 0; attempt < 4 && isCurrent(); attempt += 1) {
+          restored = await loadSession(request.sessionId, request.owner);
+          durableReady = latestConversationTurn(restored?.events || []).assistantEvents.length > 0;
+          if (durableReady || attempt === 3) break;
+          await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)));
+        }
+        if (restored && durableReady && isCurrent()) await handoffLiveTurn(request);
+        else if (isCurrent()) releaseSessionRequest(request);
       }
     }
   }
 
   return {
-    beginLiveOutput, getLiveHost, handoffLiveTurn, canRevealPlanApproval, discoverManagedRun, loadSession,
-    renderSessionTimeline, resetTranscript, restorePlanApproval, restoreSessionSnapshot, startManagedRunReconnect,
-    suppressPlanApproval, updateSessionWorkdirDisplay,
+    beginLiveOutput, beginManagedRunDiscovery, discardManagedRunDiscovery, getLiveHost, handoffLiveTurn,
+    canRevealPlanApproval, discoverManagedRun, loadSession, renderSessionTimeline, resetTranscript,
+    restorePlanApproval, restoreSessionSnapshot, startManagedRunReconnect, suppressPlanApproval,
+    updateSessionWorkdirDisplay,
     metrics: () => ({ ...metrics, ...viewport.metrics(), totalEvents: activeContext?.store.totalCount || 0 }),
   };
 }
