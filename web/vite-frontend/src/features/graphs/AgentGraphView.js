@@ -598,6 +598,153 @@ export class AgentGraphView {
     return STATUS_ALIASES[normalized] || (STATUS_VISUALS[normalized] ? normalized : "idle");
   }
 
+  _bezierPoint(p0, p1, p2, p3, progress) {
+    const inverse = 1 - progress;
+    return {
+      x: inverse ** 3 * p0.x
+        + 3 * inverse ** 2 * progress * p1.x
+        + 3 * inverse * progress ** 2 * p2.x
+        + progress ** 3 * p3.x,
+      y: inverse ** 3 * p0.y
+        + 3 * inverse ** 2 * progress * p1.y
+        + 3 * inverse * progress ** 2 * p2.y
+        + progress ** 3 * p3.y,
+    };
+  }
+
+  _segmentLength(segment) {
+    if (segment.kind === "line") return Math.hypot(segment.to.x - segment.from.x, segment.to.y - segment.from.y);
+    let length = 0;
+    let previous = segment.p0;
+    for (let index = 1; index <= 12; index++) {
+      const point = this._bezierPoint(segment.p0, segment.p1, segment.p2, segment.p3, index / 12);
+      length += Math.hypot(point.x - previous.x, point.y - previous.y);
+      previous = point;
+    }
+    return length;
+  }
+
+  _pointOnSegments(segments, progress) {
+    const lengths = segments.map((segment) => this._segmentLength(segment));
+    const totalLength = lengths.reduce((sum, length) => sum + length, 0);
+    if (!totalLength) return null;
+    let remaining = Math.max(0, Math.min(1, progress)) * totalLength;
+    for (let index = 0; index < segments.length; index++) {
+      const segment = segments[index];
+      const length = lengths[index];
+      if (remaining > length && index < segments.length - 1) {
+        remaining -= length;
+        continue;
+      }
+      const localProgress = length ? remaining / length : 1;
+      if (segment.kind === "line") {
+        return {
+          x: segment.from.x + (segment.to.x - segment.from.x) * localProgress,
+          y: segment.from.y + (segment.to.y - segment.from.y) * localProgress,
+        };
+      }
+      return this._bezierPoint(segment.p0, segment.p1, segment.p2, segment.p3, localProgress);
+    }
+    return null;
+  }
+
+  _vineGeometry(vine, positions) {
+    const source = positions[vine.from];
+    if (!source || !vine.branches.length) return null;
+    const sourceRadius = this._nodeRadius(this._nodeData[vine.from]);
+    const trunkX = Number.isFinite(vine.stemX) ? vine.stemX : source.x;
+    const sourceDirection = Math.sign(trunkX - source.x) || 1;
+    const usesSideEntry = vine.entryMode === "side" && Math.abs(trunkX - source.x) > 1;
+    const sourceX = usesSideEntry
+      ? source.x + sourceDirection * (sourceRadius + 1)
+      : source.x;
+    const sourceY = usesSideEntry ? source.y : source.y + sourceRadius + 1;
+    const routedBranches = vine.branches.map(({ to }) => {
+      const target = positions[to];
+      if (!target) return null;
+      const targetY = target.y - this._nodeRadius(this._nodeData[to]) - 1;
+      return { to, target, targetY, branchY: targetY - 34 };
+    }).filter(Boolean);
+    if (!routedBranches.length) return null;
+    return {
+      sourceX,
+      sourceY,
+      trunkX,
+      usesSideEntry,
+      firstBranchY: Math.min(...routedBranches.map(({ branchY }) => branchY)),
+      stemEndY: Math.max(...routedBranches.map(({ branchY }) => branchY)),
+      routedBranches,
+    };
+  }
+
+  _vineEntrySegments(geometry) {
+    const start = { x: geometry.sourceX, y: geometry.sourceY };
+    const end = { x: geometry.trunkX, y: geometry.firstBranchY };
+    if (geometry.usesSideEntry) {
+      const direction = Math.sign(geometry.trunkX - geometry.sourceX) || 1;
+      const horizontalHandle = Math.min(120, Math.max(36, Math.abs(geometry.trunkX - geometry.sourceX) * 0.48));
+      return [{
+        kind: "bezier",
+        p0: start,
+        p1: { x: geometry.sourceX + direction * horizontalHandle, y: geometry.sourceY },
+        p2: { x: geometry.trunkX, y: geometry.firstBranchY - 24 },
+        p3: end,
+      }];
+    }
+    if (Math.abs(geometry.trunkX - geometry.sourceX) <= 1) return [{ kind: "line", from: start, to: end }];
+
+    const middleX = (geometry.sourceX + geometry.trunkX) / 2;
+    const middleY = (geometry.sourceY + geometry.firstBranchY) / 2;
+    const direction = Math.sign(geometry.trunkX - geometry.sourceX) || 1;
+    const horizontalHandle = Math.min(64, Math.max(20, Math.abs(geometry.trunkX - geometry.sourceX) * 0.16));
+    const middle = { x: middleX, y: middleY };
+    return [
+      {
+        kind: "bezier",
+        p0: start,
+        p1: { x: geometry.sourceX, y: middleY },
+        p2: { x: middleX - direction * horizontalHandle, y: middleY },
+        p3: middle,
+      },
+      {
+        kind: "bezier",
+        p0: middle,
+        p1: { x: middleX + direction * horizontalHandle, y: middleY },
+        p2: { x: geometry.trunkX, y: middleY },
+        p3: end,
+      },
+    ];
+  }
+
+  _vineBranchSegment(geometry, branch) {
+    return {
+      kind: "bezier",
+      p0: { x: geometry.trunkX, y: branch.branchY },
+      p1: { x: geometry.trunkX, y: branch.branchY + 18 },
+      p2: { x: branch.target.x, y: branch.branchY - 18 },
+      p3: { x: branch.target.x, y: branch.targetY },
+    };
+  }
+
+  _vineParticlePoint(edge, positions, progress) {
+    const vine = this._vineEdges.find((candidate) =>
+      candidate.from === edge.from && candidate.branches.some(({ to }) => to === edge.to));
+    if (!vine) return null;
+    const geometry = this._vineGeometry(vine, positions);
+    const branch = geometry?.routedBranches.find(({ to }) => to === edge.to);
+    if (!geometry || !branch) return null;
+    const segments = [
+      ...this._vineEntrySegments(geometry),
+      {
+        kind: "line",
+        from: { x: geometry.trunkX, y: geometry.firstBranchY },
+        to: { x: geometry.trunkX, y: branch.branchY },
+      },
+      this._vineBranchSegment(geometry, branch),
+    ];
+    return this._pointOnSegments(segments, progress);
+  }
+
   _drawActiveFlow(ctx) {
     if (!this._network || !this._activeEdges.length) return;
     const positions = this._network.getPositions();
@@ -617,6 +764,8 @@ export class AgentGraphView {
       const midY = (from.y + to.y) / 2;
 
       const pointOnCurve = (progress) => {
+        const vinePoint = this._vineParticlePoint(edge, positions, progress);
+        if (vinePoint) return vinePoint;
         const inverse = 1 - progress;
         return {
           x: inverse ** 3 * from.x
@@ -993,27 +1142,6 @@ export class AgentGraphView {
     return positions;
   }
 
-  _drawBraceCurve(ctx, fromX, fromY, toX, toY) {
-    const middleX = (fromX + toX) / 2;
-    const middleY = (fromY + toY) / 2;
-    const direction = Math.sign(toX - fromX) || 1;
-    const horizontalHandle = Math.min(64, Math.max(20, Math.abs(toX - fromX) * 0.16));
-
-    // Two cubic halves meet with matching horizontal tangents. The outer
-    // endpoints retain vertical tangents, producing a broad brace/S curve
-    // without the visible elbow of one highly stretched cubic segment.
-    ctx.bezierCurveTo(
-      fromX, middleY,
-      middleX - direction * horizontalHandle, middleY,
-      middleX, middleY,
-    );
-    ctx.bezierCurveTo(
-      middleX + direction * horizontalHandle, middleY,
-      toX, middleY,
-      toX, toY,
-    );
-  }
-
   _drawVines(ctx) {
     if (!this._network || !this._vineEdges.length) return;
     const positions = this._network.getPositions();
@@ -1026,54 +1154,34 @@ export class AgentGraphView {
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
 
-    this._vineEdges.forEach(({ from, branches, stemX, entryMode = "bottom" }) => {
-      const source = positions[from];
-      if (!source || !branches.length) return;
-      const sourceRadius = this._nodeRadius(this._nodeData[from]);
-      const trunkX = Number.isFinite(stemX) ? stemX : source.x;
-      const sourceDirection = Math.sign(trunkX - source.x) || 1;
-      const usesSideEntry = entryMode === "side" && Math.abs(trunkX - source.x) > 1;
-      const sourceX = usesSideEntry
-        ? source.x + sourceDirection * (sourceRadius + 1)
-        : source.x;
-      const sourceY = usesSideEntry ? source.y : source.y + sourceRadius + 1;
-      const routedBranches = branches.map(({ to }) => {
-        const target = positions[to];
-        if (!target) return null;
-        const targetY = target.y - this._nodeRadius(this._nodeData[to]) - 1;
-        return { target, targetY, branchY: targetY - 34 };
-      }).filter(Boolean);
-      if (!routedBranches.length) return;
-      const stemEndY = Math.max(...routedBranches.map(({ branchY }) => branchY));
-      const firstBranchY = Math.min(...routedBranches.map(({ branchY }) => branchY));
+    this._vineEdges.forEach((vine) => {
+      const geometry = this._vineGeometry(vine, positions);
+      if (!geometry) return;
 
       // The stem is drawn once, so planning rounds and O-dispatched Flash
       // batches read as one tree rather than a bundle of unrelated long edges.
       ctx.beginPath();
-      ctx.moveTo(sourceX, sourceY);
-      if (usesSideEntry) {
-        const direction = Math.sign(trunkX - sourceX) || 1;
-        const horizontalHandle = Math.min(120, Math.max(36, Math.abs(trunkX - sourceX) * 0.48));
-        ctx.bezierCurveTo(
-          sourceX + direction * horizontalHandle, sourceY,
-          trunkX, firstBranchY - 24,
-          trunkX, firstBranchY,
+      ctx.moveTo(geometry.sourceX, geometry.sourceY);
+      this._vineEntrySegments(geometry).forEach((segment) => {
+        if (segment.kind === "line") ctx.lineTo(segment.to.x, segment.to.y);
+        else ctx.bezierCurveTo(
+          segment.p1.x, segment.p1.y,
+          segment.p2.x, segment.p2.y,
+          segment.p3.x, segment.p3.y,
         );
-      } else if (Math.abs(trunkX - sourceX) > 1) {
-        this._drawBraceCurve(ctx, sourceX, sourceY, trunkX, firstBranchY);
-      } else {
-        ctx.lineTo(trunkX, firstBranchY);
-      }
-      ctx.lineTo(trunkX, stemEndY);
+      });
+      ctx.lineTo(geometry.trunkX, geometry.stemEndY);
       ctx.stroke();
 
-      routedBranches.forEach(({ target, targetY, branchY }) => {
+      geometry.routedBranches.forEach((branch) => {
+        const { target, targetY } = branch;
+        const segment = this._vineBranchSegment(geometry, branch);
         ctx.beginPath();
-        ctx.moveTo(trunkX, branchY);
+        ctx.moveTo(segment.p0.x, segment.p0.y);
         ctx.bezierCurveTo(
-          trunkX, branchY + 18,
-          target.x, branchY - 18,
-          target.x, targetY,
+          segment.p1.x, segment.p1.y,
+          segment.p2.x, segment.p2.y,
+          segment.p3.x, segment.p3.y,
         );
         ctx.stroke();
 
