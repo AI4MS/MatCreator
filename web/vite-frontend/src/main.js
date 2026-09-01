@@ -9,8 +9,10 @@ import { createSessionListController } from "./features/session/sessionList.js";
 import { createSessionDetailsController } from "./features/session/sessionDetails.js";
 import { createSessionRuntime } from "./features/session/runtime.js";
 import {
+  findConversationRequest,
   finishRequestCleanup,
   requestHasActiveRun,
+  requestPresentsLiveTurn,
 } from "./features/session/requestLifecycle.js";
 import { createWorkspaceTerminalController } from "./features/workspace/terminal.js";
 import { AgentGraphView, StepExecutionFeed } from "./features/graphs/AgentGraphView.js";
@@ -385,7 +387,11 @@ function sessionRequestKey(sessionId = state.sessionId, owner = state.activeSess
 }
 
 function activeSessionRequest() {
-  return state.activeRequests.get(sessionRequestKey());
+  return findConversationRequest(state.activeRequests, {
+    key: sessionRequestKey(),
+    sessionId: state.sessionId,
+    owner: state.activeSessionUserId || state.userId,
+  });
 }
 
 function releaseSessionRequest(request) {
@@ -406,7 +412,11 @@ const orbitalIndicator = mountOrbitalAgentIndicator(agentRunningOrbital);
 function attachAgentRunningIndicator(messageView) {
   const message = messageView?.element
     || messageView?.closest?.(".agent-message:not(.step-feed-message)");
-  if (!message || !agentRunningIndicator) return;
+  if (!agentRunningIndicator) return;
+  if (!message) {
+    agentRunningIndicator.setAttribute("aria-hidden", "true");
+    return;
+  }
   const meta = message.querySelector(".agent-bubble-meta");
   (meta || message).prepend(agentRunningIndicator);
   // Before the first streamed item, make the agent's avatar and status row
@@ -422,6 +432,10 @@ function attachAgentRunningIndicator(messageView) {
 function ensureAgentRunningIndicatorAttached() {
   if (!agentRunningIndicator || agentRunningIndicator.isConnected) return;
   const message = [...chatArea.querySelectorAll(".agent-message:not(.step-feed-message)")].at(-1);
+  if (!message) {
+    agentRunningIndicator.setAttribute("aria-hidden", "true");
+    return;
+  }
   const meta = message?.querySelector(".agent-bubble-meta");
   if (meta || message) (meta || message).prepend(agentRunningIndicator);
 }
@@ -450,9 +464,14 @@ function updateSendButtonState() {
   // The text presentation can finish before the backend completes its durable
   // bookkeeping. Keep the request lock, but do not present that gap as an
   // active agent response.
-  const presenting = running && request.message?.lifecycle !== "completed";
-  if (presenting) ensureAgentRunningIndicatorAttached();
-  if (agentRunningIndicator) agentRunningIndicator.setAttribute("aria-hidden", String(!presenting));
+  // Presentation can intentionally outlive the backend run while durable
+  // history is being reconciled. In particular, an empty recovered turn must
+  // keep its waiting status until there is something safe to replace it.
+  const presenting = requestPresentsLiveTurn(request);
+  const activeAgentMessage = [...chatArea.querySelectorAll(".agent-message:not(.step-feed-message)")].at(-1);
+  if (presenting && activeAgentMessage) ensureAgentRunningIndicatorAttached();
+  const indicatorVisible = Boolean(presenting && agentRunningIndicator?.closest(".agent-message:not(.step-feed-message)"));
+  if (agentRunningIndicator) agentRunningIndicator.setAttribute("aria-hidden", String(!indicatorVisible));
   if (!running) updateAgentRunningStatus();
   if (!sendBtn) return;
   const queued = Boolean(request?.followupQueued);
@@ -483,10 +502,15 @@ function validatedStoredSession(sessions, sessionId, storedOwner) {
   } else if (state.deploymentMode === "server" && storedOwner && storedOwner !== state.userId) {
     return null;
   }
-  const found = sessions.some((session) => (
+  const found = sessions.find((session) => (
     session.id === sessionId && (session.userId || state.userId) === owner
   ));
-  return found ? { sessionId, owner } : null;
+  return found ? {
+    sessionId,
+    owner,
+    knownRunning: String(found.status || found.phase || "").toLowerCase() === "running",
+    knownRun: found.activeRun || null,
+  } : null;
 }
 
 function managedRunEventsUrl(request) {
@@ -891,7 +915,10 @@ async function getStartupHealth() {
   const sessions = await loadSessions({ retries: 7 });
   const storedSession = validatedStoredSession(sessions, storedSessionId, storedSessionOwner);
   if (storedSession) {
-    await switchSession(storedSession.sessionId, storedSession.owner);
+    await switchSession(storedSession.sessionId, storedSession.owner, {
+      knownRunning: storedSession.knownRunning,
+      knownRun: storedSession.knownRun,
+    });
   } else if (sessions && storedSessionId) {
     clearStoredSessionSelection();
     state.sessionId = newSessionId();
@@ -937,7 +964,7 @@ function sessionDisplayStatus(session, owner) {
   return ["running", "idle"].includes(status) ? status : "idle";
 }
 
-async function switchSession(sessionId, owner = state.userId) {
+async function switchSession(sessionId, owner = state.userId, { knownRunning = false, knownRun = null } = {}) {
   const viewKey = sessionRequestKey(sessionId, owner);
   // The active item remains clickable after the sidebar is rerendered.  It is
   // not a refresh control, so do not tear down and rebuild the current view
@@ -957,13 +984,22 @@ async function switchSession(sessionId, owner = state.userId) {
   agentGraph.reset();
   planGraph.reset();
   hidePlanGraph();
+  if (knownRun) sessionRuntime.startManagedRunReconnect(knownRun, sessionId, owner);
+  else if (knownRunning) sessionRuntime.beginManagedRunDiscovery(sessionId, owner);
   remoteJobsController.startPolling(sessionId, owner);
-  const [activeRun] = await Promise.all([
-    sessionRuntime.discoverManagedRun(sessionId, owner),
+  // History and active-run discovery are independent reads. Whichever returns
+  // first may establish the initial view; the runtime's live-turn ownership
+  // transaction reconciles them without allowing two assistant renderers.
+  const reconnect = knownRun ? Promise.resolve() : sessionRuntime.discoverManagedRun(sessionId, owner)
+    .then((activeRun) => {
+      if (activeRun) sessionRuntime.startManagedRunReconnect(activeRun, sessionId, owner);
+      else sessionRuntime.discardManagedRunDiscovery(sessionId, owner);
+    });
+  await Promise.all([
+    reconnect,
     sessionRuntime.loadSession(sessionId, owner),
     remoteJobsController.load(sessionId, owner),
   ]);
-  if (activeRun) sessionRuntime.startManagedRunReconnect(activeRun, sessionId, owner);
   void loadSessions();
   agentGraph.startPolling(sessionId);
   planGraph.startPolling(sessionId);
@@ -1926,6 +1962,8 @@ const sessionRuntime = createSessionRuntime({
     renderSessionFilesTree,
     refreshSessionFiles,
     onRequestStateChange: rerenderSessionList,
+    attachAgentRunningIndicator,
+    updateAgentRunningStatus,
     workdirDisplay: document.getElementById("session-workdir-display"),
   },
   managedRun: { eventsUrl: managedRunEventsUrl },

@@ -6,9 +6,11 @@ const TAU = Math.PI * 2;
 // The p/d presets are two/four-petal rose curves. They meet at the centre but
 // retain horizontal and vertical reflection symmetry, unlike the old pinwheel.
 const ORBITAL_PARAMETERS = Object.freeze({
-  s: Object.freeze({ radius: 40, twoLobe: 0, fourLobe: 0 }),
-  p: Object.freeze({ radius: 42, twoLobe: 1, fourLobe: 0 }),
-  d: Object.freeze({ radius: 42, twoLobe: 0, fourLobe: 1 }),
+  s: Object.freeze({ radius: 40, twoLobe: 0, fourLobe: 0, fourLobeBroadening: 0 }),
+  p: Object.freeze({ radius: 42, twoLobe: 1, fourLobe: 0, fourLobeBroadening: 0 }),
+  // This fills out each d-orbital leaf without moving its centre crossing or
+  // outer tips. Keep it local to d so s/p stay unchanged.
+  d: Object.freeze({ radius: 42, twoLobe: 0, fourLobe: 1, fourLobeBroadening: 0.65 }),
 });
 const CURVE_SEGMENTS = 16;
 
@@ -67,15 +69,20 @@ function interpolateParameters(from, to, progress) {
 }
 
 function orbitalPoint(parameters, angle, disturbance = null) {
-  const { radius, twoLobe, fourLobe } = parameters;
+  const { radius, twoLobe, fourLobe, fourLobeBroadening } = parameters;
   const base = 1 - twoLobe - fourLobe;
   const cos1 = Math.cos(angle);
   const cos2 = Math.cos(2 * angle);
-  const shape = base + twoLobe * Math.abs(cos1) + fourLobe * Math.abs(cos2);
+  const absoluteCos2 = Math.abs(cos2);
+  const fourLobeShape = absoluteCos2 * (
+    1 + fourLobeBroadening * (1 - absoluteCos2)
+  );
   const shapeDerivative = (
     -twoLobe * Math.sin(angle) * Math.sign(cos1)
     -2 * fourLobe * Math.sin(2 * angle) * Math.sign(cos2)
+      * (1 + fourLobeBroadening * (1 - 2 * absoluteCos2))
   );
+  const shape = base + twoLobe * Math.abs(cos1) + fourLobe * fourLobeShape;
   let radialDistance = radius * shape;
   let radialDerivative = radius * shapeDerivative;
 

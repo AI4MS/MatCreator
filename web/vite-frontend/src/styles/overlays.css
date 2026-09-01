@@ -211,6 +211,19 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.session-status-indicator {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: var(--muted);
+  opacity: 0.7;
+}
+.session-status-indicator.status-running {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  opacity: 1;
+}
 .session-item-log,
 .session-item-delete {
   flex-shrink: 0;

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 import uuid
@@ -39,6 +40,37 @@ class SseRecordBuffer:
 
 def is_sse_done(record: str) -> bool:
     return any(line.strip() == "data: [DONE]" for line in record.splitlines())
+
+
+def sse_error_message(record: str) -> str | None:
+    """Return a useful error when an ADK SSE record reports a failed run.
+
+    ADK reports exceptions from its event generator as an otherwise valid SSE
+    data record.  Treating the subsequent clean HTTP EOF as success loses the
+    exception at the control-plane boundary and leaves clients with an empty
+    or permanently pending assistant turn.
+    """
+
+    for line in record.splitlines():
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            payload = json.loads(data)
+        except json.JSONDecodeError:
+            return "The agent backend returned a malformed streaming event."
+        if not isinstance(payload, dict) or not payload.get("error"):
+            continue
+        details = payload.get("error_details")
+        if isinstance(details, dict):
+            error_type = str(details.get("error_type") or "").strip()
+            error_message = str(details.get("error_message") or "").strip()
+            if error_type and error_message:
+                return f"{error_type}: {error_message}"
+        return str(payload["error"])
+    return None
 
 
 @dataclass
@@ -156,6 +188,13 @@ class ManagedRunRegistry:
     def active_for(self, owner_id: str, session_id: str) -> ManagedRun | None:
         run_id = self._active_by_session.get((owner_id, session_id))
         return self._runs.get(run_id) if run_id else None
+
+    def latest_for(self, owner_id: str, session_id: str) -> ManagedRun | None:
+        matches = (
+            run for run in self._runs.values()
+            if run.owner_id == owner_id and run.session_id == session_id
+        )
+        return max(matches, key=lambda run: run.created_at, default=None)
 
     def active_for_session(self, session_id: str) -> list[ManagedRun]:
         return [

@@ -10,7 +10,7 @@ WEB_DIR = Path(__file__).resolve().parents[1] / "web"
 if str(WEB_DIR) not in sys.path:
     sys.path.insert(0, str(WEB_DIR))
 
-from managed_runs import ManagedRunRegistry, SseRecordBuffer, is_sse_done
+from managed_runs import ManagedRunRegistry, SseRecordBuffer, is_sse_done, sse_error_message
 
 
 def test_sse_record_buffer_frames_split_events_and_done_marker() -> None:
@@ -21,6 +21,20 @@ def test_sse_record_buffer_frames_split_events_and_done_marker() -> None:
     assert records.feed('NE]\r\n\r\n') == ['data: [DONE]\r\n\r\n']
     assert is_sse_done('data: [DONE]\r\n\r\n')
     assert records.flush() == []
+
+
+def test_sse_error_message_recognizes_adk_generator_failures() -> None:
+    record = (
+        'data: {"error":"JSONDecodeError: broken tool arguments",'
+        '"error_details":{"error_type":"JSONDecodeError",'
+        '"error_message":"Expecting comma at column 327"}}\n\n'
+    )
+
+    assert sse_error_message(record) == "JSONDecodeError: Expecting comma at column 327"
+    assert sse_error_message('data: {"content":{"parts":[{"text":"ok"}]}}\n\n') is None
+    assert sse_error_message('data: {not-json}\n\n') == (
+        "The agent backend returned a malformed streaming event."
+    )
 
 
 def test_subscriber_disconnect_does_not_cancel_producer() -> None:
@@ -73,6 +87,25 @@ def test_registry_enforces_one_run_per_session_but_allows_other_sessions() -> No
 
         release.set()
         await asyncio.gather(first.task, second.task)
+
+    asyncio.run(exercise())
+
+
+def test_latest_run_failure_lookup_is_scoped_to_owner_and_session() -> None:
+    async def exercise() -> None:
+        registry = ManagedRunRegistry()
+
+        async def failing(_run) -> None:
+            raise RuntimeError("broken response JSON")
+
+        failed = await registry.start(owner_id="alice", session_id="session-1", producer=failing)
+        await failed.task
+        other = await registry.start(owner_id="alice", session_id="session-2", producer=failing)
+        await other.task
+
+        assert registry.latest_for("alice", "session-1") is failed
+        assert registry.latest_for("alice", "session-2") is other
+        assert registry.latest_for("bob", "session-1") is None
 
     asyncio.run(exercise())
 

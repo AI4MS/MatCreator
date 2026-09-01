@@ -5,4 +5,5 @@ from matcreator.control_plane.runs import (  # noqa: F401
     ManagedRunRegistry,
     SseRecordBuffer,
     is_sse_done,
+    sse_error_message,
 )

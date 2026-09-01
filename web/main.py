@@ -119,6 +119,7 @@ from matcreator.control_plane.runs import (  # noqa: E402
     ManagedRunRegistry,
     SseRecordBuffer,
     is_sse_done,
+    sse_error_message,
 )
 from matcreator.control_plane.worker_supervisor import WorkerSupervisor  # noqa: E402
 from matcreator.control_plane.session_question_generator import (  # noqa: E402
@@ -1154,12 +1155,18 @@ async def _produce_managed_run(run: ManagedRun, payload: dict[str, Any], target_
                 if chunk:
                     for record in records.feed(decoder.decode(chunk)):
                         await _run_registry.publish(run, record)
+                        if upstream_error := sse_error_message(record):
+                            raise RuntimeError(upstream_error)
                         if is_sse_done(record):
                             return
             for record in records.feed(decoder.decode(b"", final=True)):
                 await _run_registry.publish(run, record)
+                if upstream_error := sse_error_message(record):
+                    raise RuntimeError(upstream_error)
             for record in records.flush():
                 await _run_registry.publish(run, record)
+                if upstream_error := sse_error_message(record):
+                    raise RuntimeError(upstream_error)
 
 
 async def _start_managed_run(
@@ -1433,6 +1440,16 @@ def _session_row_to_summary(row: sqlite3.Row, summaries: dict[str, dict] | None 
             result["summary"] = entry.get("summary", "")
         else:
             result["summary"] = entry
+    # Session selection must be able to present reconnect progress before the
+    # separate active-run detail request returns. The registry lookup is
+    # in-memory and makes this list response the fast recovery hint; the
+    # frontend still confirms the exact run through /api/runs/active.
+    registry = globals().get("_run_registry")
+    active_run = registry.active_for(result["userId"], result["id"]) if registry is not None else None
+    result["status"] = "running" if active_run is not None else "idle"
+    result["activeRun"] = active_run.summary() if active_run is not None else None
+    latest_run = registry.latest_for(result["userId"], result["id"]) if registry is not None else None
+    result["runFailure"] = latest_run.summary() if latest_run is not None and latest_run.status == "failed" else None
     return result
 
 

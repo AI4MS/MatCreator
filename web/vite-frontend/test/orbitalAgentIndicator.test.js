@@ -184,6 +184,10 @@ test("keeps the centre-crossing d orbital symmetric across both axes", () => {
 
     assert.ok(Math.min(...radii) < 0.01, "the four lobes meet at the centre");
     assert.ok(Math.max(...radii) > 41, "the lobes still reach the outer orbit");
+    assert.ok(
+      radii.some((radius) => radius > 33 && radius < 41),
+      "the d-orbital leaves stay visibly broader between their centre crossing and tips",
+    );
     endpoints.forEach(([x, y]) => {
       const hasHorizontalReflection = endpoints.some(([otherX, otherY]) => (
         Math.abs(otherX - x) < 0.01 && Math.abs(otherY - (100 - y)) < 0.01
