@@ -1919,6 +1919,28 @@ def _filter_agent_graph_nodes(data: dict, node_ids: list[str]) -> dict:
     return {**data, "nodes": nodes, "edges": edges}
 
 
+def _filter_agent_graph_nodes_by_actions(
+    data: dict,
+    node_ids: list[str],
+    actions: list[str],
+) -> dict:
+    """Resolve label-less Flash launches without returning the full graph."""
+    wanted_actions = {str(value).strip() for value in actions if str(value).strip()}
+    matched_ids = list(node_ids)
+    all_nodes = data.get("nodes") if isinstance(data.get("nodes"), dict) else {}
+    for graph_node_id, node in all_nodes.items():
+        if not isinstance(node, dict) or node.get("type") != "step":
+            continue
+        parent = all_nodes.get(node.get("parent_id"))
+        if isinstance(parent, dict) and parent.get("type") == "step":
+            continue
+        node_input = node.get("input") if isinstance(node.get("input"), dict) else {}
+        action = node_input.get("action")
+        if isinstance(action, str) and action.strip() in wanted_actions:
+            matched_ids.append(graph_node_id)
+    return _filter_agent_graph_nodes(data, matched_ids)
+
+
 def _map_worker_path_to_control_plane(user_id: str, path_str: str) -> Path | None:
     raw = (path_str or "").strip()
     if not raw:
@@ -3808,11 +3830,14 @@ async def publish_evaluation_question_draft(draft_id: str, user_id: str = Query(
 async def get_agent_graph(
     session_id: str,
     node_ids: list[str] = Query(default=[], alias="node_id"),
+    actions: list[str] = Query(default=[], alias="action"),
 ) -> JSONResponse:
     data = _load_agent_graph_data(session_id)
     if not data:
         return JSONResponse({"session_id": session_id, "nodes": {}, "edges": [], "updated_at": None})
-    if node_ids:
+    if actions:
+        data = _filter_agent_graph_nodes_by_actions(data, node_ids, actions)
+    elif node_ids:
         data = _filter_agent_graph_nodes(data, node_ids)
     return JSONResponse(data)
 

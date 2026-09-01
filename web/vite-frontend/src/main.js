@@ -1415,7 +1415,7 @@ function reconcileDelegationGroup(group, calls, { live = false } = {}) {
     if (Array.isArray(call.stepNodes) && call.stepNodes.length) {
       call.stepNodes.forEach((node) => stepExecutionFeed.appendStatic(node, row.host));
     } else if (live) {
-      stepExecutionFeed.bindRootHost(row.host, executorNodeId(call));
+      stepExecutionFeed.bindRootHost(row.host, executorNodeId(call), call.input?.action || "");
     }
   });
   for (const [key, row] of rows) {

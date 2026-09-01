@@ -132,6 +132,41 @@ def test_graph_filter_uses_durable_launcher_ids_not_child_step_numbers(monkeypat
     assert filter_graph_nodes(graph, ["1"])["nodes"] == {}
 
 
+def test_graph_filter_matches_direct_flash_launch_by_action(monkeypatch, tmp_path):
+    del monkeypatch, tmp_path
+    source_path = Path(__file__).resolve().parents[1] / "web" / "main.py"
+    module = ast.parse(source_path.read_text(encoding="utf-8"))
+    filter_nodes = [
+        node for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name in {
+            "_filter_agent_graph_nodes", "_filter_agent_graph_nodes_by_actions",
+        }
+    ]
+    namespace: dict[str, object] = {}
+    exec(compile(ast.Module(body=filter_nodes, type_ignores=[]), str(source_path), "exec"), namespace)
+    filter_graph_nodes = namespace["_filter_agent_graph_nodes_by_actions"]
+    graph = {
+        "nodes": {
+            "orchestrator__node_flash": {
+                "id": "orchestrator__node_flash", "type": "step", "parent_id": "orchestrator",
+                "input": {"node_id": "flash_abc", "action": "Relax the candidate"},
+            },
+            "orchestrator__node_flash__node_1": {
+                "id": "orchestrator__node_flash__node_1", "type": "step",
+                "parent_id": "orchestrator__node_flash",
+                "input": {"node_id": "1", "action": "Inspect the result"},
+            },
+        },
+        "edges": [],
+    }
+
+    filtered = filter_graph_nodes(graph, [], ["Relax the candidate"])
+    assert set(filtered["nodes"]) == {
+        "orchestrator__node_flash",
+        "orchestrator__node_flash__node_1",
+    }
+
+
 def _create_session_db(path: Path, app_name: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:

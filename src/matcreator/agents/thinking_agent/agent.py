@@ -244,7 +244,7 @@ async def run_flash_step(
     else:
         node_id = f"flash_{hashlib.sha256(action.encode()).hexdigest()[:12]}"
 
-    return await run_step_executor(
+    result = await run_step_executor(
         step_number=counter,
         action=action,
         suggested_skills=suggested_skills,
@@ -253,6 +253,10 @@ async def run_flash_step(
         node_id=node_id,
         tool_context=tool_context,
     )
+    # Surface the durable identity to transcript consumers.  In particular a
+    # label-less Flash call cannot reproduce the SHA-derived id from its tool
+    # arguments without hashing asynchronously in the browser.
+    return {"node_id": node_id, **result}
 
 
 # ---------------------------------------------------------------------------

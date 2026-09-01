@@ -203,6 +203,11 @@ class PlanningExecutionOrchestrator(BaseAgent):
 
         while True:
             # ── Planning phase (always runs first) ───────────────────────────
+            # Tools launched by the planning/O side (notably Flash steps) are
+            # direct orchestrator work. Clear a previous execution round's
+            # container before entering planning so those steps do not appear
+            # to belong to a stale E node after replanning.
+            state["_graph_exec_node_id"] = "orchestrator"
             state["execution_approved"] = False
             logger.info("[orchestrator] entering planning phase")
             graph.log_node_start(planning_id, "planning", "Planning", "orchestrator")
