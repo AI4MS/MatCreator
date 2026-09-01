@@ -1,10 +1,12 @@
 import { createDialogController } from "../../shared/ui/dialog.js";
+import { buildSettingsSavePlan } from "./settingsChanges.js";
 
 export function createSettingsController({ state, applyLogin, getFontScale, applyFontScale }) {
 
   const settingsModal = document.getElementById("settings-modal");
   const settingsBtn = document.getElementById("settings-btn");
   const settingsClose = document.getElementById("settings-close");
+  const settingsCancel = document.getElementById("settings-cancel");
   const settingsSave = document.getElementById("settings-save");
   const settingsStatus = document.getElementById("settings-status");
   const settingsUsername = document.getElementById("settings-username");
@@ -18,10 +20,16 @@ export function createSettingsController({ state, applyLogin, getFontScale, appl
   const settingsLlmCardAdd = document.getElementById("settings-llm-card-add");
   const fontScaleOptions = document.getElementById("settings-font-scale-options");
   const CUSTOM_ENV_CONFIG_KEY = "CUSTOM_ENV";
+  const REQUEST_TIMEOUT_MS = 15_000;
+  let loadedSettings = null;
+  let loadController = null;
+  let saveController = null;
+  let statusTimer = null;
   const settingsDialog = createDialogController({
     element: settingsModal,
     labelledBy: "settings-dialog-title",
     initialFocus: settingsClose,
+    onClose: cleanupSettingsOperations,
   });
 
   // Env config input refs
@@ -261,14 +269,6 @@ export function createSettingsController({ state, applyLogin, getFontScale, appl
     updateFontScaleOptions();
   });
 
-  function activeSettingsTabName() {
-    return document.querySelector(".settings-tab.active")?.dataset.tab || "profile";
-  }
-
-  function settingsTabRequiresBackendRestart(tabName) {
-    return ["llm", "runtime", "compute", "env"].includes(tabName);
-  }
-
   function openSettingsModal() {
     if (!settingsDialog.open()) return;
     settingsUsername.value = state.displayName || "";
@@ -288,6 +288,79 @@ export function createSettingsController({ state, applyLogin, getFontScale, appl
 
   function closeSettingsModal() {
     settingsDialog.close();
+  }
+
+  function cleanupSettingsOperations() {
+    loadController?.abort();
+    saveController?.abort();
+    loadController = null;
+    saveController = null;
+    loadedSettings = null;
+    clearStatusTimer();
+    settingsStatus.textContent = "";
+    settingsStatus.classList.remove("is-error", "is-success");
+    settingsSave.disabled = false;
+    settingsSave.textContent = "Save";
+  }
+
+  function clearStatusTimer() {
+    if (statusTimer) clearTimeout(statusTimer);
+    statusTimer = null;
+  }
+
+  function setSettingsStatus(message = "", kind = "") {
+    clearStatusTimer();
+    settingsStatus.textContent = message;
+    settingsStatus.classList.toggle("is-error", kind === "error");
+    settingsStatus.classList.toggle("is-success", kind === "success");
+  }
+
+  function clearSettingsStatusLater(delayMs) {
+    clearStatusTimer();
+    statusTimer = setTimeout(() => {
+      settingsStatus.textContent = "";
+      settingsStatus.classList.remove("is-error", "is-success");
+      statusTimer = null;
+    }, delayMs);
+  }
+
+  async function fetchWithTimeout(url, options = {}, signal = null, timeoutMs = REQUEST_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const abortFromCaller = () => controller.abort();
+    if (signal?.aborted) controller.abort();
+    else signal?.addEventListener("abort", abortFromCaller, { once: true });
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } catch (err) {
+      if (controller.signal.aborted && !signal?.aborted) {
+        throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)} seconds`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abortFromCaller);
+    }
+  }
+
+  function isCancelled(error, signal) {
+    return signal?.aborted || error?.name === "AbortError";
+  }
+
+  function waitFor(delayMs, signal) {
+    return new Promise((resolve, reject) => {
+      const finish = () => {
+        signal?.removeEventListener("abort", cancel);
+        resolve();
+      };
+      const cancel = () => {
+        clearTimeout(timer);
+        reject(new DOMException("Cancelled", "AbortError"));
+      };
+      const timer = setTimeout(finish, delayMs);
+      if (signal?.aborted) cancel();
+      else signal?.addEventListener("abort", cancel, { once: true });
+    });
   }
 
   // ---- tree helpers ----------------------------------------------------------
@@ -516,17 +589,27 @@ export function createSettingsController({ state, applyLogin, getFontScale, appl
   // ---- load / save -----------------------------------------------------------
 
   async function loadSettingsData() {
+    loadController?.abort();
+    const controller = new AbortController();
+    loadController = controller;
+    loadedSettings = null;
+    settingsSave.disabled = true;
+    settingsSave.textContent = "Loading…";
+    setSettingsStatus("Loading settings…");
     skillsChecklist.innerHTML =
       '<p class="settings-hint" style="opacity:0.6">Loading…</p>';
     try {
       const [skillsRes, settingsRes, envRes] = await Promise.all([
-        fetch(settingsApiUrl("/api/skills")),
-        fetch(settingsApiUrl("/api/settings")),
-        fetch(settingsApiUrl("/api/env-config")),
+        fetchWithTimeout(settingsApiUrl("/api/skills"), {}, controller.signal),
+        fetchWithTimeout(settingsApiUrl("/api/settings"), {}, controller.signal),
+        fetchWithTimeout(settingsApiUrl("/api/env-config"), {}, controller.signal),
       ]);
+      for (const response of [skillsRes, settingsRes, envRes]) {
+        if (!response.ok) throw new Error(await response.text() || `Request failed (${response.status})`);
+      }
       const skills = await skillsRes.json();
       const cfg = await settingsRes.json();
-      const envCfg = envRes.ok ? await envRes.json() : {};
+      const envCfg = await envRes.json();
       const llmCfg = cfg.llm || {};
       const extraSkills = new Set((cfg.planning || {}).extra_skills || []);
 
@@ -574,38 +657,42 @@ export function createSettingsController({ state, applyLogin, getFontScale, appl
       // Populate env config inputs
       for (const [key, getEl] of Object.entries(envInputs)) {
         const el = getEl();
-        if (el && envCfg[key] !== undefined) {
-          el.value = envCfg[key];
-        }
+        if (el) el.value = envCfg[key] ?? "";
       }
       renderExecutorCards(llmCfg.executor_cards || {});
       renderEnvPairs(envCfg[CUSTOM_ENV_CONFIG_KEY] || {});
+      loadedSettings = collectSettingsDraft();
+      setSettingsStatus("Settings loaded", "success");
+      clearSettingsStatusLater(1000);
     } catch (err) {
+      if (isCancelled(err, controller.signal)) return;
       const error = document.createElement("p");
       error.className = "settings-hint settings-error";
       error.textContent = `Failed to load: ${err.message}`;
       skillsChecklist.replaceChildren(error);
+      setSettingsStatus(`Could not load settings: ${err.message}`, "error");
+    } finally {
+      if (loadController === controller) loadController = null;
+      if (!controller.signal.aborted) updateSaveButton();
     }
   }
 
-  async function saveSettings() {
-    const activeTab = activeSettingsTabName();
-    const shouldRestartBackend = settingsTabRequiresBackendRestart(activeTab);
+  function collectSettingsDraft() {
     const username = settingsUsername.value.trim();
-    const nextDefaultWorkdir = document.getElementById("settings-default-workdir")?.value?.trim() || "";
+    const defaultWorkdir = document.getElementById("settings-default-workdir")?.value?.trim() || "";
     const extraSkills = Array.from(
-      skillsChecklist.querySelectorAll(".skill-checkbox:not(:disabled)")
+      skillsChecklist.querySelectorAll(".skill-checkbox:not(:disabled)"),
     )
       .filter((cb) => cb.checked && !cb.indeterminate)
-      .map((cb) => cb.dataset.name);
-
+      .map((cb) => cb.dataset.name)
+      .sort();
     const disabledSkills = Array.from(
-      skillsChecklist.querySelectorAll(".skill-enabled-checkbox")
+      skillsChecklist.querySelectorAll(".skill-enabled-checkbox"),
     )
       .filter((cb) => !cb.checked)
-      .map((cb) => cb.dataset.name);
+      .map((cb) => cb.dataset.name)
+      .sort();
 
-    // Collect env config values (skip empty sensitive fields with "***")
     const envValues = {};
     const sensitiveKeys = new Set([
       "LLM_API_KEY", "MAT_BENCH_TOKEN", "BOHRIUM_PASSWORD", "BOHRIUM_ACCESS_KEY",
@@ -613,102 +700,140 @@ export function createSettingsController({ state, applyLogin, getFontScale, appl
     for (const [key, getEl] of Object.entries(envInputs)) {
       const el = getEl();
       if (!el) continue;
-      const val = el.value;
-      if (sensitiveKeys.has(key) && (!val || val === "***")) continue;
-      envValues[key] = val;
+      const value = el.value;
+      if (sensitiveKeys.has(key) && (!value || value === "***")) continue;
+      envValues[key] = value;
     }
     envValues[CUSTOM_ENV_CONFIG_KEY] = collectEnvPairs();
-    let llmValues = undefined;
+
+    return {
+      username,
+      defaultWorkdir,
+      extraSkills,
+      disabledSkills,
+      envValues,
+      llm: { executor_cards: collectExecutorCards() },
+    };
+  }
+
+  function updateSaveButton() {
+    if (saveController) return;
+    if (!loadedSettings) {
+      settingsSave.disabled = true;
+      settingsSave.textContent = "Save";
+      return;
+    }
     try {
-      llmValues = { executor_cards: collectExecutorCards() };
+      const plan = buildSettingsSavePlan(loadedSettings, collectSettingsDraft());
+      settingsSave.disabled = !plan.changed;
+      settingsSave.textContent = plan.changed ? "Save changes" : "Saved";
+    } catch (_) {
+      settingsSave.disabled = false;
+      settingsSave.textContent = "Save changes";
+    }
+  }
+
+  async function saveSettings() {
+    if (!loadedSettings || saveController) return;
+    let nextSettings;
+    let plan;
+    try {
+      nextSettings = collectSettingsDraft();
+      plan = buildSettingsSavePlan(loadedSettings, nextSettings);
     } catch (err) {
-      settingsStatus.textContent = `Error: ${err.message}`;
+      setSettingsStatus(`Check the highlighted values: ${err.message}`, "error");
+      return;
+    }
+    if (!plan.changed) {
+      setSettingsStatus("Everything is already saved", "success");
+      clearSettingsStatusLater(1500);
+      updateSaveButton();
       return;
     }
 
+    const controller = new AbortController();
+    saveController = controller;
     try {
       settingsSave.disabled = true;
-      settingsStatus.textContent = "Saving…";
-
-      const requests = [
-        fetch(settingsApiUrl("/api/settings"), {
+      settingsSave.textContent = "Saving…";
+      setSettingsStatus("Saving…");
+      if (plan.settingsBody) {
+        const response = await fetchWithTimeout(settingsApiUrl("/api/settings"), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            planning: { extra_skills: extraSkills },
-            skills: { disabled: disabledSkills },
-            user: username ? { name: username } : undefined,
-            workspace: { default_workdir: nextDefaultWorkdir },
-            ...(llmValues ? { llm: llmValues } : {}),
-          }),
-        }),
-      ];
-      if (Object.keys(envValues).length > 0) {
-        requests.push(
-          fetch(settingsApiUrl("/api/env-config"), {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ values: envValues }),
-          })
-        );
+          body: JSON.stringify(plan.settingsBody),
+        }, controller.signal);
+        if (!response.ok) throw new Error(await response.text());
+      }
+      if (plan.envValues) {
+        const response = await fetchWithTimeout(settingsApiUrl("/api/env-config"), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ values: plan.envValues }),
+        }, controller.signal);
+        if (!response.ok) throw new Error(await response.text());
       }
 
-      const results = await Promise.all(requests);
-      for (const res of results) {
-        if (!res.ok) throw new Error(await res.text());
-      }
-
-      if (state.deploymentMode === "server" && username && username !== state.displayName) {
-        closeSettingsModal();
-        await applyLogin(username, null);
-      }
-      state.defaultWorkdir = nextDefaultWorkdir;
-      if (shouldRestartBackend) {
-        settingsStatus.textContent = "Saved. Restarting backend…";
-        await restartBackend();
+      const usernameChanged = nextSettings.username !== loadedSettings.username;
+      loadedSettings = nextSettings;
+      state.defaultWorkdir = nextSettings.defaultWorkdir;
+      if (plan.restartBackend) {
+        settingsSave.textContent = "Restarting…";
+        setSettingsStatus("Saved. Restarting the agent backend…", "success");
+        await restartBackend(controller.signal);
       } else {
-        settingsStatus.textContent = "Saved ✓";
-        setTimeout(() => { settingsStatus.textContent = ""; }, 2000);
+        setSettingsStatus("Saved", "success");
+        clearSettingsStatusLater(2000);
+      }
+      if (state.deploymentMode === "server" && usernameChanged && nextSettings.username) {
+        saveController = null;
+        settingsDialog.close();
+        await applyLogin(nextSettings.username, null);
       }
     } catch (err) {
-      settingsStatus.textContent = `Error: ${err.message}`;
+      if (!isCancelled(err, controller.signal)) {
+        setSettingsStatus(`Could not save: ${err.message}`, "error");
+      }
     } finally {
-      settingsSave.disabled = false;
+      if (saveController === controller) saveController = null;
+      if (!controller.signal.aborted) updateSaveButton();
     }
   }
 
   // ---- restart backend -------------------------------------------------------
 
-  async function _pollBackendReady(maxAttempts = 30, intervalMs = 2000) {
+  async function _pollBackendReady(signal, maxAttempts = 30, intervalMs = 2000) {
     for (let i = 0; i < maxAttempts; i++) {
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      await waitFor(intervalMs, signal);
       try {
         const userQuery = state.userId ? `?user_id=${encodeURIComponent(state.userId)}` : "";
-        const res = await fetch(`/api/backend-status${userQuery}`);
+        const res = await fetchWithTimeout(`/api/backend-status${userQuery}`, {}, signal, 5000);
         if (res.ok) {
           const data = await res.json();
           if (data.ready) return;
         }
-      } catch (_) {}
+      } catch (err) {
+        if (isCancelled(err, signal)) throw err;
+      }
     }
     throw new Error("Backend did not come back online in time");
   }
 
-  async function restartBackend() {
+  async function restartBackend(signal) {
     if (settingsRestartBtn) {
       settingsRestartBtn.disabled = true;
       settingsRestartBtn.textContent = "Restarting…";
     }
-    settingsStatus.textContent = "Restarting backend…";
     try {
       const userQuery = state.userId ? `?user_id=${encodeURIComponent(state.userId)}` : "";
-      const res = await fetch(`/api/restart-backend${userQuery}`, { method: "POST" });
+      const res = await fetchWithTimeout(`/api/restart-backend${userQuery}`, { method: "POST" }, signal, 30_000);
       if (!res.ok) throw new Error(await res.text());
-      await _pollBackendReady();
-      settingsStatus.textContent = "Backend restarted ✓";
-      setTimeout(() => { settingsStatus.textContent = ""; }, 3000);
+      await _pollBackendReady(signal);
+      setSettingsStatus("Saved and backend restarted", "success");
+      clearSettingsStatusLater(3000);
     } catch (err) {
-      settingsStatus.textContent = `Restart failed: ${err.message}`;
+      if (isCancelled(err, signal)) throw err;
+      setSettingsStatus(`Settings were saved, but restart failed: ${err.message}`, "error");
     } finally {
       if (settingsRestartBtn) {
         settingsRestartBtn.disabled = false;
@@ -730,10 +855,15 @@ export function createSettingsController({ state, applyLogin, getFontScale, appl
 
   if (settingsBtn) settingsBtn.addEventListener("click", openSettingsModal);
   if (settingsClose) settingsClose.addEventListener("click", closeSettingsModal);
+  if (settingsCancel) settingsCancel.addEventListener("click", closeSettingsModal);
   if (settingsSave) settingsSave.addEventListener("click", saveSettings);
+  settingsModal.addEventListener("input", updateSaveButton);
+  settingsModal.addEventListener("change", updateSaveButton);
+  settingsModal.addEventListener("click", () => queueMicrotask(updateSaveButton));
   document.getElementById("settings-workdir-reset")?.addEventListener("click", () => {
     const wdInput = document.getElementById("settings-default-workdir");
     if (wdInput) wdInput.value = "";
+    updateSaveButton();
   });
   // Settings contain a multi-field draft. Do not dismiss it when the user
   // clicks the backdrop: an imprecise click should never force them to
