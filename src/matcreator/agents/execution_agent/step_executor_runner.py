@@ -403,6 +403,50 @@ def _mark_node_waiting_on_remote_job(
     set_execution_graph(tool_context.state, graph_state)
 
 
+def _graph_dependency_step_ids(
+    graph: AgentGraphLogger,
+    tool_context: ToolContext,
+    node_id: Optional[str],
+) -> list[str]:
+    """Resolve direct execution-DAG predecessors to logged graph node IDs.
+
+    The execution container is the visual parent only for root DAG nodes.
+    Dependents must be attached to their *declared* predecessors, not inferred
+    later from the order in which they happened to start.
+    """
+    if not node_id:
+        return []
+    execution_graph = get_execution_graph(tool_context.state) or {}
+    predecessors = [
+        edge[0]
+        for edge in execution_graph.get("edges") or []
+        if isinstance(edge, (list, tuple))
+        and len(edge) == 2
+        and edge[1] == node_id
+        and isinstance(edge[0], str)
+    ]
+    if not predecessors:
+        return []
+
+    execution_id = tool_context.state.get("_graph_exec_node_id", "orchestrator")
+    resolved = []
+    for predecessor_id in predecessors:
+        # In the ordinary case the predecessor belongs to this execution
+        # phase.  The lookup also handles a remote-job resume that starts a
+        # fresh execution container after its predecessor completed earlier.
+        step_id = graph.find_step_node(predecessor_id)
+        if not step_id:
+            step_id = f"{execution_id}__node_{predecessor_id}"
+            logger.warning(
+                "[step_executor_runner] missing logged predecessor %s for %s",
+                predecessor_id,
+                node_id,
+            )
+        if step_id not in resolved:
+            resolved.append(step_id)
+    return resolved
+
+
 def _remote_job_prior_context(tool_context: ToolContext, node_id: Optional[str]) -> Optional[str]:
     """Return re-attachment instructions when a node already owns a remote job.
 
@@ -663,7 +707,15 @@ async def run_step_executor(
         llm_card.name,
         llm_card.model,
     )
-    await asyncio.to_thread(graph.log_node_start, step_id, "step", f"Node {step_label_path}", parent_id)
+    dependency_ids = _graph_dependency_step_ids(graph, tool_context, node_id)
+    await asyncio.to_thread(
+        graph.log_node_start,
+        step_id,
+        "step",
+        f"Node {step_label_path}",
+        parent_id,
+        dependency_ids=dependency_ids,
+    )
 
     # Serialize input as user message (matches AgentTool input_schema path)
     step_input = StepExecutorInput(
