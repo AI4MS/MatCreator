@@ -17,6 +17,7 @@ import { performance } from "node:perf_hooks";
 import {
   activityToolCalls,
   delegationToolCalls,
+  executorNodeId,
   getFunctionResponse,
   getPlotPaths,
   getStructurePaths,
@@ -64,6 +65,18 @@ test("separates delegated executor tools from regular activity tools", () => {
   assert.deepEqual(activityToolCalls(action).map((call) => call.id), ["regular"]);
   assert.deepEqual(delegationToolCalls([action]).map((call) => call.id), ["executor"]);
   assert.equal(isDelegatedTaskRootTool("run_sub_agent"), false);
+});
+
+test("derives the graph identity for orchestrator-dispatched Flash tasks", () => {
+  assert.equal(executorNodeId({
+    name: "run_flash_step",
+    input: { label: "Relax Candidate Structure" },
+  }), "relax_candidate_structure");
+  assert.equal(executorNodeId({
+    name: "run_flash_step",
+    input: { action: "Relax candidate structure" },
+    output: { node_id: "flash_a1b2c3d4e5f6" },
+  }), "flash_a1b2c3d4e5f6");
 });
 
 test("keeps each delegated task at its invocation position", () => {

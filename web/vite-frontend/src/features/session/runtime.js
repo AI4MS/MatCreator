@@ -240,6 +240,11 @@ export function createSessionRuntime({
     return value === undefined || value === null ? "" : String(value);
   }
 
+  function flashLauncherNodeId(input = {}) {
+    if (!input.label) return "";
+    return String(input.label).toLowerCase().replaceAll(" ", "_").slice(0, 40);
+  }
+
   function launcherNodeIds(events) {
     const ids = new Set();
     (events || []).forEach((event) => (event?.content?.parts || []).forEach((part) => {
@@ -248,18 +253,33 @@ export function createSessionRuntime({
       // subtree. Fetching them by local step_number would match unrelated
       // children from other parents (many have step number 1).
       if (!call || !["run_flash_step", "run_node_executor"].includes(call.name)) return;
-      const id = launcherNodeId(call.args || {});
+      const input = call.args || {};
+      const id = launcherNodeId(input)
+        || (call.name === "run_flash_step" ? flashLauncherNodeId(input) : "");
       if (id) ids.add(id);
     }));
     return [...ids];
   }
 
+  function launcherActions(events) {
+    const actions = new Set();
+    (events || []).forEach((event) => (event?.content?.parts || []).forEach((part) => {
+      const call = part?.functionCall || part?.function_call;
+      if (call?.name !== "run_flash_step") return;
+      const input = call.args || {};
+      if (!flashLauncherNodeId(input) && input.action) actions.add(String(input.action));
+    }));
+    return [...actions];
+  }
+
   async function fetchStepNodes(sessionId, events, signal) {
     const ids = launcherNodeIds(events);
-    if (!ids.length) return [];
+    const actions = launcherActions(events);
+    if (!ids.length && !actions.length) return [];
     try {
       const query = new URLSearchParams();
       ids.forEach((id) => query.append("node_id", id));
+      actions.forEach((action) => query.append("action", action));
       const response = await fetch(`/api/agent-graph/${encodeURIComponent(sessionId)}?${query}`, { signal });
       if (!response.ok) return [];
       const graph = await response.json();
@@ -328,9 +348,18 @@ export function createSessionRuntime({
     let changed = false;
     timeline.filter((item) => item.type === "activity_action").flatMap((item) => item.toolCalls || [])
       .filter((call) => ["run_flash_step", "run_node_executor"].includes(call.name)).forEach((call) => {
-        const id = launcherNodeId(call.input);
-        const node = nodes.find((candidate) => id
-          && (launcherNodeId(candidate.input) === id || candidate.id?.endsWith(`__node_${id}`)));
+        const id = launcherNodeId(call.input)
+          || (call.name === "run_flash_step" ? flashLauncherNodeId(call.input) : "")
+          || launcherNodeId(call.output);
+        const node = nodes.find((candidate) => (
+          id && (launcherNodeId(candidate.input) === id || candidate.id?.endsWith(`__node_${id}`))
+        ) || (
+          call.name === "run_flash_step"
+          && !id
+          && call.input?.action
+          && candidate.input?.action === call.input.action
+          && !nodes.some((parent) => parent.id === candidate.parent_id)
+        ));
         if (node && call.stepNodes?.[0] !== node) {
           call.stepNodes = [node];
           changed = true;

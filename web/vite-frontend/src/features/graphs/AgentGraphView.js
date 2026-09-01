@@ -1787,6 +1787,7 @@ export class StepExecutionFeed {
     this._liveContainerEl = null;
     this._liveStartedAt = null;
     this._rootHosts = new Map();
+    this._rootHostsByAction = new Map();
     this._stepById = new Map();
     this._childNodes = new Map();
     this._elapsedTimer = null;
@@ -1805,6 +1806,7 @@ export class StepExecutionFeed {
     this._liveContainerEl = null;
     this._liveStartedAt = null;
     this._rootHosts.clear();
+    this._rootHostsByAction.clear();
     this._stepById = new Map();
     this._childNodes = new Map();
   }
@@ -1818,12 +1820,14 @@ export class StepExecutionFeed {
     this._liveStartedAt = startedAt;
     this._liveContainerEl = document.createElement("div");
     this._rootHosts.clear();
+    this._rootHostsByAction.clear();
 
     // `hostEl` is the message timeline, used only to recover already-rendered
     // invocation slots. A graph node without a launcher slot stays detached;
     // guessing a visible fallback position is what made tasks jump later.
-    hostEl?.querySelectorAll?.(".delegation-task-host[data-step-execution-key]").forEach((host) => {
+    hostEl?.querySelectorAll?.(".delegation-task-host[data-step-execution-key], .delegation-task-host[data-step-execution-action]").forEach((host) => {
       if (host.dataset.stepExecutionKey) this._rootHosts.set(host.dataset.stepExecutionKey, host);
+      if (host.dataset.stepExecutionAction) this._rootHostsByAction.set(host.dataset.stepExecutionAction, host);
     });
 
     return this._liveContainerEl;
@@ -1835,8 +1839,10 @@ export class StepExecutionFeed {
     this._liveStartedAt = startedAt;
     this._liveContainerEl = document.createElement("div");
     this._rootHosts.clear();
-    hostEl.querySelectorAll?.(".delegation-task-host[data-step-execution-key]").forEach((host) => {
+    this._rootHostsByAction.clear();
+    hostEl.querySelectorAll?.(".delegation-task-host[data-step-execution-key], .delegation-task-host[data-step-execution-action]").forEach((host) => {
       if (host.dataset.stepExecutionKey) this._rootHosts.set(host.dataset.stepExecutionKey, host);
+      if (host.dataset.stepExecutionAction) this._rootHostsByAction.set(host.dataset.stepExecutionAction, host);
     });
     hostEl.querySelectorAll?.(".step-feed-message[data-step-node-id]").forEach((card) => {
       if (card._stepNode) this._cards.set(card.dataset.stepNodeId, card);
@@ -1844,13 +1850,21 @@ export class StepExecutionFeed {
     this._syncElapsedTimer();
   }
 
-  bindRootHost(hostEl, executionKey = "") {
+  bindRootHost(hostEl, executionKey = "", action = "") {
     const key = String(executionKey || "");
-    if (!hostEl || !key) return false;
-    hostEl.dataset.stepExecutionKey = key;
-    this._rootHosts.set(key, hostEl);
+    const actionKey = String(action || "");
+    if (!hostEl || (!key && !actionKey)) return false;
+    if (key) {
+      hostEl.dataset.stepExecutionKey = key;
+      this._rootHosts.set(key, hostEl);
+    }
+    if (actionKey) {
+      hostEl.dataset.stepExecutionAction = actionKey;
+      this._rootHostsByAction.set(actionKey, hostEl);
+    }
     const node = [...this._stepById.values()].find((candidate) => (
-      this._nodeExecutionKey(candidate) === key || String(candidate.id || "").endsWith(`__node_${key}`)
+      (key && (this._nodeExecutionKey(candidate) === key || String(candidate.id || "").endsWith(`__node_${key}`)))
+      || (!key && candidate?.input?.action === actionKey && this.isRootStep(candidate))
     ));
     const card = node && this._cards.get(node.id);
     if (node && card) this._insertIntoLiveContainer(hostEl, card, node);
@@ -1862,6 +1876,7 @@ export class StepExecutionFeed {
     this._liveContainerEl = null;
     this._liveStartedAt = null;
     this._rootHosts.clear();
+    this._rootHostsByAction.clear();
   }
 
   update(graphData, patch = {}) {
@@ -1920,6 +1935,9 @@ export class StepExecutionFeed {
     if (!host && node?.id) {
       const matchingKey = [...this._rootHosts.keys()].find((key) => String(node.id).endsWith(`__node_${key}`));
       if (matchingKey) host = this._rootHosts.get(matchingKey);
+    }
+    if (!host && this.isRootStep(node) && node?.input?.action) {
+      host = this._rootHostsByAction.get(String(node.input.action));
     }
     return host?.isConnected ? host : null;
   }

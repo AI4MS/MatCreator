@@ -58,7 +58,16 @@ export function isDelegatedTaskRootTool(name) {
 
 export function executorNodeId(call) {
   const input = call?.input || {};
-  return input.node_id || input.step_id || input.step_number || "";
+  const output = call?.output || {};
+  const explicit = input.node_id || input.step_id || output.node_id || output.step_id;
+  if (explicit) return explicit;
+  // Flash launches create their durable graph id inside the Python tool.  A
+  // caller-provided label follows the same normalization there, so expose it
+  // here as the host key instead of leaving an unbindable empty task shell.
+  if (call?.name === "run_flash_step" && input.label) {
+    return String(input.label).toLowerCase().replaceAll(" ", "_").slice(0, 40);
+  }
+  return input.step_number || "";
 }
 
 export function activityToolCalls(action) {
