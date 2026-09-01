@@ -671,6 +671,14 @@ export class AgentGraphView {
   }
 
   _sequenceTaskDisplayEdges(displayEdges, nodeMap) {
+    // Current graph snapshots include dependency_ids for every step, including
+    // roots (where it is an empty list).  Their edge list is therefore the
+    // execution DAG itself and must never be rewritten from timing: unrelated
+    // tasks can happen to start in adjacent waves.
+    const hasExplicitStepDependencies = Object.values(nodeMap).some((node) =>
+      node?.type === "step" && Array.isArray(node.dependency_ids));
+    if (hasExplicitStepDependencies) return displayEdges;
+
     const directTaskEdges = new Map();
     displayEdges.forEach((edge) => {
       if (nodeMap[edge.from]?.type !== "execution" || nodeMap[edge.to]?.type !== "step") return;

@@ -14,6 +14,7 @@ Schema
       "label": "<str>",
       "status": "idle|running|success|failed|needs_replanning",
       "parent_id": "<str|null>",
+      "dependency_ids": ["<str>", ...],
       "batch_id": "<str|null>",
       "start_time": "<ISO-8601|null>",
       "end_time": "<ISO-8601|null>",
@@ -75,17 +76,26 @@ class AgentGraphLogger:
         label: str,
         parent_id: Optional[str] = None,
         batch_id: Optional[str] = None,
+        dependency_ids: Optional[List[str]] = None,
     ) -> None:
-        """Create or overwrite a node with status=running."""
+        """Create or overwrite a node with status=running.
+
+        ``parent_id`` records the phase that launched a node.  When a DAG
+        node has explicit predecessors, ``dependency_ids`` supplies its real
+        incoming graph edges instead.  This keeps the visualization topology
+        faithful without losing the execution-phase association.
+        """
         with self._lock:
             graph = self._read()
             existing = graph["nodes"].get(node_id)
+            dependencies = list(dict.fromkeys(dependency_ids or []))
             node = {
                 "id": node_id,
                 "type": node_type,
                 "label": label,
                 "status": "running",
                 "parent_id": parent_id,
+                "dependency_ids": dependencies,
                 # Execution producers may share this value for work launched
                 # by one planning round. It is presentation metadata only: the
                 # actual parent edge remains parent_id -> node_id.
@@ -100,11 +110,30 @@ class AgentGraphLogger:
                 "conversation": [],
             }
             graph["nodes"][node_id] = node
-            if parent_id and parent_id in graph["nodes"]:
-                edge = {"from": parent_id, "to": node_id}
-                if edge not in graph["edges"]:
-                    graph["edges"].append(edge)
+            incoming_ids = dependencies or ([parent_id] if parent_id else [])
+            for source_id in incoming_ids:
+                if source_id and source_id in graph["nodes"]:
+                    edge = {"from": source_id, "to": node_id}
+                    if edge not in graph["edges"]:
+                        graph["edges"].append(edge)
             self._write(graph)
+
+    def find_step_node(self, node_id: str) -> Optional[str]:
+        """Return the latest logged graph node for an execution-DAG node.
+
+        A resumed execution phase can have a new ``execution_*`` container,
+        while its predecessor was completed in an earlier one.  Looking up the
+        logged step avoids fabricating an edge to that new container's ID.
+        """
+        with self._lock:
+            matches = [
+                node for node in self._read()["nodes"].values()
+                if node.get("type") == "step"
+                and (node.get("input") or {}).get("node_id") == node_id
+            ]
+        if not matches:
+            return None
+        return max(matches, key=lambda node: node.get("start_time") or "").get("id")
 
     def log_node_complete(
         self,
