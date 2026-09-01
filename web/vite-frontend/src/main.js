@@ -509,6 +509,7 @@ function validatedStoredSession(sessions, sessionId, storedOwner) {
     sessionId,
     owner,
     knownRunning: String(found.status || found.phase || "").toLowerCase() === "running",
+    knownRun: found.activeRun || null,
   } : null;
 }
 
@@ -916,6 +917,7 @@ async function getStartupHealth() {
   if (storedSession) {
     await switchSession(storedSession.sessionId, storedSession.owner, {
       knownRunning: storedSession.knownRunning,
+      knownRun: storedSession.knownRun,
     });
   } else if (sessions && storedSessionId) {
     clearStoredSessionSelection();
@@ -962,7 +964,7 @@ function sessionDisplayStatus(session, owner) {
   return ["running", "idle"].includes(status) ? status : "idle";
 }
 
-async function switchSession(sessionId, owner = state.userId, { knownRunning = false } = {}) {
+async function switchSession(sessionId, owner = state.userId, { knownRunning = false, knownRun = null } = {}) {
   const viewKey = sessionRequestKey(sessionId, owner);
   // The active item remains clickable after the sidebar is rerendered.  It is
   // not a refresh control, so do not tear down and rebuild the current view
@@ -982,15 +984,17 @@ async function switchSession(sessionId, owner = state.userId, { knownRunning = f
   agentGraph.reset();
   planGraph.reset();
   hidePlanGraph();
-  if (knownRunning) sessionRuntime.beginManagedRunDiscovery(sessionId, owner);
+  if (knownRun) sessionRuntime.startManagedRunReconnect(knownRun, sessionId, owner);
+  else if (knownRunning) sessionRuntime.beginManagedRunDiscovery(sessionId, owner);
   remoteJobsController.startPolling(sessionId, owner);
   // History and active-run discovery are independent reads. Whichever returns
   // first may establish the initial view; the runtime's live-turn ownership
   // transaction reconciles them without allowing two assistant renderers.
-  const reconnect = sessionRuntime.discoverManagedRun(sessionId, owner).then((activeRun) => {
-    if (activeRun) sessionRuntime.startManagedRunReconnect(activeRun, sessionId, owner);
-    else sessionRuntime.discardManagedRunDiscovery(sessionId, owner);
-  });
+  const reconnect = knownRun ? Promise.resolve() : sessionRuntime.discoverManagedRun(sessionId, owner)
+    .then((activeRun) => {
+      if (activeRun) sessionRuntime.startManagedRunReconnect(activeRun, sessionId, owner);
+      else sessionRuntime.discardManagedRunDiscovery(sessionId, owner);
+    });
   await Promise.all([
     reconnect,
     sessionRuntime.loadSession(sessionId, owner),

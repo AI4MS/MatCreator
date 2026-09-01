@@ -1008,6 +1008,10 @@
   padding: var(--msg-padding);
 }
 
+.agent-message.has-run-error .message-bubble {
+  border-color: color-mix(in srgb, #ef4444 58%, var(--agent-border));
+}
+
 .agent-bubble-meta {
   grid-column: 2;
   grid-row: 2;

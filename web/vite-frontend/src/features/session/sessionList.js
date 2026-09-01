@@ -102,7 +102,10 @@ export function createSessionListController({
     item.addEventListener("click", (event) => {
       const button = event.target.closest("button");
       if (button && button !== content) return;
-      switchSession(session.id, owner, { knownRunning: status === "running" });
+      switchSession(session.id, owner, {
+        knownRunning: status === "running",
+        knownRun: session.activeRun || null,
+      });
     });
     item.addEventListener("contextmenu", (event) => {
       if (event.target.closest("button") && !event.target.closest(".session-item-content")) return;

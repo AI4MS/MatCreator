@@ -4,6 +4,7 @@ import {
   createAssistantMessage,
 } from "../chat/timeline.js";
 import { createMessageRenderScheduler, messageRenderInterval } from "../chat/messageRenderScheduler.js";
+import { appendRunFailure, markRunFailureView, runFailureMarkdown } from "../chat/runFailure.js";
 import {
   findConversationRequest,
   initializeRequestLifecycle,
@@ -32,6 +33,19 @@ export function latestConversationTurn(events = []) {
     userEvent: events[userIndex],
     assistantEvents: events.slice(userIndex + 1).filter((event) => event?.author !== "user"),
   };
+}
+
+/**
+ * Choose exactly one source for reconstructing an in-flight assistant turn.
+ * A run whose buffer still begins at sequence 1 can be rebuilt losslessly by
+ * replay. Once the beginning has rolled off, durable session history becomes
+ * the snapshot and the stream only supplies events produced after it.
+ */
+export function managedRecoverySource(activeRun = {}) {
+  const earliestSequence = Number(activeRun?.earliest_sequence);
+  return Number.isFinite(earliestSequence) && earliestSequence > 1
+    ? "snapshot"
+    : "replay";
 }
 
 export function shouldShowApproval(sessionId, sessionData, events, options = {}) {
@@ -69,7 +83,7 @@ export function createSessionRuntime({
   const suppressedPlanApprovalTurns = new Map();
   let activeContext = null;
   let unsubscribeStore = null;
-  let sessionFetchController = null;
+  const sessionFetchControllers = new Map();
   const metrics = { sessionLoads: 0, historyFetches: 0, managedSnapshotRecoveries: 0 };
 
   const viewport = new VirtualTranscript({
@@ -110,15 +124,22 @@ export function createSessionRuntime({
       unsubscribeStore?.();
       activeContext = context;
       unsubscribeStore = context.store.subscribe(() => refreshRows(context));
-      if (!preserveLiveTurn) viewport.clearLive();
+      // The live host is shared by every session. Detach the previous
+      // session's request-owned nodes before restoring the target request;
+      // each request retains its own element references for that restoration.
+      viewport.clearLive();
       clearChatDisclosures?.();
       stepExecutionFeed.reset({ preserveDisclosures: false });
     }
     stepExecutionFeed.setHierarchy([...context.graphNodes.values()]);
     const hasSavedOffset = Number.isFinite(context.viewportOffset);
-    refreshRows(context, { follow: follow && !hasSavedOffset });
-    if (switching && hasSavedOffset) viewport.restoreOffset(context.viewportOffset);
+    // A saved reading position is useful for completed chats, but an active
+    // turn is a live-tail view. Restoring its old offset before reattaching
+    // the request-owned bubble leaves that bubble below the viewport.
+    refreshRows(context, { follow: preserveLiveTurn || (follow && !hasSavedOffset) });
+    if (switching && hasSavedOffset && !preserveLiveTurn) viewport.restoreOffset(context.viewportOffset);
     if (preserveLiveTurn || !switching) restoreActiveLiveView(context);
+    if (switching && preserveLiveTurn) viewport.followOutput();
   }
 
   function restoreActiveLiveView(context) {
@@ -135,11 +156,31 @@ export function createSessionRuntime({
     if (request.userMessage && !request.userMessage.isConnected && !durableUserPresent) {
       viewport.liveHost.appendChild(request.userMessage);
     }
-    if (request.messageView && !request.messageView.element.isConnected) {
+    const restoringDetachedView = Boolean(request.messageView && !request.messageView.element.isConnected);
+    if (restoringDetachedView) {
       viewport.liveHost.appendChild(request.messageView.element);
     }
+    if (request.messageView && request.message) {
+      // Events continue reducing into the message model while another session
+      // is visible, but the scheduler intentionally skips disconnected DOM.
+      // Returning to the session must therefore perform one full model-to-DOM
+      // reconciliation instead of merely appending the stale element.
+      attachStepNodes(request.message.items, context);
+      if (restoringDetachedView) {
+        for (const segment of request.messageView.timelineElement._timelineSegments?.values?.() || []) {
+          if (segment.element?.querySelector?.(".delegation-group")) segment.signature = "restore-required";
+        }
+      }
+      renderTimeline(
+        request.messageView,
+        request.message,
+        request.managedPresentation?.shownPlots || null,
+      );
+    }
     if (request.messageView && request.message?.lifecycle !== "completed") {
+      attachAgentRunningIndicator?.(request.messageView);
       stepExecutionFeed.resumeLiveTurn(request.messageView.stepFeedLiveHost, request.message.startedAt);
+      updateSendButtonState();
     }
   }
 
@@ -170,6 +211,17 @@ export function createSessionRuntime({
           revision: `${row.revision}:g${graphRevision}:a${context.awaitingPlanApproval ? 1 : 0}`,
         };
       }).map((row) => row.type === "assistant" ? row : ({ ...row, id: `${context.viewKey}:${row.id}` }));
+    if (!request && context.runFailure) {
+      rows.push({
+        id: `${context.viewKey}:run-failure:${context.runFailure.run_id}`,
+        type: "run_error",
+        startIndex: context.store.totalCount,
+        endIndex: context.store.totalCount + 1,
+        span: 1,
+        revision: `${context.runFailure.run_id}:${context.runFailure.updated_at}:${context.runFailure.error}`,
+        error: context.runFailure.error,
+      });
+    }
     viewport.setRows(rows, { follow });
   }
 
@@ -273,18 +325,28 @@ export function createSessionRuntime({
 
   function attachStepNodes(timeline, context) {
     const nodes = [...context.graphNodes.values()];
+    let changed = false;
     timeline.filter((item) => item.type === "activity_action").flatMap((item) => item.toolCalls || [])
       .filter((call) => ["run_flash_step", "run_node_executor"].includes(call.name)).forEach((call) => {
         const id = launcherNodeId(call.input);
         const node = nodes.find((candidate) => id
           && (launcherNodeId(candidate.input) === id || candidate.id?.endsWith(`__node_${id}`)));
-        if (node) call.stepNodes = [node];
+        if (node && call.stepNodes?.[0] !== node) {
+          call.stepNodes = [node];
+          changed = true;
+        }
       });
+    return changed;
   }
 
   function renderPersistedRow(row, host) {
     const context = activeContext;
     if (!context) return;
+    if (row.type === "run_error") {
+      const message = addMessage("agent", runFailureMarkdown(row.error), row.startIndex, host, { messageKey: row.id });
+      message.classList.add("has-run-error");
+      return;
+    }
     const events = row.records.map((record) => record.event);
     if (row.type === "user") {
       const text = displayMessageFromStoredUserText((events[0]?.content?.parts || []).map((part) => part.text || "").join(""));
@@ -298,6 +360,10 @@ export function createSessionRuntime({
     events.forEach((event) => appendEvent(message, event));
     completeAssistantMessage(message, eventTimestamp(events.at(-1)));
     attachStepNodes(message.items, context);
+    // State-only, empty, or unsupported provider events are valid transcript
+    // records but not chat messages. Mounting a shell for them creates the
+    // blank assistant box seen after switching sessions.
+    if (!message.items.length) return;
     const view = addAgentTimelineMessage(message, new Set(), row.startIndex, host, {
       startedAt: message.startedAt, endedAt: message.endedAt, messageKey: row.id,
     });
@@ -313,7 +379,7 @@ export function createSessionRuntime({
     return {
       sessionId, owner, viewKey, store: new TranscriptStore(), graphNodes: new Map(), graphRevisions: new Map(),
       graphRevision: 0, sessionData: null, summary: "", awaitingPlanApproval: false, pendingPlanUserText: "", viewportOffset: null,
-      rangeControllers: new Map(),
+      rangeControllers: new Map(), runFailure: null,
     };
   }
 
@@ -321,9 +387,9 @@ export function createSessionRuntime({
     metrics.sessionLoads += 1;
     const viewKey = sessionRequestKey(sessionId, owner);
     const isCurrent = () => sessionRequestKey() === viewKey;
-    sessionFetchController?.abort();
+    sessionFetchControllers.get(viewKey)?.abort();
     const controller = new AbortController();
-    sessionFetchController = controller;
+    sessionFetchControllers.set(viewKey, controller);
     const filesPromise = render ? refreshSessionFiles(sessionId, owner) : Promise.resolve();
     try {
       const sessionData = await fetchSessionData(sessionId, owner, { signal: controller.signal });
@@ -334,6 +400,7 @@ export function createSessionRuntime({
       if (!isCurrent()) return null;
       let context = contexts.get(viewKey) || makeContext(sessionId, owner, viewKey);
       context.sessionData = sessionData;
+      context.runFailure = sessionData.runFailure || null;
       context.summary = sessionData.summary || state.sessionSummaries[sessionId] || "";
       const pendingPlan = latestPendingPlan(events, getFunctionResponse);
       context.pendingPlanUserText = (pendingPlan?.content?.parts || []).map((part) => part.text || "").join("");
@@ -347,10 +414,13 @@ export function createSessionRuntime({
       // owners of that destructive transition.
       const liveRequest = activeRequestForContext(context);
       context.store.insertPage(sessionData);
-      hydrateManagedPresentation(liveRequest, events, sessionData.revision);
       rememberContext(context);
       const changedContext = activeContext !== context;
       activateContext(context, { follow: changedContext });
+      // Hydrate only after activation has reset and rebuilt the step-feed
+      // hierarchy. Doing this earlier creates delegated cards and then
+      // immediately removes them during the context switch.
+      hydrateManagedPresentation(liveRequest, events, sessionData.revision, context);
       state.sessionReady = true;
       if (state.deploymentMode === "local" && sessionData.userId) state.activeSessionUserId = sessionData.userId;
       if (sessionData.summary) {
@@ -371,7 +441,7 @@ export function createSessionRuntime({
       if (error?.name !== "AbortError") console.error("Failed to load session:", error);
       return null;
     } finally {
-      if (sessionFetchController === controller) sessionFetchController = null;
+      if (sessionFetchControllers.get(viewKey) === controller) sessionFetchControllers.delete(viewKey);
     }
   }
 
@@ -435,6 +505,8 @@ export function createSessionRuntime({
     unsubscribeStore?.();
     unsubscribeStore = null;
     activeContext = null;
+    sessionFetchControllers.forEach((controller) => controller.abort());
+    sessionFetchControllers.clear();
     viewport.reset();
   }
 
@@ -470,6 +542,7 @@ export function createSessionRuntime({
       key, sessionId, owner, backendUserId: owner, controller: new AbortController(),
       lastSequence: 0, runId: null, retryDelayMs: 500,
       managedReconnect: true, liveTurnClaimed: true, awaitingRunDiscovery: true,
+      recoverySource: "pending",
     });
     state.activeRequests.set(key, request);
     createManagedPresentation(request);
@@ -496,13 +569,28 @@ export function createSessionRuntime({
     if (request && !request.awaitingRunDiscovery) return request;
     if (request) {
       request.runId = activeRun.run_id;
-      request.lastSequence = activeRun.latest_sequence || 0;
+      // `latest_sequence` describes what the server has produced, not what
+      // this newly refreshed browser has consumed. Starting there skips the
+      // buffered function responses that complete running activity cards.
+      // Replay from zero; the timeline reducer is intentionally at-least-once
+      // and the server falls back to snapshot_required if its buffer rolled.
+      request.lastSequence = 0;
+      request.discoveredSequence = activeRun.latest_sequence || 0;
+      request.startedAt = Number(activeRun.created_at) * 1000 || request.startedAt;
       request.awaitingRunDiscovery = false;
+      request.recoverySource = managedRecoverySource(activeRun);
+      if (request.message) request.message.startedAt = request.startedAt;
+      if (request.messageView) {
+        stepExecutionFeed.resumeLiveTurn(request.messageView.stepFeedLiveHost, request.startedAt);
+      }
     } else {
       request = initializeRequestLifecycle({
         key, sessionId, owner, backendUserId: owner, controller: new AbortController(),
-        lastSequence: activeRun.latest_sequence || 0, runId: activeRun.run_id, retryDelayMs: 500,
+        lastSequence: 0, discoveredSequence: activeRun.latest_sequence || 0,
+        runId: activeRun.run_id, retryDelayMs: 500,
+        startedAt: Number(activeRun.created_at) * 1000 || Date.now(),
         managedReconnect: true, liveTurnClaimed: true, awaitingRunDiscovery: false,
+        recoverySource: managedRecoverySource(activeRun),
       });
       state.activeRequests.set(key, request);
     }
@@ -520,7 +608,7 @@ export function createSessionRuntime({
     if (!request || request.messageView || sessionRequestKey() !== request.key) return null;
     const message = createAssistantMessage({
       id: `managed:${request.runId}`,
-      startedAt: Date.now(),
+      startedAt: request.startedAt || Date.now(),
     });
     const shownPlots = new Set();
     const view = addAgentTimelineMessage(message, shownPlots, undefined, beginLiveOutput(), {
@@ -536,30 +624,49 @@ export function createSessionRuntime({
     });
     Object.assign(request, {
       message, messageView: view,
-      managedPresentation: { message, shownPlots, view, scheduler, lineBuffer: "", hydratedRevision: null },
+      managedPresentation: {
+        message, shownPlots, view, scheduler, lineBuffer: "", hydratedRevision: null, request,
+        requestedStepNodeIds: new Set(), recoveredStepNodes: new Map(),
+      },
     });
     stepExecutionFeed.startLiveTurn(null, message.startedAt, view.stepFeedLiveHost);
     const storedEvents = activeContext?.viewKey === request.key
       ? [...activeContext.store.records.values()].sort((left, right) => left.index - right.index).map(({ event }) => event)
       : [];
-    hydrateManagedPresentation(request, storedEvents, activeContext?.store.revision);
+    hydrateManagedPresentation(request, storedEvents, activeContext?.store.revision, activeContext);
     attachAgentRunningIndicator?.(view);
     updateAgentRunningStatus?.("working");
     return request.managedPresentation;
   }
 
-  function hydrateManagedPresentation(request, events, revision = null) {
+  function hydrateManagedPresentation(request, events, revision = null, context = activeContext) {
     const live = request?.managedPresentation;
     if (!live || live.message.lifecycle === "completed") return false;
-    if (revision && live.hydratedRevision === revision) return false;
+    if (context && live.recoveredStepNodes?.size) {
+      mergeGraphNodes(context, [...live.recoveredStepNodes.values()]);
+    }
+    const stepNodesChanged = context ? attachStepNodes(live.message.items, context) : false;
+    // Never mix a durable partial turn with a complete replay of the same run.
+    // Doing so appends the persisted final snapshots first and then reduces
+    // the original partial/final events again around activity boundaries,
+    // producing duplicated prose inside a single live bubble. Pending run
+    // discovery also defers to replay once the run metadata arrives.
+    if (request.recoverySource !== "snapshot") {
+      if (stepNodesChanged) renderTimeline(live.view, live.message, live.shownPlots);
+      return stepNodesChanged;
+    }
+    if (revision && live.hydratedRevision === revision) {
+      if (stepNodesChanged) renderTimeline(live.view, live.message, live.shownPlots);
+      return stepNodesChanged;
+    }
     const { assistantEvents } = latestConversationTurn(events || []);
     assistantEvents.forEach((event) => appendEvent(live.message, event));
+    if (context) attachStepNodes(live.message.items, context);
     if (revision) live.hydratedRevision = revision;
     // Snapshot hydration is a recovery transaction, not a streamed update:
     // commit it synchronously so the recovered bubble never waits for a
     // throttle interval or another SSE token before becoming visible.
     renderTimeline(live.view, live.message, live.shownPlots);
-    if (live.streamFinished && live.message.items.length) finishManagedPresentation(live);
     return assistantEvents.length > 0;
   }
 
@@ -570,6 +677,25 @@ export function createSessionRuntime({
     updateSendButtonState();
     live.finishPromise = live.scheduler.finish();
     return live.finishPromise;
+  }
+
+  async function recoverManagedStepNodes(live, event) {
+    const ids = launcherNodeIds([event]).filter((id) => !live.requestedStepNodeIds.has(id));
+    if (!ids.length) return;
+    ids.forEach((id) => live.requestedStepNodeIds.add(id));
+    const nodes = await fetchStepNodes(live.request.sessionId, [event], live.request.controller.signal);
+    if (state.activeRequests.get(live.request.key) !== live.request) return;
+    nodes.forEach((node) => live.recoveredStepNodes.set(node.id, node));
+    const context = contexts.get(live.request.key);
+    if (!context || !nodes.length) return;
+    mergeGraphNodes(context, nodes);
+    const changed = attachStepNodes(live.message.items, context);
+    if (changed && live.view.element.isConnected) {
+      // The launcher slot already exists by the time this request resolves.
+      // Rendering it with the recovered node mounts the delegated card now,
+      // instead of waiting for terminal durable-history handoff.
+      renderTimeline(live.view, live.message, live.shownPlots);
+    }
   }
 
   function applyManagedPayload(live, payload) {
@@ -584,7 +710,11 @@ export function createSessionRuntime({
         streamFinished = true;
         return;
       }
-      try { appendEvent(live.message, JSON.parse(data)); } catch (_) { /* malformed replay event */ }
+      try {
+        const event = JSON.parse(data);
+        appendEvent(live.message, event);
+        void recoverManagedStepNodes(live, event);
+      } catch (_) { /* malformed replay event */ }
     });
     live.scheduler.request();
     if (streamFinished) {
@@ -592,12 +722,15 @@ export function createSessionRuntime({
       // `[DONE]` only means the model stream ended. A refreshed client can
       // receive it before replay/snapshot hydration supplies any visible
       // content, so keep the waiting presentation alive in that interval.
-      if (!finishManagedPresentation(live)) updateAgentRunningStatus?.("saving");
+      if (sessionRequestKey(live.request.sessionId, live.request.owner) === sessionRequestKey()) {
+        updateAgentRunningStatus?.("saving");
+      }
     }
   }
 
   async function streamManagedRunEvents(request) {
     const isCurrent = () => state.activeRequests.get(request.key) === request;
+    const isVisible = () => sessionRequestKey(request.sessionId, request.owner) === sessionRequestKey();
     const live = request.managedPresentation || createManagedPresentation(request);
     try {
       while (isCurrent() && !request.controller.signal.aborted) {
@@ -605,7 +738,7 @@ export function createSessionRuntime({
           headers: { Accept: "text/event-stream" }, signal: request.controller.signal,
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        updateAgentRunningStatus?.("connected");
+        if (isVisible()) updateAgentRunningStatus?.("connected");
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
@@ -624,6 +757,7 @@ export function createSessionRuntime({
               if (live) applyManagedPayload(live, envelope.data);
             } else if (envelope.type === "snapshot_required") {
               request.lastSequence = envelope.latest_sequence || request.lastSequence;
+              request.recoverySource = "snapshot";
               metrics.managedSnapshotRecoveries += 1;
               // Reconnect requests have no optimistic user node, so the full
               // snapshot can safely restore history while live ownership
@@ -636,6 +770,11 @@ export function createSessionRuntime({
               updateSendButtonState();
               onRequestStateChange?.();
               if (live) {
+                if (envelope.status === "failed") {
+                  appendRunFailure(live.message, envelope.error || "Agent run failed");
+                  markRunFailureView(live.view);
+                  renderTimeline(live.view, live.message, live.shownPlots);
+                }
                 // Flush a final unterminated line for runs recorded by an
                 // older server; current servers publish complete SSE records.
                 applyManagedPayload(live, "\n");
@@ -654,8 +793,12 @@ export function createSessionRuntime({
       if (error?.name !== "AbortError") console.error("Managed run reconnect failed:", error);
     } finally {
       live?.scheduler.cancel();
-      if (live) stepExecutionFeed.finishLiveTurn();
+      if (live && isVisible()) stepExecutionFeed.finishLiveTurn();
       if (isCurrent()) {
+        if (!isVisible()) {
+          releaseSessionRequest(request);
+          return;
+        }
         // Load durable history while the live turn still owns visibility,
         // then swap owners in one synchronous handoff. If persistence is not
         // available, release without clearing the already rendered response.

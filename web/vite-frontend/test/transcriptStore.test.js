@@ -4,6 +4,7 @@ import test from "node:test";
 import { TranscriptStore } from "../src/features/session/TranscriptStore.js";
 import {
   latestConversationTurn,
+  managedRecoverySource,
   shouldShowApproval,
 } from "../src/features/session/runtime.js";
 
@@ -90,6 +91,13 @@ test("reconnect hydration never borrows assistant output from an earlier turn", 
     { author: "user", content: { parts: [{ text: "pending prompt" }] } },
   ]);
   assert.deepEqual(assistantEvents, []);
+});
+
+test("managed recovery uses one authoritative reconstruction source", () => {
+  assert.equal(managedRecoverySource({ earliest_sequence: 1, latest_sequence: 18 }), "replay");
+  assert.equal(managedRecoverySource({ earliest_sequence: 0, latest_sequence: 0 }), "replay");
+  assert.equal(managedRecoverySource({ latest_sequence: 18 }), "replay");
+  assert.equal(managedRecoverySource({ earliest_sequence: 7, latest_sequence: 18 }), "snapshot");
 });
 
 test("suppressed approval prompts do not reappear when the final transcript row is rerendered", () => {

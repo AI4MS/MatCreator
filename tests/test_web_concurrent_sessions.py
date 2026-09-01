@@ -71,6 +71,27 @@ def test_frontend_tracks_requests_per_session() -> None:
     assert "state.activeRequests.set(key, request);" in runtime
     assert "findConversationRequest(state.activeRequests" in main
     assert "if (activeSessionRequest()) return;" in main
+    assert "request.lastSequence = 0;" in runtime
+    assert "request.discoveredSequence = activeRun.latest_sequence || 0;" in runtime
+
+
+def test_agent_failures_are_visible_and_session_scoped() -> None:
+    main = _main_js()
+    streams = _message_stream_js()
+    runtime = _runtime_js()
+    run_failure = (MAIN_JS.parent / "features" / "chat" / "runFailure.js").read_text(encoding="utf-8")
+
+    assert "if upstream_error := sse_error_message(record):" in WEB_MAIN_PY.read_text(encoding="utf-8")
+    assert 'result["runFailure"] = latest_run.summary()' in WEB_MAIN_PY.read_text(encoding="utf-8")
+    assert "appendRunFailure(assistantMessage, error)" in streams
+    assert "if (requestIsVisible(request)) stepExecutionFeed.finishLiveTurn();" in streams
+    assert "if (requestIsVisible(request)) {\n        agentGraph.stopPolling();" in streams
+    assert "const sessionFetchControllers = new Map();" in runtime
+    assert "sessionFetchControllers.get(viewKey)?.abort();" in runtime
+    assert "viewport.clearLive();" in runtime[runtime.index("function activateContext("):runtime.index("function restoreActiveLiveView(")]
+    assert 'type: "run_error"' in runtime
+    assert "This failure was isolated to this chat" in run_failure
+    assert "function updateSendButtonState()" in main
 
 
 def test_frontend_has_no_browser_global_send_lock() -> None:
@@ -192,7 +213,7 @@ def test_stop_feedback_uses_managed_run_status_and_survives_session_refresh() ->
     assert '["completed", "failed", "cancelled"].includes(run.status)' in content
     assert "request.stopStatus = \"stopped\";\n        releaseSessionRequest(request);" in content
     assert "reloadSessionSnapshot({ handoff: true })" in content
-    assert "const backgroundReconciliation = Promise.allSettled([" in content
+    assert "const backgroundReconciliation = Promise.allSettled(requestIsVisible(request) ? [" in content
     assert "renderStopStatus(request);" in content
     assert "cancellation_requested" not in content
 
@@ -443,12 +464,24 @@ def test_session_switch_loads_page_scoped_graph_after_the_transcript_page() -> N
         runtime.index("async function discoverManagedRun(")
     ]
 
-    assert "sessionRuntime.discoverManagedRun(sessionId, owner).then" in switch_session
+    assert "sessionRuntime.discoverManagedRun(sessionId, owner)" in switch_session
     assert "if (activeRun) sessionRuntime.startManagedRunReconnect" in switch_session
     assert "loadSession(sessionId, owner)" in switch_session
     assert "void loadSessions();" in switch_session
     assert "const sessionData = await fetchSessionData(sessionId, owner" in load_session
     assert "fetchStepNodes(sessionId, events" in load_session
+    assert load_session.index("activateContext(context") < load_session.index("hydrateManagedPresentation(liveRequest")
+    assert "attachStepNodes(live.message.items, context)" in runtime
+    assert 'request.recoverySource !== "snapshot"' in runtime
+    assert 'request.recoverySource = "snapshot"' in runtime
+    assert "async function recoverManagedStepNodes(live, event)" in runtime
+    assert "void recoverManagedStepNodes(live, event);" in runtime
+    assert "recoveredStepNodes: new Map()" in runtime
+    assert "follow: preserveLiveTurn || (follow && !hasSavedOffset)" in runtime
+    assert "if (switching && preserveLiveTurn) viewport.followOutput();" in runtime
+    assert "restore-required" in runtime
+    assert "if (!message.items.length) return;" in runtime
+    assert "attachAgentRunningIndicator?.(request.messageView);" in runtime
     assert "const filesPromise = render" in load_session
     assert "? refreshSessionFiles(sessionId, owner)" in load_session
     assert "await refreshSessionFiles(sessionId, owner);" not in load_session
@@ -486,7 +519,7 @@ def test_stale_session_loads_cannot_replace_active_view() -> None:
     content = _runtime_js()
 
     assert "const viewKey = sessionRequestKey(sessionId, owner);" in content
-    assert "sessionFetchController?.abort();" in content
+    assert "sessionFetchControllers.get(viewKey)?.abort();" in content
     assert "if (!sessionData || !isCurrent()) return null;" in content
 
 

@@ -4,6 +4,7 @@ import {
   createAssistantMessage,
 } from "./timeline.js";
 import { createMessageRenderScheduler, messageRenderInterval } from "./messageRenderScheduler.js";
+import { appendRunFailure, markRunFailureView } from "./runFailure.js";
 import {
   initializeRequestLifecycle,
   markRequestTerminal,
@@ -57,6 +58,10 @@ export function createMessageStreamController({
     onRequestStateChange,
   },
 }) {
+
+  const requestIsVisible = (request) => (
+    sessionRequestKey(request.sessionId, request.owner) === sessionRequestKey()
+  );
 
   function renderStopStatus(request) {
     if (!request.stopStatus || sessionRequestKey(request.sessionId, request.owner) !== sessionRequestKey()) return;
@@ -224,6 +229,11 @@ export function createMessageStreamController({
       presentationFinishPromise = Promise.all([activityFinish, renderScheduler.finish()]);
       return presentationFinishPromise;
     };
+    const presentRunFailure = (error) => {
+      if (!appendRunFailure(assistantMessage, error)) return;
+      markRunFailureView(messageView);
+      renderTimeline(messageView, assistantMessage, shownPlotPaths);
+    };
     const revealPlanApproval = () => {
       if (terminalStatus !== "completed" || !validatedPlanThisTurn || executionApprovedThisTurn
         || sessionRequestKey(request.sessionId, request.owner) !== sessionRequestKey()) return;
@@ -257,26 +267,28 @@ export function createMessageStreamController({
         const event = JSON.parse(data);
         for (const { part, normalized } of applyAssistantMessageEvent(assistantMessage, event)) {
           if (part.thought) {
-            updateAgentRunningStatus("thinking");
+            if (requestIsVisible(request)) updateAgentRunningStatus("thinking");
           } else if (normalized.type === "function_call") {
             const name = normalized.name;
-            updateAgentRunningStatus(phaseForTool(name));
+            if (requestIsVisible(request)) updateAgentRunningStatus(phaseForTool(name));
           }
           else if (normalized.type === "function_response") {
             const response = normalized;
-            updateAgentRunningStatus(phaseForTool(response.name));
-            if (shouldRefreshPlanGraphForTool(response.name)) planGraph.refresh(request.sessionId);
+            if (requestIsVisible(request)) updateAgentRunningStatus(phaseForTool(response.name));
+            if (requestIsVisible(request) && shouldRefreshPlanGraphForTool(response.name)) planGraph.refresh(request.sessionId);
             if ((response.name === "validate_graph" || response.name === "validate_plan")
               && response.response?.status === "ok") {
               validatedPlanThisTurn = true;
-              updateAgentRunningStatus("finalizing_plan");
+              if (requestIsVisible(request)) updateAgentRunningStatus("finalizing_plan");
             }
             if ((response.name === "confirm_plan_and_start_execution" || response.name === "resume_execution")
               && response.response?.status === "ok") executionApprovedThisTurn = true;
           } else if (normalized.type === "text") {
-            updateAgentRunningStatus(validatedPlanThisTurn && !executionApprovedThisTurn
-              ? "finalizing_plan"
-              : "thinking");
+            if (requestIsVisible(request)) {
+              updateAgentRunningStatus(validatedPlanThisTurn && !executionApprovedThisTurn
+                ? "finalizing_plan"
+                : "thinking");
+            }
             if (!summaryTriggered && !state.summaryGeneratedFor.has(request.sessionId) && !state.sessionSummaries[request.sessionId]) {
               summaryTriggered = true;
               generateSessionSummary(request.sessionId, request.owner);
@@ -346,7 +358,7 @@ export function createMessageStreamController({
       request.runId = (await startResponse.json()).run_id;
       const eventsResponse = await fetch(managedRunEventsUrl(request), { headers: { Accept: "text/event-stream" }, signal: request.controller.signal });
       if (!eventsResponse.ok) throw new Error(`HTTP ${eventsResponse.status}`);
-      updateAgentRunningStatus("connected");
+      if (requestIsVisible(request)) updateAgentRunningStatus("connected");
       const reader = eventsResponse.body.getReader();
       const decoder = new TextDecoder();
       let eventBuffer = "";
@@ -374,10 +386,13 @@ export function createMessageStreamController({
             markRequestTerminal(request, event.status);
             updateSendButtonState();
             onRequestStateChange?.();
-            if (event.status === "failed") throw new Error(event.error || "Agent run failed");
+            if (event.status === "failed") {
+              presentRunFailure(event.error || "Agent run failed");
+              throw new Error(event.error || "Agent run failed");
+            }
             if (event.status === "completed") {
               void finishLivePresentation();
-              stepExecutionFeed.finishLiveTurn();
+              if (requestIsVisible(request)) stepExecutionFeed.finishLiveTurn();
               revealPlanApproval();
             }
           }
@@ -385,7 +400,7 @@ export function createMessageStreamController({
       }
       if (lineBuffer.trim().startsWith("data: ")) handleAdkData(lineBuffer.trim().slice(6));
     } catch (error) {
-      if (error?.name !== "AbortError") addMessage("agent", `Backend error: ${error}`, undefined, liveHost);
+      if (error?.name !== "AbortError") presentRunFailure(error);
     } finally {
       // Every exit converges on the same idempotent lifecycle transition and
       // one guaranteed final affected-message render.
@@ -393,7 +408,7 @@ export function createMessageStreamController({
       // A cancelled browser subscription can finish before the managed run
       // does. Keep the composer locked until cancellation polling observes a
       // terminal run, otherwise a new send would clear the cancellation flag.
-      stepExecutionFeed.finishLiveTurn();
+      if (requestIsVisible(request)) stepExecutionFeed.finishLiveTurn();
       revealPlanApproval();
       // The final affected-message pass is the handoff boundary. Durable
       // history cannot mount a competing representation before it completes.
@@ -404,15 +419,17 @@ export function createMessageStreamController({
       // These are independent reconciliation tasks. The run is already
       // presented as terminal; retaining ownership until they settle prevents
       // an old poll from overwriting a follow-up turn that starts immediately.
-      const backgroundReconciliation = Promise.allSettled([
+      const backgroundReconciliation = Promise.allSettled(requestIsVisible(request) ? [
         agentGraph._poll(request.sessionId),
         planGraph._poll(request.sessionId),
         refreshSessionFiles(request.sessionId, request.owner),
-      ]);
+      ] : []);
       const durableReplyReady = await reconcileAfterTransition();
       await backgroundReconciliation;
-      agentGraph.stopPolling();
-      planGraph.stopPolling();
+      if (requestIsVisible(request)) {
+        agentGraph.stopPolling();
+        planGraph.stopPolling();
+      }
       if (durableReplyReady) await sessionRuntime.handoffLiveTurn(request);
       else if (request.stopStatus !== "waiting") releaseSessionRequest(request);
       // A session snapshot replaces the chat DOM. Restore the stop indicator
