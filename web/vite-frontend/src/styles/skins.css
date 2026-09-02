@@ -503,10 +503,12 @@ body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .message-bubbl
 }
 
 body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .session-item.active {
-  color: #17191F;
+  /* Keep the selected session readable in both Rack Lab variants: the
+     light variant uses dark text while the graphite variant needs cream. */
+  color: var(--text-primary);
   border-width: 2px;
   font-weight: 800;
-  box-shadow: inset 5px 0 0 #17191F;
+  box-shadow: inset 5px 0 0 var(--text-primary);
 }
 
 body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .remote-jobs-pane {
