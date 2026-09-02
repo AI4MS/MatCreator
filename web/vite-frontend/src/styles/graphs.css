@@ -365,6 +365,9 @@ body[data-theme="light"] .graph-panel-title {
   backdrop-filter: blur(8px);
   display: flex;
   flex-direction: column;
+  /* Do not inherit the graph canvas foreground: the thumbnail has its own
+     light/dark surface and should use the regular UI text color. */
+  color: var(--text-primary, var(--text));
   transition: bottom 260ms cubic-bezier(0.4, 0, 0.2, 1), transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
 }
 
@@ -417,7 +420,10 @@ body[data-theme="light"] .graph-panel-title {
   letter-spacing: 0.35px;
   text-transform: uppercase;
   background: rgba(0, 0, 0, 0.18);
-  color: var(--text);
+  /* The Rack Lab graph rail uses a light foreground for its dark canvas,
+     but the roadmap thumbnail is white in light mode. Keep this label tied
+     to the page's primary text color instead of inheriting that local override. */
+  color: var(--text-primary, var(--text));
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   white-space: nowrap;
   pointer-events: none;
@@ -471,7 +477,7 @@ body[data-theme="light"] .plan-graph-thumbnail-connections line {
 
 body[data-theme="light"] .plan-graph-thumbnail-label {
   background: rgba(19, 32, 51, 0.035);
-  color: var(--text);
+  color: var(--text-primary, var(--text));
   border-color: rgba(19, 32, 51, 0.1);
 }
 
