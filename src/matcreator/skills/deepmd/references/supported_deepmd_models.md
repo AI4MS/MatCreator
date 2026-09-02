@@ -169,7 +169,8 @@ command — do NOT write the DPA-4c input.json by hand.
 **`--finetune` is STRICTLY PROHIBITED for DPA-4c; always train from scratch with `--pt-expt`:**
 
 ```bash
-dp --pt-expt train input.json --init-model <pretrain.pt> --skip-neighbor-stat
+dp --pt-expt train input.json --init-model <pretrain.pt> --skip-neighbor-stat \
+   --use-pretrain-script --output output.json
 ```
 
 - **NEVER use `--finetune` with DPA-4c.** Its bias-adjustment dense forward pass runs out
@@ -196,7 +197,14 @@ inputs only in:
   lr values were for the original training runs);
 - `batch_size`: the official `mix:N` rule is not supported by the deepmd build used here,
   so the closest supported rule `max:N` (batch_size × natoms ≤ N) is used instead;
-- default `num_epochs` is the official **12**.
+- default `num_epochs` is **50** (the released inputs' 12 targets the original training
+  runs; the MLFF workflow keeps 50 for fine-tuning, overridable via `--epochs`).
+
+Two extra safeguards are added to the training command:
+- `--use-pretrain-script`: the model section is taken from the checkpoint's stored script
+  instead of the embedded template, preventing mismatches with future DPA-4c releases;
+- `--output output.json`: saves the normalized training parameters actually used after
+  automatic parameter filling — **keep this file as a record of the run**.
 
 DPA-4c input parameters are **exclusive to DPA-4c — do NOT use them for any other
 architecture** (dpa2, dpa3, dpa4/SeZM, se_atten_v2, ...).

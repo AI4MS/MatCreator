@@ -244,9 +244,9 @@ Label the entropy-selected structures to obtain energy, forces, and virial:
 2. **Train (both DPA4 & DPA4c):** Init-model fine-tune the pre-trained model
    on the labeled data (both base models are initialized from the pretrained
    weights; the concrete CLI differs between DPA4 and DPA4c and is owned by
-   the `deepmd` skill). DPA4 defaults to **50 epochs**; DPA4c defaults to
-   **12 epochs** (per the official DPA-4c inputs) — do NOT instruct training
-   in steps. Submit the training job on Bohrium via the `bohrium` skill.
+   the `deepmd` skill). Both base models default to **50 epochs** (do NOT
+   instruct training in steps). Submit the training job on Bohrium via the
+   `bohrium` skill.
 
    > **Model-labeling data-gate (DPA4c only):** Before training, confirm that
    > the training frames were **produced by Stage A → Stage B** (fine-tuned
@@ -332,5 +332,5 @@ See the `deepmd` skill for details.
 - **Evaluation always compares pretrained vs fine-tuned** for both DPA4 and
   DPA4c; if model labeling was used, also compare DPA4c vs the fine-tuned
   model (two-level).
-- Both base models (DPA4 and DPA4c) use **init-model fine-tuning**; DPA4
-  defaults to **50 epochs** and DPA4c to **12 epochs**.
+- Both base models (DPA4 and DPA4c) use **init-model fine-tuning** and default
+  to **50 epochs**.

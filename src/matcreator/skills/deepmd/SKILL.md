@@ -108,7 +108,8 @@ dp --pt train input.json --restart model.ckpt.pt
 #### Fine-tuning tasks
 
 | File                                    | Description                                                                                                                                                                                                                                     |
-|-----------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|-----------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `output.json`                           | (DPA-4c) Normalized training parameters actually used by `dp train`; keep as a record                                                                                                                                     |
 | `model.ckpt.pt`                         | Saved PyTorch checkpoint                                                                                                                                                                                                                        |
 | `frozen.pt2`(DPA-4)/`frozen.pth`(other) | (Optional) Frozen AOTInductor model or TorchScript for fast inference                                                                                                                                                                           |
 | `lcurve.out`                            | Training loss curve (step, energy MAE, force MAE, etc…)                                                                                                                                                                                         |
@@ -161,10 +162,13 @@ by hand.** Use the same Phase 1 `prepare-finetune` sub-command with:
 - `--input_model_path` pointing to the matching official DPA-4c pretrained checkpoint
   (`DPA4C-<Variant>-OMat24-v20260819.pt`, downloadable from AIS Square — see the models reference).
 
-The script embeds the official per-variant DPA-4c templates (default 12 epochs), writes `input.json`,
+The script embeds the official per-variant DPA-4c templates (default 50 epochs), writes `input.json`,
 and prints the exact Phase 2 execution command, which trains via
-`dp --pt-expt train input.json --init-model <model> --skip-neighbor-stat`
+`dp --pt-expt train input.json --init-model <model> --skip-neighbor-stat --use-pretrain-script --output output.json`
 and then freezes / compresses / tests with `--pt-expt` as well.
+`--use-pretrain-script` loads the model section from the checkpoint's own script (guards against
+future DPA-4c template drift); `--output output.json` records the normalized parameters actually
+used — **keep `output.json` as a record of the run**.
 
 After training, freeze the model and then compress the frozen model for deployment.
 **Every DPA-4c CLI backend must use `--pt-expt` (train, freeze, compress, test) — never `--pt`.**

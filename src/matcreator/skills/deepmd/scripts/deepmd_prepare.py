@@ -667,7 +667,7 @@ _DPA4C_TEMPLATE: Dict[str, Any] = {
             "batch_size": 1,
             "numb_batch": 1,
         },
-        "num_epochs": 12,
+        "num_epochs": 50,
         "enable_compile": True,
         "gradient_max_norm": 5,
         "save_freq": 2000,
@@ -1031,9 +1031,14 @@ def cmd_prepare_finetune(args) -> None:
         # DPA-4c: `--finetune` is PROHIBITED (its bias-adjustment dense forward pass
         # OOMs on sel=[999999]) and every CLI backend must use `--pt-expt` (never `--pt`).
         # See references/supported_deepmd_models.md ("DPA-4c" section).
+        # `--use-pretrain-script` takes the model section from the checkpoint's stored
+        # script instead of our embedded template, guarding against mismatches with
+        # future DPA-4c releases; `--output output.json` saves the normalized training
+        # parameters actually used — keep it as a record of the run.
         exec_cmd = (
             f"dp {dp_backend} train input.json "
-            f"--init-model {model_dest.name} --skip-neighbor-stat > train_log 2>&1"
+            f"--init-model {model_dest.name} --skip-neighbor-stat "
+            f"--use-pretrain-script --output output.json > train_log 2>&1"
         )
         if not args.no_freeze:
             exec_cmd += (
