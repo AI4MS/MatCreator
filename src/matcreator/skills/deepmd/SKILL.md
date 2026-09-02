@@ -231,7 +231,7 @@ The order of `element_1`, `element_2`, ... must strictly match the atom types us
 LAMMPS simulation input file and the simulation box. For example, if the lammps simulation box
 has `type 1 = H`, `type 2 = O`, then the pair_coeff line should be `pair_coeff * * H O`.
 
-> For DPA-4 models: **`atom_modify map yes` is required at the very beginning of lammps input file.**
+> For DPA-4 and DPA-4c models: **`atom_modify map yes` is required at the very beginning of lammps input file.**
 > The `.pt2` graph inference relies on an explicit ghost/periodic-image to local-atom map;
 > the model fails fast without it!
 
