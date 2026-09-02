@@ -1253,8 +1253,7 @@
   font-weight: var(--font-weight-bold);
   text-align: center;
 }
-.step-feed-status-running,
-.step-feed-status-needs_replanning { color: #d6a95b; }
+.step-feed-status-running { color: #d6a95b; }
 .step-feed-status-failed,
 .step-feed-status-cancelled,
 .step-feed-status-blocked { color: #e47b7d; }

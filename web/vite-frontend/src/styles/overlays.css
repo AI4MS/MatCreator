@@ -1423,13 +1423,6 @@ body[data-theme="light"] .panel-resizer.resizing::before {
   padding: 16px 20px;
 }
 
-.viewer-loading-message,
-.file-viewer-notice {
-  color: var(--muted);
-  font-size: var(--font-size-ui);
-  padding: 16px 20px;
-}
-
 .settings-error {
   color: var(--danger);
 }

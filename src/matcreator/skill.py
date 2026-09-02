@@ -348,53 +348,8 @@ def _build_planning_skill_names() -> frozenset[str]:
 PLANNING_SKILL_NAMES: set[str] = set(_build_planning_skill_names())
 
 
-def skill_bundle_info(skill_name: str) -> dict[str, object] | None:
-    """Return a skill's on-disk folder and bundled sidecar file paths.
-
-    Agents receive this metadata whenever they load a skill's full content so
-    they know which ``references/``, ``assets/``, and ``scripts/`` files exist
-    and where the skill bundle lives, instead of having to guess or enumerate
-    directories themselves. Returns ``None`` for unknown or registry-fetched
-    skills.
-    """
-    loaded = next((s for s in ALL_SKILLS if s.name == skill_name), None)
-    if loaded is None:
-        return None
-    bundle: dict[str, object] = {
-        "references": [f"references/{p}" for p in sorted(loaded.resources.list_references())],
-        "assets": [f"assets/{p}" for p in sorted(loaded.resources.list_assets())],
-        "scripts": [f"scripts/{p}" for p in sorted(loaded.resources.list_scripts())],
-    }
-    skill_dir = _skill_dir_map().get(skill_name)
-    if skill_dir is not None:
-        bundle["skill_dir"] = str(skill_dir)
-    return bundle
-
-
-def format_skill_bundle_hint(skill_name: str, bundle: dict[str, object] | None) -> str | None:
-    """Describe a skill's bundled files and how the agent can access them."""
-    if not bundle:
-        return None
-    files = [
-        *(bundle.get("references") or []),
-        *(bundle.get("assets") or []),
-        *(bundle.get("scripts") or []),
-    ]
-    if not files:
-        return None
-    skill_dir = bundle.get("skill_dir")
-    location = f" in {skill_dir}" if skill_dir else ""
-    lines = [f"This skill bundles {len(files)} sidecar file(s){location}:"]
-    lines.extend(f"- {path}" for path in files)
-    lines.append(
-        f"Read one with load_skill_resource(skill_name='{skill_name}', file_path='<a path above>'); "
-        "run scripts/ files with run_skill_script."
-    )
-    return "\n".join(lines)
-
-
 class MatCreatorLoadSkillTool(skill_toolset.LoadSkillTool):
-    """Augment ADK skill loads with bundle-file and L3/L4 attachment metadata."""
+    """Augment ADK skill loads with metadata-only L3/L4 attachment counts."""
 
     async def run_async(self, *, args, tool_context):
         result = await super().run_async(args=args, tool_context=tool_context)
@@ -404,13 +359,6 @@ class MatCreatorLoadSkillTool(skill_toolset.LoadSkillTool):
         skill_name = result.get("skill_name")
         if not isinstance(skill_name, str):
             return result
-
-        bundle = skill_bundle_info(skill_name)
-        if bundle is not None:
-            result["bundled_files"] = bundle
-            bundle_hint = format_skill_bundle_hint(skill_name, bundle)
-            if bundle_hint:
-                result["bundled_files_hint"] = bundle_hint
 
         from .knowledge.query import format_node_context_hint, get_node_context_summary
 
