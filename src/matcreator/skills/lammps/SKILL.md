@@ -57,8 +57,8 @@ metadata:
 
 5. **DPA-4 / DPA-4c models require `atom_modify map yes`.** When the `pair_style deepmd`
    model is a DPA-4 or DPA-4c frozen model (`.pt2`), the line
-   `atom_modify map yes` MUST be placed at the very beginning of the in.lammps
-   input file (before all other commands). The `.pt2` graph inference relies on an
+   `atom_modify map yes` MUST appear before the `pair_style deepmd` line in the
+   in.lammps input file. The `.pt2` graph inference relies on an
    explicit ghost/periodic-image to local-atom map and fails fast without it.
    The `generate_input` template does not include this line — add it manually for
    `.pt2` models.
