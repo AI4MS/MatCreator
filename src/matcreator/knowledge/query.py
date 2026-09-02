@@ -231,10 +231,12 @@ def _format_related_skills(entries: list[Entry]) -> str:
 
 
 def get_node_context_summary(node_id: str) -> dict[str, object] | None:
-    """Return lightweight L3/L4 attachment counts for one skill node.
+    """Return lightweight graph context for one skill node.
 
     This is intentionally metadata-only so callers can decide whether reading
-    sidecars is worthwhile without loading any L1/L2 or L3/L4 content.
+    sidecars or neighbors is worthwhile without loading any L1/L2 or L3/L4
+    content. It reports L3/L4 attachment counts plus the titles of directly
+    connected non-L3/L4 nodes (skill-to-skill connections).
     """
     graph = _get_kg()
     try:
@@ -245,10 +247,28 @@ def get_node_context_summary(node_id: str) -> dict[str, object] | None:
         if node is None or is_entry_disabled(node) or _is_virtual(node):
             return None
         attached = graph.count_attached(node.id)
+        related: list[str] = []
+        seen_ids = {node.id}
+        for entry in graph.related(node.id, depth=1):
+            if entry.id in seen_ids or entry.title == node.title:
+                continue
+            seen_ids.add(entry.id)
+            if entry.entry_type in (
+                EntryType.heuristic,
+                EntryType.constraint,
+                EntryType.memory,
+            ):
+                # L3/L4 attachments are summarized by the counts above; memory
+                # nodes are not part of skill-to-skill topology.
+                continue
+            if _is_virtual(entry) or is_entry_disabled(entry):
+                continue
+            related.append(entry.title)
         return {
             "node_id": node.id,
             "heuristics": attached.get("heuristics", 0),
             "limitations": attached.get("constraints", 0),
+            "related_skills": sorted(related),
         }
     except Exception as exc:
         logger.warning("get_node_context_summary failed: %s", exc)
@@ -256,16 +276,26 @@ def get_node_context_summary(node_id: str) -> dict[str, object] | None:
 
 
 def format_node_context_hint(summary: dict[str, object]) -> str | None:
-    """Describe non-empty L3/L4 sidecars and the exact follow-up call."""
+    """Describe non-empty L3/L4 sidecars, graph connections, and follow-ups."""
+    parts: list[str] = []
     heuristic_count = summary["heuristics"]
     limitation_count = summary["limitations"]
-    if not heuristic_count and not limitation_count:
+    if heuristic_count or limitation_count:
+        parts.append(
+            f"This skill has {heuristic_count} attached L3 heuristic(s) and "
+            f"{limitation_count} L4 limitation(s). Call "
+            f"read_knowledge_node(node_id='{summary['node_id']}') to read them."
+        )
+    related = sorted(summary.get("related_skills") or [])
+    if related:
+        parts.append(
+            "Graph connections: "
+            + ", ".join(related)
+            + ". Use get_related_skills for details."
+        )
+    if not parts:
         return None
-    return (
-        f"This skill has {heuristic_count} attached L3 heuristic(s) and "
-        f"{limitation_count} L4 limitation(s). Call "
-        f"read_knowledge_node(node_id='{summary['node_id']}') to read them."
-    )
+    return " ".join(parts)
 
 
 def query_knowledge_graph(
