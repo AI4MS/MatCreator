@@ -78,7 +78,10 @@ def load_skill(skill_name: str) -> dict:
     after ``query_knowledge_graph`` to read a selected skill; use
     ``read_knowledge_node`` separately only for graph-attached L3/L4 context.
     When the graph has a matching node, the response includes
-    ``attached_context`` counts and, when nonzero, an exact follow-up hint.
+    ``attached_context`` counts (plus related-skill connections) and, when
+    nonzero, an exact follow-up hint. The response also lists the skill's
+    bundled sidecar files (``references/``, ``assets/``, ``scripts/``) and
+    their on-disk folder under ``bundled_files``.
 
     Args:
         skill_name: Exact name returned by query_knowledge_graph.
@@ -109,7 +112,15 @@ def load_skill(skill_name: str) -> dict:
         "description": skill.description,
         "instructions": skill.instructions,
     }
+    from ...skill import format_skill_bundle_hint, skill_bundle_info
     from ...knowledge.query import format_node_context_hint, get_node_context_summary
+
+    bundle = skill_bundle_info(skill.name)
+    if bundle is not None:
+        result["bundled_files"] = bundle
+        bundle_hint = format_skill_bundle_hint(skill.name, bundle)
+        if bundle_hint:
+            result["bundled_files_hint"] = bundle_hint
 
     context = get_node_context_summary(skill.name)
     if context is not None:
@@ -277,6 +288,8 @@ You are MatCreator, an AI assistant for computational materials science.
 - Set `skills_only=true` and `include_memory=false` only when you specifically need skill-only discovery.
 - Call `load_skill` for a selected installed skill's full instructions.
 - Inspect `load_skill`'s `attached_context`; call `read_knowledge_node` only when its L3/L4 count is nonzero.
+- Inspect `load_skill`'s `bundled_files` (references/, assets/, scripts/ paths plus the
+  on-disk skill folder) whenever the skill bundles sidecar files; read them from disk when needed.
 - For skill creation or evaluation requests, load the `skill-creation` guide and
   call `run_flash_step` with `suggested_skills=["skill-creation"]`.
 - After completing work, call `save_to_knowledge_graph` to persist key findings.
@@ -308,6 +321,8 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
    Call `query_knowledge_graph` once with the user's goal to discover relevant skills, knowledge, and lessons.
    Load selected installed skills with `load_skill`. Inspect its `attached_context` and call
    `read_knowledge_node` only when it reports attached L3 heuristics or L4 constraints.
+   Inspect its `bundled_files` when the skill bundles sidecar files (references/, assets/,
+   scripts/) and pass those paths to the executor in the node action.
    Use `get_related_skills` to discover its dependencies or closely related workflows.
 2. Always draft an execution graph, then call `validate_graph` to validate and commit it.
    Present the plan to the user as a Markdown table with columns:
