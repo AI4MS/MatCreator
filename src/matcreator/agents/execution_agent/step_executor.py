@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import List, Literal, Optional
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
-from google.adk.workflow import RetryConfig
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from ...llm_cards import LLMCard
@@ -38,12 +36,13 @@ STEP_EXECUTOR_AGENT_NAME = "step_executor"
 
 # ADK's LiteLlm adapter parses streamed function-call arguments as JSON.  Some
 # OpenAI-compatible endpoints occasionally finish a stream with malformed tool
-# arguments, which escapes as JSONDecodeError.  Retry the *LLM node* once by
-# default; this is deliberately separate from LiteLLM's HTTP retry setting,
-# which only covers transport/status failures.
-_JSON_DECODE_RETRY_ATTEMPTS = int(
-    os.environ.get("MATCREATOR_STEP_EXECUTOR_JSON_RETRY_ATTEMPTS", "2")
-)
+# arguments, which escapes as JSONDecodeError.  Recovery is handled at the
+# orchestrator level (see ``orchestrator/agent.py:_stream_execution_with_recovery``
+# and ``_stream_planning_with_recovery``), which wraps agent streams in
+# try/except json.JSONDecodeError.  The legacy ``RetryConfig`` did nothing
+# here because ``LlmAgent`` runs through ``llm_flows``, which does not
+# consume ``retry_config``; LiteLLM's own HTTP retry setting only covers
+# transport/status failures.
 
 
 class StepExecutorInput(BaseModel):
@@ -266,14 +265,6 @@ def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
     """Build a step executor agent for one executor invocation."""
     return LlmAgent(
         name=STEP_EXECUTOR_AGENT_NAME,
-        retry_config=RetryConfig(
-            max_attempts=_JSON_DECODE_RETRY_ATTEMPTS,
-            initial_delay=1.0,
-            max_delay=4.0,
-            backoff_factor=2.0,
-            jitter=0.0,
-            exceptions=[json.JSONDecodeError],
-        ),
         model=LiteLlm(
             model=llm_card.model,
             base_url=llm_card.base_url,

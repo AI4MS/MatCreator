@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import threading
@@ -12,7 +11,6 @@ from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.adk.agents.callback_context import CallbackContext
-from google.adk.workflow import RetryConfig
 
 from ...constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from .planning import validate_plan, validate_graph
@@ -57,10 +55,12 @@ _model_base_url = os.environ.get("LLM_BASE_URL", LLM_BASE_URL)
 # Some OpenAI-compatible endpoints occasionally emit malformed JSON in a
 # streamed tool call.  Retrying the LLM node is the safe recovery: attempting
 # to salvage a partial/concatenated payload could execute the wrong tool args.
-# ``max_attempts`` includes the original request, so 2 means one retry.
-_JSON_DECODE_RETRY_ATTEMPTS = int(
-    os.environ.get("MATCREATOR_PLANNER_JSON_RETRY_ATTEMPTS", "2")
-)
+# Recovery is handled at the orchestrator level (see
+# ``orchestrator/agent.py:_stream_planning_with_recovery``), which wraps the
+# planning stream in a try/except json.JSONDecodeError — mirroring the
+# execution-phase recovery.  The legacy ``RetryConfig`` did nothing here
+# because ``LlmAgent`` runs through ``llm_flows``, which does not consume
+# ``retry_config``.
 
 def _seed_skills_background() -> None:
     try:
@@ -434,14 +434,6 @@ def before_agent_callback(callback_context: CallbackContext) -> None:
 
 thinking_agent = LlmAgent(
     name="MatCreator",
-    retry_config=RetryConfig(
-        max_attempts=_JSON_DECODE_RETRY_ATTEMPTS,
-        initial_delay=1.0,
-        max_delay=4.0,
-        backoff_factor=2.0,
-        jitter=0.0,
-        exceptions=[json.JSONDecodeError],
-    ),
     model=LiteLlm(
         model=_model_name,
         base_url=_model_base_url,
