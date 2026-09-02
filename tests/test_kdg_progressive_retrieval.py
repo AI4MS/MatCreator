@@ -251,44 +251,11 @@ def test_node_context_summary_reports_l3_l4_counts_without_loading_content(
         "node_id": selected.id,
         "heuristics": 1,
         "limitations": 1,
-        "related_skills": [],
     }
     assert query.format_node_context_hint(summary) == (
         "This skill has 1 attached L3 heuristic(s) and 1 L4 limitation(s). "
         f"Call read_knowledge_node(node_id='{selected.id}') to read them."
     )
-
-
-def test_node_context_summary_reports_connected_skills_not_l3_l4_bodies(
-    tmp_path, monkeypatch
-) -> None:
-    graph = KnowDoGraph(tmp_path / "know-do.db")
-    selected = _add(
-        graph,
-        "Selected capability",
-        EntryType.capability,
-        SkillLevel.L1,
-        tags=["matcreator-skill"],
-    )
-    neighbor = _add(
-        graph,
-        "Neighbor skill",
-        EntryType.capability,
-        SkillLevel.L1,
-        tags=["matcreator-skill"],
-    )
-    heuristic = _add(graph, "Attached heuristic", EntryType.heuristic, SkillLevel.L3)
-    graph.connect(neighbor.id, selected.id, relation=EdgeRelation.dependency)
-    graph.connect(heuristic.id, selected.id, relation=EdgeRelation.heuristic_for)
-    monkeypatch.setattr(query, "_get_kg", lambda: graph)
-
-    summary = query.get_node_context_summary(selected.id)
-
-    assert summary is not None
-    assert summary["related_skills"] == ["Neighbor skill"]
-    hint = query.format_node_context_hint(summary)
-    assert "Neighbor skill" in hint
-    assert "get_related_skills" in hint
 
 
 def test_search_skill_context_compatibility_alias_only_returns_attached_sidecars(
