@@ -185,7 +185,15 @@ dp --pt-expt train input.json --init-model <pretrain.pt> --skip-neighbor-stat
 
 **Official per-variant inputs:** each DPA-4c checkpoint is published together with its
 training input `DPA4C-<Variant>-OMat24-v20260819.json` (see Model acquisition).
-`deepmd_prepare.py` embeds the same per-variant parameters with two adaptations:
+Per the official usage note, the released checkpoints serve as **pretrained initializations**:
+start from the corresponding released input file, keep the entire **model section unchanged**
+(descriptor, fitting net, and the full-periodic-table type_map the type embeddings are
+indexed by), replace only the training/validation data, and use a **small learning rate**
+for fine-tuning (e.g. `start_lr = 1e-4`). `deepmd_prepare.py` follows this guidance — the
+embedded per-variant templates keep the official model section and differ from the released
+inputs only in:
+- `start_lr` is lowered to **1e-4** for downstream fine-tuning (the released inputs' larger
+  lr values were for the original training runs);
 - `batch_size`: the official `mix:N` rule is not supported by the deepmd build used here,
   so the closest supported rule `max:N` (batch_size × natoms ≤ N) is used instead;
 - default `num_epochs` is the official **12**.

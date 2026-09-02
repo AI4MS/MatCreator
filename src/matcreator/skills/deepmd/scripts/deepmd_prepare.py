@@ -514,9 +514,13 @@ _DPA4_TEMPLATE: Dict[str, Any] = {
 # DPA-4c template and variants. Fine-tuning-only architecture initialized from
 # the DPA-4c pretrained checkpoint via `--init-model` (NEVER `--finetune`).
 # Values follow the official per-variant inputs published with the DPA4C-OMat24
-# models on AIS Square (v20260819), with one adaptation: the official batch_size
-# "mix:N" is not supported by the deepmd build used here, so the closest
-# supported rule "max:N" (batch_size * natoms <= N) is used instead.
+# models on AIS Square (v20260819). Per the official usage note, the released
+# checkpoints are pretrained initializations: keep the model section unchanged,
+# replace only the training/validation data, and use a SMALL learning rate for
+# fine-tuning — so start_lr is lowered to 1e-4 (the released inputs' larger lr
+# values were for the original training runs). The official "mix:N" batch_size
+# rule is not supported by the deepmd build used here, so the closest supported
+# rule "max:N" (batch_size * natoms <= N) is used instead.
 _DPA4C_VARIANTS: Dict[str, Any] = {
     # Air model specs.
     "air": {
@@ -529,9 +533,6 @@ _DPA4C_VARIANTS: Dict[str, Any] = {
             "fitting_net": {
                 "neuron": [256, 256, 256],
             },
-        },
-        "learning_rate": {
-            "start_lr": 0.003,
         },
         "training": {
             "training_data": {
@@ -551,9 +552,6 @@ _DPA4C_VARIANTS: Dict[str, Any] = {
                 "neuron": [256, 256, 256],
             },
         },
-        "learning_rate": {
-            "start_lr": 0.003,
-        },
         "training": {
             "training_data": {
                 "batch_size": "max:30000",
@@ -571,9 +569,6 @@ _DPA4C_VARIANTS: Dict[str, Any] = {
             "fitting_net": {
                 "neuron": [192, 192, 192],
             },
-        },
-        "learning_rate": {
-            "start_lr": 0.004,
         },
         "training": {
             "training_data": {
@@ -593,9 +588,6 @@ _DPA4C_VARIANTS: Dict[str, Any] = {
                 "neuron": [96, 96, 96],
             },
         },
-        "learning_rate": {
-            "start_lr": 0.005,
-        },
         "training": {
             "training_data": {
                 "batch_size": "max:50000",
@@ -613,9 +605,6 @@ _DPA4C_VARIANTS: Dict[str, Any] = {
             "fitting_net": {
                 "neuron": [384, 384, 384],
             },
-        },
-        "learning_rate": {
-            "start_lr": 0.002,
         },
         "training": {
             "training_data": {
@@ -647,7 +636,7 @@ _DPA4C_TEMPLATE: Dict[str, Any] = {
     },
     "learning_rate": {
         "type": "cosine",
-        "start_lr": 0.003,
+        "start_lr": 1e-4,
         "stop_lr": 1e-06,
         "warmup_ratio": 0.003,
         "warmup_start_factor": 0.2,
