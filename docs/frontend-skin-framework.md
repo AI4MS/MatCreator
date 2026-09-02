@@ -134,7 +134,7 @@ body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] { /* ... */ }
 
 Base recipe rules do not key off `data-skin`. Rack Lab is already migrated to this boundary, so another validated skin may reuse the same reviewed recipe while supplying different tokens and metadata. Skin identity remains available through `data-skin` for diagnostics and catalog UI.
 
-Recipe capabilities are not limited to CSS selectors. The Agent Graph is a `vis-network` Canvas and therefore cannot consume a CSS droplet selector. Its renderer reads the same reviewed `rack-lab@1` recipe attributes and switches from the standard circle to an MC-owned Bézier droplet path; unknown recipe IDs or versions fall back to the standard circle. Node type continues to own the face color and glyph, while lifecycle status remains a separate symbol badge or running aura. Geometry, hit dimensions, status anchors, vine endpoints, and redraw behavior share one pure geometry contract, so skin changes do not replace the Network or its DataSets.
+Recipe capabilities are not limited to CSS selectors. The Agent Graph is a `vis-network` Canvas and therefore cannot consume a CSS droplet selector. Its renderer resolves a small, read-only graph recipe module from the same reviewed `id@version`: `standard@1` owns the circle fallback, while `rack-lab@1` owns the MC-created Bézier droplet and its liquid alpha recipe. Unknown recipe IDs or versions resolve to `standard@1`; no Rack Lab colour, opacity, or geometry default leaks into them. Adding or deleting a Canvas capability is consequently limited to one recipe module and its tests, without rebuilding the Network or its DataSets. Node type continues to own the face color and glyph, while lifecycle status remains a separate symbol badge or running aura. Geometry, hit dimensions, status anchors, vine endpoints, and redraw behavior share one pure geometry contract.
 
 ### Legacy aliases
 
@@ -149,6 +149,10 @@ Defines the allow list, required tokens, value types, manifest validation bounda
 ### `StyleRecipeRegistry.js`
 
 Contains immutable metadata for the style recipes compiled into this MatCreator build. Its public object is read-only and intentionally has no dynamic registration or code-loading path.
+
+### Canvas recipe adapters
+
+Canvas components keep their recipe-specific behavior in adjacent, read-only adapter modules rather than in shared renderer defaults. For example, `features/graphs/agentGraphRecipes.js` owns the `standard@1` circle fallback and the complete `rack-lab@1` droplet/liquid recipe. `AgentGraphView` only resolves and applies the selected adapter. This keeps adding, changing, or removing one recipe local to its module and avoids one skin's opacity, geometry, or effect defaults changing another skin.
 
 ### `ThemeRegistry.js`
 

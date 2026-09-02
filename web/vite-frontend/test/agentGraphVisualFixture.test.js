@@ -10,6 +10,9 @@ import {
 } from "../src/dev/agentGraphVisualFixture.js";
 
 const agentGraphViewUrl = new URL("../src/features/graphs/AgentGraphView.js", import.meta.url);
+const agentNodeGeometryUrl = new URL("../src/features/graphs/agentNodeGeometry.js", import.meta.url);
+const agentNodeLiquidStyleUrl = new URL("../src/features/graphs/agentNodeLiquidStyle.js", import.meta.url);
+const agentGraphRecipesUrl = new URL("../src/features/graphs/agentGraphRecipes.js", import.meta.url);
 
 test("agent graph visual fixture covers node identities and lifecycle states", () => {
   const nodes = Object.values(AGENT_GRAPH_VISUAL_FIXTURE.nodes);
@@ -80,8 +83,11 @@ test("Rack Lab droplets track pointer contact and render routed liquid arrows", 
   const source = await readFile(agentGraphViewUrl, "utf8");
 
   assert.match(source, /getPropertyValue\("--skin-graph-droplet-fill-alpha"\)/);
-  assert.match(source, /agentDropletBodyAlphas\(fillAlpha, stateAlpha\)/);
+  assert.match(source, /resolveAgentGraphRecipe\(/);
+  assert.match(source, /agentDropletBodyAlphas\(\s*fillAlpha,\s*this\._agentGraphRecipe\.liquid,\s*stateAlpha/);
+  assert.match(source, /ctx\.fillStyle = rgba\(palette\.fill, bodyAlphas\.underlay\)/);
   assert.match(source, /body\.addColorStop\(0\.62, rgba\(palette\.fill, bodyAlphas\.fill\)\)/);
+  assert.match(source, /ctx\.strokeStyle = rgba\(palette\.border, bodyAlphas\.rim\)/);
   assert.match(source, /this\._container\?\.addEventListener\(\s*"pointermove"/);
   assert.match(source, /addEventListener\("mousemove", handleLiquidPointerMove/);
   assert.match(source, /this\._network\.on\("blurNode", \(\) => this\._clearLiquidTouch\(\)\)/);
@@ -97,4 +103,23 @@ test("Rack Lab droplets track pointer contact and render routed liquid arrows", 
   assert.match(source, /getPropertyValue\("--skin-graph-title-clearance"\)/);
   assert.match(source, /const remoteJobsOverlap = viewportRect && remoteJobsRect/);
   assert.match(source, /visibleViewportHeight = Math\.max\(1, viewportHeight - Math\.round\(remoteJobsOverlap\)\)/);
+});
+
+test("keeps Rack Lab graph decisions out of shared canvas renderer utilities", async () => {
+  const [renderer, geometry, liquidStyle, recipes] = await Promise.all([
+    readFile(agentGraphViewUrl, "utf8"),
+    readFile(agentNodeGeometryUrl, "utf8"),
+    readFile(agentNodeLiquidStyleUrl, "utf8"),
+    readFile(agentGraphRecipesUrl, "utf8"),
+  ]);
+
+  for (const source of [renderer, geometry, liquidStyle]) {
+    assert.doesNotMatch(source, /rack-lab/);
+  }
+  // The shared helper may read named recipe values, but must not own the
+  // Rack Lab opacity profile itself.
+  assert.doesNotMatch(liquidStyle, /0\.46|0\.52|0\.56|0\.86/);
+  assert.match(recipes, /id: "rack-lab"/);
+  assert.match(recipes, /defaultFillAlpha: 0\.46/);
+  assert.match(recipes, /rimAlpha: 0\.86/);
 });

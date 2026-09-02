@@ -12,10 +12,13 @@ import {
   traceDropletPath,
 } from "../src/features/graphs/agentNodeGeometry.js";
 import {
-  DEFAULT_AGENT_DROPLET_FILL_ALPHA,
   agentDropletBodyAlphas,
   resolveAgentDropletFillAlpha,
 } from "../src/features/graphs/agentNodeLiquidStyle.js";
+import {
+  listAgentGraphRecipes,
+  resolveAgentGraphRecipe,
+} from "../src/features/graphs/agentGraphRecipes.js";
 import { RACK_LAB_SKIN } from "../src/theme/builtinSkins.js";
 import { SKIN_TOKEN_SCHEMA } from "../src/theme/SkinContract.js";
 
@@ -27,37 +30,55 @@ test("activates droplet nodes only for the reviewed Rack Lab recipe version", ()
   assert.equal(agentNodeShapeForRecipe("downloaded-css", 1), AGENT_NODE_SHAPE.CIRCLE);
 });
 
-test("raises only the Rack Lab liquid body tint through validated variant tokens", () => {
+test("keeps graph renderer capabilities isolated to reviewed recipe modules", () => {
+  const rackLab = resolveAgentGraphRecipe("rack-lab", 1);
+  const standard = resolveAgentGraphRecipe("standard", 1);
+
+  assert.equal(rackLab.nodeShape, AGENT_NODE_SHAPE.DROPLET);
+  assert.equal(standard.nodeShape, AGENT_NODE_SHAPE.CIRCLE);
+  assert.equal(resolveAgentGraphRecipe("future-skin", 1), standard);
+  assert.equal(rackLab.liquid.defaultFillAlpha, 0.46);
+  assert.equal(standard.liquid, null);
+  assert.deepEqual(
+    listAgentGraphRecipes().map(({ id, apiVersion }) => `${id}@${apiVersion}`),
+    ["standard@1", "rack-lab@1"],
+  );
+});
+
+test("gives Rack Lab droplets a resilient coloured core through validated variant tokens", () => {
   const token = "--skin-graph-droplet-fill-alpha";
   const creamToken = RACK_LAB_SKIN.variants.light.tokens[token];
   const graphiteToken = RACK_LAB_SKIN.variants.dark.tokens[token];
 
   assert.equal(SKIN_TOKEN_SCHEMA[token], "number");
-  assert.equal(DEFAULT_AGENT_DROPLET_FILL_ALPHA, 0.07);
-  assert.equal(resolveAgentDropletFillAlpha(creamToken), 0.11);
-  assert.equal(resolveAgentDropletFillAlpha(graphiteToken), 0.12);
-  assert.equal(resolveAgentDropletFillAlpha(""), 0.07);
-  assert.equal(resolveAgentDropletFillAlpha("1.1"), 0.07);
+  const liquidStyle = resolveAgentGraphRecipe("rack-lab", 1).liquid;
+  assert.equal(resolveAgentDropletFillAlpha(creamToken, liquidStyle), 0.52);
+  assert.equal(resolveAgentDropletFillAlpha(graphiteToken, liquidStyle), 0.56);
+  assert.equal(resolveAgentDropletFillAlpha("", liquidStyle), 0.46);
+  assert.equal(resolveAgentDropletFillAlpha("1.1", liquidStyle), 0.46);
 
-  const cream = agentDropletBodyAlphas(creamToken);
-  const graphite = agentDropletBodyAlphas(graphiteToken);
+  const cream = agentDropletBodyAlphas(creamToken, liquidStyle);
+  const graphite = agentDropletBodyAlphas(graphiteToken, liquidStyle);
   assert.deepEqual(cream, {
-    highlight: 0.18,
-    sheen: 0.04,
-    fill: 0.11,
-    rim: 0.11,
+    underlay: 0.24,
+    highlight: 0.28,
+    sheen: 0.1,
+    fill: 0.52,
+    rim: 0.86,
   });
   assert.deepEqual(graphite, {
-    highlight: 0.18,
-    sheen: 0.04,
-    fill: 0.12,
-    rim: 0.11,
+    underlay: 0.24,
+    highlight: 0.28,
+    sheen: 0.1,
+    fill: 0.56,
+    rim: 0.86,
   });
 
-  const cancelled = agentDropletBodyAlphas(graphiteToken, 0.48);
-  assert.equal(cancelled.fill, 0.12 * 0.48);
-  assert.equal(cancelled.highlight, 0.18 * 0.48);
-  assert.equal(cancelled.rim, 0.11 * 0.48);
+  const cancelled = agentDropletBodyAlphas(graphiteToken, liquidStyle, 0.48);
+  assert.equal(cancelled.fill, 0.56 * 0.48);
+  assert.equal(cancelled.underlay, 0.24 * 0.48);
+  assert.equal(cancelled.highlight, 0.28 * 0.48);
+  assert.equal(cancelled.rim, 0.86 * 0.48);
 });
 
 test("gives active droplets deterministic independent motion without a layout pulse", () => {

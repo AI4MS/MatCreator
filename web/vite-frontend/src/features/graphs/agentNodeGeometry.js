@@ -1,12 +1,12 @@
+import { resolveAgentGraphRecipe } from "./agentGraphRecipes.js";
+
 export const AGENT_NODE_SHAPE = Object.freeze({
   CIRCLE: "circle",
   DROPLET: "droplet",
 });
 
 export function agentNodeShapeForRecipe(styleRecipeId, styleRecipeVersion) {
-  return styleRecipeId === "rack-lab" && String(styleRecipeVersion) === "1"
-    ? AGENT_NODE_SHAPE.DROPLET
-    : AGENT_NODE_SHAPE.CIRCLE;
+  return resolveAgentGraphRecipe(styleRecipeId, styleRecipeVersion).nodeShape;
 }
 
 function safeRadius(radius) {

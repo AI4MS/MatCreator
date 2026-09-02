@@ -5,7 +5,6 @@ import { httpClient } from "../../shared/api/http.js";
 import { applyGraphUpdate } from "./graphUpdates.js";
 import {
   AGENT_NODE_SHAPE,
-  agentNodeShapeForRecipe,
   dropletGeometry,
   dropletMotionForNode,
   nodeShapeDimensions,
@@ -17,6 +16,7 @@ import {
   agentDropletBodyAlphas,
   resolveAgentDropletFillAlpha,
 } from "./agentNodeLiquidStyle.js";
+import { resolveAgentGraphRecipe } from "./agentGraphRecipes.js";
 
 // Node identity and execution state intentionally live in separate visual
 // vocabularies. Type owns the face and its letter; state only owns a compact
@@ -121,6 +121,7 @@ export class AgentGraphView {
       this._network?.redraw();
     });
     this._graphSurfaceIsLight = this._readGraphSurfaceTone();
+    this._agentGraphRecipe = this._readAgentGraphRecipe();
     this._graphDropletFillAlpha = this._readGraphDropletFillAlpha();
     this._detailEl = document.getElementById("graph-detail");
     this._detailClose = document.getElementById("graph-detail-close");
@@ -241,14 +242,24 @@ export class AgentGraphView {
   }
 
   _readGraphDropletFillAlpha() {
+    const liquidStyle = this._agentGraphRecipe.liquid;
+    if (!liquidStyle) return null;
     const token = window.getComputedStyle?.(document.body)
       ?.getPropertyValue("--skin-graph-droplet-fill-alpha")
       ?.trim();
-    return resolveAgentDropletFillAlpha(token);
+    return resolveAgentDropletFillAlpha(token, liquidStyle);
+  }
+
+  _readAgentGraphRecipe() {
+    return resolveAgentGraphRecipe(
+      document.body.dataset.styleRecipe,
+      document.body.dataset.styleRecipeVersion,
+    );
   }
 
   _applyTheme() {
     this._graphSurfaceIsLight = this._readGraphSurfaceTone();
+    this._agentGraphRecipe = this._readAgentGraphRecipe();
     this._graphDropletFillAlpha = this._readGraphDropletFillAlpha();
     const color = this._edgeColors();
     const useLiquidEdges = this._nodeShape() === AGENT_NODE_SHAPE.DROPLET;
@@ -323,10 +334,7 @@ export class AgentGraphView {
   }
 
   _nodeShape() {
-    return agentNodeShapeForRecipe(
-      document.body.dataset.styleRecipe,
-      document.body.dataset.styleRecipeVersion,
-    );
+    return this._agentGraphRecipe.nodeShape;
   }
 
   _traceNodePath(ctx, x, y, radius, shape = this._nodeShape(), motion = null) {
@@ -627,13 +635,24 @@ export class AgentGraphView {
     fillAlpha,
   }) {
     const stateAlpha = isCancelled ? 0.48 : 1;
-    const bodyAlphas = agentDropletBodyAlphas(fillAlpha, stateAlpha);
+    const bodyAlphas = agentDropletBodyAlphas(
+      fillAlpha,
+      this._agentGraphRecipe.liquid,
+      stateAlpha,
+    );
 
     ctx.save();
 
-    // The body stays translucent so the graph grid and nearby edges remain
-    // visible through the coloured water instead of disappearing behind an
-    // opaque badge. Type colour is a tint; lifecycle colour stays outside.
+    // A restrained underlay gives the liquid a stable coloured core before
+    // its translucent gradient goes on top. Canvas anti-aliasing otherwise
+    // makes a faint tint and its edge disappear at browser zoom levels that
+    // differ from the reference screenshot.
+    this._traceNodePath(ctx, x, y, radius, AGENT_NODE_SHAPE.DROPLET, motion);
+    ctx.fillStyle = rgba(palette.fill, bodyAlphas.underlay);
+    ctx.fill();
+
+    // Type colour belongs to the liquid body; lifecycle colour stays outside
+    // in the compact status badge.
     this._traceNodePath(ctx, x, y, radius, AGENT_NODE_SHAPE.DROPLET, motion);
     const body = ctx.createRadialGradient(
       x - radius * 0.4,
@@ -655,6 +674,14 @@ export class AgentGraphView {
     ctx.shadowColor = "transparent";
     ctx.shadowBlur = 0;
     ctx.shadowOffsetY = 0;
+
+    // Draw the silhouette in a separate pass.  A gradient's last pixel is
+    // anti-aliased into the canvas background, so relying on its rim alone
+    // produces a fuzzy or seemingly missing boundary on many displays.
+    this._traceNodePath(ctx, x, y, radius - 0.55, AGENT_NODE_SHAPE.DROPLET, motion);
+    ctx.lineWidth = selected ? 2.15 : hover ? 1.85 : 1.55;
+    ctx.strokeStyle = rgba(palette.border, bodyAlphas.rim);
+    ctx.stroke();
 
     ctx.save();
     this._traceNodePath(ctx, x, y, radius - 1.2, AGENT_NODE_SHAPE.DROPLET, motion);
