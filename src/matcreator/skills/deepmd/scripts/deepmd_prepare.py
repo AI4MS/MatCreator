@@ -6,7 +6,13 @@ and writes an input.json script for ``dp train``.
 
 Sub-commands
 ------------
-  prepare-finetune            Single-task finetune of a pretrained DPA model
+  prepare-finetune            Single-task finetune of a pretrained DPA model.
+                              Also covers the DPA-4c architecture
+                              (``--model_name dpa4c --model_variant <air|neo|mini|nano|plus>``):
+                              writes the input.json from the official per-variant DPA-4c
+                              templates and emits the
+                              ``dp --pt-expt train ... --init-model ... --skip-neighbor-stat``
+                              execution command (never ``--finetune``, never ``--pt``).
   prepare-test                Prepare data for dp test command.
 
 After running any sub-command the ``workdir`` directory should contain:
@@ -505,6 +511,190 @@ _DPA4_TEMPLATE: Dict[str, Any] = {
     },
 }
 
+# DPA-4c template and variants. Fine-tuning-only architecture initialized from
+# the DPA-4c pretrained checkpoint via `--init-model` (NEVER `--finetune`).
+# Values follow the official per-variant inputs published with the DPA4C-OMat24
+# models on AIS Square (v20260819), with one adaptation: the official batch_size
+# "mix:N" is not supported by the deepmd build used here, so the closest
+# supported rule "max:N" (batch_size * natoms <= N) is used instead.
+_DPA4C_VARIANTS: Dict[str, Any] = {
+    # Air model specs.
+    "air": {
+        "model": {
+            "descriptor": {
+                "channels": 64,
+                "lmax": 3,
+                "radial_modes": 4,
+            },
+            "fitting_net": {
+                "neuron": [256, 256, 256],
+            },
+        },
+        "learning_rate": {
+            "start_lr": 0.003,
+        },
+        "training": {
+            "training_data": {
+                "batch_size": "max:25000",
+            },
+        },
+    },
+    # Neo model specs.
+    "neo": {
+        "model": {
+            "descriptor": {
+                "channels": 64,
+                "lmax": 2,
+                "radial_modes": 0,
+            },
+            "fitting_net": {
+                "neuron": [256, 256, 256],
+            },
+        },
+        "learning_rate": {
+            "start_lr": 0.003,
+        },
+        "training": {
+            "training_data": {
+                "batch_size": "max:30000",
+            },
+        },
+    },
+    # Mini model specs.
+    "mini": {
+        "model": {
+            "descriptor": {
+                "channels": 32,
+                "lmax": 2,
+                "radial_modes": 0,
+            },
+            "fitting_net": {
+                "neuron": [192, 192, 192],
+            },
+        },
+        "learning_rate": {
+            "start_lr": 0.004,
+        },
+        "training": {
+            "training_data": {
+                "batch_size": "max:40000",
+            },
+        },
+    },
+    # Nano model specs.
+    "nano": {
+        "model": {
+            "descriptor": {
+                "channels": 8,
+                "lmax": 2,
+                "radial_modes": 0,
+            },
+            "fitting_net": {
+                "neuron": [96, 96, 96],
+            },
+        },
+        "learning_rate": {
+            "start_lr": 0.005,
+        },
+        "training": {
+            "training_data": {
+                "batch_size": "max:50000",
+            },
+        },
+    },
+    # Plus model specs.
+    "plus": {
+        "model": {
+            "descriptor": {
+                "channels": 128,
+                "lmax": 3,
+                "radial_modes": 4,
+            },
+            "fitting_net": {
+                "neuron": [384, 384, 384],
+            },
+        },
+        "learning_rate": {
+            "start_lr": 0.002,
+        },
+        "training": {
+            "training_data": {
+                "batch_size": "max:15000",
+            },
+        },
+    },
+}
+
+_DPA4C_TEMPLATE: Dict[str, Any] = {
+    "model": {
+        "descriptor": {
+            "type": "dpa4c",
+            "rcut": 6.0,
+            "channels": 64,
+            "lmax": 2,
+            "radial_modes": 0,
+            "use_amp": False,
+            "precision": "float32",
+            "seed": 42,
+        },
+        "fitting_net": {
+            "neuron": [256, 256, 256],
+            "resnet_dt": False,
+            "activation_function": "silu",
+            "precision": "float32",
+            "seed": 42,
+        },
+    },
+    "learning_rate": {
+        "type": "cosine",
+        "start_lr": 0.003,
+        "stop_lr": 1e-06,
+        "warmup_ratio": 0.003,
+        "warmup_start_factor": 0.2,
+    },
+    "loss": {
+        "type": "ener",
+        "loss_func": "mae",
+        "f_use_norm": True,
+        "start_pref_e": 20,
+        "limit_pref_e": 20,
+        "start_pref_f": 20,
+        "limit_pref_f": 20,
+        "start_pref_v": 5,
+        "limit_pref_v": 5,
+    },
+    "optimizer": {
+        "type": "HybridMuon",
+        "weight_decay": 0.001,
+    },
+    "training": {
+        "stat_file": "OMat24.hdf5",
+        "training_data": {
+            "systems": [],
+            "batch_size": "max:30000",
+        },
+        "validation_data": {
+            "systems": [],
+            "batch_size": 1,
+            "numb_batch": 1,
+        },
+        "num_epochs": 12,
+        "enable_compile": True,
+        "gradient_max_norm": 5,
+        "save_freq": 2000,
+        "max_ckpt_keep": 3,
+        "enable_ema": True,
+        "ema_decay": 0.999,
+        "ema_ckpt_keep": 3,
+        "disp_file": "lcurve.out",
+        "disp_freq": 1000,
+        "disp_training": True,
+        "time_training": True,
+        "zero_stage": 1,
+        "seed": 42,
+    },
+}
+
 # Summing up.
 _AVAILABLE_MODEL_CFGS = {
     "dpa1": {
@@ -522,6 +712,10 @@ _AVAILABLE_MODEL_CFGS = {
     "dpa4": {
         "variants": _DPA4_VARIANTS,
         "template": _DPA4_TEMPLATE,
+    },
+    "dpa4c": {
+        "variants": _DPA4C_VARIANTS,
+        "template": _DPA4C_TEMPLATE,
     }
 }
 
@@ -530,6 +724,7 @@ _DEFAULT_HEADS = {
     "dpa2": "MP_traj_v024_alldata_mixu",
     "dpa3": "Omat24",
     "dpa4": None,
+    "dpa4c": None,
 }
 
 # ---------------------------------------------------------------------------
@@ -833,46 +1028,65 @@ def cmd_prepare_finetune(args) -> None:
         json.dump(cfg, f, indent=4)
     logger.info("Wrote input.json to %s", path)
 
-    selected_head = args.head or _DEFAULT_HEADS[args.model_name]
+    model_key = normalize_name(args.model_name)
+    selected_head = args.head or _DEFAULT_HEADS[model_key]
     if selected_head is not None and selected_head.lower() != "none":
         head_section = f"--head {selected_head}"
     else:
         head_section = ""
 
-    exec_cmd = (
-        f"dp --pt train input.json "
-        f"--finetune {model_dest.name} {head_section} > train_log 2>&1"
-    )
+    is_dpa4c = model_key == "dpa4c"
+    dp_backend = "--pt-expt" if is_dpa4c else "--pt"
 
-    # Freeze, if requested.
-    if not args.no_freeze:
-        exec_cmd += " && dp --pt freeze -c model.ckpt.pt -o frozen" + " " + head_section
+    if is_dpa4c:
+        # DPA-4c: `--finetune` is PROHIBITED (its bias-adjustment dense forward pass
+        # OOMs on sel=[999999]) and every CLI backend must use `--pt-expt` (never `--pt`).
+        # See references/supported_deepmd_models.md ("DPA-4c" section).
+        exec_cmd = (
+            f"dp {dp_backend} train input.json "
+            f"--init-model {model_dest.name} --skip-neighbor-stat > train_log 2>&1"
+        )
+        if not args.no_freeze:
+            exec_cmd += (
+                f" && dp {dp_backend} freeze -c model.ckpt.pt -o frozen"
+                f" && dp {dp_backend} compress -i frozen.pt2 -o compressed_model.pt2"
+            )
+        eval_model = "compressed_model.pt2" if not args.no_freeze else "model.ckpt.pt"
+    else:
+        exec_cmd = (
+            f"dp {dp_backend} train input.json "
+            f"--finetune {model_dest.name} {head_section} > train_log 2>&1"
+        )
+
+        # Freeze, if requested.
+        if not args.no_freeze:
+            exec_cmd += " && dp --pt freeze -c model.ckpt.pt -o frozen" + " " + head_section
+
+        # Infer on training data.
+        if not args.no_freeze:
+            # Safe to both pth and pt2 suffixes.
+            eval_model = "$(find . -maxdepth 1 -name 'frozen.*' -type f | head -n 1)"
+        else:
+            eval_model = "model.ckpt.pt"
 
     # Infer with pretrained model for comparison.
     pretrained_model = Path(args.input_model_path).name
     exec_cmd += (
-        f" && dp --pt test -m {pretrained_model} -s train_data -d result-train -l log-train"
+        f" && dp {dp_backend} test -m {pretrained_model} -s train_data -d result-train -l log-train"
         + " " + head_section
     )
     # Infer on test data if available.
     if test_paths is not None:
         exec_cmd += (
-            f" && dp --pt test -m {pretrained_model} -s test_data -d result-test -l log-test"
+            f" && dp {dp_backend} test -m {pretrained_model} -s test_data -d result-test -l log-test"
             + " " + head_section
         )
 
-    # Infer on training data.
-    if not args.no_freeze:
-        # Safe to both pth and pt2 suffixes.
-        eval_model = "$(find . -maxdepth 1 -name 'frozen.*' -type f | head -n 1)"
-    else:
-        eval_model = "model.ckpt.pt"
-
     # Infer with the fine-tuned result.
-    exec_cmd += f" && dp --pt test -m {eval_model} -s train_data -d result-train -l log-train"
+    exec_cmd += f" && dp {dp_backend} test -m {eval_model} -s train_data -d result-train -l log-train"
     # Infer on test data if available.
     if test_paths is not None:
-        exec_cmd += f" && dp --pt test -m {eval_model} -s test_data -d result-test -l log-test"
+        exec_cmd += f" && dp {dp_backend} test -m {eval_model} -s test_data -d result-test -l log-test"
 
     seeds = {"cli_main_seed": main_seed,}
     seeds.update(seed_map)
@@ -898,8 +1112,14 @@ def cmd_prepare_dp_test(args) -> None:
     system_paths = _export_atoms_to_deepmd_paths(atoms, workdir / "dpdata", args.mixed_type)
     model_dest = _place_model(args.input_model_path, workdir, not args.no_copy_model)
 
+    # DPA-4c models must run every backend (test included) with --pt-expt.
+    # Check the raw (non-normalized) filename so "DPA4-compressed.pt" is not
+    # mistaken for a DPA-4c model.
+    is_dpa4c = "dpa4c" in Path(args.input_model_path).name.lower()
+    dp_backend = "--pt-expt" if is_dpa4c else "--pt"
+
     # DP test can be executed in a single command.
-    cmd = f"dp --pt test -m {model_dest.name} -s {str(workdir / "dpdata")} -d result-infer -l log-infer"
+    cmd = f"dp {dp_backend} test -m {model_dest.name} -s {str(workdir / "dpdata")} -d result-infer -l log-infer"
 
     normalized_file_name = normalize_name(Path(args.input_model_path).stem)
     inferred_model_name = None
@@ -971,7 +1191,7 @@ def _add_common_argparse(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--head",
         help="The head of the model to use. Default is None, will use the default head of the model."
-             "DPA-1: no head, DPA-2: MP_traj_v024_alldata_mixu, DPA-3: Omat24, DPA-4: no head.",
+             "DPA-1: no head, DPA-2: MP_traj_v024_alldata_mixu, DPA-3: Omat24, DPA-4 / DPA-4c: no head.",
         type=str,
         default=None
     )
@@ -980,7 +1200,7 @@ def _add_finetune_argparse(p: argparse.ArgumentParser) -> None:
     # All defaults should be controlled by cfg templates rather than set here.
     p.add_argument(
         "--model_name",
-        help="Model name (required. valid options: dpa1, dpa2, dpa3, dpa4)",
+        help="Model name (required. valid options: dpa1, dpa2, dpa3, dpa4, dpa4c)",
         type=str,
         required=True,
     )

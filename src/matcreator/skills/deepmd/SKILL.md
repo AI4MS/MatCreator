@@ -1,7 +1,7 @@
 ---
 name: deepmd
 description: Deep potential models finetuning and testing using the DeePMD-kit.
-  Use this skill whenever finetuning a Deep Potential (DPA-1 / DPA-2 / DPA-3 / DPA-4) model
+  Use this skill whenever finetuning a Deep Potential (DPA-1 / DPA-2 / DPA-3 / DPA-4 / DPA-4c) model
   or running model tests on a dataset. The oldest DP descriptors such as se_e2_a, se_e2_r,
   and se_e3 are no longer supported. 
   Training from scratch is NEVER advised unless fine-tuning a DPA-4c model on data labeled by a fine-tuned model.
@@ -31,9 +31,9 @@ should be divided into:
 | Stage       | Tool | Where                                              |
 |-------------|---|----------------------------------------------------|
 | **Prepare** | `deepmd_prepare.py` | always run locally                                 |
-| **Execute** | `dp` CLI | run locally **or** submit remotelly via bohr skill |
+| **Execute** | `dp` CLI | run locally **or** submit remotely via bohrium skill |
 
-Script: `deepmd_prepare.py` ([scripts/deepmd_prepare.py](scripts/deepmd_prepare.py]).
+Script: `deepmd_prepare.py` ([scripts/deepmd_prepare.py](scripts/deepmd_prepare.py)).
 Use the `run_skill_script` tool to execute:
 - `skill_name`: `"deepmd"`
 - `script_name`: `"deepmd_prepare.py"`
@@ -152,9 +152,19 @@ from regular fine-tuning.
 > `machine-learning-force-field` skill ([SKILL.md](../concepts/machine-learning-force-field/SKILL.md)).
 > Training directly on the seed/static structures is forbidden.
 
-The concrete DPA-4c training command, the verified input template, and the recommended
-Bohrium image/machine are documented in
+The concrete DPA-4c training command and the recommended Bohrium image/machine are documented in
 [references/supported_deepmd_models.md](references/supported_deepmd_models.md) ("DPA-4c" section).
+
+**DPA-4c preparation is integrated into `deepmd_prepare.py` — do NOT write the DPA-4c input.json
+by hand.** Use the same Phase 1 `prepare-finetune` sub-command with:
+- `--model_name dpa4c` and `--model_variant` one of `air` / `neo` / `mini` / `nano` / `plus`;
+- `--input_model_path` pointing to the matching official DPA-4c pretrained checkpoint
+  (`DPA4C-<Variant>-OMat24-v20260819.pt`, downloadable from AIS Square — see the models reference).
+
+The script embeds the official per-variant DPA-4c templates (default 12 epochs), writes `input.json`,
+and prints the exact Phase 2 execution command, which trains via
+`dp --pt-expt train input.json --init-model <model> --skip-neighbor-stat`
+and then freezes / compresses / tests with `--pt-expt` as well.
 
 After training, freeze the model and then compress the frozen model for deployment.
 **Every DPA-4c CLI backend must use `--pt-expt` (train, freeze, compress, test) — never `--pt`.**
@@ -186,7 +196,7 @@ water = Atoms(
     "H2O",
     positions=[(0.7601, 1.9270, 1), (1.9575, 1, 1), (1.0, 1.0, 1.0)],
     cell=[100, 100, 100],
-    calculator=,
+    calculator=calc,
 )
 print(water.get_potential_energy())
 print(water.get_forces())
@@ -270,7 +280,7 @@ but instead freeze your own model with the desired settings from `model.ckpt.pt`
 ## Constraints
 
 **Environment & dependencies:** 
-- `dpa4_prepare.py` requires `ase`, `dpdata`, and `numpy` in the local Python environment.
+- `deepmd_prepare.py` requires `ase`, `dpdata`, and `numpy` in the local Python environment.
 
 **Data & model:**
 - All input structures must be **labelled** (having energy + forces + virial, either by DFT or by a fine-tuned model). 
@@ -285,5 +295,5 @@ but instead freeze your own model with the desired settings from `model.ckpt.pt`
 **Backend limitations:**
 - **No support beyond pytorch implementation**: the tensorflow, jax and paddle-paddle backends are not supported.
 - **Check GPU and image compatibility carefully**: as documented in reference
-    [refereces/supported_deepmd_models.md](references/supported_deepmd_models.md).
+    [references/supported_deepmd_models.md](references/supported_deepmd_models.md).
     Choosing wrong GPU or image may lead to unexpected errors.
