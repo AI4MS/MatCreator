@@ -13,6 +13,7 @@ from google.adk.tools.tool_context import ToolContext
 from google.adk.agents.callback_context import CallbackContext
 
 from ...constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+from ...adk_compat import install_lenient_tool_argument_parsing
 from .planning import validate_plan, validate_graph
 from .intent import validate_intent
 from .summarize import validate_summarize
@@ -449,6 +450,10 @@ def before_agent_callback(callback_context: CallbackContext) -> None:
 # ---------------------------------------------------------------------------
 # MatCreator agent instance
 # ---------------------------------------------------------------------------
+
+# Repair malformed tool-call argument JSON (unescaped inner quotes) emitted by
+# some OpenAI-compatible endpoints instead of crashing the planning stream.
+install_lenient_tool_argument_parsing()
 
 
 thinking_agent = LlmAgent(

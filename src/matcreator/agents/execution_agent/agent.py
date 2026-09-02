@@ -11,6 +11,7 @@ from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 
 from ...constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+from ...adk_compat import install_lenient_tool_argument_parsing
 from ...workspace import get_session_workdir
 from ..thinking_agent.summarize import validate_summarize
 from ..thinking_agent.planning import (
@@ -164,6 +165,11 @@ def _exec_before_agent_callback(callback_context: CallbackContext) -> None:
 # ---------------------------------------------------------------------------
 # Agent instance
 # ---------------------------------------------------------------------------
+
+# Repair malformed tool-call argument JSON (unescaped inner quotes) emitted by
+# some OpenAI-compatible endpoints instead of crashing the execution stream.
+install_lenient_tool_argument_parsing()
+
 
 execution_agent = LlmAgent(
     name="execution_orchestrator",

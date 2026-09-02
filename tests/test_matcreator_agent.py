@@ -20,22 +20,38 @@ _IMPORT_TIMEOUT = 15  # seconds
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 
 
-def _import_check(module_expr: str, workspace: str) -> subprocess.CompletedProcess:
+def _import_check(module_expr: str, workspace: str, attempts: int = 2) -> subprocess.CompletedProcess:
     """Run ``import <module_expr>`` in a subprocess with a temp workspace.
 
     PYTHONPATH is extended with the project root so that ``matcreator``
     is discoverable without requiring an editable install.
+
+    A single retry covers runners where the very first import subprocess is
+    killed by a signal (e.g. transient native-library segfaults, return code
+    -11) with no Python-level traceback. Genuine import failures (exit code
+    >= 1 with stderr output) are reported immediately.
     """
     existing = os.environ.get("PYTHONPATH", "")
     pythonpath = f"{_PROJECT_ROOT}{os.pathsep}{existing}" if existing else _PROJECT_ROOT
     env = {**os.environ, "MATCLAW_WORKSPACE": workspace, "PYTHONPATH": pythonpath}
-    return subprocess.run(
+    result = subprocess.run(
         [sys.executable, "-c", f"import {module_expr}"],
         env=env,
         capture_output=True,
         text=True,
         timeout=_IMPORT_TIMEOUT,
     )
+    for _ in range(attempts - 1):
+        if result.returncode >= 0:
+            break  # Genuine exit (success or Python-level failure): report it.
+        result = subprocess.run(
+            [sys.executable, "-c", f"import {module_expr}"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=_IMPORT_TIMEOUT,
+        )
+    return result
 
 
 class TestMatCreatorImports(unittest.TestCase):
