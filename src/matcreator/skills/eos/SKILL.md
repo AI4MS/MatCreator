@@ -1,17 +1,21 @@
 ---
 name: eos
-description: Equation-of-State (EOS) benchmark skill — compare DFT, pretrained, and finetuned model E(V) curves to evaluate force-field quality for bulk crystals and simple systems.
+description: Equation-of-State (EOS) skill — compute E(V) curves with Birch-Murnaghan fitting and benchmark DFT, pretrained, and finetuned model E(V) curves to evaluate force-field quality for bulk crystals and simple systems.
 metadata:
   tools:
     - run_bash
     - run_python
   dependent_skills:
+    - ase
+    - deepmd
+    - mattersim
     - bohrium
     - vasp-pymatgen
     - abacus
     - atomic-structure
-    - ase
     - plot
+    - concepts/machine-learning-force-field
+    - concepts/dft-calculation
   tags:
     - eos
     - benchmark
@@ -21,8 +25,9 @@ metadata:
 
 # EOS Skill
 
-Equation-of-State (EOS) benchmark to evaluate force-field quality for bulk crystals
-and simple systems. Compares DFT, pretrained model, and finetuned model E(V) curves.
+Compute the equation of states (energy-volume curve) for bulk crystals and simple
+systems, and benchmark force-field quality by comparing DFT, pretrained, and
+finetuned model E(V) curves.
 
 > **Only for bulk crystals and simple systems.**
 > Complex systems (defects, surfaces, etc.) should use `dp test` with a test dataset instead.
@@ -31,17 +36,23 @@ and simple systems. Compares DFT, pretrained model, and finetuned model E(V) cur
 
 ## Workflow
 
-1. **DFT relaxation** — relax the unit cell to find the ground-state structure.
+1. **Relaxation** — relax the unit cell to find the ground-state structure.
 
 2. **Generate deformed structures** — create 11 structures with volumes from −5% to +5%
    of the equilibrium volume (uniform spacing).
 
-3. **DFT single-point** — compute energy for all 11 structures.
+3. **Single-point calculations** — compute the energy for all 11 structures.
 
-4. **Model prediction** — predict energies for the same 11 structures using both the
+4. **Equation-of-states fit** — fit the energy-volume data to the Birch-Murnaghan
+   equation of states.
+
+5. **Model prediction** — predict energies for the same 11 structures using both the
    pretrained model and the finetuned model.
 
-5. **Compare** — plot E(V) curves: DFT (ground truth) vs pretrained vs finetuned.
+6. **Compare** — plot E(V) curves: DFT (ground truth) vs pretrained vs finetuned.
+
+When calculating energies, prefer machine-learning force fields (MLFF) over DFT;
+use DFT only when a ground-truth reference is required for benchmarking.
 
 ---
 
