@@ -304,8 +304,8 @@ body[data-skin="rack-lab"] .remote-job-progress-fill {
     0 1px 0 rgba(255, 255, 255, 0.42) inset;
 }
 
-/* MD drivers publish exact steps through the durable monitor when available.
-   Until the first value arrives, keep the whole glass rail visibly alive
+/* When the durable upstream snapshot exposes exact MD steps, show them.
+   Until such telemetry arrives, keep the whole glass rail visibly alive
    instead of presenting the generic short slider as a guessed percentage. */
 body[data-skin="rack-lab"] .remote-job[data-workload-kind="md"][data-current-phase="execute"] .remote-job-progress {
   height: 7px;

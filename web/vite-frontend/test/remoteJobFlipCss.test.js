@@ -98,6 +98,7 @@ test("Remote Jobs fixture is development-only and the controller has no hover po
 
   assert.deepEqual(statuses, new Set(["running", "paused", "collected", "failed"]));
   assert.equal(REMOTE_JOBS_VISUAL_FIXTURE[0].view.phase_label, "Relaxation");
+  assert.equal(REMOTE_JOBS_VISUAL_FIXTURE[0].view.workload_kind, "relaxation");
   assert.equal(REMOTE_JOBS_VISUAL_FIXTURE[0].view.show_progress, true);
   assert.equal(REMOTE_JOBS_VISUAL_FIXTURE[1].view.show_progress, false);
   assert.match(main, /import\.meta\.env\.DEV\s*&&\s*visualFixture === "remote-job-cards"/);

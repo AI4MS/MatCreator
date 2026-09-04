@@ -5,6 +5,7 @@ import {
   createRemoteJobsController,
   normalizeRemoteJobPresentation,
   remoteJobConfiguration,
+  remoteJobActionEnabled,
   remoteJobErrorSummary,
   remoteJobLifecycle,
   remoteJobProgress,
@@ -232,6 +233,101 @@ test("normalizes remote job lifecycle labels", () => {
   assert.deepEqual(remoteJobLifecycle(undefined), { key: "unknown", label: "Unknown" });
 });
 
+test("backend action and capability projections override legacy provider inference", () => {
+  const legacyE2b = {
+    job_id: "job-actions",
+    external_id: "provider-actions",
+    provider: "e2b",
+    status: "running",
+  };
+  const deniedByActions = {
+    ...legacyE2b,
+    capabilities: ["pause"],
+    view: { actions: { refresh: true, pause: false, terminate: false } },
+  };
+  assert.equal(remoteJobActionEnabled(deniedByActions, "refresh"), true);
+  assert.equal(remoteJobActionEnabled(deniedByActions, "pause"), false);
+  assert.equal(remoteJobActionEnabled(deniedByActions, "terminate"), false);
+
+  const grantedByActions = {
+    ...legacyE2b,
+    provider: "bohr_job",
+    capabilities: [],
+    view: { controls: { actions: { pause: true, terminate: true } } },
+  };
+  assert.equal(remoteJobActionEnabled(grantedByActions, "pause"), true);
+  assert.equal(remoteJobActionEnabled(grantedByActions, "terminate"), true);
+  assert.equal(remoteJobActionEnabled(grantedByActions, "refresh"), false);
+
+  assert.equal(remoteJobActionEnabled({ ...legacyE2b, capabilities: [] }, "pause"), false);
+  assert.equal(remoteJobActionEnabled({
+    ...legacyE2b,
+    provider: "bohr_sandbox",
+    capabilities: ["pause"],
+  }, "pause"), true);
+});
+
+test("legacy action fallback mirrors the backend lifecycle transition matrix", () => {
+  const expected = {
+    submitting: [true, false, false],
+    queued: [true, true, true],
+    running: [true, true, true],
+    pause_requested: [false, false, true],
+    paused: [false, false, true],
+    resume_requested: [false, false, true],
+    resuming: [true, false, true],
+    succeeded: [false, false, false],
+    collecting: [false, false, false],
+    terminate_requested: [false, false, false],
+    terminated: [false, false, false],
+  };
+  for (const [status, [refresh, pause, terminate]] of Object.entries(expected)) {
+    const job = {
+      job_id: `job-${status}`,
+      external_id: `provider-${status}`,
+      provider: "e2b",
+      status,
+    };
+    assert.equal(remoteJobActionEnabled(job, "refresh"), refresh, `${status} refresh`);
+    assert.equal(remoteJobActionEnabled(job, "pause"), pause, `${status} pause`);
+    assert.equal(remoteJobActionEnabled(job, "terminate"), terminate, `${status} terminate`);
+  }
+  assert.equal(remoteJobActionEnabled({
+    job_id: "job-no-provider-id",
+    provider: "e2b",
+    status: "running",
+  }, "refresh"), false);
+});
+
+test("rendered Rack Lab controls follow the backend action matrix", () => {
+  const fixture = createFixture();
+  fixture.controller.setPresentationJobs([
+    {
+      job_id: "projected-denied",
+      external_id: "provider-denied",
+      provider: "e2b",
+      status: "running",
+      view: { actions: { refresh: true, pause: false, terminate: false } },
+    },
+    {
+      job_id: "projected-granted",
+      external_id: "provider-granted",
+      provider: "bohr_job",
+      status: "running",
+      view: { actions: { refresh: false, pause: true, terminate: true } },
+    },
+  ]);
+
+  const [denied, granted] = fixture.list.children;
+  assert.equal(denied.querySelector(".remote-job-refresh-button").disabled, false);
+  assert.equal(denied.querySelector(".remote-job-action.pause").disabled, true);
+  assert.equal(denied.querySelector(".remote-job-action.terminate").disabled, true);
+  assert.equal(granted.querySelector(".remote-job-refresh-button").disabled, true);
+  assert.equal(granted.querySelector(".remote-job-action.pause").disabled, false);
+  assert.equal(granted.querySelector(".remote-job-action.terminate").disabled, false);
+  fixture.controller.destroy();
+});
+
 test("Remote Jobs expansion asks the graph to refit before and after its height transition", () => {
   let layoutChanges = 0;
   const { controller, document } = createFixture({
@@ -257,7 +353,62 @@ test("reports real percentages and honest non-numeric progress states", () => {
     { mode: "determinate", percent: 64, shortLabel: "64%", ariaText: "Execute · 64%" },
   );
   assert.equal(remoteJobProgress({ status: "running", progress_percent: 1 }).percent, 1);
-  assert.equal(remoteJobProgress({ status: "running", progress: 0.5 }).percent, 50);
+  assert.equal(remoteJobProgress({ status: "running", progress: 1 }).percent, 1);
+  assert.equal(remoteJobProgress({ status: "running", snapshot: { progress: 1 } }).percent, 1);
+  assert.equal(remoteJobProgress({ status: "running", progress: 64 }).percent, 64);
+  assert.equal(remoteJobProgress({ status: "running", snapshot: { progress: 37 } }).percent, 37);
+  assert.equal(remoteJobProgress({ status: "running", progress_fraction: 0.25 }).percent, 25);
+  assert.equal(remoteJobProgress({
+    status: "running",
+    view: { workload_kind: "relaxation", current_phase: "execute", progress: { fraction: 0.37 } },
+  }).percent, 37);
+  assert.equal(remoteJobProgress({
+    status: "running",
+    view: {
+      version: "mc.remote-job-view.v2",
+      workload: { workload_kind: "relaxation", current_phase: "execute" },
+      progress: { percent: 1 },
+    },
+  }).percent, 1);
+  assert.equal(remoteJobProgress({
+    status: "running",
+    view: {
+      version: "mc.remote-job-view.v2",
+      workload: { workload_kind: "relaxation", current_phase: "execute" },
+      progress: { current: 1, total: 4 },
+    },
+  }).percent, 25);
+  assert.equal(remoteJobProgress({
+    status: "running",
+    view: { workload_kind: "relaxation", current_phase: "execute", progress: { fraction: 0.37 } },
+    snapshot: { progress_percent: 80 },
+  }).percent, 37);
+  assert.equal(remoteJobProgress({
+    status: "running",
+    snapshot: { progress_percent: 80 },
+    view: {
+      version: "mc.remote-job-view.v2",
+      workload: { workload_kind: "relaxation", current_phase: "execute" },
+      progress: 1,
+    },
+  }).mode, "indeterminate");
+  assert.equal(remoteJobProgress({
+    status: "running",
+    progress_percent: 80,
+    view: {
+      version: "mc.remote-job-view.v2",
+      workload: { workload_kind: "relaxation", current_phase: "execute" },
+      progress: { mode: "indeterminate" },
+    },
+  }).mode, "indeterminate");
+  for (const invalidProgress of [true, "37", -1, 101, Number.POSITIVE_INFINITY]) {
+    assert.equal(remoteJobProgress({ status: "running", progress: invalidProgress }).mode, "indeterminate");
+  }
+  assert.equal(remoteJobProgress({
+    status: "running",
+    progress: 0.37,
+    view: { workload_kind: "relaxation", current_phase: "execute", show_progress: false },
+  }).mode, "hidden");
   assert.deepEqual(
     remoteJobProgress({ status: "running", snapshot: { provider_status: "running" } }),
     { mode: "indeterminate", percent: null, shortLabel: "Live", ariaText: "Execute · exact progress unavailable" },
@@ -302,6 +453,77 @@ test("normalizes typed phase plans with presentation precedence and safe legacy 
     specification: { presentation: { workload_kind: "training", current_phase: "train" } },
   }).currentLabel, "Train");
   assert.equal(normalizeRemoteJobPresentation({ status: "running" }).currentLabel, "Execute");
+
+  const upstreamRelaxation = normalizeRemoteJobPresentation({
+    status: "running",
+    specification: {
+      workload_kind: "relaxation",
+      task_type: "Structure relaxation",
+      template: "deepmd",
+      presentation: {
+        workload_kind: "relaxation",
+        current_phase: "execute",
+        phase_plan: [
+          { id: "prepare", label: "Prepare relaxation inputs" },
+          { id: "submit", label: "Provision relaxation runtime" },
+          { id: "queue", label: "Stage relaxation inputs" },
+          { id: "execute", label: "Relax structure", progress_applicable: true },
+          { id: "collect", label: "Collect relaxed structure" },
+          { id: "validate", label: "Verify convergence" },
+        ],
+      },
+    },
+  });
+  assert.equal(upstreamRelaxation.kind, "relaxation");
+  assert.equal(upstreamRelaxation.kindLabel, "Relaxation");
+  assert.equal(upstreamRelaxation.currentLabel, "Relax structure");
+  assert.equal(upstreamRelaxation.showsProgress, true);
+  assert.deepEqual(
+    upstreamRelaxation.phases.map(({ id, label }) => [id, label]),
+    [
+      ["prepare", "Prepare relaxation inputs"],
+      ["submit", "Provision relaxation runtime"],
+      ["queue", "Stage relaxation inputs"],
+      ["execute", "Relax structure"],
+      ["collect", "Collect relaxed structure"],
+      ["validate", "Verify convergence"],
+    ],
+  );
+
+  const legacyRelaxation = normalizeRemoteJobPresentation({
+    status: "running",
+    job_name: "structure-relaxation",
+    specification: { template: "deepmd" },
+  });
+  assert.equal(legacyRelaxation.kind, "relaxation");
+  assert.equal(legacyRelaxation.currentLabel, "Relax");
+
+  const nestedV2Relaxation = normalizeRemoteJobPresentation({
+    status: "running",
+    job_name: "vasp-training-md-misleading",
+    view: {
+      version: "mc.remote-job-view.v2",
+      workload: {
+        workload_kind: "relaxation",
+        current_phase: "execution",
+        phase_label: "Optimize geometry",
+        phase_plan: [
+          { phase: "execution", label: "Optimize geometry", progress_applicable: true },
+        ],
+      },
+    },
+  });
+  assert.equal(nestedV2Relaxation.schemaVersion, 2);
+  assert.equal(nestedV2Relaxation.kind, "relaxation");
+  assert.equal(nestedV2Relaxation.currentPhase, "execute");
+  assert.equal(nestedV2Relaxation.currentLabel, "Optimize geometry");
+  assert.equal(nestedV2Relaxation.showsProgress, true);
+
+  assert.equal(normalizeRemoteJobPresentation({
+    status: "running",
+    job_name: "deepmd-training-misleading",
+    view: { version: "mc.remote-job-view.v2", workload: { workload_kind: "future-kind" } },
+  }).kind, "generic");
 
   const customPlan = normalizeRemoteJobPresentation({
     status: "running",

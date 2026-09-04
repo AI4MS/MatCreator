@@ -1,6 +1,13 @@
 import { httpClient as defaultHttpClient } from "../../shared/api/http.js";
 
-const ACTIVE_JOB_STATUSES = new Set(["queued", "running", "submitting", "resuming"]);
+const REFRESHABLE_JOB_STATUSES = new Set([
+  "submitting", "queued", "running", "resuming",
+]);
+const PAUSABLE_JOB_STATUSES = new Set(["queued", "running"]);
+const TERMINABLE_JOB_STATUSES = new Set([
+  "queued", "running", "pause_requested", "paused", "resume_requested", "resuming",
+]);
+const LEGACY_PAUSE_PROVIDERS = new Set(["e2b"]);
 const EXECUTION_PROGRESS_STATUSES = new Set([
   "running", "pause_requested", "paused", "resume_requested", "resuming",
 ]);
@@ -36,6 +43,13 @@ const WORKLOAD_DEFINITIONS = Object.freeze({
       ["execute", "Simulate"], ["collect", "Collect"], ["validate", "Validate"],
     ]),
   }),
+  relaxation: Object.freeze({
+    label: "Relaxation",
+    phases: Object.freeze([
+      ["prepare", "Prepare"], ["submit", "Submit"], ["queue", "Queue"],
+      ["execute", "Relax"], ["collect", "Collect"], ["validate", "Verify"],
+    ]),
+  }),
   vasp: Object.freeze({
     label: "VASP",
     phases: Object.freeze([
@@ -64,6 +78,7 @@ const PHASE_ALIASES = Object.freeze({
   queue: "queue", queued: "queue", pending: "queue", scheduling: "queue", input_staging: "queue",
   execute: "execute", executing: "execute", running: "execute", simulation: "execute", simulate: "execute",
   execution: "execute", solve: "execute", solving: "execute", train: "execute", training: "execute",
+  relax: "execute", relaxing: "execute", relaxation: "execute", optimization: "execute", optimisation: "execute",
   collect: "collect", collecting: "collect", collection: "collect", collected: "collect", succeeded: "collect",
   validate: "validate", validating: "validate", validation: "validate", verify: "validate", verifying: "validate",
   evaluate: "validate", evaluating: "validate",
@@ -96,7 +111,103 @@ function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function remoteJobView(job = {}) {
+  return isRecord(job.view) ? job.view : {};
+}
+
+function projectedLifecycleKey(job = {}) {
+  const view = remoteJobView(job);
+  const lifecycle = isRecord(view.lifecycle) ? view.lifecycle : {};
+  const allocation = isRecord(view.allocation) ? view.allocation : {};
+  return remoteJobLifecycle(
+    lifecycle.status ?? allocation.lifecycle_status ?? view.lifecycle_status ?? job.status,
+  ).key;
+}
+
+function projectedActionDecision(job = {}, action) {
+  const view = remoteJobView(job);
+  const controls = isRecord(view.controls) ? view.controls : {};
+  const sources = [
+    view.actions,
+    controls.actions,
+    view.action_projection,
+    job.actions,
+    job.action_projection,
+    job.available_actions,
+  ];
+  for (const source of sources) {
+    if (Array.isArray(source)) return source.map(String).includes(action);
+    if (!isRecord(source)) continue;
+    const value = source[action];
+    if (isRecord(value)) {
+      return value.enabled === true || value.available === true || value.allowed === true;
+    }
+    // A projected action matrix is complete: an omitted or non-true entry is
+    // deliberately unavailable and must not fall through to provider guesses.
+    return value === true;
+  }
+  return null;
+}
+
+function projectedCapabilities(job = {}) {
+  const view = remoteJobView(job);
+  const allocation = isRecord(view.allocation) ? view.allocation : {};
+  const sources = [view.capabilities, allocation.capabilities, job.capabilities];
+  for (const source of sources) {
+    if (Array.isArray(source)) {
+      return { present: true, values: new Set(source.map((value) => String(value).toLowerCase())) };
+    }
+    if (isRecord(source)) {
+      const values = new Set(
+        Object.entries(source)
+          .filter(([, enabled]) => enabled === true || isRecord(enabled) && enabled.enabled === true)
+          .map(([name]) => name.toLowerCase()),
+      );
+      return { present: true, values };
+    }
+  }
+  return { present: false, values: new Set() };
+}
+
+/** Resolve controls from a backend projection, with a conservative legacy fallback. */
+export function remoteJobActionEnabled(job = {}, action) {
+  if (!["refresh", "pause", "terminate"].includes(action)) return false;
+  const projected = projectedActionDecision(job, action);
+  if (projected !== null) return projected;
+
+  const status = projectedLifecycleKey(job);
+  const hasProviderIdentity = Boolean(job.external_id || remoteJobView(job).identity?.provider_job_id);
+  if (action === "refresh") {
+    return hasProviderIdentity && REFRESHABLE_JOB_STATUSES.has(status);
+  }
+  if (action === "terminate") {
+    return hasProviderIdentity && TERMINABLE_JOB_STATUSES.has(status);
+  }
+  if (!hasProviderIdentity || !PAUSABLE_JOB_STATUSES.has(status)) return false;
+
+  const capabilities = projectedCapabilities(job);
+  if (capabilities.present) return capabilities.values.has("pause");
+  // Old list responses have no public capability projection. Preserve their
+  // known E2B behavior only as the final fallback; it can never override a
+  // backend actions/capabilities decision above.
+  return LEGACY_PAUSE_PROVIDERS.has(String(job.provider || "").toLowerCase());
+}
+
+function isRemoteJobViewV2(job = {}) {
+  return remoteJobView(job).version === "mc.remote-job-view.v2";
+}
+
+function projectedWorkload(job = {}) {
+  const view = remoteJobView(job);
+  if (isRecord(view.workload)) return view.workload;
+  if (isRecord(view.task)) return view.task;
+  return {};
+}
+
 function presentationSources(job = {}) {
+  if (isRemoteJobViewV2(job)) {
+    return [projectedWorkload(job), remoteJobView(job)];
+  }
   const specification = isRecord(job.specification) ? job.specification : {};
   return [job.view, job.presentation, specification.presentation].filter(isRecord);
 }
@@ -114,6 +225,10 @@ function firstPresentationValue(job, ...keys) {
 function normalizedWorkloadKind(value) {
   const key = String(value || "").trim().toLowerCase().replaceAll("-", "_");
   if (["md", "molecular_dynamics", "dynamics", "simulation", "lammps", "ase_md"].includes(key)) return "md";
+  if ([
+    "relaxation", "relax", "structure_relaxation", "geometry_optimization",
+    "geometry_optimisation", "optimization", "optimisation",
+  ].includes(key)) return "relaxation";
   if (["vasp", "dft", "electronic_structure", "first_principles"].includes(key)) return "vasp";
   if (["training", "train", "finetune", "fine_tune", "deepmd", "model_training"].includes(key)) return "training";
   if (key === "generic" || key === "task") return "generic";
@@ -129,6 +244,7 @@ function inferLegacyWorkloadKind(job = {}) {
     specification.job_name, specification.template, specification.image_address,
     specification.task_type, specification.workload_kind,
   ].filter((value) => value !== undefined && value !== null).join(" ").toLowerCase();
+  if (/\b(?:structure[ _-]?)?relax(?:ation|ing|ed)?\b|\bgeometry[ _-]?(?:optimi[sz]ation|relaxation)\b/.test(corpus)) return "relaxation";
   if (/\bvasp\b|\bdft\b|\bscf\b|\bnscf\b/.test(corpus)) return "vasp";
   if (/\bdeepmd\b|\bfinetun(?:e|ing)\b|\btraining\b|\btrain\b|\bmattergen\b/.test(corpus)) return "training";
   if (/\blammps\b|\bmolecular[ _-]?dynamics\b|\base[ _-]?md\b|\bnpt\b|\bnvt\b|\bnve\b/.test(corpus)) return "md";
@@ -191,7 +307,10 @@ export function normalizeRemoteJobPresentation(job = {}) {
   const specification = isRecord(job.specification) ? job.specification : {};
   const explicitKind = firstPresentationValue(job, "workload_kind", "task_type", "kind", "type")
     ?? job.workload_kind ?? job.task_type ?? specification.workload_kind ?? specification.task_type;
-  const kind = normalizedWorkloadKind(explicitKind) || inferLegacyWorkloadKind(job);
+  // A versioned backend view is authoritative. Never reclassify it from
+  // provider/template strings when it intentionally reports an unknown kind.
+  const kind = normalizedWorkloadKind(explicitKind)
+    || (isRemoteJobViewV2(job) ? "generic" : inferLegacyWorkloadKind(job));
   const definition = WORKLOAD_DEFINITIONS[kind];
   const suppliedPlan = firstPresentationValue(job, "phase_plan", "phases", "stages");
   const phasePlan = normalizePhasePlan(kind, suppliedPlan);
@@ -227,7 +346,7 @@ export function normalizeRemoteJobPresentation(job = {}) {
     && (EXECUTION_PROGRESS_STATUSES.has(lifecycle.key) || lifecycle.key === "unknown");
 
   return {
-    schemaVersion: 1,
+    schemaVersion: isRemoteJobViewV2(job) ? 2 : 1,
     kind,
     kindLabel: definition.label,
     title: String(title),
@@ -243,53 +362,77 @@ export function normalizeRemoteJobPresentation(job = {}) {
 }
 
 function normalizedPercent(value, { fraction = false } = {}) {
-  if (value === null || value === undefined || value === "") return null;
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric) || numeric < 0) return null;
-  const percent = fraction ? numeric * 100 : numeric;
-  return Math.round(Math.min(100, percent));
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const maximum = fraction ? 1 : 100;
+  if (value < 0 || value > maximum) return null;
+  return Math.round(fraction ? value * 100 : value);
+}
+
+function progressPercentFromSource(source, { allowLegacyScalar = false } = {}) {
+  if (isRecord(source)) {
+    const direct = normalizedPercent(source.percent);
+    if (direct !== null) return direct;
+    const fraction = normalizedPercent(source.fraction, { fraction: true });
+    if (fraction !== null) return fraction;
+    const current = source.current ?? source.completed;
+    const total = source.total;
+    if (typeof current === "number" && Number.isFinite(current)
+        && typeof total === "number" && Number.isFinite(total)
+        && current >= 0 && total > 0 && current <= total) {
+      return Math.round((current / total) * 100);
+    }
+    return null;
+  }
+  // A bare scalar has no unit. It is accepted only for legacy fields and is
+  // always a percentage; fractions must use the explicit ``fraction`` key.
+  if (!allowLegacyScalar) return null;
+  return normalizedPercent(source);
 }
 
 function explicitRemoteJobProgress(job = {}) {
-  const snapshot = job.snapshot && typeof job.snapshot === "object" ? job.snapshot : {};
+  const snapshot = isRecord(job.snapshot) ? job.snapshot : {};
   const specification = isRecord(job.specification) ? job.specification : {};
-  const progressSources = [
+  const view = remoteJobView(job);
+  if (isRemoteJobViewV2(job) && Object.prototype.hasOwnProperty.call(view, "progress")) {
+    return progressPercentFromSource(view.progress);
+  }
+  // Versioned/public projections take precedence over legacy job fields, and
+  // current job fields take precedence over potentially stale snapshots.
+  const projectedSources = [
     job.view?.progress,
     job.presentation?.progress,
     specification.presentation?.progress,
     job.view?.execution_progress,
     job.presentation?.execution_progress,
     specification.presentation?.execution_progress,
+  ].filter((value) => value !== undefined && value !== null);
+  for (const source of projectedSources) {
+    const percent = progressPercentFromSource(source, { allowLegacyScalar: true });
+    if (percent !== null) return percent;
+  }
+
+  const currentJobSources = [
+    isRecord(job.progress) ? job.progress : undefined,
+    job.progress_percent === undefined ? undefined : { percent: job.progress_percent },
+    job.progress_fraction === undefined ? undefined : { fraction: job.progress_fraction },
+    isRecord(job.progress) ? undefined : job.progress,
+  ].filter((value) => value !== undefined && value !== null);
+  for (const source of currentJobSources) {
+    const percent = progressPercentFromSource(source, { allowLegacyScalar: true });
+    if (percent !== null) return percent;
+  }
+
+  const snapshotSources = [
     snapshot.execution_progress,
     snapshot.task_progress,
-    job.progress,
+    snapshot.progress_percent === undefined ? undefined : { percent: snapshot.progress_percent },
+    snapshot.percent === undefined ? undefined : { percent: snapshot.percent },
+    snapshot.progress_fraction === undefined ? undefined : { fraction: snapshot.progress_fraction },
     snapshot.progress,
   ].filter((value) => value !== undefined && value !== null);
-  const directCandidates = [
-    job.progress_percent,
-    snapshot.progress_percent,
-    snapshot.percent,
-    ...progressSources.map((progress) => isRecord(progress) ? progress.percent : null),
-  ];
-  for (const candidate of directCandidates) {
-    const percent = normalizedPercent(candidate);
+  for (const source of snapshotSources) {
+    const percent = progressPercentFromSource(source, { allowLegacyScalar: true });
     if (percent !== null) return percent;
-  }
-  for (const candidate of [
-    typeof job.progress === "number" ? job.progress : null,
-    job.progress_fraction,
-    snapshot.progress_fraction,
-    ...progressSources.map((progress) => isRecord(progress) ? progress.fraction : null),
-  ]) {
-    const percent = normalizedPercent(candidate, { fraction: true });
-    if (percent !== null) return percent;
-  }
-  for (const progress of progressSources) {
-    const completed = Number(progress?.current ?? progress?.completed);
-    const total = Number(progress?.total);
-    if (Number.isFinite(completed) && Number.isFinite(total) && total > 0) {
-      return Math.round(Math.min(100, Math.max(0, (completed / total) * 100)));
-    }
   }
   return null;
 }
@@ -623,7 +766,7 @@ export function createRemoteJobsController({
     const owner = state.activeSessionUserId || state.userId;
     const sessionId = state.sessionId;
     if (presentationJobs !== null) return;
-    if (!sessionId || !owner || !job?.job_id) return;
+    if (!sessionId || !owner || !job?.job_id || !remoteJobActionEnabled(job, action)) return;
     button.disabled = true;
     try {
       if (dummyMode) {
@@ -657,8 +800,11 @@ export function createRemoteJobsController({
     refresh.innerHTML = '<svg class="refresh-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M18.5 9A7 7 0 1 0 19 15"></path><path d="M18.5 5v4h-4"></path></svg>';
     refresh.title = `Refresh status for ${jobLabel}`;
     refresh.setAttribute("aria-label", `Refresh status for ${jobLabel}`);
+    refresh.disabled = !remoteJobActionEnabled(job, "refresh");
+    refresh.setAttribute("aria-disabled", String(refresh.disabled));
     refresh.addEventListener("click", (event) => {
       event.stopPropagation();
+      if (refresh.disabled) return;
       void controlJob(job, "refresh", refresh);
     });
     return refresh;
@@ -667,11 +813,8 @@ export function createRemoteJobsController({
   function createActions(job) {
     const actions = documentRef.createElement("div");
     actions.className = "remote-job-actions";
-    const active = ACTIVE_JOB_STATUSES.has(job.status);
-    // The upstream provider contract currently exposes pause only for E2B.
-    // Bohrium Sandbox and batch jobs still support refresh/terminate, but a
-    // visible pause button would promise an operation the backend rejects.
-    const canPause = String(job.provider || "").toLowerCase() === "e2b";
+    const canPause = remoteJobActionEnabled(job, "pause");
+    const canTerminate = remoteJobActionEnabled(job, "terminate");
 
     const pause = documentRef.createElement("button");
     pause.type = "button";
@@ -680,10 +823,12 @@ export function createRemoteJobsController({
     pause.textContent = "Ⅱ";
     pause.title = "Pause job";
     pause.setAttribute("aria-label", "Pause job");
-    pause.disabled = !active || !canPause;
-    if (!canPause) pause.title = "Pause is not supported by this provider";
+    pause.disabled = !canPause;
+    pause.setAttribute("aria-disabled", String(pause.disabled));
+    if (!canPause) pause.title = "Pause is not available for this job";
     pause.addEventListener("click", (event) => {
       event.stopPropagation();
+      if (pause.disabled) return;
       void controlJob(job, "pause", pause);
     });
 
@@ -694,9 +839,11 @@ export function createRemoteJobsController({
     terminate.textContent = "■";
     terminate.title = "Terminate job";
     terminate.setAttribute("aria-label", "Terminate job");
-    terminate.disabled = !active && job.status !== "paused";
+    terminate.disabled = !canTerminate;
+    terminate.setAttribute("aria-disabled", String(terminate.disabled));
     terminate.addEventListener("click", (event) => {
       event.stopPropagation();
+      if (terminate.disabled) return;
       void controlJob(job, "terminate", terminate);
     });
     actions.append(pause, terminate);

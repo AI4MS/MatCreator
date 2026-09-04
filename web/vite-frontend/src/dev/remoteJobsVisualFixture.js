@@ -7,7 +7,7 @@ export const REMOTE_JOBS_VISUAL_FIXTURE = Object.freeze([
     provider: "e2b",
     status: "running",
     view: Object.freeze({
-      workload_kind: "vasp",
+      workload_kind: "relaxation",
       current_phase: "execute",
       phase_label: "Relaxation",
       show_progress: true,
@@ -36,7 +36,7 @@ export const REMOTE_JOBS_VISUAL_FIXTURE = Object.freeze([
     provider: "e2b",
     status: "paused",
     view: Object.freeze({
-      workload_kind: "vasp",
+      workload_kind: "relaxation",
       current_phase: "queue",
       phase_label: "Stage runtime",
       show_progress: false,
