@@ -1,11 +1,793 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { remoteJobLifecycle } from "../src/features/remoteJobs/RemoteJobsController.js";
+import {
+  createRemoteJobsController,
+  normalizeRemoteJobPresentation,
+  remoteJobConfiguration,
+  remoteJobErrorSummary,
+  remoteJobLifecycle,
+  remoteJobProgress,
+} from "../src/features/remoteJobs/RemoteJobsController.js";
+
+class FakeClassList {
+  constructor(element) {
+    this.element = element;
+  }
+
+  values() {
+    return new Set(this.element.className.split(/\s+/).filter(Boolean));
+  }
+
+  contains(name) {
+    return this.values().has(name);
+  }
+
+  add(...names) {
+    const values = this.values();
+    names.forEach((name) => values.add(name));
+    this.element.className = Array.from(values).join(" ");
+  }
+
+  remove(...names) {
+    const values = this.values();
+    names.forEach((name) => values.delete(name));
+    this.element.className = Array.from(values).join(" ");
+  }
+
+  toggle(name, force) {
+    const enabled = force === undefined ? !this.contains(name) : Boolean(force);
+    if (enabled) this.add(name);
+    else this.remove(name);
+    return enabled;
+  }
+}
+
+function matchesClassSelector(element, selector) {
+  const classes = selector.split(".").filter(Boolean);
+  return classes.length > 0 && classes.every((name) => element.classList.contains(name));
+}
+
+class FakeElement {
+  constructor(ownerDocument, tagName) {
+    this.ownerDocument = ownerDocument;
+    this.tagName = tagName.toUpperCase();
+    this.children = [];
+    this.parentElement = null;
+    this.attributes = new Map();
+    this.listeners = new Map();
+    this.dataset = {};
+    this.style = {};
+    this.className = "";
+    this.classList = new FakeClassList(this);
+    this.textContent = "";
+    this.innerHTML = "";
+    this.id = "";
+    this.title = "";
+    this.type = "";
+    this.disabled = false;
+  }
+
+  appendChild(child) {
+    child.parentElement = this;
+    this.children.push(child);
+    return child;
+  }
+
+  append(...children) {
+    children.forEach((child) => this.appendChild(child));
+  }
+
+  replaceChildren(...children) {
+    this.children.forEach((child) => {
+      child.parentElement = null;
+    });
+    this.children = [];
+    this.append(...children);
+  }
+
+  remove() {
+    if (!this.parentElement) return;
+    this.parentElement.children = this.parentElement.children.filter((child) => child !== this);
+    this.parentElement = null;
+  }
+
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  }
+
+  getAttribute(name) {
+    return this.attributes.get(name) ?? null;
+  }
+
+  removeAttribute(name) {
+    this.attributes.delete(name);
+  }
+
+  hasAttribute(name) {
+    return this.attributes.has(name);
+  }
+
+  addEventListener(type, listener) {
+    if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+    this.listeners.get(type).add(listener);
+  }
+
+  removeEventListener(type, listener) {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  dispatch(type, overrides = {}) {
+    let propagationStopped = false;
+    const event = {
+      key: undefined,
+      currentTarget: this,
+      defaultPrevented: false,
+      preventDefault() { this.defaultPrevented = true; },
+      stopPropagation() { propagationStopped = true; },
+      target: this,
+      ...overrides,
+    };
+    let current = this;
+    while (current) {
+      event.currentTarget = current;
+      for (const listener of current.listeners.get(type) || []) listener(event);
+      if (propagationStopped) break;
+      current = current.parentElement;
+    }
+    return event;
+  }
+
+  descendants() {
+    return this.children.flatMap((child) => [child, ...child.descendants()]);
+  }
+
+  querySelector(selector) {
+    return this.descendants().find((element) => matchesClassSelector(element, selector)) || null;
+  }
+
+  querySelectorAll(selector) {
+    return this.descendants().filter((element) => matchesClassSelector(element, selector));
+  }
+
+  focus() {
+    this.ownerDocument.activeElement = this;
+  }
+}
+
+class FakeDocument {
+  constructor() {
+    this.listeners = new Map();
+    this.activeElement = null;
+    this.body = this.createElement("body");
+    this.elements = new Map([
+      ["remote-job-list", this.createElement("ul")],
+      ["refresh-remote-jobs", this.createElement("button")],
+      ["remote-jobs-toggle", this.createElement("button")],
+      ["remote-jobs-pane", this.createElement("section")],
+      ["graph-column", this.createElement("div")],
+    ]);
+  }
+
+  createElement(tagName) {
+    return new FakeElement(this, tagName);
+  }
+
+  getElementById(id) {
+    return this.elements.get(id) || null;
+  }
+
+  addEventListener(type, listener) {
+    if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+    this.listeners.get(type).add(listener);
+  }
+
+  removeEventListener(type, listener) {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  dispatch(type, overrides = {}) {
+    const event = { key: undefined, ...overrides };
+    for (const listener of this.listeners.get(type) || []) listener(event);
+  }
+}
+
+function createFixture({ controllerOverrides = {}, skin = "rack-lab", windowOverrides = {} } = {}) {
+  const document = new FakeDocument();
+  document.body.dataset.skin = skin;
+  const state = {
+    activeSessionUserId: "owner-1",
+    remoteJobs: [],
+    sessionId: "session-1",
+    userId: "owner-1",
+  };
+  const window = {
+    clearInterval() {},
+    setInterval() { return 1; },
+    ...windowOverrides,
+  };
+  const controller = createRemoteJobsController({
+    state,
+    dummyMode: true,
+    document,
+    window,
+    ...controllerOverrides,
+  });
+  return {
+    controller,
+    document,
+    list: document.getElementById("remote-job-list"),
+    state,
+  };
+}
+
+function treeText(element) {
+  return [element, ...element.descendants()].map((node) => node.textContent || "").join(" ");
+}
 
 test("normalizes remote job lifecycle labels", () => {
   assert.deepEqual(remoteJobLifecycle("RUNNING"), { key: "running", label: "Running" });
   assert.deepEqual(remoteJobLifecycle("collected"), { key: "collected", label: "Completed" });
   assert.deepEqual(remoteJobLifecycle("pause_requested"), { key: "pause_requested", label: "Pausing" });
   assert.deepEqual(remoteJobLifecycle(undefined), { key: "unknown", label: "Unknown" });
+});
+
+test("Remote Jobs expansion asks the graph to refit before and after its height transition", () => {
+  let layoutChanges = 0;
+  const { controller, document } = createFixture({
+    controllerOverrides: { onLayoutChanged: () => { layoutChanges += 1; } },
+  });
+  const pane = document.getElementById("remote-jobs-pane");
+
+  controller.setExpanded(true);
+  assert.equal(layoutChanges, 1);
+  pane.dispatch("transitionend", { propertyName: "opacity" });
+  assert.equal(layoutChanges, 1);
+  pane.dispatch("transitionend", { propertyName: "height" });
+  assert.equal(layoutChanges, 2);
+
+  controller.destroy();
+  pane.dispatch("transitionend", { propertyName: "height" });
+  assert.equal(layoutChanges, 2);
+});
+
+test("reports real percentages and honest non-numeric progress states", () => {
+  assert.deepEqual(
+    remoteJobProgress({ status: "running", snapshot: { progress_percent: 64 } }),
+    { mode: "determinate", percent: 64, shortLabel: "64%", ariaText: "Execute · 64%" },
+  );
+  assert.equal(remoteJobProgress({ status: "running", progress_percent: 1 }).percent, 1);
+  assert.equal(remoteJobProgress({ status: "running", progress: 0.5 }).percent, 50);
+  assert.deepEqual(
+    remoteJobProgress({ status: "running", snapshot: { provider_status: "running" } }),
+    { mode: "indeterminate", percent: null, shortLabel: "Live", ariaText: "Execute · exact progress unavailable" },
+  );
+  assert.equal(remoteJobProgress({ status: "paused" }).mode, "paused");
+  assert.deepEqual(
+    remoteJobProgress({ status: "queued", progress_percent: 88 }),
+    { mode: "hidden", percent: null, shortLabel: "", ariaText: "Queue · progress is not applicable to this stage" },
+  );
+  assert.equal(remoteJobProgress({ status: "succeeded" }).mode, "hidden");
+  assert.equal(remoteJobProgress({ status: "succeeded" }).percent, null);
+  assert.equal(remoteJobProgress({ status: "collected" }).mode, "hidden");
+  assert.equal(remoteJobProgress({ status: "collected" }).percent, null);
+  assert.equal(remoteJobProgress({ status: "failed" }).mode, "hidden");
+});
+
+test("normalizes typed phase plans with presentation precedence and safe legacy fallbacks", () => {
+  const preferred = normalizeRemoteJobPresentation({
+    status: "running",
+    view: {
+      workload_kind: "md",
+      current_phase: "simulate",
+      title: "NVT production",
+    },
+    presentation: { workload_kind: "vasp", current_phase: "solve" },
+    specification: { presentation: { workload_kind: "training", current_phase: "train" } },
+  });
+  assert.equal(preferred.kind, "md");
+  assert.equal(preferred.kindLabel, "MD");
+  assert.equal(preferred.title, "NVT production");
+  assert.equal(preferred.currentPhase, "execute");
+  assert.equal(preferred.currentLabel, "Simulate");
+  assert.equal(preferred.phaseIndex, 3);
+  assert.equal(preferred.showsExecutionProgress, true);
+
+  assert.equal(normalizeRemoteJobPresentation({
+    status: "running",
+    presentation: { workload_kind: "vasp", current_phase: "solve" },
+  }).currentLabel, "Solve");
+  assert.equal(normalizeRemoteJobPresentation({
+    status: "running",
+    specification: { presentation: { workload_kind: "training", current_phase: "train" } },
+  }).currentLabel, "Train");
+  assert.equal(normalizeRemoteJobPresentation({ status: "running" }).currentLabel, "Execute");
+
+  const customPlan = normalizeRemoteJobPresentation({
+    status: "running",
+    view: {
+      workload_kind: "md",
+      current_phase: "simulation",
+      phase_plan: [
+        { id: "preparing", label: "Stage inputs" },
+        { id: "simulation", label: "Integrate trajectory" },
+        { id: "validating", label: "Audit outputs" },
+      ],
+    },
+  });
+  assert.deepEqual(
+    customPlan.phases.map(({ id, label }) => [id, label]),
+    [["prepare", "Stage inputs"], ["execute", "Integrate trajectory"], ["validate", "Audit outputs"]],
+  );
+  assert.equal(customPlan.currentLabel, "Integrate trajectory");
+
+  const canonicalContract = normalizeRemoteJobPresentation({
+    status: "running",
+    view: {
+      workload_kind: "md",
+      current_phase: "execution",
+      phase_plan: [
+        { phase: "preparation", label: "Prepare" },
+        { phase: "provisioning", label: "Provision" },
+        { phase: "input_staging", label: "Stage inputs" },
+        { phase: "execution", label: "Run MD", progress_applicable: true },
+        { phase: "validation", label: "Validate" },
+        { phase: "collection", label: "Collect" },
+      ],
+    },
+  });
+  assert.deepEqual(
+    canonicalContract.phases.map(({ id, label }) => [id, label]),
+    [
+      ["prepare", "Prepare"], ["submit", "Provision"], ["queue", "Stage inputs"],
+      ["execute", "Run MD"], ["validate", "Validate"], ["collect", "Collect"],
+    ],
+  );
+  assert.equal(canonicalContract.currentPhase, "execute");
+  assert.equal(canonicalContract.showsExecutionProgress, true);
+  assert.equal(canonicalContract.showsProgress, true);
+  assert.equal(canonicalContract.phases[3].progressApplicable, true);
+
+  const publicProjection = normalizeRemoteJobPresentation({
+    status: "running",
+    view: {
+      workload_kind: "vasp",
+      current_phase: "execute",
+      phase_label: "Relaxation",
+      show_progress: false,
+      phase_plan: [
+        { key: "prepare", label: "Prepare", progress_applicable: false },
+        { key: "execute", label: "Relaxation", progress_applicable: true },
+      ],
+    },
+  });
+  assert.equal(publicProjection.currentLabel, "Relaxation");
+  assert.equal(publicProjection.phases[1].progressApplicable, true);
+  assert.equal(publicProjection.phaseAllowsProgress, false);
+  assert.equal(publicProjection.showsProgress, false);
+
+  const lifecyclePhases = [
+    ["created", "prepare"],
+    ["submitting", "submit"],
+    ["queued", "queue"],
+    ["running", "execute"],
+    ["collecting", "collect"],
+    ["collected", "collect"],
+  ];
+  lifecyclePhases.forEach(([status, phase]) => {
+    assert.equal(normalizeRemoteJobPresentation({ status }).currentPhase, phase);
+  });
+
+  assert.equal(normalizeRemoteJobPresentation({
+    status: "queued",
+    job_name: "lammps-npt-production",
+  }).kind, "md");
+  assert.equal(normalizeRemoteJobPresentation({
+    status: "running",
+    job_name: "ordinary-task",
+    specification: {
+      command: "dp train input.json",
+      env: { WORKLOAD_KIND: "vasp" },
+    },
+  }).kind, "generic");
+});
+
+test("configuration rows are allowlisted and never reveal command or environment values", () => {
+  const rows = remoteJobConfiguration({
+    provider: "bohr_sandbox",
+    node_id: "step-relax",
+    specification: {
+      api_key: "not-visible",
+      command: "curl https://example.invalid/?token=not-visible",
+      env: { SECRET_TOKEN: "not-visible" },
+      template: "dpa4-template",
+      timeout: 7200,
+    },
+  });
+  const values = rows.map(({ value }) => value).join(" ");
+
+  assert.equal(rows.find(({ label }) => label === "Template")?.value, "dpa4-template");
+  assert.equal(rows.find(({ label }) => label === "Command")?.value, "Configured");
+  assert.equal(rows.find(({ label }) => label === "Environment")?.value, "1 variable");
+  assert.doesNotMatch(values, /not-visible|curl|SECRET_TOKEN/);
+});
+
+test("provider errors use a fixed summary instead of exposing command arguments", () => {
+  const unsafeError = "bohr command failed: --env SECRET_TOKEN=not-visible --api-key not-visible";
+  const summary = remoteJobErrorSummary(unsafeError);
+  const fixture = createFixture();
+
+  fixture.controller.setPresentationJobs([{
+    job_id: "unsafe-error-fixture",
+    provider: "bohr_sandbox",
+    status: "failed",
+    error: unsafeError,
+  }]);
+  const renderedDetails = fixture.list.children[0].querySelector(".remote-job-face-details");
+
+  assert.equal(summary, "Provider error · details hidden for safety");
+  assert.doesNotMatch(summary, /SECRET_TOKEN|not-visible|api-key|--env/);
+  assert.match(treeText(renderedDetails), /Provider error · details hidden for safety/);
+  assert.doesNotMatch(treeText(renderedDetails), /SECRET_TOKEN|not-visible|api-key|--env/);
+  assert.equal(remoteJobErrorSummary(""), "");
+  fixture.controller.destroy();
+});
+
+test("remote job summaries open from the whole surface while details close from a dedicated control", async () => {
+  const fixture = createFixture();
+  await fixture.controller.load("session-1", "owner-1");
+
+  const card = fixture.list.children[0];
+  const summary = card.querySelector(".remote-job-face-summary");
+  const details = card.querySelector(".remote-job-face-details");
+  const toggle = card.querySelector(".remote-job-card-toggle");
+  const detailsBack = card.querySelector(".remote-job-details-back");
+  const refresh = card.querySelector(".remote-job-refresh-button");
+  const progress = summary.querySelector(".remote-job-progress");
+  const stageViewport = summary.querySelector(".remote-job-stage-viewport");
+
+  assert.equal(toggle.type, "button");
+  assert.equal(toggle.tagName, "BUTTON");
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(toggle.getAttribute("aria-controls"), details.id);
+  assert.equal(toggle.getAttribute("aria-label"), "Show details for sandbox-demo-running");
+  assert.equal(refresh.type, "button");
+  assert.equal(refresh.getAttribute("aria-label"), "Refresh status for sandbox-demo-running");
+  assert.equal(summary.getAttribute("aria-hidden"), "false");
+  assert.equal(summary.hasAttribute("inert"), false);
+  assert.equal(details.getAttribute("aria-hidden"), "true");
+  assert.equal(details.hasAttribute("inert"), true);
+  assert.equal(summary.querySelector(".remote-job-id").textContent, "sandbox-demo-running");
+  assert.equal(summary.querySelector(".remote-job-identity-label").textContent, "Sandbox");
+  assert.match(treeText(summary), /Sandbox|Running|42%/);
+  assert.equal(summary.querySelector(".remote-job-provider"), null);
+  assert.equal(summary.querySelector(".remote-job-detail-row"), null);
+  assert.equal(stageViewport.getAttribute("role"), "status");
+  assert.equal(stageViewport.getAttribute("aria-live"), "polite");
+  assert.equal(stageViewport.getAttribute("aria-label"), "Generic task stage: Execute, 4 of 6");
+  assert.equal(stageViewport.querySelector(".remote-job-stage-track").dataset.stageIndex, "3");
+  assert.equal(progress.getAttribute("aria-valuenow"), "42");
+  assert.equal(progress.getAttribute("aria-valuetext"), "Execute · 42%");
+  assert.match(treeText(details), /Task config|demo-template|2 h|1 variable/);
+  assert.doesNotMatch(treeText(details), /never-render-this-value/);
+
+  summary.dispatch("click");
+
+  assert.equal(card.classList.contains("is-flipped"), true);
+  assert.equal(fixture.list.classList.contains("has-expanded-card"), true);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  assert.equal(toggle.getAttribute("aria-label"), "Show details for sandbox-demo-running");
+  assert.equal(summary.getAttribute("aria-hidden"), "true");
+  assert.equal(summary.hasAttribute("inert"), true);
+  assert.equal(details.getAttribute("aria-hidden"), "false");
+  assert.equal(details.hasAttribute("inert"), false);
+  assert.equal(details.querySelectorAll(".remote-job-action").length, 3);
+  assert.deepEqual(
+    details.querySelectorAll(".remote-job-action").map((button) => button.getAttribute("aria-label")),
+    ["Return to summary for sandbox-demo-running", "Pause job", "Terminate job"],
+  );
+
+  details.dispatch("click");
+  assert.equal(card.classList.contains("is-flipped"), true);
+
+  detailsBack.dispatch("click");
+  assert.equal(card.classList.contains("is-flipped"), false);
+  assert.equal(fixture.list.classList.contains("has-expanded-card"), false);
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+
+  refresh.dispatch("click");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(fixture.list.children[0].classList.contains("is-flipped"), false);
+  assert.equal(fixture.list.children[0].querySelector(".remote-job-refresh-button") !== null, true);
+  fixture.controller.destroy();
+});
+
+test("Rack Lab alone renders sharp-content liquid-glass layers without a pointer hotspot", async () => {
+  const rackFixture = createFixture({ skin: "rack-lab" });
+  await rackFixture.controller.load("session-1", "owner-1");
+  const rackCard = rackFixture.list.children[0];
+  const summary = rackCard.querySelector(".remote-job-face-summary");
+  const details = rackCard.querySelector(".remote-job-face-details");
+
+  assert.equal(rackCard.dataset.visualMaterial, "liquid-glass");
+  [summary, details].forEach((face) => {
+    assert.equal(face.querySelectorAll(".remote-job-glass-warp").length, 1);
+    assert.equal(face.querySelectorAll(".remote-job-glass-edge").length, 1);
+    assert.equal(face.querySelector(".remote-job-glass-warp").getAttribute("aria-hidden"), "true");
+    assert.equal(face.querySelector(".remote-job-glass-edge").getAttribute("aria-hidden"), "true");
+  });
+  assert.equal(
+    rackFixture.document.body.children.filter(
+      (child) => child.getAttribute("class") === "rack-remote-job-liquid-glass-defs",
+    ).length,
+    1,
+  );
+
+  rackCard.getBoundingClientRect = () => ({ left: 100, top: 40, width: 200, height: 100 });
+  rackCard.dispatch("pointermove", { clientX: 250, clientY: 65 });
+  assert.equal(rackCard.classList.contains("is-liquid-glass-engaged"), true);
+  assert.equal(rackCard.style["--rack-glass-x"], undefined);
+  assert.equal(rackCard.style["--rack-glass-y"], undefined);
+  assert.equal(rackCard.style["--rack-glass-tilt-y"], "1.05deg");
+
+  rackCard.dispatch("pointerout", { relatedTarget: null });
+  assert.equal(rackCard.classList.contains("is-liquid-glass-engaged"), false);
+  assert.equal(rackCard.style["--rack-glass-x"], undefined);
+  assert.equal(rackCard.style["--rack-glass-tilt-y"], "0deg");
+
+  rackFixture.document.body.dataset.skin = "matcreator-default";
+  rackFixture.controller.render();
+  assert.equal(rackFixture.list.children[0].querySelector(".remote-job-glass-warp"), null);
+  rackFixture.document.body.dataset.skin = "rack-lab";
+  rackFixture.controller.render();
+  const rerenderedRackCard = rackFixture.list.children[0];
+  [
+    rerenderedRackCard.querySelector(".remote-job-face-summary"),
+    rerenderedRackCard.querySelector(".remote-job-face-details"),
+  ].forEach((face) => {
+    assert.equal(face.querySelectorAll(".remote-job-glass-warp").length, 1);
+    assert.equal(face.querySelectorAll(".remote-job-glass-edge").length, 1);
+  });
+  assert.equal(
+    rackFixture.document.body.children.filter(
+      (child) => child.getAttribute("class") === "rack-remote-job-liquid-glass-defs",
+    ).length,
+    1,
+  );
+  rackFixture.controller.destroy();
+  assert.equal(
+    rackFixture.document.body.children.filter(
+      (child) => child.getAttribute("class") === "rack-remote-job-liquid-glass-defs",
+    ).length,
+    0,
+  );
+
+  const defaultFixture = createFixture({ skin: "matcreator-default" });
+  await defaultFixture.controller.load("session-1", "owner-1");
+  const defaultCard = defaultFixture.list.children[0];
+  assert.equal(defaultCard.dataset.visualMaterial, undefined);
+  assert.equal(defaultCard.querySelector(".remote-job-glass-warp"), null);
+  assert.equal(
+    defaultFixture.document.body.children.some(
+      (child) => child.getAttribute("class") === "rack-remote-job-liquid-glass-defs",
+    ),
+    false,
+  );
+  defaultFixture.controller.destroy();
+});
+
+test("the projected stage contract alone controls integrated progress", () => {
+  const fixture = createFixture();
+  fixture.controller.setPresentationJobs([
+    { job_id: "queued", status: "queued", progress_percent: 76, view: { workload_kind: "md" } },
+    { job_id: "preparing", status: "running", progress_percent: 76, view: { workload_kind: "md", current_phase: "preparing" } },
+    { job_id: "collecting", status: "collecting", progress_percent: 76, view: { workload_kind: "vasp", current_phase: "collecting" } },
+    { job_id: "validating", status: "running", progress_percent: 76, view: { workload_kind: "training", current_phase: "validating" } },
+    { job_id: "collected", status: "collected", progress_percent: 100, view: { workload_kind: "generic", current_phase: "collected" } },
+    {
+      job_id: "explicitly-disabled-relaxation",
+      status: "running",
+      view: {
+        workload_kind: "vasp",
+        current_phase: "execute",
+        phase_label: "Relaxation",
+        show_progress: false,
+        progress: { current: 37, total: 100 },
+      },
+    },
+    {
+      job_id: "relaxing",
+      status: "running",
+      view: {
+        workload_kind: "vasp",
+        current_phase: "execute",
+        phase_label: "Relaxation",
+        show_progress: true,
+        phase_plan: [
+          { key: "prepare", label: "Prepare", progress_applicable: false },
+          { key: "execute", label: "Relaxation", progress_applicable: true },
+          { key: "validate", label: "Verify", progress_applicable: false },
+        ],
+        progress: { current: 37, total: 100, unit: "ionic steps" },
+      },
+    },
+  ]);
+
+  fixture.list.children.slice(0, 6).forEach((card) => {
+    assert.equal(card.querySelector(".remote-job-progress"), null);
+    assert.equal(card.querySelector(".remote-job-face-summary").classList.contains("has-execution-progress"), false);
+  });
+  const relaxationCard = fixture.list.children[6];
+  assert.equal(relaxationCard.dataset.workloadKind, "vasp");
+  assert.equal(relaxationCard.dataset.currentPhase, "execute");
+  assert.equal(relaxationCard.querySelector(".remote-job-stage-viewport").getAttribute("aria-label"), "VASP task stage: Relaxation, 2 of 3");
+  assert.equal(relaxationCard.querySelector(".remote-job-progress").getAttribute("aria-valuenow"), "37");
+  assert.equal(relaxationCard.querySelector(".remote-job-face-summary").classList.contains("has-execution-progress"), true);
+  fixture.controller.destroy();
+});
+
+test("phase updates roll the stage track while reduced motion jumps directly", () => {
+  const animationFrames = [];
+  const fixture = createFixture({
+    windowOverrides: {
+      matchMedia: () => ({ matches: false }),
+      requestAnimationFrame(callback) {
+        animationFrames.push(callback);
+        return animationFrames.length;
+      },
+    },
+  });
+  const renderPhase = (currentPhase) => fixture.controller.setPresentationJobs([{
+    job_id: "rolling-md",
+    status: currentPhase === "queued" ? "queued" : "running",
+    view: { workload_kind: "md", current_phase: currentPhase },
+  }]);
+
+  renderPhase("queued");
+  assert.equal(fixture.list.children[0].querySelector(".remote-job-stage-track").dataset.stageIndex, "2");
+  assert.equal(animationFrames.length, 0);
+
+  renderPhase("simulate");
+  const rollingTrack = fixture.list.children[0].querySelector(".remote-job-stage-track");
+  assert.equal(rollingTrack.dataset.stageIndex, "2");
+  assert.equal(animationFrames.length, 1);
+  animationFrames.shift()();
+  assert.equal(rollingTrack.dataset.stageIndex, "3");
+  assert.equal(rollingTrack.style.transform, "translateY(-54px)");
+  fixture.controller.destroy();
+
+  let reducedFrameCount = 0;
+  const reducedFixture = createFixture({
+    windowOverrides: {
+      matchMedia: () => ({ matches: true }),
+      requestAnimationFrame() {
+        reducedFrameCount += 1;
+        return reducedFrameCount;
+      },
+    },
+  });
+  reducedFixture.controller.setPresentationJobs([{
+    job_id: "static-md",
+    status: "queued",
+    view: { workload_kind: "md", current_phase: "queued" },
+  }]);
+  reducedFixture.controller.setPresentationJobs([{
+    job_id: "static-md",
+    status: "running",
+    view: { workload_kind: "md", current_phase: "simulate" },
+  }]);
+  assert.equal(reducedFrameCount, 0);
+  assert.equal(
+    reducedFixture.list.children[0].querySelector(".remote-job-stage-track").dataset.stageIndex,
+    "3",
+  );
+  reducedFixture.controller.destroy();
+});
+
+test("native keyboard flip control and job actions do not double-toggle the card", async () => {
+  const fixture = createFixture();
+  await fixture.controller.load("session-1", "owner-1");
+
+  const card = fixture.list.children[0];
+  const toggle = card.querySelector(".remote-job-card-toggle");
+  const enterEvent = toggle.dispatch("keydown", { key: "Enter" });
+  assert.equal(card.classList.contains("is-flipped"), true);
+  assert.equal(enterEvent.defaultPrevented, true);
+
+  const spaceEvent = toggle.dispatch("keydown", { key: " " });
+  assert.equal(card.classList.contains("is-flipped"), true);
+  assert.equal(spaceEvent.defaultPrevented, true);
+
+  card.querySelector(".remote-job-details-back").dispatch("click");
+  assert.equal(card.classList.contains("is-flipped"), false);
+
+  toggle.dispatch("click");
+  assert.equal(card.classList.contains("is-flipped"), true);
+
+  card.querySelector(".remote-job-action.pause").dispatch("click");
+  assert.equal(card.classList.contains("is-flipped"), true);
+
+  card.querySelector(".remote-job-action.terminate").dispatch("click");
+  assert.equal(card.classList.contains("is-flipped"), true);
+  fixture.controller.destroy();
+});
+
+test("flip state survives polling-style rerenders and reset clears it", async () => {
+  const fixture = createFixture();
+  await fixture.controller.load("session-1", "owner-1");
+
+  const originalToggle = fixture.list.children[0].querySelector(".remote-job-card-toggle");
+  originalToggle.focus();
+  originalToggle.dispatch("click");
+  fixture.state.remoteJobs[0].status = "paused";
+  fixture.controller.render();
+
+  assert.equal(fixture.list.children[0].classList.contains("is-flipped"), true);
+  assert.equal(fixture.list.children[1].classList.contains("is-flipped"), false);
+  assert.equal(fixture.list.classList.contains("has-expanded-card"), true);
+  assert.notEqual(fixture.document.activeElement, originalToggle);
+  assert.equal(fixture.document.activeElement, fixture.list.children[0].querySelector(".remote-job-card-toggle"));
+
+  fixture.controller.reset();
+  await fixture.controller.load("session-1", "owner-1");
+  assert.equal(fixture.list.children[0].classList.contains("is-flipped"), false);
+  assert.equal(fixture.list.classList.contains("has-expanded-card"), false);
+  fixture.controller.destroy();
+});
+
+test("focus falls back to the whole-card flip control when a refreshed action becomes disabled", async () => {
+  const fixture = createFixture();
+  await fixture.controller.load("session-1", "owner-1");
+  const card = fixture.list.children[0];
+  card.querySelector(".remote-job-card-toggle").dispatch("click");
+  card.querySelector(".remote-job-action.pause").focus();
+
+  fixture.state.remoteJobs[0].status = "paused";
+  fixture.controller.render();
+
+  const refreshedCard = fixture.list.children[0];
+  assert.equal(refreshedCard.classList.contains("is-flipped"), true);
+  assert.equal(
+    fixture.document.activeElement,
+    refreshedCard.querySelector(".remote-job-card-toggle"),
+  );
+  fixture.controller.destroy();
+});
+
+test("Escape returns the visible card to its summary and keeps whole-card toggle focus", async () => {
+  const fixture = createFixture();
+  await fixture.controller.load("session-1", "owner-1");
+  const card = fixture.list.children[0];
+  const toggle = card.querySelector(".remote-job-card-toggle");
+  toggle.dispatch("click");
+
+  fixture.document.dispatch("keydown", { key: "Escape" });
+
+  assert.equal(card.classList.contains("is-flipped"), false);
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(fixture.document.activeElement, toggle);
+  fixture.controller.destroy();
+});
+
+test("latest provider identity is visible and unsupported pause is capability-gated", () => {
+  const fixture = createFixture();
+  fixture.controller.setPresentationJobs([{
+    job_id: "mc-job-42",
+    external_id: "bohr-batch-314",
+    provider: "bohr_job",
+    status: "running",
+    snapshot: { provider_status: "RUNNING" },
+  }]);
+
+  const card = fixture.list.children[0];
+  const rows = card.querySelectorAll(".remote-job-detail-row");
+  const rowText = rows
+    .map((row) => `${row.children[0]?.textContent}${row.children[1]?.textContent}`)
+    .join(" | ");
+  assert.match(rowText, /Job IDmc-job-42/);
+  assert.match(rowText, /Provider IDbohr-batch-314/);
+  assert.match(rowText, /Provider statusRUNNING/);
+  assert.equal(card.querySelector(".remote-job-action.pause").disabled, true);
+  assert.equal(card.querySelector(".remote-job-action.terminate").disabled, false);
+  fixture.controller.destroy();
 });
