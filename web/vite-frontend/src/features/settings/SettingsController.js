@@ -1,7 +1,7 @@
 import { createDialogController } from "../../shared/ui/dialog.js";
 import { buildSettingsSavePlan } from "./settingsChanges.js";
 
-export function createSettingsController({ state, applyLogin, getFontScale, applyFontScale }) {
+export function createSettingsController({ state, applyLogin, getFontScale, applyFontScale, appearanceController }) {
 
   const settingsModal = document.getElementById("settings-modal");
   const settingsBtn = document.getElementById("settings-btn");
@@ -275,6 +275,7 @@ export function createSettingsController({ state, applyLogin, getFontScale, appl
     settingsUuid.value = state.userId || "";
     loadSettingsData();
     updateFontScaleOptions();
+    appearanceController?.sync();
   }
 
   function updateFontScaleOptions() {
