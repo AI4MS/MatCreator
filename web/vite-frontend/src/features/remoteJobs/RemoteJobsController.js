@@ -119,8 +119,9 @@ function projectedLifecycleKey(job = {}) {
   const view = remoteJobView(job);
   const lifecycle = isRecord(view.lifecycle) ? view.lifecycle : {};
   const allocation = isRecord(view.allocation) ? view.allocation : {};
+  const projectedStatus = lifecycle.status ?? allocation.lifecycle_status ?? view.lifecycle_status;
   return remoteJobLifecycle(
-    lifecycle.status ?? allocation.lifecycle_status ?? view.lifecycle_status ?? job.status,
+    projectedStatus ?? (isRemoteJobViewV2(job) ? "unknown" : job.status),
   ).key;
 }
 
@@ -202,6 +203,32 @@ function projectedWorkload(job = {}) {
   if (isRecord(view.workload)) return view.workload;
   if (isRecord(view.task)) return view.task;
   return {};
+}
+
+function explicitRemoteJobWorkloadState(job = {}) {
+  const view = remoteJobView(job);
+  if (isRemoteJobViewV2(job)) {
+    const projectedState = String(
+      projectedWorkload(job).state ?? view.workload_state ?? "",
+    ).trim().toLowerCase();
+    return ["failed", "finished"].includes(projectedState) ? projectedState : "";
+  }
+  const snapshot = isRecord(job.snapshot) ? job.snapshot : {};
+  const snapshotWorkload = isRecord(snapshot.workload) ? snapshot.workload : {};
+  const jobWorkload = isRecord(job.workload) ? job.workload : {};
+  const candidates = [
+    projectedWorkload(job).state,
+    view.workload_state,
+    jobWorkload.state,
+    job.workload_state,
+    snapshotWorkload.state,
+    snapshot.workload_state,
+  ];
+  for (const candidate of candidates) {
+    const state = String(candidate || "").trim().toLowerCase();
+    if (["failed", "finished"].includes(state)) return state;
+  }
+  return "";
 }
 
 function presentationSources(job = {}) {
@@ -305,8 +332,11 @@ function legacyPhaseForLifecycle(status) {
 /** Build a presentation-only task model without changing remote-job lifecycle. */
 export function normalizeRemoteJobPresentation(job = {}) {
   const specification = isRecord(job.specification) ? job.specification : {};
+  const authoritativeV2 = isRemoteJobViewV2(job);
   const explicitKind = firstPresentationValue(job, "workload_kind", "task_type", "kind", "type")
-    ?? job.workload_kind ?? job.task_type ?? specification.workload_kind ?? specification.task_type;
+    ?? (authoritativeV2
+      ? undefined
+      : job.workload_kind ?? job.task_type ?? specification.workload_kind ?? specification.task_type);
   // A versioned backend view is authoritative. Never reclassify it from
   // provider/template strings when it intentionally reports an unknown kind.
   const kind = normalizedWorkloadKind(explicitKind)
@@ -315,14 +345,14 @@ export function normalizeRemoteJobPresentation(job = {}) {
   const suppliedPlan = firstPresentationValue(job, "phase_plan", "phases", "stages");
   const phasePlan = normalizePhasePlan(kind, suppliedPlan);
   const explicitPhase = firstPresentationValue(job, "current_phase", "current_stage", "phase", "stage")
-    ?? job.current_phase ?? job.task_phase;
-  const currentPhase = normalizePhaseId(explicitPhase) || legacyPhaseForLifecycle(job.status);
+    ?? (authoritativeV2 ? undefined : job.current_phase ?? job.task_phase);
+  const lifecycle = remoteJobLifecycle(projectedLifecycleKey(job));
+  const currentPhase = normalizePhaseId(explicitPhase) || legacyPhaseForLifecycle(lifecycle.key);
   const phaseIndex = phasePlan.findIndex(({ id }) => id === currentPhase);
-  const lifecycle = remoteJobLifecycle(job.status);
   const paused = lifecycle.key === "paused";
   const collected = lifecycle.key === "collected";
   const failed = TERMINAL_FAILURE_STATUSES.has(lifecycle.key);
-  const phases = phasePlan.map((phase, index) => {
+  let phases = phasePlan.map((phase, index) => {
     let state = "pending";
     if (phaseIndex >= 0 && index < phaseIndex) state = "complete";
     else if (index === phaseIndex) {
@@ -334,8 +364,19 @@ export function normalizeRemoteJobPresentation(job = {}) {
     return { ...phase, state };
   });
   const projectedPhaseLabel = firstPresentationValue(job, "phase_label");
-  const currentLabel = projectedPhaseLabel
+  let currentLabel = projectedPhaseLabel
     || (phaseIndex >= 0 ? phasePlan[phaseIndex].label : lifecycle.label);
+  const workloadState = explicitRemoteJobWorkloadState(job);
+  if (currentPhase === "execute" && workloadState) {
+    currentLabel = workloadState === "failed" ? "Workload failed" : "Workload finished";
+    phases = phases.map((phase, index) => index === phaseIndex
+      ? {
+          ...phase,
+          label: currentLabel,
+          state: workloadState === "failed" ? "failed" : "complete",
+        }
+      : phase);
+  }
   const title = firstPresentationValue(job, "title", "display_name", "task_label") || definition.label;
   const projectedShowProgress = firstPresentationValue(job, "show_progress");
   const currentPhaseDefinition = phaseIndex >= 0 ? phasePlan[phaseIndex] : null;
@@ -352,6 +393,7 @@ export function normalizeRemoteJobPresentation(job = {}) {
     title: String(title),
     currentPhase,
     currentLabel,
+    workloadState,
     phaseIndex,
     phases,
     phaseAllowsProgress,
@@ -389,12 +431,42 @@ function progressPercentFromSource(source, { allowLegacyScalar = false } = {}) {
   return normalizedPercent(source);
 }
 
+function progressDetailsFromSource(source, { allowLegacyScalar = false } = {}) {
+  const percent = progressPercentFromSource(source, { allowLegacyScalar });
+  if (percent === null) return null;
+  if (!isRecord(source)) {
+    return {
+      percent,
+      kind: "",
+      unit: "",
+      current: null,
+      total: null,
+      hasTypedCounters: false,
+    };
+  }
+  const kind = typeof source.kind === "string" ? source.kind.trim() : "";
+  const unit = typeof source.unit === "string" ? source.unit.trim() : "";
+  const current = source.current ?? source.completed;
+  const total = source.total;
+  const hasCounters = typeof current === "number" && Number.isFinite(current)
+    && typeof total === "number" && Number.isFinite(total)
+    && current >= 0 && total > 0 && current <= total;
+  return {
+    percent,
+    kind,
+    unit,
+    current: hasCounters ? current : null,
+    total: hasCounters ? total : null,
+    hasTypedCounters: hasCounters && Boolean(kind || unit),
+  };
+}
+
 function explicitRemoteJobProgress(job = {}) {
   const snapshot = isRecord(job.snapshot) ? job.snapshot : {};
   const specification = isRecord(job.specification) ? job.specification : {};
   const view = remoteJobView(job);
-  if (isRemoteJobViewV2(job) && Object.prototype.hasOwnProperty.call(view, "progress")) {
-    return progressPercentFromSource(view.progress);
+  if (isRemoteJobViewV2(job)) {
+    return progressDetailsFromSource(view.progress);
   }
   // Versioned/public projections take precedence over legacy job fields, and
   // current job fields take precedence over potentially stale snapshots.
@@ -407,8 +479,8 @@ function explicitRemoteJobProgress(job = {}) {
     specification.presentation?.execution_progress,
   ].filter((value) => value !== undefined && value !== null);
   for (const source of projectedSources) {
-    const percent = progressPercentFromSource(source, { allowLegacyScalar: true });
-    if (percent !== null) return percent;
+    const progress = progressDetailsFromSource(source, { allowLegacyScalar: true });
+    if (progress !== null) return progress;
   }
 
   const currentJobSources = [
@@ -418,28 +490,74 @@ function explicitRemoteJobProgress(job = {}) {
     isRecord(job.progress) ? undefined : job.progress,
   ].filter((value) => value !== undefined && value !== null);
   for (const source of currentJobSources) {
-    const percent = progressPercentFromSource(source, { allowLegacyScalar: true });
-    if (percent !== null) return percent;
+    const progress = progressDetailsFromSource(source, { allowLegacyScalar: true });
+    if (progress !== null) return progress;
   }
 
   const snapshotSources = [
-    snapshot.execution_progress,
     snapshot.task_progress,
+    snapshot.execution_progress,
     snapshot.progress_percent === undefined ? undefined : { percent: snapshot.progress_percent },
     snapshot.percent === undefined ? undefined : { percent: snapshot.percent },
     snapshot.progress_fraction === undefined ? undefined : { fraction: snapshot.progress_fraction },
     snapshot.progress,
   ].filter((value) => value !== undefined && value !== null);
   for (const source of snapshotSources) {
-    const percent = progressPercentFromSource(source, { allowLegacyScalar: true });
-    if (percent !== null) return percent;
+    const progress = progressDetailsFromSource(source, { allowLegacyScalar: true });
+    if (progress !== null) return progress;
   }
   return null;
 }
 
+function explicitRemoteJobProgressStatus(job = {}) {
+  const view = remoteJobView(job);
+  const viewProgress = isRecord(view.progress) ? view.progress : {};
+  const projectedStatus = view.progress_status ?? viewProgress.status;
+  if (isRemoteJobViewV2(job)) return String(projectedStatus || "").trim().toLowerCase();
+
+  const snapshot = isRecord(job.snapshot) ? job.snapshot : {};
+  const taskProgress = isRecord(snapshot.task_progress) ? snapshot.task_progress : {};
+  const jobProgress = isRecord(job.progress) ? job.progress : {};
+  return String(
+    projectedStatus
+      ?? job.progress_status
+      ?? jobProgress.status
+      ?? snapshot.progress_status
+      ?? taskProgress.status
+      ?? "",
+  ).trim().toLowerCase();
+}
+
+function relaxationBudgetAxis(presentation, progress) {
+  if (presentation.kind !== "relaxation" || !progress?.hasTypedCounters) return null;
+  const semantic = `${progress.kind || ""} ${progress.unit || ""}`
+    .toLowerCase()
+    .replace(/[_-]+/g, " ");
+  if (/\b(?:iter|iters|iteration|iterations)\b/.test(semantic)) return "iteration";
+  if (/\b(?:step|steps)\b/.test(semantic)) return "step";
+  return null;
+}
+
+function progressMetadata(progress) {
+  return {
+    ...(progress?.kind ? { kind: progress.kind } : {}),
+    ...(progress?.unit ? { unit: progress.unit } : {}),
+  };
+}
+
+function budgetProgressAria(presentation, progress, axis) {
+  let countUnit = progress.unit || `${axis}s`;
+  if (progress.total !== 1) {
+    if (countUnit.toLowerCase() === "iteration") countUnit = "iterations";
+    if (countUnit.toLowerCase() === "step") countUnit = "steps";
+  }
+  return `${presentation.currentLabel} · ${progress.percent}% of ${axis} budget used, `
+    + `${progress.current} of ${progress.total} ${countUnit}`;
+}
+
 export function remoteJobProgress(
   job = {},
-  lifecycle = remoteJobLifecycle(job.status),
+  lifecycle = remoteJobLifecycle(projectedLifecycleKey(job)),
   presentation = normalizeRemoteJobPresentation(job),
 ) {
   if (!presentation.showsProgress) {
@@ -450,13 +568,60 @@ export function remoteJobProgress(
       ariaText: `${presentation.currentLabel} · progress is not applicable to this stage`,
     };
   }
-  const explicitPercent = explicitRemoteJobProgress(job);
-  if (explicitPercent !== null) {
+  const workloadState = explicitRemoteJobWorkloadState(job);
+  const observedProgressStatus = explicitRemoteJobProgressStatus(job);
+  const progressStatus = workloadState || observedProgressStatus;
+  const explicitProgress = explicitRemoteJobProgress(job);
+  if (progressStatus === "failed") {
+    const workloadLabel = presentation.currentLabel === "Workload failed"
+      ? presentation.currentLabel
+      : `${presentation.currentLabel} · workload failed`;
+    return {
+      mode: "failed",
+      percent: null,
+      shortLabel: "Failed",
+      ariaText: `${workloadLabel}; remote resource status is reported separately`,
+    };
+  }
+  if (["waiting", "stale", "invalid", "unavailable"].includes(progressStatus)) {
+    const labels = {
+      waiting: ["Waiting", "waiting for a progress update"],
+      stale: ["Stale", "last progress update is stale"],
+      invalid: ["Telemetry", "latest progress update was invalid"],
+      unavailable: ["Offline", "progress telemetry is temporarily unavailable"],
+    };
+    const [shortLabel, message] = labels[progressStatus];
+    return {
+      mode: "indeterminate",
+      percent: null,
+      shortLabel,
+      ariaText: `${presentation.currentLabel} · ${message}`,
+    };
+  }
+  if (progressStatus === "finished" && !explicitProgress?.hasTypedCounters) {
+    const workloadLabel = presentation.currentLabel === "Workload finished"
+      ? presentation.currentLabel
+      : `${presentation.currentLabel} · workload finished`;
+    const missingSample = presentation.kind === "relaxation"
+      ? "no exact iteration-budget sample was recorded"
+      : "no exact progress sample was recorded";
+    return {
+      mode: "finished",
+      percent: null,
+      shortLabel: "Finished",
+      ariaText: `${workloadLabel} · ${missingSample}`,
+    };
+  }
+  if (explicitProgress !== null) {
+    const axis = relaxationBudgetAxis(presentation, explicitProgress);
     return {
       mode: lifecycle.key === "paused" ? "paused" : "determinate",
-      percent: explicitPercent,
-      shortLabel: `${explicitPercent}%`,
-      ariaText: `${presentation.currentLabel} · ${explicitPercent}%`,
+      percent: explicitProgress.percent,
+      shortLabel: axis ? `${explicitProgress.percent}% budget` : `${explicitProgress.percent}%`,
+      ariaText: axis
+        ? budgetProgressAria(presentation, explicitProgress, axis)
+        : `${presentation.currentLabel} · ${explicitProgress.percent}%`,
+      ...progressMetadata(explicitProgress),
     };
   }
   if (lifecycle.key === "paused") {
@@ -868,10 +1033,15 @@ export function createRemoteJobsController({
     const track = documentRef.createElement("div");
     track.className = "remote-job-progress";
     track.dataset.progressMode = progress.mode;
-    track.setAttribute("role", "progressbar");
+    if (progress.kind) track.dataset.progressKind = progress.kind;
+    if (progress.unit) track.dataset.progressUnit = progress.unit;
+    const terminalWorkload = ["failed", "finished"].includes(progress.mode);
+    track.setAttribute("role", terminalWorkload ? "status" : "progressbar");
     track.setAttribute("aria-label", `${jobLabel} progress`);
-    track.setAttribute("aria-valuemin", "0");
-    track.setAttribute("aria-valuemax", "100");
+    if (!terminalWorkload) {
+      track.setAttribute("aria-valuemin", "0");
+      track.setAttribute("aria-valuemax", "100");
+    }
     track.setAttribute("aria-valuetext", progress.ariaText);
     if (progress.percent !== null) track.setAttribute("aria-valuenow", String(progress.percent));
     const fill = documentRef.createElement("span");
@@ -1046,7 +1216,7 @@ export function createRemoteJobsController({
     const currentJobIds = new Set();
     state.remoteJobs.forEach((job, index) => {
       const item = documentRef.createElement("li");
-      const lifecycle = remoteJobLifecycle(job.status);
+      const lifecycle = remoteJobLifecycle(projectedLifecycleKey(job));
       const presentation = normalizeRemoteJobPresentation(job);
       const jobKey = String(job.job_id || job.external_id || `remote-job-${index}`);
       const jobLabel = String(job.external_id || job.job_id || "remote job");
@@ -1057,6 +1227,7 @@ export function createRemoteJobsController({
       item.dataset.jobKey = jobKey;
       item.dataset.workloadKind = presentation.kind;
       item.dataset.currentPhase = presentation.currentPhase || "unknown";
+      if (presentation.workloadState) item.dataset.workloadState = presentation.workloadState;
       if (rackLiquidGlassEnabled()) item.dataset.visualMaterial = "liquid-glass";
 
       const cardToggle = documentRef.createElement("button");
@@ -1103,7 +1274,17 @@ export function createRemoteJobsController({
       statusDot.className = "remote-job-status-dot";
       statusDot.setAttribute("aria-hidden", "true");
       const statusText = documentRef.createElement("span");
-      statusText.textContent = lifecycle.label;
+      const isSandboxResource = SANDBOX_PROVIDERS.has(String(job.provider || "").toLowerCase());
+      statusText.textContent = presentation.workloadState && isSandboxResource
+        ? `Sandbox ${lifecycle.label}`
+        : lifecycle.label;
+      if (presentation.workloadState) {
+        status.setAttribute(
+          "aria-label",
+          `${isSandboxResource ? "Sandbox resource" : "Remote resource"} ${lifecycle.label}; `
+            + `workload ${presentation.workloadState}`,
+        );
+      }
       status.append(statusDot, statusText);
       const stageViewport = createStageViewport(presentation, jobKey);
       const { progress, track: progressTrack } = createProgress(job, lifecycle, presentation, jobLabel);

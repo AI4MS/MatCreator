@@ -401,6 +401,17 @@ test("reports real percentages and honest non-numeric progress states", () => {
       progress: { mode: "indeterminate" },
     },
   }).mode, "indeterminate");
+  const omittedV2Progress = remoteJobProgress({
+    status: "running",
+    progress_percent: 91,
+    snapshot: { task_progress: { kind: "md_steps", current: 88, total: 100, unit: "steps" } },
+    view: {
+      version: "mc.remote-job-view.v2",
+      workload: { workload_kind: "md", current_phase: "execute" },
+    },
+  });
+  assert.equal(omittedV2Progress.mode, "indeterminate");
+  assert.equal(omittedV2Progress.percent, null);
   for (const invalidProgress of [true, "37", -1, 101, Number.POSITIVE_INFINITY]) {
     assert.equal(remoteJobProgress({ status: "running", progress: invalidProgress }).mode, "indeterminate");
   }
@@ -423,6 +434,128 @@ test("reports real percentages and honest non-numeric progress states", () => {
   assert.equal(remoteJobProgress({ status: "collected" }).mode, "hidden");
   assert.equal(remoteJobProgress({ status: "collected" }).percent, null);
   assert.equal(remoteJobProgress({ status: "failed" }).mode, "hidden");
+});
+
+test("uses durable task progress but never presents waiting or stale telemetry as a percentage", () => {
+  assert.deepEqual(
+    remoteJobProgress({
+      status: "running",
+      snapshot: { task_progress: { current: 3, total: 8, unit: "ionic steps" } },
+    }),
+    {
+      mode: "determinate",
+      percent: 38,
+      shortLabel: "38%",
+      ariaText: "Execute · 38%",
+      unit: "ionic steps",
+    },
+  );
+
+  for (const [progressStatus, shortLabel, ariaText] of [
+    ["waiting", "Waiting", "Execute · waiting for a progress update"],
+    ["stale", "Stale", "Execute · last progress update is stale"],
+    ["invalid", "Telemetry", "Execute · latest progress update was invalid"],
+    ["unavailable", "Offline", "Execute · progress telemetry is temporarily unavailable"],
+  ]) {
+    assert.deepEqual(
+      remoteJobProgress({
+        status: "running",
+        snapshot: {
+          progress_status: progressStatus,
+          task_progress: { current: 7, total: 8, unit: "ionic steps" },
+        },
+      }),
+      { mode: "indeterminate", percent: null, shortLabel, ariaText },
+    );
+  }
+
+  assert.deepEqual(
+    remoteJobProgress({
+      status: "running",
+      snapshot: {
+        progress_status: "failed",
+        task_progress: { current: 7, total: 8, unit: "ionic steps" },
+      },
+    }),
+    {
+      mode: "failed",
+      percent: null,
+      shortLabel: "Failed",
+      ariaText: "Execute · workload failed; remote resource status is reported separately",
+    },
+  );
+});
+
+test("labels relaxation counters as budget use and preserves their typed semantics", () => {
+  for (const [kind, unit, axis, countUnit] of [
+    ["iteration", "iteration", "iteration", "iterations"],
+    ["relaxation_steps", "ionic steps", "step", "ionic steps"],
+  ]) {
+    assert.deepEqual(
+      remoteJobProgress({
+        status: "running",
+        view: { workload_kind: "relaxation", current_phase: "execute" },
+        snapshot: { task_progress: { kind, current: 3, total: 8, unit } },
+      }),
+      {
+        mode: "determinate",
+        percent: 38,
+        shortLabel: "38% budget",
+        ariaText: `Relax · 38% of ${axis} budget used, 3 of 8 ${countUnit}`,
+        kind,
+        unit,
+      },
+    );
+  }
+});
+
+test("shows a workload finished state without inventing a missing counter percentage", () => {
+  assert.deepEqual(
+    remoteJobProgress({
+      status: "running",
+      provider: "bohr_sandbox",
+      view: { workload_kind: "relaxation", current_phase: "execute" },
+      snapshot: { progress_status: "finished", workload: { state: "finished" } },
+    }),
+    {
+      mode: "finished",
+      percent: null,
+      shortLabel: "Finished",
+      ariaText: "Workload finished · no exact iteration-budget sample was recorded",
+    },
+  );
+});
+
+test("v2 workload projection never falls back to stale raw terminal state", () => {
+  const job = {
+    status: "running",
+    provider: "bohr_sandbox",
+    view: {
+      version: "mc.remote-job-view.v2",
+      workload: {
+        workload_kind: "relaxation",
+        current_phase: "execute",
+        state: "running",
+      },
+    },
+    snapshot: {
+      progress_status: "failed",
+      workload: { state: "failed", exit_code: 2 },
+    },
+  };
+
+  const presentation = normalizeRemoteJobPresentation(job);
+  assert.equal(presentation.workloadState, "");
+  assert.equal(presentation.currentLabel, "Relax");
+  assert.deepEqual(
+    remoteJobProgress(job),
+    {
+      mode: "indeterminate",
+      percent: null,
+      shortLabel: "Live",
+      ariaText: "Relax · exact progress unavailable",
+    },
+  );
 });
 
 test("normalizes typed phase plans with presentation precedence and safe legacy fallbacks", () => {
@@ -524,6 +657,27 @@ test("normalizes typed phase plans with presentation precedence and safe legacy 
     job_name: "deepmd-training-misleading",
     view: { version: "mc.remote-job-view.v2", workload: { workload_kind: "future-kind" } },
   }).kind, "generic");
+  assert.equal(normalizeRemoteJobPresentation({
+    status: "running",
+    workload_kind: "relaxation",
+    specification: { task_type: "relaxation" },
+    view: {
+      version: "mc.remote-job-view.v2",
+      workload: { current_phase: "execute" },
+    },
+  }).kind, "generic");
+
+  const authoritativeLifecycle = normalizeRemoteJobPresentation({
+    status: "failed",
+    external_id: "sandbox-authoritative",
+    view: {
+      version: "mc.remote-job-view.v2",
+      lifecycle: { status: "running" },
+      workload: { workload_kind: "relaxation", current_phase: "execute" },
+    },
+  });
+  assert.equal(authoritativeLifecycle.showsProgress, true);
+  assert.equal(authoritativeLifecycle.phases[authoritativeLifecycle.phaseIndex].state, "active");
 
   const customPlan = normalizeRemoteJobPresentation({
     status: "running",
@@ -845,6 +999,144 @@ test("the projected stage contract alone controls integrated progress", () => {
   assert.equal(relaxationCard.querySelector(".remote-job-stage-viewport").getAttribute("aria-label"), "VASP task stage: Relaxation, 2 of 3");
   assert.equal(relaxationCard.querySelector(".remote-job-progress").getAttribute("aria-valuenow"), "37");
   assert.equal(relaxationCard.querySelector(".remote-job-face-summary").classList.contains("has-execution-progress"), true);
+  fixture.controller.destroy();
+});
+
+test("Rack Lab running cards render task progress while waiting and stale snapshots stay non-numeric", () => {
+  const fixture = createFixture({ skin: "rack-lab" });
+  fixture.controller.setPresentationJobs([
+    {
+      job_id: "rack-task-progress",
+      external_id: "sandbox-rack-progress",
+      provider: "bohr_sandbox",
+      status: "running",
+      view: { workload_kind: "md", current_phase: "execute", show_progress: true },
+      snapshot: {
+        provider_status: "reachable",
+        task_progress: { current: 3, total: 8, unit: "steps" },
+      },
+    },
+    ...["waiting", "stale"].map((progressStatus) => ({
+      job_id: `rack-task-${progressStatus}`,
+      external_id: `sandbox-rack-${progressStatus}`,
+      provider: "bohr_sandbox",
+      status: "running",
+      view: { workload_kind: "md", current_phase: "execute", show_progress: true },
+      snapshot: {
+        provider_status: "reachable",
+        progress_status: progressStatus,
+        task_progress: { current: 7, total: 8, unit: "steps" },
+      },
+    })),
+  ]);
+
+  const determinate = fixture.list.children[0].querySelector(".remote-job-progress");
+  assert.equal(determinate.dataset.progressMode, "determinate");
+  assert.equal(determinate.getAttribute("aria-valuenow"), "38");
+  assert.equal(determinate.getAttribute("aria-valuetext"), "Simulate · 38%");
+  assert.equal(determinate.querySelector(".remote-job-progress-fill").style.width, "38%");
+  assert.match(treeText(fixture.list.children[0]), /Running|38%/);
+
+  for (const [index, progressStatus] of ["waiting", "stale"].entries()) {
+    const card = fixture.list.children[index + 1];
+    const progress = card.querySelector(".remote-job-progress");
+    assert.equal(progress.dataset.progressMode, "indeterminate");
+    assert.equal(progress.getAttribute("aria-valuenow"), null);
+    assert.equal(progress.querySelector(".remote-job-progress-fill").style.width, undefined);
+    assert.match(treeText(card), new RegExp(progressStatus, "i"));
+    assert.doesNotMatch(treeText(card), /88%/);
+  }
+  fixture.controller.destroy();
+});
+
+test("Rack Lab separates a live Sandbox resource from terminal workload state", () => {
+  const fixture = createFixture({ skin: "rack-lab" });
+  const baseJob = {
+    provider: "bohr_sandbox",
+    status: "running",
+    view: { workload_kind: "relaxation", current_phase: "execute", show_progress: true },
+  };
+  fixture.controller.setPresentationJobs([
+    {
+      ...baseJob,
+      job_id: "rack-workload-failed",
+      external_id: "sandbox-workload-failed",
+      snapshot: {
+        provider_status: "reachable",
+        progress_status: "failed",
+        workload: { state: "failed", exit_code: 2 },
+      },
+    },
+    {
+      ...baseJob,
+      job_id: "rack-workload-finished-budget",
+      external_id: "sandbox-workload-finished-budget",
+      snapshot: {
+        provider_status: "reachable",
+        progress_status: "finished",
+        workload: { state: "finished", exit_code: 0 },
+        task_progress: { kind: "iteration", current: 3, total: 8, unit: "iteration" },
+      },
+    },
+    {
+      ...baseJob,
+      job_id: "rack-workload-finished-no-sample",
+      external_id: "sandbox-workload-finished-no-sample",
+      snapshot: {
+        provider_status: "reachable",
+        progress_status: "finished",
+        workload: { state: "finished", exit_code: 0 },
+      },
+    },
+  ]);
+
+  const failedCard = fixture.list.children[0];
+  assert.equal(failedCard.classList.contains("status-running"), true);
+  assert.equal(failedCard.dataset.workloadState, "failed");
+  assert.match(treeText(failedCard.querySelector(".remote-job-status")), /Sandbox Running/);
+  assert.equal(
+    failedCard.querySelector(".remote-job-status").getAttribute("aria-label"),
+    "Sandbox resource Running; workload failed",
+  );
+  assert.match(treeText(failedCard.querySelector(".remote-job-stage-viewport")), /Workload failed/);
+  assert.match(
+    failedCard.querySelector(".remote-job-stage-viewport").getAttribute("aria-label"),
+    /task stage: Workload failed/,
+  );
+  assert.equal(failedCard.querySelector(".remote-job-progress").dataset.progressMode, "failed");
+  assert.equal(failedCard.querySelector(".remote-job-progress").getAttribute("role"), "status");
+  assert.match(treeText(failedCard), /Failed/);
+
+  const budgetCard = fixture.list.children[1];
+  const budgetProgress = budgetCard.querySelector(".remote-job-progress");
+  assert.equal(budgetCard.classList.contains("status-running"), true);
+  assert.equal(budgetCard.dataset.workloadState, "finished");
+  assert.match(treeText(budgetCard), /Sandbox Running/);
+  assert.match(treeText(budgetCard), /Workload finished/);
+  assert.match(treeText(budgetCard), /38% budget/);
+  assert.equal(budgetProgress.dataset.progressMode, "determinate");
+  assert.equal(budgetProgress.dataset.progressKind, "iteration");
+  assert.equal(budgetProgress.dataset.progressUnit, "iteration");
+  assert.equal(budgetProgress.getAttribute("aria-valuenow"), "38");
+  assert.equal(
+    budgetProgress.getAttribute("aria-valuetext"),
+    "Workload finished · 38% of iteration budget used, 3 of 8 iterations",
+  );
+
+  const finishedCard = fixture.list.children[2];
+  const finishedProgress = finishedCard.querySelector(".remote-job-progress");
+  assert.equal(finishedCard.classList.contains("status-running"), true);
+  assert.equal(finishedCard.dataset.workloadState, "finished");
+  assert.match(treeText(finishedCard), /Sandbox Running/);
+  assert.match(treeText(finishedCard), /Workload finished/);
+  assert.match(treeText(finishedCard), /Finished/);
+  assert.equal(finishedProgress.dataset.progressMode, "finished");
+  assert.equal(finishedProgress.getAttribute("role"), "status");
+  assert.equal(finishedProgress.getAttribute("aria-valuenow"), null);
+  assert.equal(
+    finishedProgress.getAttribute("aria-valuetext"),
+    "Workload finished · no exact iteration-budget sample was recorded",
+  );
   fixture.controller.destroy();
 });
 
