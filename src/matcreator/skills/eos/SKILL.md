@@ -43,8 +43,17 @@ finetuned model E(V) curves.
 
 3. **Single-point calculations** — compute the energy for all 11 structures.
 
-4. **Equation-of-states fit** — fit the energy-volume data to the Birch-Murnaghan
-   equation of states.
+4. **Equation-of-states fit** — fit the energy-volume data to the third-order
+   Birch-Murnaghan equation of states:
+
+   ```text
+   E(V) = E0 + (9 V0 B0 / 16) * { [ (V0/V)^(2/3) − 1 ]^3 * B0'
+                                  + [ (V0/V)^(2/3) − 1 ]^2 * [ 6 − 4 (V0/V)^(2/3) ] }
+   ```
+
+   where `E0` is the equilibrium energy, `V0` the equilibrium volume, `B0` the
+   bulk modulus, and `B0'` its pressure derivative. The fit yields `E0`, `V0`,
+   `B0`, and `B0'` for each energy source (DFT, pretrained, finetuned).
 
 5. **Model prediction** — predict energies for the same 11 structures using both the
    pretrained model and the finetuned model.
