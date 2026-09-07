@@ -2,6 +2,95 @@
 
 <!-- version list -->
 
+## v2.22.0 (2026-09-07)
+
+### Bug Fixes
+
+- Add paramiko skill
+  ([`b7dfd82`](https://github.com/AI4MS/MatCreator/commit/b7dfd827e0cd5312957553ac0a5585ff6a58d02b))
+
+- Add planning-stream JSONDecodeError recovery and remove dead RetryConfig
+  ([`c9831a7`](https://github.com/AI4MS/MatCreator/commit/c9831a78fa9074baf08f543aa3de46a85565304a))
+
+- Agent graph wrong edges
+  ([`426a644`](https://github.com/AI4MS/MatCreator/commit/426a644618cc4b4029ef85a4fb02548c9eaadc54))
+
+- D-orbit not smooth
+  ([`ebbaf39`](https://github.com/AI4MS/MatCreator/commit/ebbaf39e7b9b530bacf95d1f89612c10e362eb60))
+
+- Doubling of agent cards and markdown blocks
+  ([`c8d387a`](https://github.com/AI4MS/MatCreator/commit/c8d387af96fabda0bc376baac51f423ab6bd041b))
+
+- Edge animation not on the lines
+  ([`2b80314`](https://github.com/AI4MS/MatCreator/commit/2b80314cc78b4411e26ff3574a4233fc416f218d))
+
+- Graph not showing flash mode tasks
+  ([`4c0a484`](https://github.com/AI4MS/MatCreator/commit/4c0a484817ded63486b09d2cc9053e2454bb0345))
+
+- Images centering
+  ([`9f3d78e`](https://github.com/AI4MS/MatCreator/commit/9f3d78e1dafd4346fffdcc0f0eb3f7cce404bf36))
+
+- Not showing chat bubble after refreshing/session switching
+  ([`30fcdc7`](https://github.com/AI4MS/MatCreator/commit/30fcdc765325c85e52de43008d8eeb7dfe3aec41))
+
+- Settings issues
+  ([`78a3279`](https://github.com/AI4MS/MatCreator/commit/78a3279251b16273e932ab3000537d8356be35a6))
+
+- Skill not return assets'info
+  ([`57396d0`](https://github.com/AI4MS/MatCreator/commit/57396d0f4f3bdff0e9a17136babff1dd7affbcc6))
+
+- Waiting after finished & doubling markdown renders
+  ([`da35b4f`](https://github.com/AI4MS/MatCreator/commit/da35b4f97a6b0ee0c758457a9c1df2c57f86b16d))
+
+- **skills**: Address review - add --use-pretrain-script and --output to DPA-4c train; default
+  epochs back to 50
+  ([`da9783a`](https://github.com/AI4MS/MatCreator/commit/da9783ab3a4d2ab37a3319ea3d5fa3425b641232))
+
+- **skills**: Lower DPA-4c fine-tuning start_lr to 1e-4 per official usage note
+  ([`3e06e2e`](https://github.com/AI4MS/MatCreator/commit/3e06e2e425da5beb5b474efc32a7d402b34b4a13))
+
+### Chores
+
+- Merge duplicate eos and equation-of-states skills
+  ([`36ee500`](https://github.com/AI4MS/MatCreator/commit/36ee5008305b81455866668bac197ae9a9cd11c7))
+
+### Documentation
+
+- **eos**: Spell out the third-order Birch-Murnaghan equation
+  ([`3598f37`](https://github.com/AI4MS/MatCreator/commit/3598f376bff5facbc8717fe2eb76bbacaba4fb06))
+
+- **skills**: Atom_modify map yes only needs to precede the pair_style deepmd line
+  ([`3cc32f9`](https://github.com/AI4MS/MatCreator/commit/3cc32f97819a634ec4228348b935665f2d18b242))
+
+- **skills**: Require atom_modify map yes for DPA-4c (and DPA-4) in LAMMPS inputs
+  ([`8e87118`](https://github.com/AI4MS/MatCreator/commit/8e8711854c4e2c9dc0b90fb5f60ff19dbccb31dc))
+
+### Features
+
+- Add lenient JSON parsing for tool-call arguments and tests
+  ([`9e2978f`](https://github.com/AI4MS/MatCreator/commit/9e2978f662616aab49d0b90fa93bc6f8a29667e7))
+
+- Flash agent graph
+  ([`7eabd24`](https://github.com/AI4MS/MatCreator/commit/7eabd24faf6f0f9bba7e6724e7ba15a53977b870))
+
+- Frontend refactor
+  ([`8695db8`](https://github.com/AI4MS/MatCreator/commit/8695db81d85bdaccc20f4b01174d4d7fc5889d18))
+
+- **skills**: Merge DPA-4c preparation into deepmd_prepare.py with official OMat24 variants
+  ([`ba1dfa6`](https://github.com/AI4MS/MatCreator/commit/ba1dfa60b1414854c911b44cea240fdfe9b9d30a))
+
+### Refactoring
+
+- Fatier d orbit in waiting animation
+  ([`b2e57c4`](https://github.com/AI4MS/MatCreator/commit/b2e57c47803df02ae68c9d1bc51f0f3f23afc774))
+
+- Skill creation skill with kdg info
+  ([`c93eb48`](https://github.com/AI4MS/MatCreator/commit/c93eb48ea7c194bee678403025c8d8c0972fa255))
+
+- Waiting animation
+  ([`73ea271`](https://github.com/AI4MS/MatCreator/commit/73ea2710464ea119b0b2572b930bda3e87035668))
+
+
 ## v2.21.0 (2026-08-25)
 
 ### Bug Fixes
