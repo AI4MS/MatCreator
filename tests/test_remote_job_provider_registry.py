@@ -65,6 +65,14 @@ def test_run_bohr_json_returns_data_on_success(monkeypatch) -> None:
     assert run_bohr_json(["job", "list"]) == {"a": 1}
 
 
+def test_batchjob_is_registered_and_legacy_provider_is_rejected():
+    assert "bohr_batchjob" in registry.registered_providers()
+    assert "bohr_job" not in registry.registered_providers()
+    assert registry.get_adapter("bohr_batchjob").provider == "bohr_batchjob"
+    with pytest.raises(registry.RetiredProviderError, match="no longer supported"):
+        registry.get_adapter("bohr_job")
+
+
 class _DummyAdapter(RemoteJobAdapter):
     provider = "dummy"
 

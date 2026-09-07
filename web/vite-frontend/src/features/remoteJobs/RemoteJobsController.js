@@ -1389,7 +1389,7 @@ export function createRemoteJobsController({
       if (sessionId !== state.sessionId || owner !== state.activeSessionUserId) return;
       state.remoteJobs = Array.isArray(data?.jobs) ? data.jobs : [];
       render();
-      onJobsChanged();
+      onJobsChanged({ sessionId, owner, activity: data });
     } catch (_) {
       // The control plane may be restarting; retain the last visible snapshot.
     }

@@ -1,4 +1,12 @@
-# VASP Bohrium Submission Reference (bohr CLI)
+# Historical VASP Bohrium Submission Reference — Legacy Jobs
+
+> **Legacy reference only; not active submission instructions.** The commands,
+> machine examples, and retry advice below belong to the retired job/job-group
+> API. For all new tracked VASP submissions, read
+> [bohr-batchjob.md](bohr-batchjob.md) and use `submit_bohr_batchjob` from
+> `remote-job`. Do not use this historical recipe, reinterpret legacy IDs, or
+> automatically resubmit old jobs. Interactive execution is unchanged; see
+> [remote-sandbox-execution.md](remote-sandbox-execution.md).
 
 See the `bohrium` skill for general `bohr` CLI usage (login, project ID, machine types, monitoring).
 This file covers only **VASP-specific** parameters.

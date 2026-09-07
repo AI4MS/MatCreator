@@ -2,14 +2,14 @@
 
 Submission is provider-specific — a bohr sandbox needs a template while a
 batch job needs a machine type and image, so there is one submit tool per
-provider (``submit_bohr_sandbox``, ``submit_bohr_job``). Every operation
+provider (``submit_bohr_sandbox``, ``submit_bohr_batchjob``). Every operation
 after submission dispatches on the ``job_id`` alone and works the same for
 any provider, so adding a new provider plugin never requires a new
 post-submission tool here.
 
 ``submit_e2b_sandbox`` is retained below for existing/in-flight e2b jobs and
 its unit tests, but is no longer registered on the step executor — new
-submissions go through ``submit_bohr_sandbox``/``submit_bohr_job`` instead.
+submissions go through ``submit_bohr_sandbox``/``submit_bohr_batchjob`` instead.
 """
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from typing import Any
 from google.adk.tools.tool_context import ToolContext
 
 from ...control_plane.providers.e2b import E2BConnectionConfig
+from ...control_plane.providers.registry import RetiredProviderError, require_supported_provider
 from ...control_plane.remote_job_service import RemoteJobService
 from ...control_plane.remote_jobs import TERMINAL_REMOTE_JOB_STATUSES, RemoteJobStore
 from ...workspace import ADK_DIR
@@ -249,34 +250,38 @@ def submit_bohr_sandbox(
     )
 
 
-def submit_bohr_job(
+def submit_bohr_batchjob(
     tool_context: ToolContext,
     *,
-    project_id: int = None,
-    job_name: str = None,
-    machine_type: str = None,
-    image_address: str = None,
-    command: str = None,
-    input_directory: str | None = None,
-    result_path: str | None = None,
-    max_run_time: int | None = None,
+    name: str,
+    image: str,
+    command: str,
+    project_id: int | None = None,
+    machine_type: str | None = None,
+    sku_id: int | None = None,
+    input_path: str | None = None,
+    out_files: list[str] | None = None,
+    max_run_time: str = "24h",
+    max_wait_time: str = "30m",
 ) -> dict[str, Any]:
-    """Submit a batch/HPC-style Bohrium job (`bohr job submit`) for the current step.
+    """Submit or reuse a tracked sandbox-based job through `bohr batchjob submit`.
 
-    This is a fire-and-forget batch submission, not an interactive sandbox:
-    inputs are staged once via ``input_directory`` and there is no
-    `run_remote_job_command` for this provider — the whole computation must
-    be expressed in ``command``. Poll `get_remote_job_status` until it
-    reports ``succeeded``, then call `collect_remote_job_outputs`.
+    Supply exactly one of machine_type or sku_id, discovered with
+    `bohr batchjob machine list -o json`. project_id falls back to
+    BOHRIUM_PROJECT_ID. input_path is a workspace file or nonempty directory
+    of regular files (no symlinks); out_files lists remote paths to retain.
+    Durations use units, e.g. '2h' or '90s', and must be at least one second.
+    Express the entire computation in command: interactive execution and
+    incremental transfers are not supported. After status succeeds, collect
+    outputs into a new, nonexistent workspace directory.
     """
-    resolved_project_id = project_id or os.environ.get("BOHRIUM_PROJECT_ID", "")
+    resolved_project_id = project_id if project_id is not None else os.environ.get("BOHRIUM_PROJECT_ID", "")
     missing = [
         name
         for name, value in (
             ("project_id", resolved_project_id),
-            ("job_name", job_name),
-            ("machine_type", machine_type),
-            ("image_address", image_address),
+            ("name", name),
+            ("image", image),
             ("command", command),
         )
         if not value
@@ -284,32 +289,100 @@ def submit_bohr_job(
     if missing:
         return {
             "status": "error",
-            "message": f"Missing required field(s) for bohr job submission: {', '.join(missing)}",
+            "message": f"Missing required field(s) for bohr batchjob submission: {', '.join(missing)}",
         }
+    if bool(machine_type) == (sku_id is not None):
+        return {"status": "error", "message": "Specify exactly one of machine_type or sku_id."}
+    if input_path is not None:
+        if not isinstance(input_path, str) or not input_path.strip():
+            return {"status": "error", "message": "input_path must be a nonempty workspace path."}
+        source, error = _resolve_workspace_child(tool_context, input_path)
+        if error:
+            return {"status": "error", "message": error}
+        assert source is not None
+        original = Path(input_path).expanduser()
+        if not original.is_absolute():
+            original = Path(str(tool_context.state["workspace_dir"])) / original
+        if original.is_symlink():
+            return {"status": "error", "message": "Batch Job input_path must not be a symbolic link."}
+        input_path = str(source)
     spec = {
         "project_id": resolved_project_id,
-        "job_name": job_name,
+        "name": name,
         "machine_type": machine_type,
-        "image_address": image_address,
+        "sku_id": sku_id,
+        "image": image,
         "command": command,
-        "input_directory": input_directory,
-        "result_path": result_path,
+        "input_path": input_path,
+        "out_files": out_files,
         "max_run_time": max_run_time,
+        "max_wait_time": max_wait_time,
     }
     result = _submit(
         tool_context,
-        provider="bohr_job",
+        provider="bohr_batchjob",
         spec=spec,
-        discriminator=f"{job_name}:{machine_type}:{image_address}",
+        discriminator=f"bohr_batchjob:{name}",
     )
     return _submission_response(
         result,
-        id_field="bohr_job_id",
+        id_field="batchjob_id",
         success_message=(
             "Tracked bohr batch job is submitted. Poll get_remote_job_status until it "
             "reports succeeded, then call collect_remote_job_outputs."
         ),
     )
+
+
+def attach_bohr_batchjob(
+    tool_context: ToolContext,
+    *,
+    batchjob_id: str,
+) -> dict[str, Any]:
+    """Attach an already-submitted Batch Job by its explicit string ID; never submit.
+
+    Uses the existing bohr account authentication to read the remote status.
+    Repeated attachment reuses the current session's durable job record.
+    Use the returned job_id for status, controls, and output collection.
+    """
+    session_id = str(tool_context.state.get("session_id") or "")
+    error = None
+    if not isinstance(batchjob_id, str) or not batchjob_id.strip():
+        error = "An explicit nonempty string batchjob_id is required."
+    elif not session_id:
+        error = "No session_id is available for remote-job attachment."
+    if error:
+        return {"status": "error", "job_id": None, "batchjob_id": None, "error": error, "message": error}
+    batchjob_id = batchjob_id.strip()
+    node_id = _node_id(tool_context)
+    try:
+        job = _service().attach_job(
+            owner_id=_owner_id(tool_context),
+            session_id=session_id,
+            provider="bohr_batchjob",
+            external_id=batchjob_id,
+            node_id=node_id,
+            step_number=tool_context.state.get("step_number"),
+        )
+    except Exception as exc:
+        error = f"bohr batchjob attachment failed: {exc}"
+        return {
+            "status": "error", "job_id": None, "batchjob_id": batchjob_id,
+            "error": error, "message": error,
+        }
+    record_remote_job_reference(
+        session_id=session_id,
+        node_id=node_id,
+        job_id=job["job_id"],
+        provider="bohr_batchjob",
+        external_id=job["external_id"],
+    )
+    return {
+        "status": job["status"],
+        "job_id": job["job_id"],
+        "batchjob_id": job["external_id"],
+        "error": job.get("error"),
+    }
 
 
 def get_remote_job_status(job_id: str, tool_context: ToolContext) -> dict[str, Any]:
@@ -330,6 +403,15 @@ def get_remote_job_status(job_id: str, tool_context: ToolContext) -> dict[str, A
     ]
     if controls:
         result["user_control"] = controls[-1]
+    try:
+        require_supported_provider(job["provider"])
+    except RetiredProviderError as exc:
+        result.update(
+            status="error",
+            tracked_status=job["status"],
+            message=exc.args[0],
+            provider_supported=False,
+        )
     return result
 
 
@@ -358,7 +440,10 @@ def terminate_remote_job(job_id: str, tool_context: ToolContext) -> dict[str, An
         terminated = _service().terminate_job(job_id)
     except Exception as exc:
         return {"status": "error", "message": f"Termination failed: {exc}"}
-    return {"job_id": terminated["job_id"], "status": terminated["status"], "external_id": terminated["external_id"]}
+    result = {"job_id": terminated["job_id"], "status": terminated["status"], "external_id": terminated["external_id"]}
+    if terminated.get("error"):
+        result["error"] = terminated["error"]
+    return result
 
 
 def run_remote_job_command(
@@ -381,7 +466,7 @@ def run_remote_job_command(
     Do not put credentials in ``command``. Command text and output are
     returned to the current step but are not persisted in the durable job
     snapshot. Not every provider supports this — a batch job (e.g.
-    `bohr_job`) returns an error explaining that its whole command must run
+    `bohr_batchjob`) returns an error explaining that its whole command must run
     at submission time instead.
     """
     job = get_remote_job_status(job_id, tool_context)
@@ -504,7 +589,7 @@ def download_remote_job_output(
 
     ``source_path`` is an absolute path on the remote side (e.g.
     ``/home/user/CHGCAR``). ``destination_path`` must resolve inside the
-    current workspace. For a batch job (e.g. `bohr_job`), use
+    current workspace. For a batch job (e.g. `bohr_batchjob`), use
     `collect_remote_job_outputs` instead once the job has succeeded.
     """
     job = get_remote_job_status(job_id, tool_context)
@@ -528,22 +613,29 @@ def collect_remote_job_outputs(
 
     Only valid once `get_remote_job_status` reports ``status: succeeded``.
     ``destination_path`` must resolve inside the current workspace as a
-    directory. A repeated call after outputs are already collected is a
+    new, nonexistent directory for Batch Jobs; do not create it first.
+    A repeated call after outputs are already collected is a
     durable no-op that returns the same artifact list rather than
     downloading twice.
     """
     job = get_remote_job_status(job_id, tool_context)
     if job.get("status") == "error":
         return job
-    destination, error = _resolve_workspace_child(tool_context, destination_path)
+    _, error = _resolve_workspace_child(tool_context, destination_path)
     if error is not None:
         return {"status": "error", "message": f"Output collection failed: {error}"}
+    original = Path(destination_path).expanduser()
+    if not original.is_absolute():
+        original = Path(str(tool_context.state["workspace_dir"])) / original
     try:
-        collected = _service().collect_job_outputs(job_id, destination)
+        collected = _service().collect_job_outputs(job_id, original)
     except Exception as exc:
         return {"status": "error", "message": f"Output collection failed: {exc}"}
-    return {
+    result = {
         "job_id": collected["job_id"],
         "status": collected["status"],
         "artifacts": collected.get("artifacts", []),
     }
+    if collected.get("error"):
+        result["error"] = collected["error"]
+    return result

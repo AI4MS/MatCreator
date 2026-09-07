@@ -222,6 +222,26 @@ function createFixture({ controllerOverrides = {}, skin = "rack-lab", windowOver
   };
 }
 
+test("polling forwards root activity even when remote job status has not changed", async () => {
+  const updates = [];
+  const data = { jobs: [], active_run: { run_id: "root-run" }, activity_revision: "revision-1" };
+  const { controller, state } = createFixture({
+    controllerOverrides: {
+      dummyMode: false,
+      httpClient: { getJson: async () => data },
+      onJobsChanged: (update) => updates.push(update),
+    },
+  });
+  await controller.load("session-1", "owner-1");
+  await controller.load("session-1", "owner-1");
+  assert.equal(updates.length, 2);
+  assert.deepEqual(updates[0], { sessionId: "session-1", owner: "owner-1", activity: data });
+  state.sessionId = "session-2";
+  await controller.load("session-1", "owner-1");
+  assert.equal(updates.length, 2);
+  controller.destroy();
+});
+
 function treeText(element) {
   return [element, ...element.descendants()].map((node) => node.textContent || "").join(" ");
 }
@@ -251,7 +271,7 @@ test("backend action and capability projections override legacy provider inferen
 
   const grantedByActions = {
     ...legacyE2b,
-    provider: "bohr_job",
+    provider: "bohr_batchjob",
     capabilities: [],
     view: { controls: { actions: { pause: true, terminate: true } } },
   };
@@ -312,7 +332,7 @@ test("rendered Rack Lab controls follow the backend action matrix", () => {
     {
       job_id: "projected-granted",
       external_id: "provider-granted",
-      provider: "bohr_job",
+      provider: "bohr_batchjob",
       status: "running",
       view: { actions: { refresh: false, pause: true, terminate: true } },
     },
@@ -1288,7 +1308,7 @@ test("latest provider identity is visible and unsupported pause is capability-ga
   fixture.controller.setPresentationJobs([{
     job_id: "mc-job-42",
     external_id: "bohr-batch-314",
-    provider: "bohr_job",
+    provider: "bohr_batchjob",
     status: "running",
     snapshot: { provider_status: "RUNNING" },
   }]);

@@ -30,9 +30,36 @@ export function createSessionCoordinator({
   const createOperations = new Map();
   let filesRequestController = null;
   let modeRequestController = null;
+  let destroyed = false;
+  const activityRevisions = new Map();
+  const activityLoads = new Set();
 
   function isCurrentSession(sessionId, owner) {
     return sessionRequestKey(sessionId, owner) === sessionRequestKey();
+  }
+
+  async function observeRemoteJobActivity(sessionId, owner, activity = {}) {
+    if (destroyed || !state.sessionReady || !isCurrentSession(sessionId, owner)) return;
+    const key = sessionRequestKey(sessionId, owner);
+    if (state.activeRequests.has(key)) return;
+    const runtime = getSessionRuntime();
+    if (activity.active_run) {
+      runtime.startManagedRunReconnect(activity.active_run, sessionId, owner);
+      return;
+    }
+    const revision = activity.activity_revision;
+    if (!revision || activityRevisions.get(key) === revision || activityLoads.has(key)) return;
+    activityLoads.add(key);
+    try {
+      const snapshot = await runtime.loadSession(sessionId, owner);
+      if (snapshot && !destroyed && isCurrentSession(sessionId, owner)) {
+        activityRevisions.set(key, revision);
+      }
+    } catch (error) {
+      console.error("Failed to refresh background agent results:", error);
+    } finally {
+      activityLoads.delete(key);
+    }
   }
 
   function displayStatus(session, owner) {
@@ -305,6 +332,8 @@ export function createSessionCoordinator({
   }
 
   function destroy() {
+    destroyed = true;
+    activityRevisions.clear();
     switchRevision += 1;
     filesRequestController?.abort();
     modeRequestController?.abort();
@@ -315,6 +344,7 @@ export function createSessionCoordinator({
   }
 
   return {
+    observeRemoteJobActivity,
     displayStatus,
     switchSession,
     refreshFiles,

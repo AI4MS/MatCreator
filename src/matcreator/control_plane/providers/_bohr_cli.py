@@ -1,6 +1,6 @@
 """Shared subprocess boundary for `bohr`-CLI-backed provider adapters.
 
-Both ``bohr_sandbox`` (interactive) and ``bohr_job`` (batch) adapters shell
+Both ``bohr_sandbox`` (interactive) and ``bohr_batchjob`` (batch) adapters shell
 out to the same ``bohr`` binary and expect the same JSON envelope
 (``{"ok": bool, "data": ..., "error": {...}}``), so the invocation and
 error-handling logic lives here once instead of being duplicated per adapter.

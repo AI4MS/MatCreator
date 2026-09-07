@@ -1,4 +1,11 @@
-# Bohrium CLI Reference
+# Historical Bohrium CLI Reference — Legacy Jobs
+
+> **Legacy reference only; not active submission instructions.** The commands
+> and retry advice below describe the retired job/job-group API. Do not use
+> them for new tracked jobs or to operate on Batch Job IDs. Use the
+> [tracked Batch Job reference](../../remote-job/references/bohr-batchjob-ref.md)
+> and `submit_bohr_batchjob` instead. Legacy records remain inspectable but
+> provider operations are unsupported; never auto-resubmit or reinterpret IDs.
 
 
 ## Job Submit (for single-job submission)

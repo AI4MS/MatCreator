@@ -547,7 +547,12 @@ const { loadSessions, rerender: rerenderSessionList } = createSessionListControl
 const remoteJobsController = createRemoteJobsController({
   state,
   dummyMode: import.meta.env.VITE_DUMMY_REMOTE_JOBS === "true",
-  onJobsChanged: rerenderSessionList,
+  onJobsChanged: (update) => {
+    rerenderSessionList();
+    if (update) {
+      void sessionCoordinator?.observeRemoteJobActivity(update.sessionId, update.owner, update.activity);
+    }
+  },
 });
 
 const sessionSummaryController = createSessionSummaryController({

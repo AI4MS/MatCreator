@@ -56,6 +56,7 @@ function createHarness(overrides = {}) {
       showConfirmDialog: async () => false,
       fetchImpl: async () => ({ ok: true, status: 200 }),
       ...overrides,
+      state,
     }),
   };
 }
@@ -151,4 +152,73 @@ test("session log download releases its temporary object URL", async () => {
   assert.equal(requestUrl, "/api/sessions/session%2Fa/session-log?user_id=owner%2Fa");
   assert.equal(link.href, "blob:test");
   assert.deepEqual(events, ["appended", "clicked", "removed", "revoked:blob:test"]);
+});
+
+test("idle remote-job polling reconnects a harness-started root run", async () => {
+  const calls = [];
+  const { coordinator } = createHarness({
+    state: { sessionReady: true },
+    getSessionRuntime: () => ({
+      startManagedRunReconnect: (...args) => calls.push(args),
+      loadSession: async () => { throw new Error("Active runs should stream, not reload"); },
+    }),
+  });
+  const run = { run_id: "harness-run" };
+  await coordinator.observeRemoteJobActivity("session-a", "user-a", {
+    active_run: run, activity_revision: "running-1",
+  });
+  assert.deepEqual(calls, [[run, "session-a", "user-a"]]);
+  });
+
+test("a background turn completed between polls reloads history exactly once", async () => {
+  let loads = 0;
+  const { coordinator } = createHarness({
+    state: { sessionReady: true },
+    getSessionRuntime: () => ({
+      loadSession: async () => { loads += 1; return {}; },
+    }),
+  });
+  for (const revision of ["delivered", "delivered", "completed", "completed"]) {
+    await coordinator.observeRemoteJobActivity("session-a", "user-a", { activity_revision: revision });
+  }
+  assert.equal(loads, 2);
+  });
+
+test("background activity respects session ownership, local work, and teardown", async () => {
+  let loads = 0;
+  const { coordinator, state } = createHarness({
+    state: { sessionReady: true },
+    getSessionRuntime: () => ({ loadSession: async () => { loads += 1; return {}; } }),
+  });
+  const activity = { activity_revision: "completed" };
+  await coordinator.observeRemoteJobActivity("session-a", "user-b", activity);
+  await coordinator.observeRemoteJobActivity("session-b", "user-a", activity);
+  state.activeRequests.set("user-a:session-a", { running: true });
+  await coordinator.observeRemoteJobActivity("session-a", "user-a", activity);
+  assert.equal(loads, 0);
+  state.activeRequests.clear();
+  await coordinator.observeRemoteJobActivity("session-a", "user-a", activity);
+  coordinator.destroy();
+  await coordinator.observeRemoteJobActivity("session-a", "user-a", { activity_revision: "later" });
+  assert.equal(loads, 1);
+  });
+
+test("overlapping background polls coalesce and failed snapshot reads retry", async () => {
+  const gate = deferred();
+  let loads = 0;
+  const { coordinator } = createHarness({
+    state: { sessionReady: true },
+    getSessionRuntime: () => ({ loadSession: async () => {
+      loads += 1;
+      return loads === 1 ? gate.promise : {};
+    } }),
+  });
+  const activity = { activity_revision: "completed" };
+  const first = coordinator.observeRemoteJobActivity("session-a", "user-a", activity);
+  await coordinator.observeRemoteJobActivity("session-a", "user-a", activity);
+  assert.equal(loads, 1);
+  gate.resolve(null);
+  await first;
+  await coordinator.observeRemoteJobActivity("session-a", "user-a", activity);
+  assert.equal(loads, 2);
 });
