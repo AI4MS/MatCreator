@@ -43,7 +43,6 @@ planning:
 
 skills:
     module_root: /path/to/selected/default/skills
-    disabled: [...]
 
 env:
     MP_API_KEY: ...
@@ -220,8 +219,3 @@ def apply_config_env_overrides(
 def get_planning_skills() -> list[str]:
     """Return the list of extra skill names promoted to planning access."""
     return load_config().get("planning", {}).get("extra_skills", [])
-
-
-def get_disabled_skills() -> list[str]:
-    """Return the list of skill names disabled for knowledge graph search."""
-    return load_config().get("skills", {}).get("disabled", [])

@@ -19,6 +19,10 @@ from ..execution_graph_state import get_execution_graph, set_execution_graph
 
 logger = logging.getLogger(__name__)
 
+# Planning actions can include concrete tool parameters and acceptance criteria;
+# 500 characters is too restrictive for complex material-science workflows.
+PLAN_TEXT_MAX_LENGTH = 2_000
+
 
 # ---------------------------------------------------------------------------
 # Legacy schemas (linear plan — kept for backward compatibility)
@@ -37,7 +41,7 @@ class PlanStep(BaseModel):
     action: str = Field(
         ...,
         description="Clear, concise description of what this step does (1-2 sentences). Each step should cover a meaningful chunk of work — avoid splitting a single logical operation into multiple steps.",
-        max_length=500,
+        max_length=PLAN_TEXT_MAX_LENGTH,
     )
 
     @field_validator("suggested_skills")
@@ -65,7 +69,7 @@ class ExecutionPlan(BaseModel):
     additional_notes: str = Field(
         ...,
         description="Any extra information or considerations for the user",
-        max_length=500,
+        max_length=PLAN_TEXT_MAX_LENGTH,
     )
 
 
@@ -177,7 +181,7 @@ class GraphNode(BaseModel):
     label: str = Field(..., description="Short display name shown in the UI")
     action: str = Field(
         ...,
-        max_length=500,
+        max_length=PLAN_TEXT_MAX_LENGTH,
         description="1-2 sentence description of what this node does",
     )
     suggested_skills: List[str] = Field(
@@ -237,7 +241,7 @@ class ExecutionGraph(BaseModel):
         default_factory=list,
         description="List of [predecessor_id, successor_id] pairs. predecessor must complete before successor starts.",
     )
-    additional_notes: str = Field(default="", max_length=500)
+    additional_notes: str = Field(default="", max_length=PLAN_TEXT_MAX_LENGTH)
 
     @model_validator(mode="after")
     def _validate_graph_structure(self) -> "ExecutionGraph":

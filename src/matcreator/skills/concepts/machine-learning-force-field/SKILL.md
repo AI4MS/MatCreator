@@ -30,7 +30,7 @@ MLFFs enable large-scale and long-timescale molecular dynamics simulations that 
 ## When to Use
 
 - Init-model fine-tuning of a pre-trained model is the most common use case.
-- When the pre-trained or fine-tuned model is too large for productive MD simulations, choose the lightweight **DPA4c** base model; if a fine-tuned model is available, DPA4c can optionally use **model labeling** (the fine-tuned model's predictions replace DFT) to generate large datasets cheaply.
+- When the pre-trained or fine-tuned model is too large for productive MD simulations, choose the lightweight **DPA4c** base model (see base-model selection below).
 - Act as the energy, force and stress provider for the majority of atomistic property calculations
   (after confirmed accuracy on DFT-labeled testing set.)
 
@@ -104,10 +104,9 @@ fine-tuned single-task model, and only then come back to DPA4c.
 
 # Unified MLFF generation workflow (init-model fine-tuning)
 
-Both DPA4 and DPA4c follow the **same procedure** below. The only systematic
-differences are the **base model** and the **input.json** template — all other
-stages are identical. DPA4c additionally supports **optional model labeling**
-when a fine-tuned model is available (see Stage 0).
+Both DPA4 and DPA4c follow the **same procedure** below (see base-model selection
+above for the differences between them). DPA4c additionally supports **optional
+model labeling** when a fine-tuned model is available (see Stage 0).
 
 > **Strict stage ordering — Stage 0 → Stage A → Stage B → Stage C.**
 > Execute in order; do not skip, reorder, or omit any stage. The only allowed
@@ -137,7 +136,8 @@ of DFT single-point calculations.)
 > **Key principle:** The pretrained model is only a **surrogate for
 > structural-space exploration** via MD, **not a ground truth**. All ground-truth
 > labels for fine-tuning and evaluation must come from **DFT calculations**,
-> unless model labeling is explicitly chosen (Stage B).
+> unless model labeling is explicitly chosen (see
+> [DPA4c model labeling](#dpa4c-model-labeling) above).
 
 > See [DPA4c model labeling](#dpa4c-model-labeling) above for the validity
 > requirements of a fine-tuned model. If no valid fine-tuned model exists,
@@ -190,11 +190,11 @@ of DFT single-point calculations.)
 
    **Output frames recommendation:**
 
-   | System complexity | DFT labeling (both DPA4 & DPA4c) | Model labeling (DPA4c only when Fine-tune model ready) |
+   | System complexity | DFT labeling (both DPA4 & DPA4c) | Model labeling (DPA4c only, with fine-tuned model) |
    |--------------------|-----------------------------------|------------------------------|
-   | Simple             | **100**                           | **1 000**                    |
-   | Complex            | **200**                           | **2 000**                    |
-   | Very complex       | **500**                           | **5 000**                    |
+   | Simple             | **100**                           | **1,000**                    |
+   | Complex            | **200**                           | **2,000**                    |
+   | Very complex       | **500**                           | **5,000**                    |
 
    > Model labeling uses roughly **10×** the frames of DFT labeling because
    > labeling is essentially free (no DFT jobs).
@@ -203,8 +203,8 @@ of DFT single-point calculations.)
    After MD sampling, use entropy-based filtering to select a subset of ~50% of
    the structures **with diversity** from the obtained MD frames before labeling,
    to reduce labeling cost. For example, use the `quests` skill's
-   `active_learning.py` script with `filter-by-entropy`. The chunk size had
-   better be 1/50 of the total number of MD frames, but never below 10.
+   `active_learning.py` script with `filter-by-entropy`. Use a chunk size of
+   roughly 1/50 of the total number of MD frames, but never below 10.
    > **CRITICAL:** Always run entropy-based selection BEFORE labeling. Never
    > send all sampled frames directly to labeling — use the selected structures.
 
@@ -237,16 +237,16 @@ Label the entropy-selected structures to obtain energy, forces, and virial:
 
 > Do NOT reuse any existing workdir. **Always create a fresh workdir.**
 
-1. **Prepare input files** in the fresh workdir. For DPA models, use the
-   `deepmd` skill's preparation script. Train/test split ratio is **4:1** for
-   all labeled frames.
+1. **Prepare input files** in the fresh workdir. For DPA models (including
+   DPA4c), use the `deepmd` skill's preparation script. Train/test split ratio
+   is **4:1** for all labeled frames.
 
 2. **Train (both DPA4 & DPA4c):** Init-model fine-tune the pre-trained model
-   on the labeled data. Both base models use `--init-model` initialization
-   (see the `deepmd` skill for the concrete CLI, which differs between DPA4
-   and DPA4c). Both base models default to **50 epochs** (set via the
-   `num_epochs` keyword — do NOT instruct training in steps). Submit the
-   training job on Bohrium via the `bohrium` skill.
+   on the labeled data (both base models are initialized from the pretrained
+   weights; the concrete CLI differs between DPA4 and DPA4c and is owned by
+   the `deepmd` skill). Both base models default to **50 epochs** (do NOT
+   instruct training in steps). Submit the training job on Bohrium via the
+   `bohrium` skill.
 
    > **Model-labeling data-gate (DPA4c only):** Before training, confirm that
    > the training frames were **produced by Stage A → Stage B** (fine-tuned
@@ -268,7 +268,7 @@ Label the entropy-selected structures to obtain energy, forces, and virial:
      come back together with the fine-tuned model. For other MLFF models,
      manually run evaluation via the MLFF's native ASE calculator interface
      (see `ase` skill).
-   - **Model labeling (DPA4c only) — two levels required:**
+   - **Model labeling (DPA4c only) — additional comparison:**
      - **DPA4c vs fine-tuned model:** compare the DPA4c model's
        predictions against the fine-tuned model's labels on the held-out test
        set (the 1/5 test split from step 1). Checks that the DPA4c model
@@ -290,7 +290,7 @@ Label the entropy-selected structures to obtain energy, forces, and virial:
 
 # Post-delivery: model compression (freeze)
 
-After training and evaluation, freeze the model ( **and compress for DPA4c** ) before productive
+After training and evaluation, freeze the model (**and compress for DPA4c**) before productive
 inference (ASE, LAMMPS). The freeze procedure — including CLI, precision
 settings, and hardware-specific guidance — is owned entirely by the **`deepmd`
 skill**. Load it for concrete instructions; this concept file does not repeat
@@ -330,6 +330,7 @@ See the `deepmd` skill for details.
 - **Structure size:** ~50 atoms/structure. Large systems must NOT be extended
   into supercells.
 - **Evaluation always compares pretrained vs fine-tuned** for both DPA4 and
-  DPA4c; if model labeling was used, also compare DPA4c vs DFT (two-level).
+  DPA4c; if model labeling was used, also compare DPA4c vs the fine-tuned
+  model (two-level).
 - Both base models (DPA4 and DPA4c) use **init-model fine-tuning** and default
   to **50 epochs**.

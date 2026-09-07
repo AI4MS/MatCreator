@@ -1,7 +1,9 @@
 import pytest
 
 from matcreator.agents.thinking_agent.planning import (
+    ExecutionGraph,
     NodeStatus,
+    PLAN_TEXT_MAX_LENGTH,
     block_graph_dependents,
     graph_nodes_with_status,
     is_graph_complete,
@@ -80,3 +82,23 @@ def test_graph_is_complete_only_when_every_node_succeeds() -> None:
         graph["nodes"][node_id]["status"] = "success"
 
     assert is_graph_complete(graph)
+
+
+def test_graph_accepts_extended_planning_text() -> None:
+    action = "a" * PLAN_TEXT_MAX_LENGTH
+    notes = "n" * PLAN_TEXT_MAX_LENGTH
+
+    graph = ExecutionGraph(
+        nodes={
+            "long_step": {
+                "node_id": "long_step",
+                "label": "Long step",
+                "action": action,
+                "suggested_skills": [],
+            }
+        },
+        additional_notes=notes,
+    )
+
+    assert graph.nodes["long_step"].action == action
+    assert graph.additional_notes == notes

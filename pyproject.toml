@@ -14,6 +14,7 @@ dependencies = [
     "google-cloud-storage",
     "lbg>=1.2.29",
     "litellm>=1.77.4",
+    "json-repair>=0.30.0",
     "periodictable>=2.0.2",
     "pyyaml>=6.0.2",
     "scipy>=1.16.2",
@@ -35,7 +36,8 @@ dependencies = [
     "know-do-graph>=0.1.9",
     "pymatgen",
     "mat-bench @ git+https://github.com/AI4MS/mat_agent_bench.git@main",
-    "mat-know-base[materials] @ git+https://github.com/theAfish/mat_know_base.git@a367f73a5c4ab0e6a459fed796d855548da33155"
+    "mat-know-base[materials] @ git+https://github.com/theAfish/mat_know_base.git@a367f73a5c4ab0e6a459fed796d855548da33155",
+    "paramiko>=4.0.0"
 ]
 
 [build-system]

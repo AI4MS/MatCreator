@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ast
 import importlib.util
 import json
 import sqlite3
@@ -91,6 +92,79 @@ def _load_web_main_server(monkeypatch, control_home: Path, data_root: Path, host
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def test_graph_filter_uses_durable_launcher_ids_not_child_step_numbers(monkeypatch, tmp_path):
+    del monkeypatch, tmp_path
+    source_path = Path(__file__).resolve().parents[1] / "web" / "main.py"
+    module = ast.parse(source_path.read_text(encoding="utf-8"))
+    filter_node = next(
+        node for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_filter_agent_graph_nodes"
+    )
+    namespace: dict[str, object] = {}
+    exec(compile(ast.Module(body=[filter_node], type_ignores=[]), str(source_path), "exec"), namespace)
+    filter_graph_nodes = namespace["_filter_agent_graph_nodes"]
+    graph = {
+        "nodes": {
+            "execution__node_relax": {
+                "id": "execution__node_relax", "type": "step", "parent_id": "execution",
+                "input": {"node_id": "relax"},
+            },
+            "execution__node_relax__node_1": {
+                "id": "execution__node_relax__node_1", "type": "step", "parent_id": "execution__node_relax",
+                "input": {"node_id": "1", "step_number": 1},
+            },
+            "execution__node_static": {
+                "id": "execution__node_static", "type": "step", "parent_id": "execution",
+                "input": {"node_id": "static"},
+            },
+            "execution__node_static__node_1": {
+                "id": "execution__node_static__node_1", "type": "step", "parent_id": "execution__node_static",
+                "input": {"node_id": "1", "step_number": 1},
+            },
+        },
+        "edges": [],
+    }
+
+    filtered = filter_graph_nodes(graph, ["relax"])
+    assert set(filtered["nodes"]) == {"execution__node_relax", "execution__node_relax__node_1"}
+    assert filter_graph_nodes(graph, ["1"])["nodes"] == {}
+
+
+def test_graph_filter_matches_direct_flash_launch_by_action(monkeypatch, tmp_path):
+    del monkeypatch, tmp_path
+    source_path = Path(__file__).resolve().parents[1] / "web" / "main.py"
+    module = ast.parse(source_path.read_text(encoding="utf-8"))
+    filter_nodes = [
+        node for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name in {
+            "_filter_agent_graph_nodes", "_filter_agent_graph_nodes_by_actions",
+        }
+    ]
+    namespace: dict[str, object] = {}
+    exec(compile(ast.Module(body=filter_nodes, type_ignores=[]), str(source_path), "exec"), namespace)
+    filter_graph_nodes = namespace["_filter_agent_graph_nodes_by_actions"]
+    graph = {
+        "nodes": {
+            "orchestrator__node_flash": {
+                "id": "orchestrator__node_flash", "type": "step", "parent_id": "orchestrator",
+                "input": {"node_id": "flash_abc", "action": "Relax the candidate"},
+            },
+            "orchestrator__node_flash__node_1": {
+                "id": "orchestrator__node_flash__node_1", "type": "step",
+                "parent_id": "orchestrator__node_flash",
+                "input": {"node_id": "1", "action": "Inspect the result"},
+            },
+        },
+        "edges": [],
+    }
+
+    filtered = filter_graph_nodes(graph, [], ["Relax the candidate"])
+    assert set(filtered["nodes"]) == {
+        "orchestrator__node_flash",
+        "orchestrator__node_flash__node_1",
+    }
 
 
 def _create_session_db(path: Path, app_name: str) -> None:
@@ -188,6 +262,24 @@ def test_server_worker_image_uses_deployment_override(monkeypatch, tmp_path):
 
     assert web_main._WORKER_IMAGE == "registry.example/matcreator-worker:v2"
     assert web_main._worker_supervisor.image == "registry.example/matcreator-worker:v2"
+
+
+def test_session_event_meta_keeps_delegated_events_in_their_user_turn(monkeypatch):
+    web_main = _load_web_main(monkeypatch)
+    events = [
+        {"author": "user", "invocationId": "user-turn"},
+        {"author": "agent", "invocationId": "planner-invocation"},
+        {"author": "agent", "invocationId": "sub-agent-invocation"},
+        {"author": "agent", "invocationId": "tool-invocation"},
+    ]
+    rows = [
+        {"event_timestamp": 10 + index, "event_row_id": 100 + index}
+        for index in range(len(events))
+    ]
+
+    meta = web_main._session_event_meta(events, rows, 0)
+
+    assert [item["turn_id"] for item in meta] == ["10,100"] * len(events)
 
 
 def test_server_worker_shared_mounts_parse_extra_binds(monkeypatch, tmp_path):
@@ -358,6 +450,48 @@ def test_local_mode_reads_session_detail_regardless_of_requested_user(monkeypatc
     assert payload["userId"] == "legacy-display-name"
     assert payload["state"] == {"answer": 42}
     assert payload["events"] == [{"event": "persisted"}]
+    assert payload["pagination"]["has_more"] is False
+    assert payload["pagination"]["next_before"] == ""
+
+    compact = json.loads(asyncio.run(web_main.get_user_session(
+        "current-user", "session-1", compact=True,
+    )).body)
+    assert compact["state"] == {}
+
+
+def test_session_detail_pages_events_in_chronological_order(monkeypatch, tmp_path):
+    web_main = _load_web_main(monkeypatch)
+    db_path = tmp_path / "session.db"
+    _create_session_db(db_path, web_main.APP_NAME)
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            "INSERT INTO events VALUES (?, ?, ?, ?, ?)",
+            [
+                (web_main.APP_NAME, "legacy-display-name", "session-1", json.dumps({"event": "second"}), 2.0),
+                (web_main.APP_NAME, "legacy-display-name", "session-1", json.dumps({"event": "third"}), 3.0),
+                (web_main.APP_NAME, "legacy-display-name", "session-1", json.dumps({"event": "fourth"}), 4.0),
+            ],
+        )
+        conn.commit()
+    monkeypatch.setattr(web_main, "SESSION_DB_PATH", db_path)
+    monkeypatch.setattr(web_main, "_MATCREATOR_MODE", "local")
+
+    latest = json.loads(asyncio.run(web_main.get_user_session("current-user", "session-1", limit=2)).body)
+
+    assert [event["event"] for event in latest["events"]] == ["third", "fourth"]
+    assert latest["pagination"]["has_more"] is True
+    earlier = json.loads(asyncio.run(web_main.get_user_session(
+        "current-user", "session-1", limit=2, before=latest["pagination"]["next_before"],
+    )).body)
+    assert [event["event"] for event in earlier["events"]] == ["persisted", "second"]
+    assert earlier["pagination"]["has_more"] is False
+    assert earlier["pagination"]["next_before"] == ""
+
+    newer = json.loads(asyncio.run(web_main.get_user_session(
+        "current-user", "session-1", limit=2, after=earlier["pagination"]["end_cursor"],
+    )).body)
+    assert [event["event"] for event in newer["events"]] == ["third", "fourth"]
+    assert newer["pagination"]["has_more_after"] is False
 
 
 def test_execution_graph_endpoint_reads_atomic_graph_snapshot(monkeypatch, tmp_path):

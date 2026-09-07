@@ -15,6 +15,10 @@ def test_skill_creation_guide_loads_as_planning_skill() -> None:
 
     assert loaded.name == "skill-creation"
     assert "get_user_skills_root" in loaded.instructions
+    assert "Know-Do Graph Model" in loaded.instructions
+    assert "Evaluation Contract" in loaded.instructions
+    assert "Build metrics" in loaded.instructions
+    assert "Use metrics" in loaded.instructions
     assert "Required Checks" in loaded.instructions
     assert loaded.name in skill.PLANNING_SKILL_NAMES
 

@@ -2,6 +2,7 @@ import { Network, DataSet } from "vis-network/standalone";
 import { createDisclosureController } from "../ui/disclosureState.js";
 import { installNetworkWheelZoom } from "./networkWheelZoom.js";
 import { httpClient } from "../../shared/api/http.js";
+import { applyGraphUpdate } from "./graphUpdates.js";
 
 // Node identity and execution state intentionally live in separate visual
 // vocabularies. Type owns the face and its letter; state only owns a compact
@@ -50,14 +51,16 @@ const rgba = (rgb, alpha) => `rgba(${rgb}, ${alpha})`;
 // These distances describe time, rather than graph depth.  In particular an
 // execution batch gets its own row even though every execution node still has
 // the same planning node as its real parent.
-const VINE_BATCH_GAP = 92;
-const VINE_BATCH_STAGGER = 54;
+const VINE_BATCH_GAP = 104;
+const VINE_BATCH_STAGGER = 68;
+const VINE_ROOT_GAP = 132;
 // Keep task chains legible vertically while batches themselves still use the
 // tighter stagger below.
-const VINE_DESCENDANT_GAP = 70;
+const VINE_DESCENDANT_GAP = 82;
 const VINE_NODE_GAP = 64;
 const VINE_PLANNER_GAP = 460;
 const VINE_STEM_CLEARANCE = 42;
+const DIRECT_LANE_CLEARANCE = 28;
 
 const STATUS_ALIASES = {
   completed: "success",
@@ -93,6 +96,7 @@ export class AgentGraphView {
     this._hasRunningNodes = false;
     this._nodeTransitions = new Map();
     this._lastNodeStatuses = new Map();
+    this._runningNodeIds = new Set();
     this._reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
     this._detailEl = document.getElementById("graph-detail");
     this._detailClose = document.getElementById("graph-detail-close");
@@ -107,6 +111,16 @@ export class AgentGraphView {
     this._detailConversation = document.getElementById("detail-conversation");
     this._detailConversationCount = document.getElementById("detail-conversation-count");
     this._nodeData = {};
+    this._layoutKey = null;
+    this._cachedDisplayEdges = [];
+    this._cachedPositions = {};
+    this._cachedVineEdgeIds = new Set();
+    this._vineStemX = new Map();
+    this._displayEdgesByNode = new Map();
+    this._edgePhases = new Map();
+    this._nodeVisualKeys = new Map();
+    this._detailRenderKey = null;
+    this._graphSnapshot = null;
     this._activeDetailNodeId = null;
     this._detailDisclosures = createDisclosureController({
       captureScrollPosition: () => ({ scrollTop: this._detailEl.scrollTop }),
@@ -197,6 +211,7 @@ export class AgentGraphView {
       `Status: ${statusVisual?.label || status}`,
       `Type: ${raw.type || "step"}`,
     ];
+    if (this._isDirectOrchestratorStep(raw)) lines.push("Dispatch: direct from orchestrator");
     if (raw.summary) lines.push(`Summary: ${raw.summary}`);
     if (raw.start_time) {
       if (raw.end_time) {
@@ -228,6 +243,45 @@ export class AgentGraphView {
     if (raw.type === "orchestrator") return 17;
     if (raw.type === "planning") return 15;
     return 13;
+  }
+
+  _isDirectOrchestratorStep(raw) {
+    return raw?.type === "step" && raw?.parent_id === "orchestrator";
+  }
+
+  _vineRouteForEdge(edge, nodeMap) {
+    const fromNode = nodeMap[edge.from];
+    const toNode = nodeMap[edge.to];
+    if (fromNode?.type === "planning" && toNode?.type === "execution") {
+      return {
+        key: `batches:${edge.from}`,
+        stemX: this._vineStemX.get(edge.from),
+        entryMode: "bottom",
+      };
+    }
+    if (fromNode?.type !== "orchestrator") return null;
+    if (toNode?.type === "planning") {
+      return {
+        key: `root:${edge.from}:${edge.to}`,
+        stemX: this._vineStemX.get(edge.to),
+        entryMode: "bottom",
+      };
+    }
+    if (
+      this._isDirectOrchestratorStep(toNode)
+      && (!Array.isArray(toNode.dependency_ids) || toNode.dependency_ids.length === 0)
+    ) {
+      return {
+        key: `direct:${edge.from}`,
+        stemX: this._vineStemX.get(edge.from),
+        entryMode: "bottom",
+      };
+    }
+    return null;
+  }
+
+  _isRoutedVineEdge(edge, nodeMap) {
+    return this._vineRouteForEdge(edge, nodeMap) !== null;
   }
 
   _nodeTransition(nodeId) {
@@ -397,6 +451,28 @@ export class AgentGraphView {
     ctx.restore();
   }
 
+  _drawDirectDispatchMark(ctx, x, y, radius) {
+    // Keep this separate from the lifecycle badge: the bolt describes who
+    // dispatched the work, rather than whether that work succeeded or failed.
+    const markX = x - radius * 0.66;
+    const markY = y + radius * 0.62;
+    const scale = Math.max(0.72, radius / 15);
+    ctx.save();
+    ctx.translate(markX, markY);
+    ctx.scale(scale, scale);
+    ctx.beginPath();
+    ctx.moveTo(0.7, -5.2);
+    ctx.lineTo(-3.1, 0.25);
+    ctx.lineTo(-0.4, 0.25);
+    ctx.lineTo(-1.15, 5.0);
+    ctx.lineTo(3.25, -1.2);
+    ctx.lineTo(0.55, -1.2);
+    ctx.closePath();
+    ctx.fillStyle = document.body.dataset.theme === "light" ? "#d97706" : "#fbbf24";
+    ctx.fill();
+    ctx.restore();
+  }
+
   _nodeRenderer(raw, typeVisual, badge, radius) {
     return ({ ctx, x, y, state }) => {
       const selected = Boolean(state?.selected);
@@ -470,6 +546,9 @@ export class AgentGraphView {
             ? (metrics.actualBoundingBoxLeft - metrics.actualBoundingBoxRight) / 2
             : 0;
           ctx.fillText(badge, x + opticalOffset, y);
+          if (this._isDirectOrchestratorStep(raw)) {
+            this._drawDirectDispatchMark(ctx, x, y, drawRadius);
+          }
           this._drawStatusBadge(ctx, x, y, drawRadius, status, transition);
           ctx.restore();
         },
@@ -519,6 +598,153 @@ export class AgentGraphView {
     return STATUS_ALIASES[normalized] || (STATUS_VISUALS[normalized] ? normalized : "idle");
   }
 
+  _bezierPoint(p0, p1, p2, p3, progress) {
+    const inverse = 1 - progress;
+    return {
+      x: inverse ** 3 * p0.x
+        + 3 * inverse ** 2 * progress * p1.x
+        + 3 * inverse * progress ** 2 * p2.x
+        + progress ** 3 * p3.x,
+      y: inverse ** 3 * p0.y
+        + 3 * inverse ** 2 * progress * p1.y
+        + 3 * inverse * progress ** 2 * p2.y
+        + progress ** 3 * p3.y,
+    };
+  }
+
+  _segmentLength(segment) {
+    if (segment.kind === "line") return Math.hypot(segment.to.x - segment.from.x, segment.to.y - segment.from.y);
+    let length = 0;
+    let previous = segment.p0;
+    for (let index = 1; index <= 12; index++) {
+      const point = this._bezierPoint(segment.p0, segment.p1, segment.p2, segment.p3, index / 12);
+      length += Math.hypot(point.x - previous.x, point.y - previous.y);
+      previous = point;
+    }
+    return length;
+  }
+
+  _pointOnSegments(segments, progress) {
+    const lengths = segments.map((segment) => this._segmentLength(segment));
+    const totalLength = lengths.reduce((sum, length) => sum + length, 0);
+    if (!totalLength) return null;
+    let remaining = Math.max(0, Math.min(1, progress)) * totalLength;
+    for (let index = 0; index < segments.length; index++) {
+      const segment = segments[index];
+      const length = lengths[index];
+      if (remaining > length && index < segments.length - 1) {
+        remaining -= length;
+        continue;
+      }
+      const localProgress = length ? remaining / length : 1;
+      if (segment.kind === "line") {
+        return {
+          x: segment.from.x + (segment.to.x - segment.from.x) * localProgress,
+          y: segment.from.y + (segment.to.y - segment.from.y) * localProgress,
+        };
+      }
+      return this._bezierPoint(segment.p0, segment.p1, segment.p2, segment.p3, localProgress);
+    }
+    return null;
+  }
+
+  _vineGeometry(vine, positions) {
+    const source = positions[vine.from];
+    if (!source || !vine.branches.length) return null;
+    const sourceRadius = this._nodeRadius(this._nodeData[vine.from]);
+    const trunkX = Number.isFinite(vine.stemX) ? vine.stemX : source.x;
+    const sourceDirection = Math.sign(trunkX - source.x) || 1;
+    const usesSideEntry = vine.entryMode === "side" && Math.abs(trunkX - source.x) > 1;
+    const sourceX = usesSideEntry
+      ? source.x + sourceDirection * (sourceRadius + 1)
+      : source.x;
+    const sourceY = usesSideEntry ? source.y : source.y + sourceRadius + 1;
+    const routedBranches = vine.branches.map(({ to }) => {
+      const target = positions[to];
+      if (!target) return null;
+      const targetY = target.y - this._nodeRadius(this._nodeData[to]) - 1;
+      return { to, target, targetY, branchY: targetY - 34 };
+    }).filter(Boolean);
+    if (!routedBranches.length) return null;
+    return {
+      sourceX,
+      sourceY,
+      trunkX,
+      usesSideEntry,
+      firstBranchY: Math.min(...routedBranches.map(({ branchY }) => branchY)),
+      stemEndY: Math.max(...routedBranches.map(({ branchY }) => branchY)),
+      routedBranches,
+    };
+  }
+
+  _vineEntrySegments(geometry) {
+    const start = { x: geometry.sourceX, y: geometry.sourceY };
+    const end = { x: geometry.trunkX, y: geometry.firstBranchY };
+    if (geometry.usesSideEntry) {
+      const direction = Math.sign(geometry.trunkX - geometry.sourceX) || 1;
+      const horizontalHandle = Math.min(120, Math.max(36, Math.abs(geometry.trunkX - geometry.sourceX) * 0.48));
+      return [{
+        kind: "bezier",
+        p0: start,
+        p1: { x: geometry.sourceX + direction * horizontalHandle, y: geometry.sourceY },
+        p2: { x: geometry.trunkX, y: geometry.firstBranchY - 24 },
+        p3: end,
+      }];
+    }
+    if (Math.abs(geometry.trunkX - geometry.sourceX) <= 1) return [{ kind: "line", from: start, to: end }];
+
+    const middleX = (geometry.sourceX + geometry.trunkX) / 2;
+    const middleY = (geometry.sourceY + geometry.firstBranchY) / 2;
+    const direction = Math.sign(geometry.trunkX - geometry.sourceX) || 1;
+    const horizontalHandle = Math.min(64, Math.max(20, Math.abs(geometry.trunkX - geometry.sourceX) * 0.16));
+    const middle = { x: middleX, y: middleY };
+    return [
+      {
+        kind: "bezier",
+        p0: start,
+        p1: { x: geometry.sourceX, y: middleY },
+        p2: { x: middleX - direction * horizontalHandle, y: middleY },
+        p3: middle,
+      },
+      {
+        kind: "bezier",
+        p0: middle,
+        p1: { x: middleX + direction * horizontalHandle, y: middleY },
+        p2: { x: geometry.trunkX, y: middleY },
+        p3: end,
+      },
+    ];
+  }
+
+  _vineBranchSegment(geometry, branch) {
+    return {
+      kind: "bezier",
+      p0: { x: geometry.trunkX, y: branch.branchY },
+      p1: { x: geometry.trunkX, y: branch.branchY + 18 },
+      p2: { x: branch.target.x, y: branch.branchY - 18 },
+      p3: { x: branch.target.x, y: branch.targetY },
+    };
+  }
+
+  _vineParticlePoint(edge, positions, progress) {
+    const vine = this._vineEdges.find((candidate) =>
+      candidate.from === edge.from && candidate.branches.some(({ to }) => to === edge.to));
+    if (!vine) return null;
+    const geometry = this._vineGeometry(vine, positions);
+    const branch = geometry?.routedBranches.find(({ to }) => to === edge.to);
+    if (!geometry || !branch) return null;
+    const segments = [
+      ...this._vineEntrySegments(geometry),
+      {
+        kind: "line",
+        from: { x: geometry.trunkX, y: geometry.firstBranchY },
+        to: { x: geometry.trunkX, y: branch.branchY },
+      },
+      this._vineBranchSegment(geometry, branch),
+    ];
+    return this._pointOnSegments(segments, progress);
+  }
+
   _drawActiveFlow(ctx) {
     if (!this._network || !this._activeEdges.length) return;
     const positions = this._network.getPositions();
@@ -538,6 +764,8 @@ export class AgentGraphView {
       const midY = (from.y + to.y) / 2;
 
       const pointOnCurve = (progress) => {
+        const vinePoint = this._vineParticlePoint(edge, positions, progress);
+        if (vinePoint) return vinePoint;
         const inverse = 1 - progress;
         return {
           x: inverse ** 3 * from.x
@@ -660,6 +888,14 @@ export class AgentGraphView {
   }
 
   _sequenceTaskDisplayEdges(displayEdges, nodeMap) {
+    // Current graph snapshots include dependency_ids for every step, including
+    // roots (where it is an empty list).  Their edge list is therefore the
+    // execution DAG itself and must never be rewritten from timing: unrelated
+    // tasks can happen to start in adjacent waves.
+    const hasExplicitStepDependencies = Object.values(nodeMap).some((node) =>
+      node?.type === "step" && Array.isArray(node.dependency_ids));
+    if (hasExplicitStepDependencies) return displayEdges;
+
     const directTaskEdges = new Map();
     displayEdges.forEach((edge) => {
       if (nodeMap[edge.from]?.type !== "execution" || nodeMap[edge.to]?.type !== "step") return;
@@ -701,6 +937,83 @@ export class AgentGraphView {
     ];
   }
 
+  _measureVineSubtree(rootId, children, nodeMap) {
+    const rows = [];
+    const seen = new Set([rootId]);
+    let frontier = [rootId];
+    while (frontier.length) {
+      const next = [];
+      frontier.forEach((parentId) => children[parentId].forEach((childId) => {
+        if (!seen.has(childId) && nodeMap[childId]?.type !== "execution") {
+          seen.add(childId);
+          next.push(childId);
+        }
+      }));
+      if (!next.length) break;
+      rows.push(next);
+      frontier = next;
+    }
+    const widestRow = Math.max(0, ...rows.map((ids) => (ids.length - 1) * VINE_NODE_GAP));
+    return {
+      rootId,
+      rows,
+      maxDepth: rows.length,
+      width: Math.max(VINE_NODE_GAP, widestRow + VINE_NODE_GAP),
+    };
+  }
+
+  _layoutVineBatches(batchRows, spineX, startY, children, nodeMap, options = {}) {
+    const { centerLatest = true } = options;
+    const batchPositions = {};
+    let previousBatchY = startY - VINE_BATCH_STAGGER;
+    // Tree kinds share alternating lanes, subtree measurement, and the final
+    // centered tip. Historical batches stay to the sides of the main spine.
+    const sideClearY = new Map([[-1, startY], [1, startY]]);
+
+    batchRows.forEach((rootIds, batchIndex) => {
+      const orderedRootIds = [...rootIds].sort((a, b) =>
+        this._timeKey(nodeMap[a]) - this._timeKey(nodeMap[b]) || a.localeCompare(b));
+      const isCenteredTip = centerLatest && batchIndex === batchRows.length - 1;
+      const subtrees = orderedRootIds.map((rootId) =>
+        this._measureVineSubtree(rootId, children, nodeMap));
+      const batchWidth = subtrees.reduce((total, subtree) => total + subtree.width, 0);
+      const maxDepth = Math.max(0, ...subtrees.map((subtree) => subtree.maxDepth));
+      const subtreeHalfWidth = batchWidth / 2 + this._nodeRadius({ type: "step" });
+      const side = batchIndex % 2 === 0 ? 1 : -1;
+      const nextStaggerY = previousBatchY + VINE_BATCH_STAGGER;
+      const batchY = isCenteredTip
+        ? Math.max(nextStaggerY, ...sideClearY.values())
+        : Math.max(nextStaggerY, sideClearY.get(side));
+      const batchCenterX = isCenteredTip
+        ? spineX
+        : spineX + side * (subtreeHalfWidth + VINE_STEM_CLEARANCE);
+
+      let subtreeLeft = batchCenterX - batchWidth / 2;
+      subtrees.forEach((subtree) => {
+        const rootX = subtreeLeft + subtree.width / 2;
+        batchPositions[subtree.rootId] = { x: rootX, y: batchY };
+        subtree.rows.forEach((ids, depthIndex) => {
+          const rowWidth = (ids.length - 1) * VINE_NODE_GAP;
+          ids.forEach((id, index) => {
+            batchPositions[id] = {
+              x: rootX + index * VINE_NODE_GAP - rowWidth / 2,
+              y: batchY + (depthIndex + 1) * VINE_DESCENDANT_GAP,
+            };
+          });
+        });
+        subtreeLeft += subtree.width;
+      });
+      previousBatchY = batchY;
+      if (!isCenteredTip) {
+        sideClearY.set(
+          side,
+          batchY + maxDepth * VINE_DESCENDANT_GAP + VINE_BATCH_STAGGER,
+        );
+      }
+    });
+    return batchPositions;
+  }
+
   _computeVineLayout(rawNodes, edges) {
     const nodeMap = Object.fromEntries(rawNodes.map((node) => [node.id, node]));
     const children = Object.fromEntries(rawNodes.map((node) => [node.id, []]));
@@ -715,9 +1028,11 @@ export class AgentGraphView {
     const planners = rawNodes.filter((node) => node.type === "planning")
       .sort((a, b) => this._timeKey(a) - this._timeKey(b) || a.id.localeCompare(b.id));
     const plannerCount = planners.length;
+    this._vineStemX = new Map();
 
     planners.forEach((planner, plannerIndex) => {
       const plannerX = (plannerIndex - (plannerCount - 1) / 2) * VINE_PLANNER_GAP;
+      this._vineStemX.set(planner.id, plannerX);
       positions[planner.id] = { x: plannerX, y: 0 };
       placed.add(planner.id);
 
@@ -735,88 +1050,90 @@ export class AgentGraphView {
         return aTime - bTime || aId.localeCompare(bId);
       });
 
-      let previousBatchY = VINE_BATCH_GAP - VINE_BATCH_STAGGER;
-      // Alternating branches use independent vertical lanes. A new branch on
-      // the opposite side may tuck in after a small stagger; returning to a
-      // side waits until that side's existing leaf fan has cleared.
-      const sideClearY = new Map([[-1, VINE_BATCH_GAP], [1, VINE_BATCH_GAP]]);
-      orderedBatches.forEach(([, executionIds], batchIndex) => {
-        executionIds.sort((a, b) => this._timeKey(nodeMap[a]) - this._timeKey(nodeMap[b]) || a.localeCompare(b));
-        const isLatestBatch = batchIndex === orderedBatches.length - 1;
-        // Measure each E subtree independently. Pooling all sibling task
-        // nodes into global rows made their branches cross and obscured which
-        // execution owned each task.
-        const subtrees = executionIds.map((rootId) => {
-          const rows = [];
-          const seen = new Set([rootId]);
-          let frontier = [rootId];
-          while (frontier.length) {
-            const next = [];
-            frontier.forEach((parentId) => children[parentId].forEach((childId) => {
-              if (!seen.has(childId) && nodeMap[childId]?.type !== "execution") {
-                seen.add(childId);
-                next.push(childId);
-              }
-            }));
-            if (!next.length) break;
-            rows.push(next);
-            frontier = next;
-          }
-          const widestRow = Math.max(0, ...rows.map((ids) => (ids.length - 1) * VINE_NODE_GAP));
-          return {
-            rootId,
-            rows,
-            maxDepth: rows.length,
-            width: Math.max(VINE_NODE_GAP, widestRow + VINE_NODE_GAP),
-          };
-        });
-        const batchWidth = subtrees.reduce((total, subtree) => total + subtree.width, 0);
-        const maxDepth = Math.max(0, ...subtrees.map((subtree) => subtree.maxDepth));
-        const subtreeHalfWidth = batchWidth / 2 + this._nodeRadius({ type: "step" });
-        const side = batchIndex % 2 === 0 ? 1 : -1;
-        const nextStaggerY = previousBatchY + VINE_BATCH_STAGGER;
-        const batchY = isLatestBatch
-          // The centered tip shares horizontal space with both historical
-          // sides. Place it below the deepest task generation from either
-          // side, not merely below the preceding execution node.
-          ? Math.max(nextStaggerY, ...sideClearY.values())
-          : Math.max(nextStaggerY, sideClearY.get(side));
-        const batchCenterX = isLatestBatch
-          ? plannerX
-          : plannerX + side * (subtreeHalfWidth + VINE_STEM_CLEARANCE);
-
-        let subtreeLeft = batchCenterX - batchWidth / 2;
-        subtrees.forEach((subtree) => {
-          const rootX = subtreeLeft + subtree.width / 2;
-          positions[subtree.rootId] = { x: rootX, y: batchY };
-          placed.add(subtree.rootId);
-          subtree.rows.forEach((ids, depthIndex) => {
-            const rowWidth = (ids.length - 1) * VINE_NODE_GAP;
-            ids.forEach((id, index) => {
-              positions[id] = {
-                x: rootX + index * VINE_NODE_GAP - rowWidth / 2,
-                y: batchY + (depthIndex + 1) * VINE_DESCENDANT_GAP,
-              };
-              placed.add(id);
-            });
-          });
-          subtreeLeft += subtree.width;
-        });
-        previousBatchY = batchY;
-        if (!isLatestBatch) {
-          sideClearY.set(
-            side,
-            batchY + maxDepth * VINE_DESCENDANT_GAP + VINE_BATCH_STAGGER,
-          );
-        }
+      const plannerPositions = this._layoutVineBatches(
+        orderedBatches.map(([, executionIds]) => executionIds),
+        plannerX,
+        VINE_BATCH_GAP,
+        children,
+        nodeMap,
+      );
+      Object.entries(plannerPositions).forEach(([nodeId, position]) => {
+        positions[nodeId] = position;
+        placed.add(nodeId);
       });
     });
 
-    // Keep the orchestrator immediately above its planners.  Any malformed or
-    // unrelated node remains visible in a small fallback strip instead of
-    // being silently omitted from the graph.
+    // Steps directly launched by O are peers of planning, not malformed
+    // leftovers. Give them their own right-hand lane while retaining their
+    // real O -> step edge and any nested subagent tree below each step.
+    const directRoots = rawNodes
+      .filter((node) => this._isDirectOrchestratorStep(node))
+      .filter((node) => !Array.isArray(node.dependency_ids) || node.dependency_ids.length === 0)
+      .sort((a, b) => this._timeKey(a) - this._timeKey(b) || a.id.localeCompare(b.id));
+    if (directRoots.length) {
+      const rows = this._chronologicalTaskRows(directRoots.map((node) => node.id), nodeMap);
+      const rightmostPlannerX = planners.length
+        ? Math.max(...planners.map((planner) => positions[planner.id].x))
+        : 0;
+      const directPositionsForLane = (directLaneX) => this._layoutVineBatches(
+        rows,
+        directLaneX,
+        0,
+        children,
+        nodeMap,
+      );
+      const intersectsPlacedNode = (candidatePositions) => Object.entries(candidatePositions).some(
+        ([candidateId, candidate]) => [...placed].some((placedId) => {
+          const occupied = positions[placedId];
+          if (!occupied) return false;
+          const minimumDistance = this._nodeRadius(nodeMap[candidateId])
+            + this._nodeRadius(nodeMap[placedId])
+            + DIRECT_LANE_CLEARANCE;
+          return Math.hypot(candidate.x - occupied.x, candidate.y - occupied.y) < minimumDistance;
+        }),
+      );
+      // Start compact and move only when nodes at their actual levels collide.
+      // Whole-tree bounding boxes were too conservative: branches at very
+      // different heights forced large horizontal gaps despite never meeting.
+      let directLaneX = planners.length ? rightmostPlannerX + VINE_NODE_GAP * 1.5 : 0;
+      let directPositions = directPositionsForLane(directLaneX);
+      while (intersectsPlacedNode(directPositions)) {
+        directLaneX += VINE_NODE_GAP / 2;
+        directPositions = directPositionsForLane(directLaneX);
+      }
+
+      if (planners.length) {
+        // O is the fork between two peer trunks. Recenter the already-spaced
+        // trees around it instead of leaving P fixed beneath O and pushing
+        // only the Flash tree outward.
+        const planningSpineCenter = planners.reduce(
+          (sum, planner) => sum + this._vineStemX.get(planner.id),
+          0,
+        ) / planners.length;
+        const forkCenter = (planningSpineCenter + directLaneX) / 2;
+        placed.forEach((nodeId) => {
+          positions[nodeId].x -= forkCenter;
+        });
+        planners.forEach((planner) => {
+          this._vineStemX.set(planner.id, this._vineStemX.get(planner.id) - forkCenter);
+        });
+        Object.values(directPositions).forEach((position) => {
+          position.x -= forkCenter;
+        });
+        directLaneX -= forkCenter;
+      }
+      Object.entries(directPositions).forEach(([nodeId, position]) => {
+        positions[nodeId] = position;
+        placed.add(nodeId);
+      });
+      this._vineStemX.set("orchestrator", directLaneX);
+    }
+
+    // Leave enough headroom for the two root arms to form broad brace curves.
+    // Any malformed or unrelated node remains visible in a small fallback
+    // strip instead of being silently omitted from the graph.
     rawNodes.filter((node) => node.type === "orchestrator").forEach((node, index) => {
-      positions[node.id] = { x: index * VINE_PLANNER_GAP, y: -VINE_BATCH_GAP };
+      positions[node.id] = { x: index * VINE_PLANNER_GAP, y: -VINE_ROOT_GAP };
       placed.add(node.id);
     });
     rawNodes.filter((node) => !placed.has(node.id)).forEach((node, index) => {
@@ -837,33 +1154,34 @@ export class AgentGraphView {
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
 
-    this._vineEdges.forEach(({ from, branches }) => {
-      const source = positions[from];
-      if (!source || !branches.length) return;
-      const sourceY = source.y + this._nodeRadius(this._nodeData[from]) + 1;
-      const stemEndY = Math.max(...branches.map(({ to }) => {
-        const target = positions[to];
-        return target ? target.y - this._nodeRadius(this._nodeData[to]) - 34 : sourceY;
-      }));
+    this._vineEdges.forEach((vine) => {
+      const geometry = this._vineGeometry(vine, positions);
+      if (!geometry) return;
 
-      // The stem is drawn once, so later planning rounds visibly extend the
-      // same P connection rather than appearing as unrelated long edges.
+      // The stem is drawn once, so planning rounds and O-dispatched Flash
+      // batches read as one tree rather than a bundle of unrelated long edges.
       ctx.beginPath();
-      ctx.moveTo(source.x, sourceY);
-      ctx.lineTo(source.x, stemEndY);
+      ctx.moveTo(geometry.sourceX, geometry.sourceY);
+      this._vineEntrySegments(geometry).forEach((segment) => {
+        if (segment.kind === "line") ctx.lineTo(segment.to.x, segment.to.y);
+        else ctx.bezierCurveTo(
+          segment.p1.x, segment.p1.y,
+          segment.p2.x, segment.p2.y,
+          segment.p3.x, segment.p3.y,
+        );
+      });
+      ctx.lineTo(geometry.trunkX, geometry.stemEndY);
       ctx.stroke();
 
-      branches.forEach(({ to }) => {
-        const target = positions[to];
-        if (!target) return;
-        const targetY = target.y - this._nodeRadius(this._nodeData[to]) - 1;
-        const branchY = targetY - 34;
+      geometry.routedBranches.forEach((branch) => {
+        const { target, targetY } = branch;
+        const segment = this._vineBranchSegment(geometry, branch);
         ctx.beginPath();
-        ctx.moveTo(source.x, branchY);
+        ctx.moveTo(segment.p0.x, segment.p0.y);
         ctx.bezierCurveTo(
-          source.x, branchY + 18,
-          target.x, branchY - 18,
-          target.x, targetY,
+          segment.p1.x, segment.p1.y,
+          segment.p2.x, segment.p2.y,
+          segment.p3.x, segment.p3.y,
         );
         ctx.stroke();
 
@@ -979,18 +1297,88 @@ export class AgentGraphView {
     });
   }
 
-  update(graphData) {
-    if (!graphData || typeof graphData.nodes !== "object") return;
+  _graphLayoutKey(rawNodes, edges) {
+    // Conversation/tool payloads can grow without changing graph geometry.
+    // Keep them out of this key so those hot updates reuse the cold layout.
+    return JSON.stringify({
+      nodes: rawNodes.map((node) => [
+        node.id,
+        node.type,
+        node.parent_id || "",
+        node.batch_id || node.execution_batch_id || "",
+        node.start_time || "",
+        node.end_time || "",
+        node.input?.node_id || node.input?.step_id || "",
+      ]),
+      edges: (edges || []).map((edge) => [edge.id || "", edge.from, edge.to]),
+    });
+  }
 
-    const prevNodeIds = new Set(this._nodes.getIds());
-    const prevEdgeIds = new Set(this._edges.getIds());
-    const rawNodes = Object.values(graphData.nodes).map((node) => ({
-      ...node,
-      status: this._normalizeNodeStatus(node.status),
-    }));
+  _nodeVisualKey(node) {
+    return JSON.stringify([
+      node.status,
+      node.type,
+      node.label,
+      node.summary,
+      node.start_time,
+      node.end_time,
+      node.input?.step_number,
+    ]);
+  }
+
+  _nodeDetailKey(node) {
+    if (!node) return "";
+    return JSON.stringify([
+      this._nodeVisualKey(node),
+      node.input,
+      node.artifacts,
+      node.tool_calls,
+      node.type === "step" ? null : node.conversation,
+    ]);
+  }
+
+  update(incomingGraphData) {
+    if (!incomingGraphData || typeof incomingGraphData.nodes !== "object") return;
+    const patch = applyGraphUpdate(this._graphSnapshot, incomingGraphData);
+    const graphData = patch.graph;
+    this._graphSnapshot = graphData;
+
+    const layoutMayChange = !patch.isDelta || patch.layoutChanged;
+    const prevNodeIds = layoutMayChange ? new Set(this._nodes.getIds()) : null;
+    const prevEdgeIds = layoutMayChange ? new Set(this._edges.getIds()) : null;
+    let rawNodeMap;
+    if (patch.isDelta) {
+      rawNodeMap = { ...this._nodeData };
+      for (const id of patch.changedNodeIds) {
+        const node = graphData.nodes[id];
+        if (!node) {
+          delete rawNodeMap[id];
+          continue;
+        }
+        const status = this._normalizeNodeStatus(node.status);
+        rawNodeMap[id] = status === node.status ? node : { ...node, status };
+      }
+    } else {
+      rawNodeMap = Object.fromEntries(Object.values(graphData.nodes).map((node) => {
+        const status = this._normalizeNodeStatus(node.status);
+        const normalized = status === node.status ? node : { ...node, status };
+        return [normalized.id, normalized];
+      }));
+    }
+    const rawNodes = Object.values(rawNodeMap);
     const transitionStartedAt = performance.now();
-    const nextNodeStatuses = new Map();
-    rawNodes.forEach((node) => {
+    const nextNodeStatuses = patch.isDelta ? new Map(this._lastNodeStatuses) : new Map();
+    if (!patch.isDelta) this._runningNodeIds.clear();
+    const statusNodes = patch.isDelta
+      ? [...patch.changedNodeIds].map((id) => rawNodeMap[id]).filter(Boolean)
+      : rawNodes;
+    patch.changedNodeIds.forEach((id) => {
+      if (!rawNodeMap[id]) {
+        nextNodeStatuses.delete(id);
+        this._runningNodeIds.delete(id);
+      }
+    });
+    statusNodes.forEach((node) => {
       const previousStatus = this._lastNodeStatuses.get(node.id);
       if (!this._reduceMotion && previousStatus && previousStatus !== node.status) {
         this._nodeTransitions.set(node.id, {
@@ -1000,78 +1388,144 @@ export class AgentGraphView {
         });
       }
       nextNodeStatuses.set(node.id, node.status);
+      if (node.status === "running") this._runningNodeIds.add(node.id);
+      else this._runningNodeIds.delete(node.id);
     });
     this._lastNodeStatuses = nextNodeStatuses;
-    this._nodeData = Object.fromEntries(rawNodes.map((node) => [node.id, node]));
-    this._stepExecutionFeed.update(graphData);
-    const displayEdges = this._buildDisplayEdges(rawNodes, graphData.edges || []);
-    const rawNodeMap = Object.fromEntries(rawNodes.map((node) => [node.id, node]));
-    this._hasRunningNodes = rawNodes.some((node) => node.status === "running");
-    this._activeEdges = displayEdges
-      // A transfer is live only while both ends are active. This retains the
-      // original running-flow treatment and keeps completed edges quiet.
-      .filter((edge) => rawNodeMap[edge.from]?.status === "running" && rawNodeMap[edge.to]?.status === "running")
-      .map((edge, index) => ({
-        ...edge,
-        color: STATUS_VISUALS.running,
-        phase: (index * 0.173) % 1,
-      }));
-    const positions = this._computeVineLayout(rawNodes, displayEdges);
-    const vineEdgeIds = new Set(displayEdges
-      .filter((edge) => rawNodeMap[edge.from]?.type === "planning" && rawNodeMap[edge.to]?.type === "execution")
-      .map((edge) => edge.id || `${edge.from}__${edge.to}`));
-    const vineTargetsByPlanner = new Map();
-    displayEdges.forEach((edge) => {
-      if (!vineEdgeIds.has(edge.id || `${edge.from}__${edge.to}`)) return;
-      if (!vineTargetsByPlanner.has(edge.from)) vineTargetsByPlanner.set(edge.from, []);
-      vineTargetsByPlanner.get(edge.from).push(edge.to);
-    });
-    this._vineEdges = [...vineTargetsByPlanner.entries()].map(([from, targetIds]) => ({
-      from,
-      // This one object produces one shared stem and a branch for every
-      // direct execution relation. It intentionally does not replace edges
-      // in graphData: every E still belongs directly to its planner.
-      branches: targetIds.map((to) => ({ to })),
-    }));
+    this._nodeData = rawNodeMap;
+    this._stepExecutionFeed.update(graphData, patch);
+    const layoutKey = patch.isDelta && !patch.layoutChanged
+      ? this._layoutKey
+      : this._graphLayoutKey(rawNodes, graphData.edges || []);
+    const layoutChanged = patch.isDelta ? patch.layoutChanged : layoutKey !== this._layoutKey;
+    if (layoutChanged) {
+      this._layoutKey = layoutKey;
+      this._cachedDisplayEdges = this._buildDisplayEdges(rawNodes, graphData.edges || []);
+      this._displayEdgesByNode = new Map();
+      this._edgePhases = new Map();
+      this._cachedDisplayEdges.forEach((edge, index) => {
+        const edgeId = edge.id || `${edge.from}__${edge.to}`;
+        this._edgePhases.set(edgeId, (index * 0.173) % 1);
+        for (const nodeId of [edge.from, edge.to]) {
+          const adjacent = this._displayEdgesByNode.get(nodeId) || [];
+          adjacent.push(edge);
+          this._displayEdgesByNode.set(nodeId, adjacent);
+        }
+      });
+      this._cachedPositions = this._computeVineLayout(rawNodes, this._cachedDisplayEdges);
+      this._cachedVineEdgeIds = new Set(this._cachedDisplayEdges
+        .filter((edge) => this._isRoutedVineEdge(edge, rawNodeMap))
+        .map((edge) => edge.id || `${edge.from}__${edge.to}`));
+    }
+    const displayEdges = this._cachedDisplayEdges;
+    this._hasRunningNodes = this._runningNodeIds.size > 0;
+    const activeEdgeIds = new Set();
+    this._activeEdges = [];
+    for (const nodeId of this._runningNodeIds) {
+      for (const edge of this._displayEdgesByNode.get(nodeId) || []) {
+        const edgeId = edge.id || `${edge.from}__${edge.to}`;
+        if (activeEdgeIds.has(edgeId)
+          || rawNodeMap[edge.from]?.status !== "running"
+          || rawNodeMap[edge.to]?.status !== "running") continue;
+        activeEdgeIds.add(edgeId);
+        this._activeEdges.push({
+          ...edge,
+          color: STATUS_VISUALS.running,
+          phase: this._edgePhases.get(edgeId) || 0,
+        });
+      }
+    }
+    const positions = this._cachedPositions;
+    const vineEdgeIds = this._cachedVineEdgeIds;
+    if (layoutChanged) {
+      const vineGroups = new Map();
+      displayEdges.forEach((edge) => {
+        if (!vineEdgeIds.has(edge.id || `${edge.from}__${edge.to}`)) return;
+        const route = this._vineRouteForEdge(edge, rawNodeMap);
+        if (!route) return;
+        if (!vineGroups.has(route.key)) {
+          vineGroups.set(route.key, {
+            from: edge.from,
+            stemX: route.stemX,
+            entryMode: route.entryMode,
+            targetIds: [],
+          });
+        }
+        vineGroups.get(route.key).targetIds.push(edge.to);
+      });
+      this._vineEdges = [...vineGroups.values()].map((group) => {
+        const { from, stemX, targetIds } = group;
+        const sourceX = this._cachedPositions[from]?.x;
+        return {
+          from,
+          stemX,
+          entryMode: Number.isFinite(stemX)
+            && Number.isFinite(sourceX)
+            && Math.abs(stemX - sourceX) > 1
+            ? group.entryMode
+            : "bottom",
+          branches: targetIds
+            .sort((a, b) => this._timeKey(rawNodeMap[a]) - this._timeKey(rawNodeMap[b]) || a.localeCompare(b))
+            .map((to) => ({ to })),
+        };
+      });
+    }
     this._resizeSurface();
-    const nextNodeIds = new Set(rawNodes.map((raw) => raw.id));
-    const nextEdgeIds = new Set(displayEdges.map((e) => e.id || `${e.from}__${e.to}`));
-    const topologyChanged =
+    const nextNodeIds = layoutChanged ? new Set(rawNodes.map((raw) => raw.id)) : null;
+    const nextEdgeIds = layoutChanged
+      ? new Set(displayEdges.map((e) => e.id || `${e.from}__${e.to}`))
+      : null;
+    const topologyChanged = layoutChanged && (
       prevNodeIds.size !== nextNodeIds.size ||
       prevEdgeIds.size !== nextEdgeIds.size ||
       [...nextNodeIds].some((id) => !prevNodeIds.has(id)) ||
-      [...nextEdgeIds].some((id) => !prevEdgeIds.has(id));
+      [...nextEdgeIds].some((id) => !prevEdgeIds.has(id))
+    );
 
-    this._nodes.getIds().forEach((nodeId) => {
+    if (layoutChanged) this._nodes.getIds().forEach((nodeId) => {
       if (!nextNodeIds.has(nodeId)) this._nodes.remove(nodeId);
     });
 
-    rawNodes.forEach((raw) => {
+    const nextNodeVisualKeys = layoutChanged || !patch.isDelta
+      ? new Map()
+      : new Map(this._nodeVisualKeys);
+    const nodesToUpdate = layoutChanged || !patch.isDelta
+      ? rawNodes
+      : [...patch.changedNodeIds].map((id) => rawNodeMap[id]).filter(Boolean);
+    patch.changedNodeIds.forEach((id) => {
+      if (!rawNodeMap[id]) nextNodeVisualKeys.delete(id);
+    });
+    nodesToUpdate.forEach((raw) => {
+      const visualKey = this._nodeVisualKey(raw);
+      nextNodeVisualKeys.set(raw.id, visualKey);
+      const isNew = !this._nodes.get(raw.id);
+      if (!isNew && !layoutChanged && this._nodeVisualKeys.get(raw.id) === visualKey) return;
       const vis = this._visNode(raw);
       const position = positions[raw.id] || { x: 0, y: 0 };
       vis.x = position.x;
       vis.y = position.y;
       vis.fixed = { x: true, y: true };
-      if (this._nodes.get(raw.id)) {
+      if (!isNew) {
         this._nodes.update(vis);
       } else {
         this._nodes.add(vis);
       }
     });
+    this._nodeVisualKeys = nextNodeVisualKeys;
 
-    this._edges.getIds().forEach((edgeId) => {
+    if (layoutChanged) this._edges.getIds().forEach((edgeId) => {
       if (!nextEdgeIds.has(edgeId)) this._edges.remove(edgeId);
     });
 
-    displayEdges.forEach((e) => {
+    if (layoutChanged) displayEdges.forEach((e) => {
       const edgeId = e.id || `${e.from}__${e.to}`;
       const visEdge = {
         id: edgeId,
         from: e.from,
         to: e.to,
-        // Planner -> execution links are painted as routed vines in
-        // beforeDrawing. The edge itself stays in the DataSet, preserving the
-        // real graph topology for interaction and future consumers.
+        // Root forks, planner batches, and O-dispatched Flash roots are
+        // painted by the same routed-vine renderer in beforeDrawing. The
+        // edges stay in the DataSet for interaction and future consumers.
         hidden: vineEdgeIds.has(edgeId),
         physics: false,
         width: 1.35,
@@ -1089,7 +1543,10 @@ export class AgentGraphView {
 
     if (this._activeDetailNodeId) {
       if (this._nodeData[this._activeDetailNodeId]) {
-        this._showDetail(this._activeDetailNodeId, { preserveScroll: true, scrollToStep: false });
+        const detailKey = this._nodeDetailKey(this._nodeData[this._activeDetailNodeId]);
+        if (detailKey !== this._detailRenderKey) {
+          this._showDetail(this._activeDetailNodeId, { preserveScroll: true, scrollToStep: false });
+        }
       } else {
         this._hideDetail();
       }
@@ -1136,6 +1593,7 @@ export class AgentGraphView {
     this._activeEdges = [];
     this._nodeTransitions.clear();
     this._lastNodeStatuses.clear();
+    this._runningNodeIds.clear();
     if (this._animationFrame !== null) cancelAnimationFrame(this._animationFrame);
     this._animationFrame = null;
     this._network?.redraw();
@@ -1157,10 +1615,21 @@ export class AgentGraphView {
     this._nodes.clear();
     this._edges.clear();
     this._nodeData = {};
+    this._graphSnapshot = null;
+    this._layoutKey = null;
+    this._cachedDisplayEdges = [];
+    this._cachedPositions = {};
+    this._cachedVineEdgeIds = new Set();
+    this._vineStemX.clear();
+    this._displayEdgesByNode.clear();
+    this._edgePhases.clear();
+    this._nodeVisualKeys.clear();
+    this._detailRenderKey = null;
     this._didInitialFit = false;
     this._pendingFit = true;
     this._hasRunningNodes = false;
     this._activeEdges = [];
+    this._runningNodeIds.clear();
     this._detailDisclosures.clear();
     if (this._animationFrame !== null) cancelAnimationFrame(this._animationFrame);
     this._animationFrame = null;
@@ -1174,6 +1643,7 @@ export class AgentGraphView {
     const raw = this._nodeData[nodeId];
     if (!raw) return;
     this._activeDetailNodeId = nodeId;
+    this._detailRenderKey = this._nodeDetailKey(raw);
     const preserveScroll = Boolean(options.preserveScroll);
     const prevScrollTop = preserveScroll ? this._detailEl.scrollTop : 0;
     this._detailLabel.textContent = raw.label;
@@ -1274,6 +1744,7 @@ export class AgentGraphView {
 
   _hideDetail() {
     this._activeDetailNodeId = null;
+    this._detailRenderKey = null;
     this._detailEl.classList.add("hidden");
     this._syncPanelResizerVisibility();
   }
@@ -1289,543 +1760,6 @@ export class AgentGraphView {
       return;
     }
     this._network.redraw();
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Step executor feed in the main chat window
-// ---------------------------------------------------------------------------
-
-export class StepExecutionFeed {
-  constructor(dependencies) {
-    this._chatArea = dependencies.chatArea;
-    this._isSending = dependencies.isSending;
-    this._updatePreservingReadingPosition = dependencies.updatePreservingReadingPosition;
-    this._createAgentAvatarEl = dependencies.createAgentAvatarEl;
-    this._stepFeedTitle = dependencies.stepFeedTitle;
-    this._formatStepDuration = dependencies.formatStepDuration;
-    this._renderStepInput = dependencies.renderStepInput;
-    this._renderStepConversationEvent = dependencies.renderStepConversationEvent;
-    this._renderStepToolCall = dependencies.renderStepToolCall;
-    this._requestStepCancellation = dependencies.requestStepCancellation;
-    this._createArtifactListItem = dependencies.createArtifactListItem;
-    this._cards = new Map();
-    this._disclosures = dependencies.disclosureController;
-    this._highlightedId = null;
-    this._liveAnchorEl = null;
-    this._liveContainerEl = null;
-    this._liveStartedAt = null;
-    this._liveToolHosts = new Map();
-    this._stepById = new Map();
-    this._childNodes = new Map();
-  }
-
-  reset({ preserveDisclosures = false } = {}) {
-    this._cards.clear();
-    if (!preserveDisclosures) this._disclosures.clear();
-    this._highlightedId = null;
-    this._liveAnchorEl = null;
-    this._liveContainerEl = null;
-    this._liveStartedAt = null;
-    this._liveToolHosts.clear();
-    this._stepById = new Map();
-    this._childNodes = new Map();
-  }
-
-  captureDisclosureState() {
-    this._disclosures.capture(this._chatArea);
-  }
-
-  startLiveTurn(anchorEl, startedAt = Date.now(), hostEl = null) {
-    this._liveAnchorEl = anchorEl || null;
-    this._liveStartedAt = startedAt;
-    this._liveContainerEl = document.createElement("div");
-    this._liveContainerEl.className = "step-feed-live-region";
-    this._liveContainerEl.dataset.stepLiveRegion = "true";
-    this._liveToolHosts.clear();
-
-    if (hostEl?.isConnected) {
-      hostEl.appendChild(this._liveContainerEl);
-    } else if (anchorEl && anchorEl.parentNode === this._chatArea) {
-      this._chatArea.insertBefore(this._liveContainerEl, anchorEl.nextSibling);
-    } else {
-      this._chatArea.appendChild(this._liveContainerEl);
-    }
-
-    return this._liveContainerEl;
-  }
-
-  attachLiveToolHost(hostEl, nodeId = "") {
-    if (!hostEl) return false;
-    const key = String(nodeId || "");
-    if (!key) return false;
-
-    // A turn can launch several independent executors. Associate each live
-    // node with its own host instead of moving one shared region between
-    // calls, which previously made every card land in the final action.
-    this._liveToolHosts.set(key, hostEl);
-    const node = [...this._stepById.values()].find((item) => this._nodeExecutionKey(item) === key);
-    const card = node && this._cards.get(node.id);
-    if (node && card) {
-      this._insertIntoLiveContainer(hostEl, card, node);
-    }
-    return true;
-  }
-
-  finishLiveTurn() {
-    this._liveAnchorEl = null;
-    this._liveContainerEl = null;
-    this._liveStartedAt = null;
-    this._liveToolHosts.clear();
-  }
-
-  update(graphData) {
-    if (!graphData || typeof graphData.nodes !== "object") return;
-    const hasLiveDestination = this._liveToolHosts.size > 0 || this._activeLiveContainer();
-    const steps = Object.values(graphData.nodes)
-      .filter((node) => node.type === "step")
-      .filter((node) => !hasLiveDestination || this._isLiveStep(node))
-      .sort((a, b) => {
-        const ta = a.start_time ? new Date(a.start_time).getTime() : Infinity;
-        const tb = b.start_time ? new Date(b.start_time).getTime() : Infinity;
-        return ta - tb;
-      });
-    this.setHierarchy(steps);
-    const rootSteps = steps.filter((node) => this.isRootStep(node));
-
-    const seen = new Set(steps.map((node) => node.id));
-    for (const nodeId of this._cards.keys()) {
-      if (!seen.has(nodeId)) {
-        this._cards.delete(nodeId);
-        this._disclosures.deletePrefix(`step:${nodeId}:`);
-      }
-    }
-
-    this._updatePreservingReadingPosition(() => {
-      rootSteps.forEach((node) => this._upsert(node));
-    });
-  }
-
-  setHierarchy(stepNodes) {
-    const steps = Array.isArray(stepNodes) ? stepNodes : [];
-    this._stepById = new Map(steps.map((node) => [node.id, node]));
-    this._childNodes = new Map();
-
-    steps.forEach((node) => {
-      if (!this._stepById.has(node.parent_id)) return;
-      const children = this._childNodes.get(node.parent_id) || [];
-      children.push(node);
-      this._childNodes.set(node.parent_id, children);
-    });
-
-    for (const children of this._childNodes.values()) {
-      children.sort((a, b) => this._stepSortTime(a) - this._stepSortTime(b));
-    }
-  }
-
-  isRootStep(node) {
-    return !this._stepById.has(node?.parent_id);
-  }
-
-  _activeLiveContainer() {
-    return this._liveContainerEl && this._liveContainerEl.isConnected
-      ? this._liveContainerEl
-      : null;
-  }
-
-  _nodeExecutionKey(node) {
-    const input = node?.input || {};
-    return String(input.node_id || input.step_id || node?.id || "");
-  }
-
-  _liveHostForNode(node) {
-    const host = this._liveToolHosts.get(this._nodeExecutionKey(node));
-    return host?.isConnected ? host : null;
-  }
-
-  _isLiveStep(node) {
-    if (!this._liveStartedAt) return true;
-    if (!node.start_time) return node.status === "running";
-    const startedAt = new Date(node.start_time).getTime();
-    return Number.isFinite(startedAt) && startedAt >= this._liveStartedAt - 2000;
-  }
-
-  highlight(nodeId) {
-    this._highlightedId = nodeId;
-    for (const [id, card] of this._cards.entries()) {
-      card.classList.toggle("step-feed-highlight", id === nodeId);
-    }
-    const card = this._cards.get(nodeId);
-    if (card) {
-      card.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      setTimeout(() => card.classList.remove("step-feed-highlight"), 1600);
-    }
-  }
-
-  _upsert(node) {
-    let outer = this._cards.get(node.id);
-    const nextSortTime = this._stepSortTime(node);
-    if (!outer || !this._chatArea.contains(outer)) {
-      outer = this._createCard(node);
-      this._cards.set(node.id, outer);
-      this._placeCard(outer, node);
-    } else if (outer.dataset.stepStartTime !== String(nextSortTime)) {
-      this._placeCard(outer, node);
-    }
-    this._renderCardIfChanged(outer, node);
-  }
-
-  appendStatic(node, container = this._chatArea) {
-    let outer = this._cards.get(node.id);
-    if (!outer || !container.contains(outer)) {
-      outer = this._createCard(node);
-      this._cards.set(node.id, outer);
-    }
-    outer.dataset.stepStartTime = String(this._stepSortTime(node));
-    container.appendChild(outer);
-    this._renderCardIfChanged(outer, node);
-    return outer;
-  }
-
-  _placeCard(outer, node) {
-    outer.classList.remove("step-feed-child-message");
-    const liveContainer = this._liveHostForNode(node) || this._activeLiveContainer();
-    if (liveContainer) {
-      this._insertIntoLiveContainer(liveContainer, outer, node);
-      return;
-    }
-    if (this._isSending() && this._liveContainerEl) {
-      this._insertIntoLiveContainer(this._liveContainerEl, outer, node);
-      return;
-    }
-
-    // A reconnect snapshot can restore cards into an inline region before
-    // graph polling resumes. Retain that restored in-bubble host instead of
-    // moving the card back to the chat root when its position changes.
-    const existingHost = outer.parentElement;
-    if (existingHost && existingHost !== this._chatArea && this._chatArea.contains(existingHost)) {
-      this._insertIntoLiveContainer(existingHost, outer, node);
-      return;
-    }
-    this._insertSorted(outer, node);
-  }
-
-  _stepSortTime(node) {
-    return node?.start_time ? new Date(node.start_time).getTime() : Infinity;
-  }
-
-  _upsertNested(node, container, ancestors) {
-    let outer = this._cards.get(node.id);
-    if (!outer) {
-      outer = this._createCard(node);
-      this._cards.set(node.id, outer);
-    }
-    outer.classList.add("step-feed-child-message");
-    this._insertIntoLiveContainer(container, outer, node);
-    this._renderCardIfChanged(outer, node, ancestors);
-    return outer;
-  }
-
-  _renderKey(node, ancestors = new Set([node.id])) {
-    const children = (this._childNodes.get(node.id) || [])
-      .filter((child) => !ancestors.has(child.id))
-      .map((child) => {
-        const nextAncestors = new Set(ancestors);
-        nextAncestors.add(child.id);
-        return this._renderKey(child, nextAncestors);
-      });
-    return JSON.stringify({
-      status: node.status,
-      summary: node.summary,
-      input: node.input,
-      conversation: node.conversation,
-      toolCalls: node.tool_calls,
-      artifacts: node.artifacts,
-      children,
-    });
-  }
-
-  _renderCardIfChanged(outer, node, ancestors = new Set([node.id])) {
-    const renderKey = this._renderKey(node, ancestors);
-    if (outer._stepRenderKey === renderKey) return;
-    outer._stepRenderKey = renderKey;
-    this._renderCard(outer, node, ancestors);
-  }
-
-  _insertIntoLiveContainer(container, outer, node) {
-    const newTime = this._stepSortTime(node);
-    outer.dataset.stepStartTime = String(newTime);
-
-    for (const el of [...container.children]) {
-      if (el === outer) continue;
-      if (!el.dataset.stepStartTime) continue;
-      if (newTime < Number(el.dataset.stepStartTime)) {
-        container.insertBefore(outer, el);
-        return;
-      }
-    }
-    container.appendChild(outer);
-  }
-
-  _insertSorted(outer, node) {
-    const newTime = this._stepSortTime(node);
-    outer.dataset.stepStartTime = String(newTime);
-
-    // Walk all chat children to find the right insertion point.
-    // - Step cards: compare by start_time, insert before the first later one.
-    // - User/agent messages: track as anchor, but reset when a step card is
-    //   found after them (so we insert after the most recent step card too).
-    const children = [...this._chatArea.children];
-    const liveAnchor = this._liveAnchorEl && this._chatArea.contains(this._liveAnchorEl)
-      ? this._liveAnchorEl
-      : null;
-    let insertAfter = liveAnchor; // element to insert after (null = before first child)
-    let passedLiveAnchor = !liveAnchor;
-
-    for (const el of children) {
-      if (el === outer) continue;
-      if (liveAnchor && !passedLiveAnchor) {
-        if (el === liveAnchor) passedLiveAnchor = true;
-        continue;
-      }
-
-      if (el.dataset.stepStartTime) {
-        const elTime = Number(el.dataset.stepStartTime);
-        if (newTime < elTime) {
-          // Found a later step card — insert before it
-          if (insertAfter) {
-            this._chatArea.insertBefore(outer, insertAfter.nextElementSibling);
-          } else {
-            this._chatArea.insertBefore(outer, el);
-          }
-          return;
-        }
-        // This step card is earlier — update anchor
-        insertAfter = el;
-      } else if (el.dataset.msgIndex !== undefined) {
-        // User/agent message — update anchor
-        insertAfter = el;
-      } else if (el.classList.contains("user-message")) {
-        // Live messages have no msgIndex until the session is reloaded.
-        insertAfter = el;
-      } else if (
-        insertAfter &&
-        el.classList.contains("agent-message") &&
-        !el.classList.contains("step-feed-message")
-      ) {
-        this._chatArea.insertBefore(outer, el);
-        return;
-      }
-    }
-
-    // No later step card found — insert after the last tracked element.
-    if (insertAfter) {
-      this._chatArea.insertBefore(outer, insertAfter.nextElementSibling);
-    } else {
-      this._chatArea.appendChild(outer);
-    }
-  }
-
-  _createCard(node) {
-    const outer = document.createElement("div");
-    outer.className = "message agent-message step-feed-message";
-    outer.dataset.stepNodeId = node.id;
-    outer.dataset.stepStartTime = node.start_time ? String(new Date(node.start_time).getTime()) : "";
-    outer.appendChild(this._createAgentAvatarEl());
-
-    const bubble = document.createElement("div");
-    bubble.className = "message-bubble step-feed-bubble";
-    const details = document.createElement("details");
-    details.className = "step-feed-details";
-    this._disclosures.wire(details, `step:${node.id}:card`, {
-      defaultOpen: node.status === "running",
-    });
-    bubble.appendChild(details);
-    outer.appendChild(bubble);
-    return outer;
-  }
-
-  _wireNested(nodeId, key, element) {
-    if (element?.tagName !== "DETAILS") return element;
-    element.dataset.stepNestedKey = key;
-    this._disclosures.wire(element, `step:${nodeId}:nested:${key}`);
-    return element;
-  }
-
-  _renderCard(outer, node, ancestors = new Set([node.id])) {
-    outer.dataset.stepNodeId = node.id;
-    outer.dataset.stepStatus = node.status || "idle";
-    outer.classList.toggle("step-feed-highlight", this._highlightedId === node.id);
-
-    const bubble = outer.querySelector(".step-feed-bubble");
-    bubble?.querySelector(":scope > .step-feed-child-section")?.remove();
-
-    const details = outer.querySelector(".step-feed-details");
-    const cardKey = `step:${node.id}:card`;
-    const isRunning = node.status === "running";
-    if (!isRunning) this._disclosures.state.delete(cardKey);
-    const userChoice = this._disclosures.state.get(cardKey);
-    // A card stays open while work is live, then automatically compacts at
-    // completion. A reader can still opt out of the live default explicitly.
-    details.open = isRunning && (userChoice === undefined ? true : userChoice);
-    details.innerHTML = "";
-
-    const summary = document.createElement("summary");
-    summary.className = "step-feed-summary";
-    const titleInfo = this._stepFeedTitle(node);
-    const title = document.createElement("span");
-    title.className = "step-feed-title";
-    const task = document.createElement("span");
-    task.className = "step-feed-task";
-    task.textContent = titleInfo.action;
-    title.appendChild(task);
-    if (titleInfo.identifier) {
-      const identity = document.createElement("span");
-      identity.className = "step-feed-identity";
-      identity.textContent = `Sub-agent · ${titleInfo.identifier}`;
-      title.appendChild(identity);
-    }
-    const status = document.createElement("span");
-    status.className = `step-feed-status step-feed-status-${node.status || "idle"}`;
-    status.textContent = ["failed", "cancelled", "blocked"].includes(node.status) ? "!" : node.status === "running" ? "◌" : "✓";
-    status.title = node.status || "idle";
-    const meta = document.createElement("span");
-    meta.className = "step-feed-meta";
-    meta.textContent = this._formatStepDuration(node);
-    summary.append(status, title, meta);
-
-    const stepNumber = node.input && node.input.step_number;
-    if (node.status === "running" && stepNumber !== undefined && stepNumber !== null) {
-      const stopBtn = document.createElement("button");
-      stopBtn.type = "button";
-      stopBtn.className = "step-feed-stop-btn";
-      stopBtn.textContent = "Stop";
-      stopBtn.title = `Stop step ${stepNumber}`;
-      stopBtn.addEventListener("click", async (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        stopBtn.disabled = true;
-        stopBtn.textContent = "Stopping…";
-        await this._requestStepCancellation(stepNumber);
-      });
-      summary.appendChild(stopBtn);
-    }
-    details.appendChild(summary);
-
-    const body = document.createElement("div");
-    body.className = "step-feed-body";
-
-    if (node.summary) {
-      const p = document.createElement("div");
-      p.className = "step-feed-node-summary";
-      p.textContent = node.summary;
-      body.appendChild(p);
-    }
-
-    if (node.input && Object.keys(node.input).length) {
-      body.appendChild(this._wireNested(node.id, "input", this._renderStepInput(node.input)));
-    }
-
-    const childNodes = (this._childNodes.get(node.id) || [])
-      .filter((child) => !ancestors.has(child.id));
-    if (childNodes.length) {
-      const section = document.createElement("div");
-      section.className = "step-feed-section step-feed-child-section";
-      const label = document.createElement("div");
-      label.className = "step-feed-section-title";
-      label.textContent = `Sub-executors (${childNodes.length})`;
-      const childHost = document.createElement("div");
-      childHost.className = "step-feed-child-list";
-      section.append(label, childHost);
-
-      childNodes.forEach((child) => {
-        const nextAncestors = new Set(ancestors);
-        nextAncestors.add(child.id);
-        this._upsertNested(child, childHost, nextAncestors);
-      });
-
-      bubble?.appendChild(section);
-    }
-
-    const activityItems = this._activityStream(node);
-    if (activityItems.length) {
-      const activity = document.createElement("div");
-      activity.className = "step-feed-activity-list agent-activity-action-list";
-      activityItems.forEach((item) => {
-        if (item.kind === "conversation") {
-          const { event, index } = item;
-          const key = `conversation:${index}:${event.timestamp || ""}:${event.type || ""}:${event.author || ""}`;
-          activity.appendChild(this._wireNested(node.id, key, this._renderStepConversationEvent(event, {
-            collapsed: node.status !== "running",
-            timelineId: `step:${node.id}:${key}`,
-          })));
-          return;
-        }
-        const { toolCall, index } = item;
-        const key = `tool:${index}:${toolCall.name || ""}:${toolCall.start_time || ""}`;
-        activity.appendChild(this._wireNested(node.id, key, this._renderStepToolCall(toolCall)));
-      });
-      body.appendChild(activity);
-    }
-
-    const artifacts = node.artifacts || [];
-    if (artifacts.length) {
-      const section = document.createElement("div");
-      section.className = "step-feed-section";
-      const label = document.createElement("div");
-      label.className = "step-feed-section-title";
-      label.textContent = "Artifacts";
-      const list = document.createElement("ul");
-      list.className = "detail-artifacts step-feed-artifacts";
-      artifacts.forEach((artifact) => {
-        list.appendChild(this._createArtifactListItem(artifact));
-      });
-      section.append(label, list);
-      body.appendChild(section);
-    }
-
-    if (!body.childElementCount) {
-      const empty = document.createElement("div");
-      empty.className = "step-feed-empty";
-      empty.textContent = "Waiting for step executor events…";
-      body.appendChild(empty);
-    }
-
-    details.appendChild(body);
-  }
-
-  _activityStream(node) {
-    const toolCalls = node.tool_calls || [];
-    const toolMatchesConversationEvent = (event) => {
-      if (!["function_call", "function_response"].includes(event.type)) return false;
-      const content = String(event.content || "");
-      return toolCalls.some((toolCall) => {
-        const name = toolCall.name || "";
-        return name && (content.startsWith(`${name}(`) || content.startsWith(`${name} →`));
-      });
-    };
-    const timeValue = (value) => {
-      const time = new Date(value || "").getTime();
-      return Number.isFinite(time) ? time : null;
-    };
-    const items = [
-      ...(node.conversation || [])
-        .filter((event) => !toolMatchesConversationEvent(event))
-        .map((event, index) => ({ kind: "conversation", event, index, time: timeValue(event.timestamp), sequence: index })),
-      ...toolCalls.map((toolCall, index) => ({
-        kind: "tool",
-        toolCall,
-        index,
-        time: timeValue(toolCall.start_time || toolCall.end_time),
-        sequence: (node.conversation || []).length + index,
-      })),
-    ];
-    return items.sort((a, b) => {
-      if (a.time !== null && b.time !== null && a.time !== b.time) return a.time - b.time;
-      if (a.time !== null && b.time === null) return -1;
-      if (a.time === null && b.time !== null) return 1;
-      return a.sequence - b.sequence;
-    });
   }
 }
 

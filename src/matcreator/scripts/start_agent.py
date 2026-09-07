@@ -865,18 +865,32 @@ def _ensure_workspace(workspace: str | None) -> None:
               help="Maximum number of nodes to return.")
 @click.option("--depth", default=2, show_default=True, type=int,
               help="BFS expansion depth from seed nodes.")
+@click.option("--include-memory/--no-include-memory", default=True, show_default=True,
+              help="Include working-memory candidates.")
+@click.option("--skills-only", is_flag=True,
+              help="Limit durable candidates to installed skills.")
+@click.option("--include-ids/--no-include-ids", default=True, show_default=True,
+              help="Include stable node IDs in results.")
 @click.option("--workspace", default=None, metavar="DIR",
               help="Override the workspace root directory.")
-def knowledge_query(text, top_k, depth, workspace):
+def knowledge_query(text, top_k, depth, include_memory, skills_only, include_ids, workspace):
     """Discover compact L1/L2 and memory candidates matching TEXT.
 
     TEXT is a free-form query string that is matched against node content
-    using semantic similarity. Use a returned node ID with the agent's
-    ``read_knowledge_node`` tool to load one selected result in detail.
+    using semantic similarity. Use a returned skill name with the agent's
+    ``load_skill`` tool to load SKILL.md instructions, or use its node ID with
+    ``read_knowledge_node`` only for attached L3/L4 context.
     """
     _ensure_workspace(workspace)
     from matcreator.knowledge.query import query_knowledge_graph
-    result = query_knowledge_graph(text, depth=depth, top_k=top_k)
+    result = query_knowledge_graph(
+        text,
+        depth=depth,
+        top_k=top_k,
+        include_memory=include_memory,
+        skills_only=skills_only,
+        include_ids=include_ids,
+    )
     click.echo(result)
 
 
@@ -887,10 +901,9 @@ def knowledge_query(text, top_k, depth, workspace):
 @click.option("--workspace", default=None, metavar="DIR",
               help="Override the workspace root directory.")
 def knowledge_search_skills(text, top_k, workspace):
-    """Search for skill nodes semantically matching TEXT.
+    """Compatibility shortcut for ``knowledge query --skills-only``.
 
-    TEXT is matched against skill names and descriptions using embedding
-    similarity.  Use this to discover skills relevant to a task or concept.
+    New integrations should use ``knowledge query`` with its filtering options.
     """
     _ensure_workspace(workspace)
     from matcreator.knowledge.query import search_skills

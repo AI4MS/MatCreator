@@ -1,6 +1,7 @@
 import { Network, DataSet } from "vis-network/standalone";
 import { installNetworkWheelZoom } from "./networkWheelZoom.js";
 import { httpClient } from "../../shared/api/http.js";
+import { applyGraphUpdate } from "./graphUpdates.js";
 
 function clamp(number, min, max) {
   return Math.max(min, Math.min(max, number));
@@ -43,6 +44,9 @@ export class ExecutionPlanView {
     this._hierarchicalMode = true;
     this._latestGraphData = null;
     this._renderLayoutKey = null;
+    this._nodeLayoutKey = null;
+    this._nodeVisualKeys = new Map();
+    this._graphSnapshot = null;
     this._init();
   }
 
@@ -309,8 +313,29 @@ export class ExecutionPlanView {
     return this._subgraphs[0] || this._latestGraphData;
   }
 
-  update(graphData) {
-    if (!graphData || typeof graphData.nodes !== "object") return;
+  update(incomingGraphData) {
+    if (!incomingGraphData || typeof incomingGraphData.nodes !== "object") return;
+    const patch = applyGraphUpdate(this._graphSnapshot, incomingGraphData);
+    const graphData = patch.graph;
+    this._graphSnapshot = graphData;
+    if (patch.isDelta && !patch.layoutChanged && this._subgraphs.length) {
+      this._latestGraphData = graphData;
+      for (const id of patch.changedNodeIds) {
+        for (const subgraph of this._subgraphs) {
+          if (subgraph.nodes[id]) subgraph.nodes[id] = graphData.nodes[id];
+        }
+      }
+      this._nodeVisualKeys = new Map(this._nodeVisualKeys);
+      for (const id of patch.changedNodeIds) {
+        const node = graphData.nodes[id];
+        if (node) this._nodeVisualKeys.set(id, JSON.stringify([node.status, node.label, node.action]));
+        else this._nodeVisualKeys.delete(id);
+      }
+      this._updateThumbnailStatuses(this._primarySubgraph(), patch.changedNodeIds);
+      this._updateCurrentNodeVisuals(patch.changedNodeIds);
+      this._updateNavUI();
+      return;
+    }
     const nodeEntries = Object.entries(graphData.nodes);
     if (nodeEntries.length === 0) return;
     this._latestGraphData = graphData;
@@ -321,6 +346,15 @@ export class ExecutionPlanView {
     // Detect structural changes
     const structureKey = JSON.stringify({ ids: [...nodeIds].sort(), edges: rawEdges });
     const structureChanged = structureKey !== this._structureKey;
+    const nodeLayoutKey = JSON.stringify(nodeEntries.map(([id, node]) => [id, node.label || id]));
+    const nodeLayoutChanged = nodeLayoutKey !== this._nodeLayoutKey;
+    const nextVisualKeys = new Map(nodeEntries.map(([id, node]) => [
+      id,
+      JSON.stringify([node.status, node.label, node.action]),
+    ]));
+    const changedNodeIds = new Set(nodeIds.filter((id) => this._nodeVisualKeys.get(id) !== nextVisualKeys.get(id)));
+    this._nodeLayoutKey = nodeLayoutKey;
+    this._nodeVisualKeys = nextVisualKeys;
     if (structureChanged) {
       this._structureKey = structureKey;
       this._subgraphs = this._extractConnectedSubgraphs(graphData)
@@ -340,9 +374,38 @@ export class ExecutionPlanView {
     // The compact preview represents the current/primary roadmap only. Older
     // disconnected nodes remain navigable in the full popup without turning
     // the thumbnail into a collection of unrelated fragments.
+    if (!structureChanged && !nodeLayoutChanged) {
+      this._updateThumbnailStatuses(this._primarySubgraph(), changedNodeIds);
+      this._updateCurrentNodeVisuals(changedNodeIds);
+      this._updateNavUI();
+      return;
+    }
     this._renderThumbnail(this._primarySubgraph());
-    this._renderCurrentSubgraph(structureChanged);
+    this._renderCurrentSubgraph(structureChanged || nodeLayoutChanged);
     this._updateNavUI();
+  }
+
+  _updateCurrentNodeVisuals(changedNodeIds) {
+    const subgraph = this._subgraphs[this._currentIndex];
+    if (!subgraph || !changedNodeIds.size) return;
+    const updates = [];
+    for (const id of changedNodeIds) {
+      const node = subgraph.nodes[id];
+      if (!node || !this._planNodes.get(id)) continue;
+      const current = this._planNodes.get(id);
+      updates.push(this._visNode(id, node, current.level ?? 0));
+    }
+    if (updates.length) this._planNodes.update(updates);
+  }
+
+  _updateThumbnailStatuses(graphData, changedNodeIds) {
+    if (!this._thumbnailElement || !changedNodeIds.size) return;
+    for (const dot of this._thumbnailElement.querySelectorAll("[data-plan-node-id]")) {
+      const id = dot.dataset.planNodeId;
+      if (!changedNodeIds.has(id)) continue;
+      const status = graphData?.nodes?.[id]?.status || "pending";
+      dot.style.background = (PLAN_NODE_STATUS_COLORS[status] || PLAN_NODE_STATUS_COLORS.pending).bg;
+    }
   }
 
   _syncPlanData(visNodes, visEdges, replaceAll = false) {
@@ -571,6 +634,9 @@ export class ExecutionPlanView {
     this._didInitialFit = false;
     this._structureKey = null;
     this._renderLayoutKey = null;
+    this._nodeLayoutKey = null;
+    this._nodeVisualKeys.clear();
+    this._graphSnapshot = null;
     this._subgraphs = [];
     this._currentIndex = 0;
     this._latestGraphData = null;
@@ -643,6 +709,7 @@ export class ExecutionPlanView {
       const colors = PLAN_NODE_STATUS_COLORS[node.status || "pending"] || PLAN_NODE_STATUS_COLORS.pending;
       const dot = document.createElement("span");
       dot.className = "plan-graph-thumbnail-node";
+      dot.dataset.planNodeId = id;
       dot.style.left = `${position.x}%`;
       dot.style.top = `${position.y}%`;
       dot.style.background = colors.bg;

@@ -127,7 +127,12 @@
   font-size: var(--font-size-caption);
   color: var(--accent);
   flex: 1;
+  min-width: 0;
+  line-height: 1.35;
 }
+.settings-status.is-success { color: var(--success); }
+.settings-status.is-error { color: var(--danger); }
+#settings-save { min-width: 104px; }
 
 /* ── Settings env config form elements ────────────────── */
 .settings-env-input {

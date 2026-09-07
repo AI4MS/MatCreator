@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import threading
@@ -12,14 +11,14 @@ from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.adk.agents.callback_context import CallbackContext
-from google.adk.workflow import RetryConfig
 
 from ...constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+from ...adk_compat import install_lenient_tool_argument_parsing
 from .planning import validate_plan, validate_graph
 from .intent import validate_intent
 from .summarize import validate_summarize
 from .session_summary import write_session_summary
-from ...skill import ALL_SKILLS, PLANNING_SKILL_NAMES, ALL_SKILLS_TOOLSET, refresh_skills, seed_skills_to_graph
+from ...skill import ALL_SKILLS, refresh_skills, seed_skills_to_graph
 from .memory import (
     chat_with_knowledge_graph,
     get_related_skills,
@@ -28,8 +27,6 @@ from .memory import (
     read_memory,
     run_synthesizer,
     save_to_knowledge_graph,
-    search_skill_context,
-    search_skills,
     update_memory,
 )
 from ...tools.workspace_tools import (
@@ -59,10 +56,12 @@ _model_base_url = os.environ.get("LLM_BASE_URL", LLM_BASE_URL)
 # Some OpenAI-compatible endpoints occasionally emit malformed JSON in a
 # streamed tool call.  Retrying the LLM node is the safe recovery: attempting
 # to salvage a partial/concatenated payload could execute the wrong tool args.
-# ``max_attempts`` includes the original request, so 2 means one retry.
-_JSON_DECODE_RETRY_ATTEMPTS = int(
-    os.environ.get("MATCREATOR_PLANNER_JSON_RETRY_ATTEMPTS", "2")
-)
+# Recovery is handled at the orchestrator level (see
+# ``orchestrator/agent.py:_stream_planning_with_recovery``), which wraps the
+# planning stream in a try/except json.JSONDecodeError — mirroring the
+# execution-phase recovery.  The legacy ``RetryConfig`` did nothing here
+# because ``LlmAgent`` runs through ``llm_flows``, which does not consume
+# ``retry_config``.
 
 def _seed_skills_background() -> None:
     try:
@@ -76,14 +75,17 @@ threading.Thread(target=_seed_skills_background, name="seed-skills", daemon=True
 def load_skill(skill_name: str) -> dict:
     """Load skill information by name.
 
-    Returns full SKILL.md instructions for concept and guide skills (planning
-    reference material). Returns name and description only for execution skills
-    — their tool-level details are only needed by the executor.
-
-    Call this after search_skills to get the relevant content.
+    Returns the full SKILL.md instructions for every installed skill. Call this
+    after ``query_knowledge_graph`` to read a selected skill; use
+    ``read_knowledge_node`` separately only for graph-attached L3/L4 context.
+    When the graph has a matching node, the response includes
+    ``attached_context`` counts (plus related-skill connections) and, when
+    nonzero, an exact follow-up hint. The response also lists the skill's
+    bundled sidecar files (``references/``, ``assets/``, ``scripts/``) and
+    their on-disk folder under ``bundled_files``.
 
     Args:
-        skill_name: Exact name as returned by search_skills.
+        skill_name: Exact name returned by query_knowledge_graph.
     """
     normalized = (skill_name or "").strip()
     skill = next((s for s in ALL_SKILLS if s.name == normalized), None)
@@ -98,25 +100,36 @@ def load_skill(skill_name: str) -> dict:
             "available_skills": sorted(s.name for s in ALL_SKILLS),
         }
 
-    from ...config import get_disabled_skills
-    if skill.name in get_disabled_skills():
+    from ...skill import is_skill_disabled
+    if is_skill_disabled(skill.name):
         return {
             "status": "error",
             "message": f"Skill '{skill_name}' is disabled.",
         }
 
-    if skill.name in PLANNING_SKILL_NAMES:
-        return {
-            "status": "ok",
-            "skill": skill.name,
-            "description": skill.description,
-            "instructions": skill.instructions,
-        }
-    return {
+    result: dict[str, object] = {
         "status": "ok",
         "skill": skill.name,
         "description": skill.description,
+        "instructions": skill.instructions,
     }
+    from ...skill import format_skill_bundle_hint, skill_bundle_info
+    from ...knowledge.query import format_node_context_hint, get_node_context_summary
+
+    bundle = skill_bundle_info(skill.name)
+    if bundle is not None:
+        result["bundled_files"] = bundle
+        bundle_hint = format_skill_bundle_hint(skill.name, bundle)
+        if bundle_hint:
+            result["bundled_files_hint"] = bundle_hint
+
+    context = get_node_context_summary(skill.name)
+    if context is not None:
+        result["attached_context"] = context
+        hint = format_node_context_hint(context)
+        if hint:
+            result["attached_context_hint"] = hint
+    return result
 
 
 def confirm_plan_and_start_execution(tool_context: ToolContext) -> dict:
@@ -243,7 +256,7 @@ async def run_flash_step(
     else:
         node_id = f"flash_{hashlib.sha256(action.encode()).hexdigest()[:12]}"
 
-    return await run_step_executor(
+    result = await run_step_executor(
         step_number=counter,
         action=action,
         suggested_skills=suggested_skills,
@@ -252,6 +265,10 @@ async def run_flash_step(
         node_id=node_id,
         tool_context=tool_context,
     )
+    # Surface the durable identity to transcript consumers.  In particular a
+    # label-less Flash call cannot reproduce the SHA-derived id from its tool
+    # arguments without hashing asynchronously in the browser.
+    return {"node_id": node_id, **result}
 
 
 # ---------------------------------------------------------------------------
@@ -268,10 +285,12 @@ You are MatCreator, an AI assistant for computational materials science.
 ## How to work
 - Call `run_flash_step` for computation, or skill execution.
   Multiple independent calls in one response turn run concurrently.
-- Call `search_skills` / `load_skill` to discover or load a skill.
-- Use `query_knowledge_graph` to discover clipped L1/L2 and memory candidates.
-- Select a returned node ID, then call `read_knowledge_node` for its full body and attached L3/L4 details.
-- Use `search_skills` only to discover runnable installed skills, then call `load_skill`.
+- Use `query_knowledge_graph` to discover clipped L1/L2 skills, knowledge, and memory candidates.
+- Set `skills_only=true` and `include_memory=false` only when you specifically need skill-only discovery.
+- Call `load_skill` for a selected installed skill's full instructions.
+- Inspect `load_skill`'s `attached_context`; call `read_knowledge_node` only when its L3/L4 count is nonzero.
+- Inspect `load_skill`'s `bundled_files` (references/, assets/, scripts/ paths plus the
+  on-disk skill folder) whenever the skill bundles sidecar files; read them from disk when needed.
 - For skill creation or evaluation requests, load the `skill-creation` guide and
   call `run_flash_step` with `suggested_skills=["skill-creation"]`.
 - After completing work, call `save_to_knowledge_graph` to persist key findings.
@@ -300,10 +319,11 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
 
 ## Default workflow
 1. Determine the user's goal, then call `validate_intent` with your interpretation.
-   Call `query_knowledge_graph` with the user's goal to discover relevant past knowledge and lessons.
-   Call `search_skills` with the user's goal to discover relevant skills and guides.
-   After selecting an L1/L2 node ID, call `read_knowledge_node` to conditionally search
-   only that node's attached L3 heuristics and L4 constraints.
+   Call `query_knowledge_graph` once with the user's goal to discover relevant skills, knowledge, and lessons.
+   Load selected installed skills with `load_skill`. Inspect its `attached_context` and call
+   `read_knowledge_node` only when it reports attached L3 heuristics or L4 constraints.
+   Inspect its `bundled_files` when the skill bundles sidecar files (references/, assets/,
+   scripts/) and pass those paths to the executor in the node action.
    Use `get_related_skills` to discover its dependencies or closely related workflows.
 2. Always draft an execution graph, then call `validate_graph` to validate and commit it.
    Present the plan to the user as a Markdown table with columns:
@@ -311,7 +331,7 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
    (where "Depends On" lists predecessor node IDs, or "—" for root nodes).
 {confirmation_instruction}
 4. If the user asks to create or test a skill:
-   a. Call `search_skills` / `load_skill` for the `skill-creation` guide.
+   a. Call `query_knowledge_graph(skills_only=true, include_memory=false)` and `load_skill` for the `skill-creation` guide.
    b. Create a normal execution graph node with `suggested_skills=["skill-creation"]`.
    c. The node action must say that generated skills belong under the user skills root
       returned by `get_user_skills_root`, not under the workspace skills directory.
@@ -326,7 +346,7 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
   Independent nodes (no shared data, no ordering constraint) need no edge and will execute in parallel.
 - **Keep graphs small**: 2–4 nodes for simple tasks, 5–7 for complex ones.
   Merge operations that belong to the same skill or logical unit into a single node.
-- **Suggested skills**: include only exact names returned by `search_skills`. Use `[]`
+- **Suggested skills**: include only exact names returned by `query_knowledge_graph`. Use `[]`
   when no installed skill is specifically needed; do not invent a skill name.
 - **validate_graph input shape**:
   ```json
@@ -431,17 +451,13 @@ def before_agent_callback(callback_context: CallbackContext) -> None:
 # MatCreator agent instance
 # ---------------------------------------------------------------------------
 
+# Repair malformed tool-call argument JSON (unescaped inner quotes) emitted by
+# some OpenAI-compatible endpoints instead of crashing the planning stream.
+install_lenient_tool_argument_parsing()
+
 
 thinking_agent = LlmAgent(
     name="MatCreator",
-    retry_config=RetryConfig(
-        max_attempts=_JSON_DECODE_RETRY_ATTEMPTS,
-        initial_delay=1.0,
-        max_delay=4.0,
-        backoff_factor=2.0,
-        jitter=0.0,
-        exceptions=[json.JSONDecodeError],
-    ),
     model=LiteLlm(
         model=_model_name,
         base_url=_model_base_url,
@@ -460,9 +476,7 @@ thinking_agent = LlmAgent(
         FunctionTool(write_session_summary),
         FunctionTool(confirm_plan_and_start_execution),
         FunctionTool(resume_execution),
-        FunctionTool(search_skills),
         FunctionTool(read_knowledge_node),
-        FunctionTool(search_skill_context),
         FunctionTool(get_related_skills),
         FunctionTool(query_knowledge_graph),
         FunctionTool(save_to_knowledge_graph),
@@ -483,7 +497,6 @@ thinking_agent = LlmAgent(
         show_artifact,
         show_plot,
         show_structure,
-        #ALL_SKILLS_TOOLSET,
     ],
     before_agent_callback=before_agent_callback,
 )

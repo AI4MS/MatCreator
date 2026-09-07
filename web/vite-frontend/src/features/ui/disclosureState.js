@@ -18,7 +18,9 @@ export function createDisclosureController({
     details.open = openState.has(key) ? openState.get(key) : Boolean(defaultOpen);
 
     let pendingViewport = null;
+    let interacted = false;
     const captureViewport = () => {
+      interacted = true;
       // Use this disclosure as the reading anchor. At the bottom the renderer
       // returns an explicit follow-bottom snapshot; elsewhere the Node stays
       // at the same viewport offset while its body expands below it.
@@ -47,10 +49,11 @@ export function createDisclosureController({
       pendingViewport = null;
       // Assigning `open` while rebuilding the view also emits `toggle`.
       // Only a toggle preceded by interaction is a durable user choice.
-      if (!viewport) return;
+      if (!interacted) return;
+      interacted = false;
       openState.set(key, details.open);
       onToggle?.(details.open);
-      restoreScrollPosition?.(viewport);
+      if (viewport) restoreScrollPosition?.(viewport);
     });
     return details;
   }

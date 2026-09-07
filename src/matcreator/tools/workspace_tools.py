@@ -453,11 +453,10 @@ async def run_skill_script(
     Returns:
         Combined stdout and stderr output, truncated to 4 000 characters.
     """
-    from ..config import get_disabled_skills
     from ..workspace import workspace_skills_dir
-    from ..skill import _MODULE_SKILLS_ROOT, official_skills_dir, user_skills_dir
+    from ..skill import _MODULE_SKILLS_ROOT, is_skill_disabled, official_skills_dir, user_skills_dir
 
-    if skill_name in get_disabled_skills():
+    if is_skill_disabled(skill_name):
         return f"Skill '{skill_name}' is disabled."
 
     script_path = _resolve_skill_script_path(workspace_skills_dir(), skill_name, script_name)

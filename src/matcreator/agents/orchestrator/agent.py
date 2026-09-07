@@ -19,6 +19,7 @@ Every invocation runs a planning-first loop:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from contextlib import aclosing
@@ -44,6 +45,12 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MEMORIZATION_FREQUENCY = 1
 _DEFAULT_REVIEW_FREQUENCY = 10
 _PLANNING_NODE_STATE_KEY = "_graph_planning_node_id"
+_EXECUTION_STREAM_ATTEMPTS = max(
+    1, int(os.environ.get("MATCREATOR_EXECUTION_JSON_RETRY_ATTEMPTS", "2"))
+)
+_PLANNING_STREAM_ATTEMPTS = max(
+    1, int(os.environ.get("MATCREATOR_PLANNER_JSON_RETRY_ATTEMPTS", "2"))
+)
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +116,94 @@ def _get_planning_node_id(state: dict, graph: AgentGraphLogger) -> str:
     return node_id
 
 
+async def _stream_execution_with_recovery(
+    execution_agent: BaseAgent,
+    ctx: InvocationContext,
+    *,
+    max_attempts: int = _EXECUTION_STREAM_ATTEMPTS,
+) -> AsyncGenerator[Event, None]:
+    """Run an execution stream across recoverable model-output failures.
+
+    Step executors persist their result before returning it to the execution
+    orchestrator. If the orchestrator's next tool call contains malformed JSON,
+    restart the orchestration stream after folding those durable results into
+    the graph. The restarted agent therefore schedules only unfinished nodes.
+    """
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be at least 1")
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            async with aclosing(execution_agent.run_async(ctx)) as execution_events:
+                async for event in execution_events:
+                    yield event
+            return
+        except json.JSONDecodeError:
+            recovered = reconcile_recovery_state(
+                ctx.session.state,
+                ctx.session.state.get("workdir") or get_workspace_root(),
+            )
+            logger.warning(
+                "[orchestrator] malformed execution tool arguments on attempt %d/%d; "
+                "recovered state: %s",
+                attempt,
+                max_attempts,
+                recovered,
+                exc_info=True,
+            )
+            if attempt == max_attempts:
+                raise
+
+
+async def _stream_planning_with_recovery(
+    planning_agent: BaseAgent,
+    ctx: InvocationContext,
+    *,
+    max_attempts: int = _PLANNING_STREAM_ATTEMPTS,
+) -> AsyncGenerator[Event, None]:
+    """Run a planning stream across recoverable model-output failures.
+
+    Mirrors ``_stream_execution_with_recovery`` but for the planning phase.
+    Some OpenAI-compatible endpoints (e.g. GLM-5.3) occasionally emit a tool
+    call whose ``function.arguments`` is not valid JSON; ADK's LiteLlm adapter
+    raises ``json.JSONDecodeError`` from ``_parse_tool_call_arguments`` during
+    response finalization.  Unlike the execution phase there is no durable
+    sub-step state to reconcile — the planner has no persisted partial results
+    — so recovery is simply re-invoking the planning agent after the failed
+    stream is closed.
+
+    Events already yielded to the client before the failure are not "unsent";
+    the retried stream produces a fresh, complete set of events.  The
+    ``execution_approved`` flag is reset before each retry because a
+    JSONDecodeError during tool-call finalization means the tool never
+    executed (so the flag was never set by the tool itself).
+    """
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be at least 1")
+
+    state = ctx.session.state
+    for attempt in range(1, max_attempts + 1):
+        state["execution_approved"] = False
+        try:
+            async with aclosing(planning_agent.run_async(ctx)) as planning_events:
+                async for event in planning_events:
+                    yield event
+                    if state.get("execution_approved", False):
+                        logger.info("[orchestrator] approval received; ending planning phase")
+                        break
+            return
+        except json.JSONDecodeError:
+            logger.warning(
+                "[orchestrator] malformed planning tool arguments on attempt %d/%d; "
+                "retrying planning phase",
+                attempt,
+                max_attempts,
+                exc_info=True,
+            )
+            if attempt == max_attempts:
+                raise
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -160,18 +255,22 @@ class PlanningExecutionOrchestrator(BaseAgent):
 
         while True:
             # ── Planning phase (always runs first) ───────────────────────────
+            # Tools launched by the planning/O side (notably Flash steps) are
+            # direct orchestrator work. Clear a previous execution round's
+            # container before entering planning so those steps do not appear
+            # to belong to a stale E node after replanning.
+            state["_graph_exec_node_id"] = "orchestrator"
             state["execution_approved"] = False
             logger.info("[orchestrator] entering planning phase")
             graph.log_node_start(planning_id, "planning", "Planning", "orchestrator")
             # Approval is a hard handoff boundary. Yield the successful tool
             # response first so clients can persist/render it, then close the
             # planner stream before it can start another model/tool round.
-            async with aclosing(self.planning_agent.run_async(ctx)) as planning_events:
-                async for event in planning_events:
-                    yield event
-                    if state.get("execution_approved", False):
-                        logger.info("[orchestrator] approval received; ending planning phase")
-                        break
+            # Wrapped in _stream_planning_with_recovery to catch JSONDecodeError
+            # from malformed tool-call arguments emitted by some OpenAI-compatible
+            # endpoints (e.g. GLM-5.3) and retry the planning phase.
+            async for event in _stream_planning_with_recovery(self.planning_agent, ctx):
+                yield event
             graph.log_node_complete(planning_id, "success")
 
             # Flash mode: thinking agent handles everything; skip execution phase
@@ -213,7 +312,7 @@ class PlanningExecutionOrchestrator(BaseAgent):
                 )
                 state["_graph_exec_node_id"] = exec_id
 
-                async for event in self.execution_agent.run_async(ctx):
+                async for event in _stream_execution_with_recovery(self.execution_agent, ctx):
                     yield event
 
                 interrupted = state.get("return_to_planner", False)

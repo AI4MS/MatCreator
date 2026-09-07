@@ -6,8 +6,8 @@ import "./OrbitalAgentIndicator.css";
 export function mountOrbitalAgentIndicator(target) {
   if (!target) return null;
   return createOrbitalAgentIndicator(target, {
-    size: 18,
-    color: "var(--accent)",
+    size: 20,
+    color: "var(--orbital-indicator-color, var(--accent))",
     title: (state) => `MatCreator is ${state}`,
   });
 }

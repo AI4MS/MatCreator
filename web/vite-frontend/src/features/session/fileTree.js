@@ -22,6 +22,28 @@ function formatFileSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function isSafeRelativePath(path) {
+  return typeof path === "string"
+    && path.length > 0
+    && !path.startsWith("/")
+    && !path.split("/").includes("..");
+}
+
+function commonPathPrefix(files) {
+  let common = files[0].path;
+  for (const file of files) {
+    let index = 0;
+    while (index < common.length && index < file.path.length && common[index] === file.path[index]) index++;
+    common = common.slice(0, index);
+  }
+  return common.slice(0, common.lastIndexOf("/") + 1);
+}
+
+export function relativePathForFile(files, file, fallbackPrefix = commonPathPrefix(files)) {
+  if (isSafeRelativePath(file.relative_path)) return file.relative_path;
+  return file.path.slice(fallbackPrefix.length).replace(/^\//, "");
+}
+
 function createTreeIcon(type) {
   const icon = document.createElement("span");
   icon.className = `tree-icon tree-icon-${type}`;
@@ -38,7 +60,7 @@ function createTreeIcon(type) {
   return icon;
 }
 
-export function createSessionFileTree({ getSessionId, pathToApiUrl, openStructure, openFile }) {
+export function createSessionFileTree({ pathToApiUrl, openStructure, openFile }) {
   function createFileItem(file) {
     const item = document.createElement("li");
     item.className = "tree-file";
@@ -79,7 +101,7 @@ export function createSessionFileTree({ getSessionId, pathToApiUrl, openStructur
     actions.className = "tree-actions";
 
     const download = document.createElement("a");
-    download.href = `/api/workspace/files?path=${encodeURIComponent(file.path)}`;
+    download.href = pathToApiUrl(file.path);
     download.download = file.relname;
     download.className = "tree-btn tree-btn-download";
     download.title = "Download";
@@ -105,10 +127,11 @@ export function createSessionFileTree({ getSessionId, pathToApiUrl, openStructur
     return item;
   }
 
-  function buildTree(files, prefix) {
+  function buildTree(files) {
     const root = { children: {}, files: [] };
+    const fallbackPrefix = commonPathPrefix(files);
     for (const file of files) {
-      const relativePath = file.path.slice(prefix.length).replace(/^\//, "");
+      const relativePath = relativePathForFile(files, file, fallbackPrefix);
       const parts = relativePath.split("/");
       const directories = parts.slice(0, -1);
       let node = root;
@@ -147,20 +170,6 @@ export function createSessionFileTree({ getSessionId, pathToApiUrl, openStructur
     for (const file of files) container.appendChild(createFileItem(file));
   }
 
-  function commonPathPrefix(files) {
-    const sessionId = getSessionId();
-    const sessionIndex = files[0].path.indexOf(sessionId);
-    if (sessionIndex >= 0) return files[0].path.slice(0, sessionIndex + sessionId.length);
-
-    let common = files[0].path;
-    for (const file of files) {
-      let index = 0;
-      while (index < common.length && index < file.path.length && common[index] === file.path[index]) index++;
-      common = common.slice(0, index);
-    }
-    return common.slice(0, common.lastIndexOf("/") + 1);
-  }
-
   function render(files) {
     const rootElement = document.getElementById("session-files-tree");
     rootElement.innerHTML = "";
@@ -172,7 +181,7 @@ export function createSessionFileTree({ getSessionId, pathToApiUrl, openStructur
       return;
     }
 
-    renderNode(buildTree(files, commonPathPrefix(files)), rootElement);
+    renderNode(buildTree(files), rootElement);
   }
 
   return { render };

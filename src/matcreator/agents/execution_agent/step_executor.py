@@ -2,19 +2,17 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import List, Literal, Optional
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
-from google.adk.workflow import RetryConfig
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from ...llm_cards import LLMCard
 from ...skill import ALL_SKILLS_TOOLSET
-from ...knowledge.query import get_related_skills, search_skill_context, search_skills
+from ...knowledge.query import get_related_skills, query_knowledge_graph, read_knowledge_node
 from ...tools.remoteagent_tool import load_remote_a2a_agents
 from ...tools.util_tools import show_artifact, show_plot, show_structure
 from ...tools.workspace_tools import get_user_skills_root, run_bash, run_python
@@ -38,12 +36,13 @@ STEP_EXECUTOR_AGENT_NAME = "step_executor"
 
 # ADK's LiteLlm adapter parses streamed function-call arguments as JSON.  Some
 # OpenAI-compatible endpoints occasionally finish a stream with malformed tool
-# arguments, which escapes as JSONDecodeError.  Retry the *LLM node* once by
-# default; this is deliberately separate from LiteLLM's HTTP retry setting,
-# which only covers transport/status failures.
-_JSON_DECODE_RETRY_ATTEMPTS = int(
-    os.environ.get("MATCREATOR_STEP_EXECUTOR_JSON_RETRY_ATTEMPTS", "2")
-)
+# arguments, which escapes as JSONDecodeError.  Recovery is handled at the
+# orchestrator level (see ``orchestrator/agent.py:_stream_execution_with_recovery``
+# and ``_stream_planning_with_recovery``), which wraps agent streams in
+# try/except json.JSONDecodeError.  The legacy ``RetryConfig`` did nothing
+# here because ``LlmAgent`` runs through ``llm_flows``, which does not
+# consume ``retry_config``; LiteLLM's own HTTP retry setting only covers
+# transport/status failures.
 
 
 class StepExecutorInput(BaseModel):
@@ -108,9 +107,12 @@ You are a focused step executor. Execute the single plan step provided in your i
 
 ## Your task
 1. Review `suggested_skills` from your input. Call `load_skill` for each skill you deem
-   relevant to the action. Use `search_skills` to discover additional skills if the
-   suggested list is insufficient. After selecting a skill, use
-   `search_skill_context` to retrieve only its attached L3/L4 guidance.
+   relevant to the action. Use `query_knowledge_graph` to discover additional skills if the
+   suggested list is insufficient. Inspect `load_skill`'s `attached_context`; only
+   when it reports L3/L4 entries, call `read_knowledge_node` to retrieve that guidance.
+   Inspect its `bundled_files` listing: read bundled files with
+   `load_skill_resource(skill_name, file_path)` and run bundled `scripts/` files with
+   `run_skill_script` — never guess file paths that were not listed.
 2. Decompose task into sub-tasks. Directly execute them (**simple** cases) or **Delegate** them to child executors by calling `run_sub_agent` tool (**complex** cases).
        
 ## Reporting results (REQUIRED)
@@ -266,14 +268,6 @@ def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
     """Build a step executor agent for one executor invocation."""
     return LlmAgent(
         name=STEP_EXECUTOR_AGENT_NAME,
-        retry_config=RetryConfig(
-            max_attempts=_JSON_DECODE_RETRY_ATTEMPTS,
-            initial_delay=1.0,
-            max_delay=4.0,
-            backoff_factor=2.0,
-            jitter=0.0,
-            exceptions=[json.JSONDecodeError],
-        ),
         model=LiteLlm(
             model=llm_card.model,
             base_url=llm_card.base_url,
@@ -288,8 +282,8 @@ def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
         tools=[
             FunctionTool(run_sub_agent),
             FunctionTool(submit_step_result),
-            FunctionTool(search_skills),
-            FunctionTool(search_skill_context),
+            FunctionTool(query_knowledge_graph),
+            FunctionTool(read_knowledge_node),
             FunctionTool(get_related_skills),
             FunctionTool(get_user_skills_root),
             FunctionTool(run_python),

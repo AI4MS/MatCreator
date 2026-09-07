@@ -25,6 +25,7 @@ The vite dev server proxies /api/* here and /run_sse + /apps/* to the ADK server
 from __future__ import annotations
 
 import asyncio
+import codecs
 import fcntl
 import json
 import logging
@@ -98,8 +99,10 @@ from matcreator.skill import (  # noqa: E402
     refresh_skills,
     seed_skills_to_graph,
     get_default_skill_names,
+    get_disabled_skill_names,
+    set_disabled_skill_names,
 )
-from matcreator.config import load_config, save_config, get_disabled_skills  # noqa: E402
+from matcreator.config import load_config, save_config  # noqa: E402
 from matcreator.config import ENV_TO_YAML, YAML_TO_ENV, SENSITIVE_YAML_KEYS  # noqa: E402
 from matcreator.constants import GRAPH_AGENT_MODEL, KNOW_DO_GRAPH_DB  # noqa: E402
 from matcreator.control_plane.remote_job_monitor import RemoteJobMonitor  # noqa: E402
@@ -111,7 +114,13 @@ from matcreator.control_plane.evaluation_manager import EvaluationManager  # noq
 from matcreator.control_plane.evaluation_runtime import RuntimeOutcome, RuntimeSpec  # noqa: E402
 from matcreator.control_plane.evaluation_service import EvaluationService  # noqa: E402
 from matcreator.control_plane.evaluations import EvaluationStore  # noqa: E402
-from matcreator.control_plane.runs import ManagedRun, ManagedRunRegistry  # noqa: E402
+from matcreator.control_plane.runs import (  # noqa: E402
+    ManagedRun,
+    ManagedRunRegistry,
+    SseRecordBuffer,
+    is_sse_done,
+    sse_error_message,
+)
 from matcreator.control_plane.worker_supervisor import WorkerSupervisor  # noqa: E402
 from matcreator.control_plane.session_question_generator import (  # noqa: E402
     CallableSessionQuestionGenerator,
@@ -917,7 +926,6 @@ def _json_ready(value):
 
 def _load_skill_graph_payload(*, limit: int = 400) -> dict:
     graph = _get_kg()
-    disabled_skills = set(get_disabled_skills())
     default_skill_names = get_default_skill_names()
     skill_dirs = _skill_dir_map()
     workspace_skill_root = workspace_skills_dir().resolve()
@@ -953,8 +961,7 @@ def _load_skill_graph_payload(*, limit: int = 400) -> dict:
             and skill_dir is None
         )
         graph_disabled = is_entry_disabled(entry)
-        config_disabled = skill_name in disabled_skills if skill_name else False
-        enabled = not virtual and not graph_disabled and not config_disabled
+        enabled = not virtual and not graph_disabled
         skill_path = str(skill_dir.resolve()) if skill_dir else None
         source = get_skill_source(skill_name) if skill_name else None
         removable = bool(
@@ -982,7 +989,6 @@ def _load_skill_graph_payload(*, limit: int = 400) -> dict:
                 "remove_requires_confirmation": bool(skill_name and source and source.managed),
                 "enabled": enabled,
                 "graph_disabled": graph_disabled,
-                "config_disabled": config_disabled,
                 "virtual": virtual,
                 "entry_type": entry_type,
                 "content": "" if virtual else entry.content,
@@ -1106,6 +1112,7 @@ class ManagedRunBody(BaseModel):
     user_id: str
     session_id: str
     new_message: dict[str, Any]
+    streaming: bool = True
 
 
 def _body_to_dict(body: BaseModel) -> dict[str, Any]:
@@ -1130,6 +1137,8 @@ async def _produce_managed_run(run: ManagedRun, payload: dict[str, Any], target_
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
     }
+    records = SseRecordBuffer()
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     async with httpx.AsyncClient(timeout=None) as client:
         async with client.stream(
             method="POST",
@@ -1144,7 +1153,20 @@ async def _produce_managed_run(run: ManagedRun, payload: dict[str, Any], target_
                 if run.status == "cancelling":
                     raise asyncio.CancelledError()
                 if chunk:
-                    await _run_registry.publish(run, chunk.decode("utf-8", errors="replace"))
+                    for record in records.feed(decoder.decode(chunk)):
+                        await _run_registry.publish(run, record)
+                        if upstream_error := sse_error_message(record):
+                            raise RuntimeError(upstream_error)
+                        if is_sse_done(record):
+                            return
+            for record in records.feed(decoder.decode(b"", final=True)):
+                await _run_registry.publish(run, record)
+                if upstream_error := sse_error_message(record):
+                    raise RuntimeError(upstream_error)
+            for record in records.flush():
+                await _run_registry.publish(run, record)
+                if upstream_error := sse_error_message(record):
+                    raise RuntimeError(upstream_error)
 
 
 async def _start_managed_run(
@@ -1418,7 +1440,93 @@ def _session_row_to_summary(row: sqlite3.Row, summaries: dict[str, dict] | None 
             result["summary"] = entry.get("summary", "")
         else:
             result["summary"] = entry
+    # Session selection must be able to present reconnect progress before the
+    # separate active-run detail request returns. The registry lookup is
+    # in-memory and makes this list response the fast recovery hint; the
+    # frontend still confirms the exact run through /api/runs/active.
+    registry = globals().get("_run_registry")
+    active_run = registry.active_for(result["userId"], result["id"]) if registry is not None else None
+    result["status"] = "running" if active_run is not None else "idle"
+    result["activeRun"] = active_run.summary() if active_run is not None else None
+    latest_run = registry.latest_for(result["userId"], result["id"]) if registry is not None else None
+    result["runFailure"] = latest_run.summary() if latest_run is not None and latest_run.status == "failed" else None
     return result
+
+
+def _session_view_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Return only state needed to restore a session view.
+
+    Session state also contains the durable execution log.  Returning that log
+    with every transcript page duplicates potentially large sub-agent payloads
+    before the browser has decided to display them.
+    """
+    if not isinstance(state, dict):
+        return {}
+    view_keys = {"agent_mode", "benchmark_mode", "workdir", "custom_workdir"}
+    return {
+        key: value
+        for key, value in state.items()
+        if key in view_keys
+    }
+
+
+def _parse_session_event_cursor(cursor: str) -> tuple[float, int] | None:
+    """Parse the opaque-enough timestamp,rowid cursor used for event paging."""
+    if not cursor:
+        return None
+    try:
+        timestamp, row_id = cursor.rsplit(",", 1)
+        parsed_timestamp = float(timestamp)
+        parsed_row_id = int(row_id)
+    except (TypeError, ValueError):
+        return None
+    if parsed_row_id <= 0:
+        return None
+    return parsed_timestamp, parsed_row_id
+
+
+_SESSION_TOOL_DETAIL_THRESHOLD = 96_000
+
+
+def _compact_session_tool_payloads(
+    events: list[dict[str, Any]],
+    rows: list[sqlite3.Row],
+    *,
+    user_id: str,
+    session_id: str,
+) -> None:
+    """Replace only oversized historical tool payloads with lazy references."""
+    for event, row in zip(events, rows, strict=False):
+        parts = event.get("content", {}).get("parts", [])
+        for part_index, part in enumerate(parts):
+            response_key = "functionResponse" if isinstance(part.get("functionResponse"), dict) else "function_response"
+            response = part.get(response_key)
+            payload = response.get("response") if isinstance(response, dict) else None
+            if payload is None:
+                continue
+            try:
+                encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            except (TypeError, ValueError):
+                continue
+            if len(encoded) <= _SESSION_TOOL_DETAIL_THRESHOLD:
+                continue
+            preview: dict[str, Any] = {}
+            if isinstance(payload, dict):
+                for key, value in payload.items():
+                    if len(preview) >= 8:
+                        break
+                    if value is None or isinstance(value, (bool, int, float)):
+                        preview[key] = value
+                    elif isinstance(value, str) and len(value) <= 500:
+                        preview[key] = value
+            preview["_matcreator_deferred_detail"] = {
+                "user_id": user_id,
+                "session_id": session_id,
+                "row_id": int(row["event_row_id"]),
+                "part_index": part_index,
+                "byte_size": len(encoded),
+            }
+            response["response"] = preview
 
 
 def _query_session_summaries(user_id: str | None = None) -> list[dict]:
@@ -1738,6 +1846,99 @@ def _load_agent_graph_data(session_id: str) -> dict:
         except (json.JSONDecodeError, OSError):
             return {}
     return {}
+
+
+def _filter_agent_graph_nodes(data: dict, node_ids: list[str]) -> dict:
+    """Return only delegated root steps and their descendants.
+
+    Session transcripts are loaded in small pages, while the on-disk agent graph
+    can contain a full, long-running execution.  Returning the whole graph for
+    every transcript page both wastes bandwidth and gives the frontend nodes
+    whose launching tool call is not in the current page.  ``node_ids`` are the
+    stable IDs supplied to executor-launcher tools in that page.
+    """
+    wanted = {str(value).strip() for value in node_ids if str(value).strip()}
+    if not wanted:
+        return {**data, "nodes": {}, "edges": []}
+
+    all_nodes = data.get("nodes") if isinstance(data.get("nodes"), dict) else {}
+    included: set[str] = set()
+    children: dict[str, list[str]] = {}
+    for graph_node_id, node in all_nodes.items():
+        if not isinstance(node, dict):
+            continue
+        parent_id = node.get("parent_id")
+        if isinstance(parent_id, str) and parent_id:
+            children.setdefault(parent_id, []).append(graph_node_id)
+        if node.get("type") != "step":
+            continue
+        parent = all_nodes.get(parent_id) if isinstance(parent_id, str) else None
+        # Launcher calls start top-level executor steps. Nested children are
+        # returned with that root's subtree; matching a child directly would
+        # make its parent-local identity compete with unrelated siblings.
+        if isinstance(parent, dict) and parent.get("type") == "step":
+            continue
+        node_input = node.get("input") if isinstance(node.get("input"), dict) else {}
+        stable_ids = {
+            str(value).strip()
+            for value in (
+                node_input.get("node_id"),
+                node_input.get("step_id"),
+            )
+            if value is not None and str(value).strip()
+        }
+        # `step_number` is local to a parent executor (many unrelated child
+        # tasks are numbered 1), so it cannot identify a transcript launch.
+        # Match only a durable node/step ID, or an explicit full graph ID.
+        if wanted & stable_ids or graph_node_id in wanted:
+            included.add(graph_node_id)
+
+    # A matched executor card owns all of its nested subagent cards.  Include
+    # the complete descendant subtree so hierarchy rendering remains local to
+    # the transcript page that launched the root executor.
+    pending = list(included)
+    while pending:
+        parent_id = pending.pop()
+        for child_id in children.get(parent_id, []):
+            if child_id in included:
+                continue
+            included.add(child_id)
+            pending.append(child_id)
+
+    nodes = {
+        node_id: node
+        for node_id, node in all_nodes.items()
+        if node_id in included
+    }
+    edges = [
+        edge for edge in (data.get("edges") or [])
+        if isinstance(edge, dict)
+        and edge.get("from") in included
+        and edge.get("to") in included
+    ]
+    return {**data, "nodes": nodes, "edges": edges}
+
+
+def _filter_agent_graph_nodes_by_actions(
+    data: dict,
+    node_ids: list[str],
+    actions: list[str],
+) -> dict:
+    """Resolve label-less Flash launches without returning the full graph."""
+    wanted_actions = {str(value).strip() for value in actions if str(value).strip()}
+    matched_ids = list(node_ids)
+    all_nodes = data.get("nodes") if isinstance(data.get("nodes"), dict) else {}
+    for graph_node_id, node in all_nodes.items():
+        if not isinstance(node, dict) or node.get("type") != "step":
+            continue
+        parent = all_nodes.get(node.get("parent_id"))
+        if isinstance(parent, dict) and parent.get("type") == "step":
+            continue
+        node_input = node.get("input") if isinstance(node.get("input"), dict) else {}
+        action = node_input.get("action")
+        if isinstance(action, str) and action.strip() in wanted_actions:
+            matched_ids.append(graph_node_id)
+    return _filter_agent_graph_nodes(data, matched_ids)
 
 
 def _map_worker_path_to_control_plane(user_id: str, path_str: str) -> Path | None:
@@ -2627,11 +2828,65 @@ async def list_user_sessions(user_id: str) -> JSONResponse:
     return JSONResponse(_query_session_summaries(user_id))
 
 
+def _session_event_meta(
+    events: list[dict[str, Any]],
+    rows: list[Any],
+    start_index: int,
+    previous_user_cursor: str = "",
+) -> list[dict[str, Any]]:
+    """Assign every assistant event to the user turn that initiated it.
+
+    An ADK invocation id identifies one internal agent/tool invocation, not a
+    conversational turn. Grouping persisted rows by it split a single answer
+    into several bubbles whenever delegated work used fresh invocation ids.
+    """
+    current_turn_id = previous_user_cursor
+    event_meta: list[dict[str, Any]] = []
+    for event_index, (event, row) in enumerate(zip(events, rows, strict=False), start=start_index):
+        cursor_value = f"{row['event_timestamp']},{row['event_row_id']}"
+        if event.get("author") == "user":
+            # The database cursor is available to every paginated response;
+            # unlike invocationId it remains stable when this turn spans
+            # more than one transcript page.
+            current_turn_id = cursor_value
+        event_meta.append({
+            "index": event_index,
+            "cursor": cursor_value,
+            "turn_id": str(current_turn_id or cursor_value),
+        })
+    return event_meta
+
+
 @app.get("/api/users/{user_id}/sessions/{session_id}")
-async def get_user_session(user_id: str, session_id: str) -> JSONResponse:
+async def get_user_session(
+    user_id: str,
+    session_id: str,
+    limit: int = 40,
+    before: str = "",
+    after: str = "",
+    offset: int | None = Query(default=None, ge=0),
+    compact: bool = False,
+) -> JSONResponse:
+    """Return the newest page of a session transcript.
+
+    ``before`` and ``after`` are ``timestamp,rowid`` cursors. Pages always
+    arrive in chronological order, so the frontend can prepend or append them
+    without reordering individual events.
+    """
     session_db_path = next((db for _, db in _iter_session_db_paths(user_id)), None)
     if not session_db_path:
         raise HTTPException(status_code=404, detail="Session not found")
+    if not 1 <= limit <= 500:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+    offset_value = offset if isinstance(offset, int) else None
+    cursor = _parse_session_event_cursor(before)
+    if before and cursor is None:
+        raise HTTPException(status_code=422, detail="before must be a valid event cursor")
+    after_cursor = _parse_session_event_cursor(after)
+    if after and after_cursor is None:
+        raise HTTPException(status_code=422, detail="after must be a valid event cursor")
+    if sum(value is not None for value in (cursor, after_cursor, offset_value)) > 1:
+        raise HTTPException(status_code=422, detail="before, after and offset cannot be combined")
 
     try:
         with sqlite3.connect(session_db_path) as conn:
@@ -2657,40 +2912,161 @@ async def get_user_session(user_id: str, session_id: str) -> JSONResponse:
             if session is None:
                 raise HTTPException(status_code=404, detail="Session not found")
 
+            where_parts = ["app_name = ?", "session_id = ?"]
+            params: list[Any] = [APP_NAME, session_id]
             if _MATCREATOR_MODE == "server":
-                event_rows = conn.execute(
-                    """
-                    SELECT event_data
-                    FROM events
-                    WHERE app_name = ? AND user_id = ? AND session_id = ?
-                    ORDER BY timestamp ASC
+                where_parts.insert(1, "user_id = ?")
+                params.insert(1, user_id)
+            base_where_parts = list(where_parts)
+            base_params = list(params)
+            total_events = int(conn.execute(
+                f"SELECT COUNT(*) FROM events WHERE {' AND '.join(base_where_parts)}",
+                base_params,
+            ).fetchone()[0])
+            if cursor is not None:
+                where_parts.append(
+                    "(COALESCE(timestamp, 0) < ? OR "
+                    "(COALESCE(timestamp, 0) = ? AND rowid < ?))"
+                )
+                params.extend([cursor[0], cursor[0], cursor[1]])
+            elif after_cursor is not None:
+                where_parts.append(
+                    "(COALESCE(timestamp, 0) > ? OR "
+                    "(COALESCE(timestamp, 0) = ? AND rowid > ?))"
+                )
+                params.extend([after_cursor[0], after_cursor[0], after_cursor[1]])
+            direction = "ASC" if after_cursor is not None or offset_value is not None else "DESC"
+            offset_clause = " OFFSET ?" if offset_value is not None else ""
+            query_params = [*params, limit + 1]
+            if offset_value is not None:
+                query_params.append(min(offset_value, total_events))
+            event_rows = conn.execute(
+                f"""
+                SELECT rowid AS event_row_id, event_data, COALESCE(timestamp, 0) AS event_timestamp
+                FROM events
+                WHERE {' AND '.join(where_parts)}
+                ORDER BY event_timestamp {direction}, event_row_id {direction}
+                LIMIT ?{offset_clause}
+                """,
+                query_params,
+            ).fetchall()
+            preview_rows = event_rows[:limit]
+            preview_chronological = preview_rows if after_cursor is not None or offset_value is not None else list(reversed(preview_rows))
+            if offset_value is not None:
+                page_start_index = min(offset_value, total_events)
+            elif preview_chronological:
+                first_preview = preview_chronological[0]
+                page_start_index = int(conn.execute(
+                    f"""
+                    SELECT COUNT(*) FROM events
+                    WHERE {' AND '.join(base_where_parts)}
+                      AND (COALESCE(timestamp, 0) < ? OR
+                           (COALESCE(timestamp, 0) = ? AND rowid < ?))
                     """,
-                    (APP_NAME, user_id, session_id),
-                ).fetchall()
+                    [*base_params, first_preview["event_timestamp"], first_preview["event_timestamp"], first_preview["event_row_id"]],
+                ).fetchone()[0])
             else:
-                event_rows = conn.execute(
-                    """
-                    SELECT event_data
+                page_start_index = total_events
+            previous_user_cursor = ""
+            first_preview_event = _load_json_field(preview_chronological[0]["event_data"], {}) if preview_chronological else {}
+            if preview_chronological and first_preview_event.get("author") != "user":
+                first_preview = preview_chronological[0]
+                previous_user = conn.execute(
+                    f"""
+                    SELECT rowid AS event_row_id, COALESCE(timestamp, 0) AS event_timestamp
                     FROM events
-                    WHERE app_name = ? AND session_id = ?
-                    ORDER BY timestamp ASC
+                    WHERE {' AND '.join(base_where_parts)}
+                      AND json_extract(event_data, '$.author') = 'user'
+                      AND (COALESCE(timestamp, 0) < ? OR
+                           (COALESCE(timestamp, 0) = ? AND rowid < ?))
+                    ORDER BY event_timestamp DESC, event_row_id DESC
+                    LIMIT 1
                     """,
-                    (APP_NAME, session_id),
-                ).fetchall()
+                    [*base_params, first_preview["event_timestamp"], first_preview["event_timestamp"], first_preview["event_row_id"]],
+                ).fetchone()
+                if previous_user is not None:
+                    previous_user_cursor = f"{previous_user['event_timestamp']},{previous_user['event_row_id']}"
     except sqlite3.Error as exc:
         raise HTTPException(status_code=500, detail=f"Failed to read session: {exc}")
 
     summary = _session_row_to_summary(session)
     summary["summary"] = _get_session_summary(session_id, user_id if _MATCREATOR_MODE == "server" else None)
-    summary["state"] = _load_json_field(session["state"], {})
-    events = [
-        _load_json_field(row["event_data"], {})
-        for row in event_rows
-    ]
-    # Return the canonical session history as-is so the frontend reflects only
-    # what was actually persisted in the session DB.
+    persisted_state = _load_json_field(session["state"], {})
+    # Keep the existing detail endpoint compatible for API/debug consumers.
+    # The conversation UI opts into compact mode because it needs only these
+    # view settings, not the session's duplicated execution-log payloads.
+    summary["state"] = _session_view_state(persisted_state) if compact else persisted_state
+    has_more = len(event_rows) > limit
+    page_rows = event_rows[:limit]
+    chronological_rows = page_rows if after_cursor is not None else list(reversed(page_rows))
+    if offset_value is not None:
+        chronological_rows = page_rows
+    start_cursor = ""
+    end_cursor = ""
+    if chronological_rows:
+        start_cursor = f"{chronological_rows[0]['event_timestamp']},{chronological_rows[0]['event_row_id']}"
+        end_cursor = f"{chronological_rows[-1]['event_timestamp']},{chronological_rows[-1]['event_row_id']}"
+    events = [_load_json_field(row["event_data"], {}) for row in chronological_rows]
+    if compact:
+        _compact_session_tool_payloads(
+            events,
+            chronological_rows,
+            user_id=user_id,
+            session_id=session_id,
+        )
+    start_index = page_start_index
+
+    event_meta = _session_event_meta(events, chronological_rows, start_index, previous_user_cursor)
+    # Return canonical persisted events, but only one chronological page. The
+    # graph/log endpoints remain the explicit opt-in path for debug payloads.
     summary["events"] = events
+    summary["event_meta"] = event_meta
+    summary["revision"] = f"{session['update_time']}:{total_events}"
+    summary["pagination"] = {
+        # Keep the first-release names for clients that only page backward.
+        "has_more": has_more if after_cursor is None else False,
+        "next_before": start_cursor if after_cursor is None and has_more else "",
+        "has_more_before": start_index > 0,
+        "has_more_after": start_index + len(events) < total_events,
+        "start_cursor": start_cursor,
+        "end_cursor": end_cursor,
+        "start_index": start_index,
+        "end_index": start_index + len(events),
+        "total_count": total_events,
+    }
     return JSONResponse(summary)
+
+
+@app.get("/api/users/{user_id}/sessions/{session_id}/events/{row_id}/parts/{part_index}/detail")
+async def get_session_event_part_detail(
+    user_id: str,
+    session_id: str,
+    row_id: int,
+    part_index: int,
+) -> JSONResponse:
+    """Load a tool response omitted from a compact transcript page."""
+    session_db_path = next((db for _, db in _iter_session_db_paths(user_id)), None)
+    if not session_db_path:
+        raise HTTPException(status_code=404, detail="Session not found")
+    with sqlite3.connect(session_db_path) as conn:
+        where = ["rowid = ?", "app_name = ?", "session_id = ?"]
+        params: list[Any] = [row_id, APP_NAME, session_id]
+        if _MATCREATOR_MODE == "server":
+            where.append("user_id = ?")
+            params.append(user_id)
+        row = conn.execute(
+            f"SELECT event_data FROM events WHERE {' AND '.join(where)}",
+            params,
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Event not found")
+    event = _load_json_field(row[0], {})
+    parts = event.get("content", {}).get("parts", [])
+    if not 0 <= part_index < len(parts):
+        raise HTTPException(status_code=404, detail="Event part not found")
+    part = parts[part_index]
+    response = part.get("functionResponse") or part.get("function_response") or {}
+    return JSONResponse({"response": response.get("response")})
 
 
 @app.get("/api/sessions/{session_id}/remote-jobs")
@@ -3029,6 +3405,48 @@ async def get_execution_graph(session_id: str) -> JSONResponse:
     return JSONResponse(data)
 
 
+def _graph_stream_delta(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    """Return only changed graph records while preserving full-snapshot APIs."""
+    previous_nodes = previous.get("nodes") if isinstance(previous.get("nodes"), dict) else {}
+    current_nodes = current.get("nodes") if isinstance(current.get("nodes"), dict) else {}
+    changed_nodes = {
+        node_id: node
+        for node_id, node in current_nodes.items()
+        if previous_nodes.get(node_id) != node
+    }
+    removed_node_ids = [node_id for node_id in previous_nodes if node_id not in current_nodes]
+    previous_edges = previous.get("edges") or []
+    current_edges = current.get("edges") or []
+    edges_changed = previous_edges != current_edges
+
+    def layout_value(node: Any) -> tuple[Any, ...]:
+        if not isinstance(node, dict):
+            return ()
+        node_input = node.get("input") if isinstance(node.get("input"), dict) else {}
+        return (
+            node.get("id"), node.get("type"), node.get("parent_id"),
+            node.get("batch_id", node.get("execution_batch_id")),
+            node.get("start_time"), node.get("end_time"), node.get("label"),
+            node_input.get("node_id", node_input.get("step_id")),
+        )
+
+    layout_changed = edges_changed or bool(removed_node_ids) or any(
+        layout_value(previous_nodes.get(node_id)) != layout_value(node)
+        for node_id, node in changed_nodes.items()
+    )
+    delta = {
+        "session_id": current.get("session_id"),
+        "updated_at": current.get("updated_at"),
+        "delta": True,
+        "layout_changed": layout_changed,
+        "nodes": changed_nodes,
+        "removed_node_ids": removed_node_ids,
+    }
+    if edges_changed:
+        delta["edges"] = current_edges
+    return delta
+
+
 @app.get("/api/execution-graph/{session_id}/events")
 async def stream_execution_graph(session_id: str, request: Request) -> StreamingResponse:
     """Push roadmap snapshots whenever persisted execution state changes.
@@ -3039,12 +3457,17 @@ async def stream_execution_graph(session_id: str, request: Request) -> Streaming
     """
     async def stream():
         last_snapshot = None
+        last_data = None
         while not await request.is_disconnected():
             data = _load_execution_graph(session_id)
             snapshot = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             if snapshot != last_snapshot:
+                full_snapshot = snapshot
+                payload = data if last_data is None else _graph_stream_delta(last_data, data)
+                snapshot = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                 yield f"data: {snapshot}\n\n"
-                last_snapshot = snapshot
+                last_snapshot = full_snapshot
+                last_data = data
             await asyncio.sleep(0.2)
 
     return StreamingResponse(
@@ -3404,10 +3827,18 @@ async def publish_evaluation_question_draft(draft_id: str, user_id: str = Query(
 
 
 @app.get("/api/agent-graph/{session_id}")
-async def get_agent_graph(session_id: str) -> JSONResponse:
+async def get_agent_graph(
+    session_id: str,
+    node_ids: list[str] = Query(default=[], alias="node_id"),
+    actions: list[str] = Query(default=[], alias="action"),
+) -> JSONResponse:
     data = _load_agent_graph_data(session_id)
     if not data:
         return JSONResponse({"session_id": session_id, "nodes": {}, "edges": [], "updated_at": None})
+    if actions:
+        data = _filter_agent_graph_nodes_by_actions(data, node_ids, actions)
+    elif node_ids:
+        data = _filter_agent_graph_nodes(data, node_ids)
     return JSONResponse(data)
 
 
@@ -3416,14 +3847,17 @@ async def stream_agent_graph(session_id: str, request: Request) -> StreamingResp
     """Push graph updates so concurrent node output appears without polling."""
     async def stream():
         last_updated_at = object()
+        last_data = None
         while not await request.is_disconnected():
             data = _load_agent_graph_data(session_id)
             if not data:
                 data = {"session_id": session_id, "nodes": {}, "edges": [], "updated_at": None}
             updated_at = data.get("updated_at")
             if updated_at != last_updated_at:
-                yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                payload = data if last_data is None else _graph_stream_delta(last_data, data)
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                 last_updated_at = updated_at
+                last_data = data
             # The logger writes synchronously for every model/tool event. A
             # short server-side wait keeps the browser connection quiet while
             # making independently running nodes feel genuinely concurrent.
@@ -3799,18 +4233,28 @@ async def list_modeling_structure_files(
 @app.get("/api/sessions/{session_id}/files")
 async def list_session_files(session_id: str) -> JSONResponse:
     owner_id, _ = _load_session_state(session_id)
-    session_dir = _get_workdir_for_session(session_id)
+    session_dir = _get_workdir_for_session(session_id).resolve()
     if not session_dir.exists():
         return JSONResponse({"files": []})
-    files = [
-        {
-            "name": f.name,
-            "path": _control_plane_path_to_worker(owner_id, f) if owner_id else str(f),
-            "size": f.stat().st_size,
-        }
-        for f in sorted(session_dir.rglob("*"))
-        if f.is_file()
-    ]
+
+    # These folders are runtime bookkeeping kept below the shared workspace,
+    # rather than artifacts generated for a session.  In particular, stopping
+    # a session creates ``cancellation/<session_id>.flag``.  Do not send these
+    # files to the user-facing explorer when a session uses the shared root.
+    internal_roots = {"cancellation", "trajectories"}
+    files = []
+    for file_path in sorted(session_dir.rglob("*")):
+        if not file_path.is_file():
+            continue
+        relative_path = file_path.relative_to(session_dir).as_posix()
+        if relative_path.split("/", 1)[0] in internal_roots:
+            continue
+        files.append({
+            "name": file_path.name,
+            "path": _control_plane_path_to_worker(owner_id, file_path) if owner_id else str(file_path),
+            "relative_path": relative_path,
+            "size": file_path.stat().st_size,
+        })
     return JSONResponse({"files": files})
 
 
@@ -4588,7 +5032,7 @@ async def list_skills(user_id: str = Query(default="")) -> JSONResponse:
     default_skill_names = get_default_skill_names()
     config = _load_config_for_user(user_id)
     planning_skills = set((config.get("planning") or {}).get("extra_skills") or [])
-    disabled_skills = set((config.get("skills") or {}).get("disabled") or [])
+    disabled_skills = get_disabled_skill_names()
     skills = []
     for s in sorted(ALL_SKILLS, key=lambda s: s.name):
         source = get_skill_source(s.name)
@@ -4753,8 +5197,20 @@ async def update_settings(body: SettingsBody, user_id: str = Query(default="")) 
         config.setdefault("planning", {}).update(body.planning)
     if body.user is not None:
         config.setdefault("user", {}).update(body.user)
+    disabled_skill_names: set[str] | None = None
     if body.skills is not None:
-        config.setdefault("skills", {}).update(body.skills)
+        skill_settings = dict(body.skills)
+        if "disabled" in skill_settings:
+            disabled_skill_names = {
+                str(name)
+                for name in skill_settings.pop("disabled") or []
+                if str(name).strip()
+            }
+        if skill_settings:
+            config.setdefault("skills", {}).update(skill_settings)
+        # ``skills.disabled`` used to be persisted in config.yaml.  Graph node
+        # state now owns availability, so retire any legacy copy on save.
+        config.setdefault("skills", {}).pop("disabled", None)
     if body.workspace is not None:
         config.setdefault("workspace", {}).update(body.workspace)
     if body.llm is not None:
@@ -4762,6 +5218,8 @@ async def update_settings(body: SettingsBody, user_id: str = Query(default="")) 
     _save_config_for_user(config, user_id)
     try:
         refresh_skills()
+        if disabled_skill_names is not None:
+            set_disabled_skill_names(disabled_skill_names)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Settings saved but skill registry reload failed: {exc}")
     return JSONResponse({

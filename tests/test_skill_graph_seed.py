@@ -3,10 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from google.adk.skills import load_skill_from_dir
-from know_do_graph import KnowDoGraph
+from know_do_graph import EdgeRelation, KnowDoGraph
 
 from matcreator import guide, skill
 from matcreator.knowledge import query
+from matcreator.knowledge.kdg_memory import (
+    is_entry_disabled,
+    iter_entries_including_disabled,
+    set_entry_disabled,
+)
 
 
 def _write_skill(skill_dir: Path) -> None:
@@ -97,6 +102,7 @@ def test_seed_skills_to_graph_stores_full_skill_body_and_native_attachments(
     skill_entry = next(entry for entry in matches if entry.title == "demo-skill")
     assert "Use the detailed SKILL instructions here." in skill_entry.content
     assert "Short summary only." not in skill_entry.content
+    assert skill_entry.metadata.custom["description"] == "Short summary only."
 
     assert skill_entry.internal_refs == ["references/tips.md", "README.md"]
     assert {(asset.folder, asset.filename) for asset in skill_entry.assets} == {
@@ -107,10 +113,55 @@ def test_seed_skills_to_graph_stores_full_skill_body_and_native_attachments(
     }
     assert [script.filename for script in skill_entry.scripts] == ["tool.py"]
 
-    context = query.search_skill_context(skill_entry.id, query="README", top_k=10)
-    assert "docs/README.md" in context
-    assert "Extra README context for operators." in context
-    assert "scripts/tool.py" not in context
+    context = query.read_knowledge_node(skill_entry.id, query="README", top_k=10)
+    assert context == "No attached L3/L4 context found for 'demo-skill'."
+
+
+def test_seed_reuses_disabled_skill_node_and_merges_legacy_duplicate(
+    tmp_path, monkeypatch
+) -> None:
+    skills_root = tmp_path / "skills"
+    skill_dir = skills_root / "demo-skill"
+    _write_skill(skill_dir)
+    loaded_skill = load_skill_from_dir(skill_dir)
+    graph = KnowDoGraph(tmp_path / "know-do.db")
+    original = graph.add(
+        "demo-skill",
+        entry_type="capability",
+        tags=["matcreator-skill", "managed", "skill-source:builtin"],
+    )
+    set_entry_disabled(graph, original.id, True)
+    duplicate = graph.add(
+        "demo-skill",
+        entry_type="capability",
+        tags=["matcreator-skill", "managed", "skill-source:builtin"],
+    )
+    dependent = graph.add(
+        "dependent-skill",
+        entry_type="capability",
+        tags=["matcreator-skill"],
+    )
+    graph.connect(dependent.id, duplicate.id, relation=EdgeRelation.dependency)
+
+    monkeypatch.setattr(skill, "ALL_SKILLS", [loaded_skill])
+    monkeypatch.setattr(skill, "_MODULE_SKILLS_ROOT", tmp_path / "empty-defaults")
+    monkeypatch.setattr(skill, "workspace_skills_dir", lambda: skills_root)
+    monkeypatch.setattr(guide, "ALL_GUIDES", [])
+    monkeypatch.setattr(query, "_get_kg", lambda: graph)
+
+    result = skill.seed_skills_to_graph()
+
+    entries = [
+        entry
+        for entry in iter_entries_including_disabled(graph)
+        if entry.title == "demo-skill"
+    ]
+    assert result["seeded"] == 0
+    assert result["deduplicated"] == 1
+    assert len(entries) == 1
+    assert entries[0].id == original.id
+    assert is_entry_disabled(entries[0])
+    assert [entry.id for entry in graph.related(dependent.id, depth=1)] == [original.id]
 
 
 def test_seed_skills_to_graph_attaches_l3_l4_nodes_for_progressive_retrieval(

@@ -1,26 +1,73 @@
 import {
-  upsertTimelineEvent,
-  upsertTimelineText,
-  upsertTimelineThought,
+  applyAssistantMessageEvent,
+  completeAssistantMessage,
+  createAssistantMessage,
 } from "./timeline.js";
+import { createMessageRenderScheduler, messageRenderInterval } from "./messageRenderScheduler.js";
+import { appendRunFailure, markRunFailureView } from "./runFailure.js";
+import {
+  initializeRequestLifecycle,
+  markRequestTerminal,
+  requestHasActiveRun,
+} from "../session/requestLifecycle.js";
 
-/** Coordinates a single composer request from optimistic UI through SSE completion. */
-export function createMessageStreamController(deps) {
-  const {
-    state, appName, chatArea, textInput, activeSessionRequest, sessionRequestKey, activeSessionBackendUserId,
-    canWriteActiveSession, showLoginModal, createSession, addMessage, addAgentTimelineMessage,
-    addPlanApprovalActions, renderTimeline, messageWithUploadNames, messageWithUploadContext, clearCurrentUploads,
-    autoResizeTextInput, stepExecutionFeed, agentGraph, planGraph, updateSendButtonState, updateAgentRunningStatus,
+/**
+ * Coordinates a single composer request from optimistic UI through SSE completion.
+ *
+ * Grouping collaborators here makes the controller's responsibilities
+ * (session state, composer UI including uploads, and execution UI) visible at
+ * its API.
+ */
+export function createMessageStreamController({
+  session: {
+    state,
+    activeRequest: activeSessionRequest,
+    requestKey: sessionRequestKey,
+    backendUserId: activeSessionBackendUserId,
+    canWrite: canWriteActiveSession,
+    create: createSession,
+    releaseRequest: releaseSessionRequest,
+    runtime: sessionRuntime,
+    refreshFiles: refreshSessionFiles,
+    generateSummary: generateSessionSummary,
+  },
+  composer: {
+    appName,
+    chatArea,
+    textInput,
+    showLoginModal,
+    addMessage,
+    addAgentTimelineMessage,
+    addPlanApprovalActions,
+    renderTimeline,
+    messageWithUploadNames,
+    messageWithUploadContext,
+    clearCurrentUploads,
+    autoResizeTextInput,
+  },
+  execution: {
+    stepExecutionFeed,
+    agentGraph,
+    planGraph,
+    updateSendButtonState,
+    updateAgentRunningStatus,
     attachAgentRunningIndicator,
-    releaseSessionRequest, managedRunEventsUrl, shouldRefreshPlanGraphForTool,
-    generateSessionSummary, refreshSessionFiles, sessionRuntime, showPlanGraph,
-  } = deps;
+    managedRunEventsUrl,
+    shouldRefreshPlanGraphForTool,
+    showPlanGraph,
+    onRequestStateChange,
+  },
+}) {
+
+  const requestIsVisible = (request) => (
+    sessionRequestKey(request.sessionId, request.owner) === sessionRequestKey()
+  );
 
   function renderStopStatus(request) {
     if (!request.stopStatus || sessionRequestKey(request.sessionId, request.owner) !== sessionRequestKey()) return;
     const content = request.stopStatus === "stopped" ? "✓ Execution stopped." : "Still executing…";
     if (!request.stopStatusMessage?.isConnected) {
-      request.stopStatusMessage = addMessage("agent", content);
+      request.stopStatusMessage = addMessage("agent", content, undefined, sessionRuntime.getLiveHost());
       return;
     }
     const inner = request.stopStatusMessage.querySelector(".markdown-content");
@@ -68,7 +115,7 @@ export function createMessageStreamController(deps) {
 
   function stop() {
     const request = activeSessionRequest();
-    if (!request) return;
+    if (!requestHasActiveRun(request)) return;
     sessionRuntime.suppressPlanApproval(request.sessionId);
     const query = new URLSearchParams({ user_id: request.owner || state.userId });
     fetch(`/api/sessions/${request.sessionId}/cancel?${query}`, { method: "POST" }).catch(() => {});
@@ -80,10 +127,25 @@ export function createMessageStreamController(deps) {
   }
 
   async function send(message) {
-    if (!message.trim() || activeSessionRequest()) return;
+    if (!message.trim()) return;
+    const previousRequest = activeSessionRequest();
+    if (requestHasActiveRun(previousRequest)) return;
+    if (previousRequest) {
+      // The managed run is terminal, so this reply is no longer "running".
+      // Keep the completed live turn mounted until its durable counterpart is
+      // ready, and serialize an immediate follow-up behind that short handoff.
+      if (previousRequest.followupQueued) return;
+      const queuedSessionKey = sessionRequestKey();
+      previousRequest.followupQueued = true;
+      textInput.disabled = true;
+      updateSendButtonState();
+      await previousRequest.cleanupComplete;
+      textInput.disabled = false;
+      if (sessionRequestKey() !== queuedSessionKey || activeSessionRequest()) return;
+    }
     if (!state.userId) { showLoginModal(); return; }
     if (!canWriteActiveSession()) {
-      addMessage("agent", `Admin view is read-only for ${state.activeSessionUserId}'s session.`);
+      addMessage("agent", `Admin view is read-only for ${state.activeSessionUserId}'s session.`, undefined, sessionRuntime.getLiveHost());
       return;
     }
     const uploads = state.currentUploads.slice();
@@ -96,40 +158,44 @@ export function createMessageStreamController(deps) {
       user_id: state.activeSessionUserId || state.userId,
     });
     try { await fetch(`/api/sessions/${state.sessionId}/cancel?${cancellationQuery}`, { method: "DELETE" }); } catch (_) {}
-    const userMessage = addMessage("user", messageWithUploadNames(message, uploads));
+    const liveHost = sessionRuntime.beginLiveOutput();
+    const userMessage = addMessage("user", messageWithUploadNames(message, uploads), undefined, liveHost);
     const startedAt = Date.now();
     textInput.value = "";
     clearCurrentUploads();
     autoResizeTextInput();
     if (!state.sessionReady) await createSession();
     if (!state.sessionReady) {
-      addMessage("agent", "Failed to create session — the backend may still be loading. Please try again in a moment.");
+      addMessage("agent", "Failed to create session — the backend may still be loading. Please try again in a moment.", undefined, liveHost);
       stepExecutionFeed.finishLiveTurn();
       return;
     }
 
-    const timeline = [];
+    const assistantMessage = createAssistantMessage({
+      id: `live:${state.sessionId}:${startedAt}`,
+      startedAt,
+    });
     const shownPlotPaths = new Set();
-    const timelineContainer = addAgentTimelineMessage(timeline, shownPlotPaths);
+    const messageView = addAgentTimelineMessage(assistantMessage, shownPlotPaths, undefined, liveHost, {
+      startedAt,
+      live: true,
+    });
     // The agent shell is visible immediately while the first SSE event is
     // pending, so the user sees progress in the conversational flow rather
     // than an isolated indicator above the composer.
-    attachAgentRunningIndicator(timelineContainer);
+    attachAgentRunningIndicator(messageView);
 
     agentGraph.reset();
     planGraph.reset();
-    const liveTurn = stepExecutionFeed.startLiveTurn(userMessage, startedAt, timelineContainer.parentElement);
+    stepExecutionFeed.startLiveTurn(userMessage, startedAt, messageView.stepFeedLiveHost);
     agentGraph.startPolling(state.sessionId);
     planGraph.startPolling(state.sessionId);
     const owner = state.activeSessionUserId || state.userId;
-    // The optimistic user message and live assistant shell already represent
-    // this session. Mark it before the first persisted snapshot arrives so
-    // stop/plan-completion refreshes preserve the visible disclosure state.
-    sessionRuntime.markSessionRendered(state.sessionId, owner);
-    const request = {
+    const request = initializeRequestLifecycle({
       key: sessionRequestKey(state.sessionId, owner), sessionId: state.sessionId, owner,
       backendUserId: activeSessionBackendUserId(), controller: new AbortController(), lastSequence: 0, runId: null,
-    };
+      message: assistantMessage, messageView, userMessage, backendMessage,
+    });
     state.activeRequests.set(request.key, request);
     // Make connection progress explicit even before the agent has emitted its
     // first thought, tool call, or text token.  This is especially important
@@ -143,36 +209,41 @@ export function createMessageStreamController(deps) {
     let executionApprovedThisTurn = false;
     let terminalStatus = null;
     let roadmapOpenedForPlan = false;
-    let pendingTimelineFrame = null;
-    const renderPendingTimeline = () => {
-      if (!timeline.length || pendingTimelineFrame !== null) return;
-      // A single SSE message can contain several parts. Rendering each part
-      // independently creates competing height changes in the activity and
-      // assistant text; coalesce them into one browser frame instead.
-      pendingTimelineFrame = requestAnimationFrame(() => {
-        pendingTimelineFrame = null;
-        if (timelineContainer.isConnected) renderTimeline(timelineContainer, timeline, shownPlotPaths);
-      });
+    const renderScheduler = createMessageRenderScheduler({
+      intervalMs: () => messageRenderInterval(assistantMessage.items
+        .filter((item) => item.type === "text" || item.type === "reasoning")
+        .reduce((total, item) => total + String(item.text || "").length, 0)),
+      render: () => {
+        if (messageView.element.isConnected) renderTimeline(messageView, assistantMessage, shownPlotPaths);
+      },
+    });
+    let presentationFinishPromise = null;
+    const finishLivePresentation = () => {
+      if (presentationFinishPromise) return presentationFinishPromise;
+      completeAssistantMessage(assistantMessage);
+      messageView.finishDuration(assistantMessage.endedAt);
+      const activityFinish = messageView.finishLiveActivity();
+      // Status teardown is derived from the canonical lifecycle and happens
+      // before the final Markdown task is scheduled.
+      updateSendButtonState();
+      presentationFinishPromise = Promise.all([activityFinish, renderScheduler.finish()]);
+      return presentationFinishPromise;
     };
-    const flushPendingTimeline = () => {
-      if (pendingTimelineFrame !== null) {
-        cancelAnimationFrame(pendingTimelineFrame);
-        pendingTimelineFrame = null;
-      }
-      if (timeline.length && timelineContainer.isConnected) {
-        renderTimeline(timelineContainer, timeline, shownPlotPaths);
-      }
+    const presentRunFailure = (error) => {
+      if (!appendRunFailure(assistantMessage, error)) return;
+      markRunFailureView(messageView);
+      renderTimeline(messageView, assistantMessage, shownPlotPaths);
     };
     const revealPlanApproval = () => {
       if (terminalStatus !== "completed" || !validatedPlanThisTurn || executionApprovedThisTurn
         || sessionRequestKey(request.sessionId, request.owner) !== sessionRequestKey()) return;
+      if (!sessionRuntime.canRevealPlanApproval(request.sessionId, backendMessage)) return;
       // The terminal event is the safe handoff boundary: the backend no longer
       // owns this session, so approval can start a new run immediately. Do not
       // make the user wait for graph, file, and persisted-session refreshes.
-      flushPendingTimeline();
       sessionRuntime.restorePlanApproval(request.sessionId);
-      const latestTimeline = timelineContainer.isConnected
-        ? timelineContainer
+      const latestTimeline = messageView.element.isConnected
+        ? messageView
         : Array.from(chatArea.querySelectorAll(".agent-message .timeline-container")).at(-1);
       if (latestTimeline) addPlanApprovalActions(latestTimeline);
       // Open once at the completed-plan handoff, not when validate_graph first
@@ -183,40 +254,47 @@ export function createMessageStreamController(deps) {
       }
     };
     const handleAdkData = (data) => {
-      if (data === "[DONE]") return;
+      if (data === "[DONE]") {
+        // The model has finished emitting text, even though the managed run
+        // can remain active briefly while the session is persisted. Commit
+        // the final scheduled text frame now, then finish the *visible* turn.
+        // The request stays locked until its terminal event, but presentation
+        // no longer depends on that slower durable-write lifecycle.
+        void finishLivePresentation();
+        return;
+      }
       try {
-        for (const part of JSON.parse(data)?.content?.parts || []) {
+        const event = JSON.parse(data);
+        for (const { part, normalized } of applyAssistantMessageEvent(assistantMessage, event)) {
           if (part.thought) {
-            updateAgentRunningStatus("thinking");
-            upsertTimelineThought(timeline, part.text || "");
-          } else if (part.functionCall) {
-            const name = part.functionCall.name || "Unknown";
-            updateAgentRunningStatus(phaseForTool(name));
-            upsertTimelineEvent(timeline, { type: "function_call", id: part.functionCall.id, name, args: part.functionCall.args || {} });
+            if (requestIsVisible(request)) updateAgentRunningStatus("thinking");
+          } else if (normalized.type === "function_call") {
+            const name = normalized.name;
+            if (requestIsVisible(request)) updateAgentRunningStatus(phaseForTool(name));
           }
-          else if (part.functionResponse) {
-            const response = part.functionResponse;
-            upsertTimelineEvent(timeline, { type: "function_response", id: response.id, name: response.name || "Unknown", response: response.response || {} });
-            updateAgentRunningStatus(phaseForTool(response.name));
-            if (shouldRefreshPlanGraphForTool(response.name)) planGraph.refresh(request.sessionId);
+          else if (normalized.type === "function_response") {
+            const response = normalized;
+            if (requestIsVisible(request)) updateAgentRunningStatus(phaseForTool(response.name));
+            if (requestIsVisible(request) && shouldRefreshPlanGraphForTool(response.name)) planGraph.refresh(request.sessionId);
             if ((response.name === "validate_graph" || response.name === "validate_plan")
               && response.response?.status === "ok") {
               validatedPlanThisTurn = true;
-              updateAgentRunningStatus("finalizing_plan");
+              if (requestIsVisible(request)) updateAgentRunningStatus("finalizing_plan");
             }
             if ((response.name === "confirm_plan_and_start_execution" || response.name === "resume_execution")
               && response.response?.status === "ok") executionApprovedThisTurn = true;
-          } else if (part.text) {
-            updateAgentRunningStatus(validatedPlanThisTurn && !executionApprovedThisTurn
-              ? "finalizing_plan"
-              : "thinking");
-            upsertTimelineText(timeline, part.text);
+          } else if (normalized.type === "text") {
+            if (requestIsVisible(request)) {
+              updateAgentRunningStatus(validatedPlanThisTurn && !executionApprovedThisTurn
+                ? "finalizing_plan"
+                : "thinking");
+            }
             if (!summaryTriggered && !state.summaryGeneratedFor.has(request.sessionId) && !state.sessionSummaries[request.sessionId]) {
               summaryTriggered = true;
               generateSessionSummary(request.sessionId, request.owner);
             }
           }
-          renderPendingTimeline();
+          renderScheduler.request();
         }
       } catch (_) { /* Ignore malformed backend events. */ }
     };
@@ -226,7 +304,7 @@ export function createMessageStreamController(deps) {
       lineBuffer = lines.pop();
       lines.forEach((line) => { const trimmed = line.trim(); if (trimmed.startsWith("data: ")) handleAdkData(trimmed.slice(6)); });
     };
-    const reloadSessionSnapshot = async () => {
+    const reloadSessionSnapshot = async ({ handoff = false } = {}) => {
       const newerRequestIsActive = () => {
         const active = activeSessionRequest();
         return active && active !== request;
@@ -235,20 +313,40 @@ export function createMessageStreamController(deps) {
       // ADK may close the managed SSE stream before its session database has
       // received the final events. Do not let such an incomplete snapshot
       // erase the optimistic user message and already-streamed agent reply.
-      const restored = await sessionRuntime.loadSession(request.sessionId, request.owner, { render: false });
+      // For the final handoff, load the durable row into the transcript store
+      // while the live request still owns visibility. Runtime filtering keeps
+      // that row hidden until ownership is swapped synchronously below.
+      const restored = await sessionRuntime.loadSession(request.sessionId, request.owner, { render: handoff });
       if (newerRequestIsActive()) return;
       const events = restored?.events || [];
-      const userEventIndex = events.findIndex((event) => event?.author === "user"
+      // Always identify the most recent matching user event. `findIndex`
+      // matched an older identical prompt (notably "yes"), then saw that old
+      // prompt's reply and incorrectly replaced the active live turn.
+      const userEventIndex = events.findLastIndex((event) => event?.author === "user"
         && (event.content?.parts || []).some((part) => String(part.text || "").includes(backendMessage)));
       const hasPersistedReply = userEventIndex >= 0 && events.slice(userEventIndex + 1)
         .some((event) => event?.author !== "user" && (event.content?.parts || []).length);
 
-      if (hasPersistedReply) {
-        await sessionRuntime.loadSession(request.sessionId, request.owner);
-      } else if (!userMessage.isConnected
+      // The caller performs the visible handoff.  Keeping this probe
+      // render-free is essential: it must never mount persisted Markdown
+      // while the live timeline still owns this assistant turn.
+      if (handoff && hasPersistedReply) return true;
+      if (handoff && !userMessage.isConnected
         && sessionRequestKey(request.sessionId, request.owner) === sessionRequestKey()) {
-        chatArea.prepend(userMessage);
+        sessionRuntime.getLiveHost().prepend(userMessage);
       }
+      return false;
+    };
+    const reconcileDurableTurn = async () => {
+      // A terminal notification may slightly precede the database commit.
+      // Retry the durable handoff in the background, without ever mounting a
+      // second response or disturbing the completed live presentation.
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        if (await reloadSessionSnapshot({ handoff: true })) return true;
+        if (activeSessionRequest() && activeSessionRequest() !== request) return false;
+        if (attempt < 3) await new Promise((resolve) => window.setTimeout(resolve, 200 * (attempt + 1)));
+      }
+      return false;
     };
 
     try {
@@ -260,7 +358,7 @@ export function createMessageStreamController(deps) {
       request.runId = (await startResponse.json()).run_id;
       const eventsResponse = await fetch(managedRunEventsUrl(request), { headers: { Accept: "text/event-stream" }, signal: request.controller.signal });
       if (!eventsResponse.ok) throw new Error(`HTTP ${eventsResponse.status}`);
-      updateAgentRunningStatus("connected");
+      if (requestIsVisible(request)) updateAgentRunningStatus("connected");
       const reader = eventsResponse.body.getReader();
       const decoder = new TextDecoder();
       let eventBuffer = "";
@@ -279,14 +377,22 @@ export function createMessageStreamController(deps) {
             continue; // Ignore malformed SSE messages.
           }
           if (event.type === "event") { request.lastSequence = event.sequence || request.lastSequence; handleAdkChunk(event.data || ""); }
+          // Snapshot recovery keeps the live presentation authoritative. Only
+          // the final handoff below is allowed to mount durable history.
           else if (event.type === "snapshot_required") await reloadSessionSnapshot();
           else if (event.type === "terminal") {
             request.lastSequence = event.latest_sequence || request.lastSequence;
             terminalStatus = event.status;
-            if (event.status === "failed") throw new Error(event.error || "Agent run failed");
+            markRequestTerminal(request, event.status);
+            updateSendButtonState();
+            onRequestStateChange?.();
+            if (event.status === "failed") {
+              presentRunFailure(event.error || "Agent run failed");
+              throw new Error(event.error || "Agent run failed");
+            }
             if (event.status === "completed") {
-              releaseSessionRequest(request);
-              stepExecutionFeed.finishLiveTurn();
+              void finishLivePresentation();
+              if (requestIsVisible(request)) stepExecutionFeed.finishLiveTurn();
               revealPlanApproval();
             }
           }
@@ -294,25 +400,38 @@ export function createMessageStreamController(deps) {
       }
       if (lineBuffer.trim().startsWith("data: ")) handleAdkData(lineBuffer.trim().slice(6));
     } catch (error) {
-      if (error?.name !== "AbortError") addMessage("agent", `Backend error: ${error}`, undefined, liveTurn);
+      if (error?.name !== "AbortError") presentRunFailure(error);
     } finally {
+      // Every exit converges on the same idempotent lifecycle transition and
+      // one guaranteed final affected-message render.
+      const presentationFinished = finishLivePresentation();
       // A cancelled browser subscription can finish before the managed run
       // does. Keep the composer locked until cancellation polling observes a
       // terminal run, otherwise a new send would clear the cancellation flag.
-      if (request.stopStatus !== "waiting") releaseSessionRequest(request);
-      stepExecutionFeed.finishLiveTurn();
+      if (requestIsVisible(request)) stepExecutionFeed.finishLiveTurn();
       revealPlanApproval();
-      // These are independent reconciliation tasks. They keep the durable
-      // session, roadmap, agent graph, and files current, but none is required
-      // before the user can act on a completed plan.
-      await Promise.allSettled([
+      // The final affected-message pass is the handoff boundary. Durable
+      // history cannot mount a competing representation before it completes.
+      const reconcileAfterTransition = async () => {
+        await presentationFinished;
+        return reconcileDurableTurn();
+      };
+      // These are independent reconciliation tasks. The run is already
+      // presented as terminal; retaining ownership until they settle prevents
+      // an old poll from overwriting a follow-up turn that starts immediately.
+      const backgroundReconciliation = Promise.allSettled(requestIsVisible(request) ? [
         agentGraph._poll(request.sessionId),
         planGraph._poll(request.sessionId),
         refreshSessionFiles(request.sessionId, request.owner),
-        reloadSessionSnapshot(),
-      ]);
-      agentGraph.stopPolling();
-      planGraph.stopPolling();
+      ] : []);
+      const durableReplyReady = await reconcileAfterTransition();
+      await backgroundReconciliation;
+      if (requestIsVisible(request)) {
+        agentGraph.stopPolling();
+        planGraph.stopPolling();
+      }
+      if (durableReplyReady) await sessionRuntime.handoffLiveTurn(request);
+      else if (request.stopStatus !== "waiting") releaseSessionRequest(request);
       // A session snapshot replaces the chat DOM. Restore the stop indicator
       // from the request state so cancellation feedback is never lost during
       // the final refresh.

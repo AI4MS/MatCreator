@@ -81,10 +81,14 @@ export function createSessionListController({
     const summary = typeof rawSummary === "string" ? rawSummary.trim() : "";
     const nameLine = document.createElement("span");
     nameLine.className = "session-item-name";
+    const statusIndicator = document.createElement("span");
+    statusIndicator.className = `session-status-indicator status-${status}`;
+    statusIndicator.title = status === "running" ? "Agent is running" : "Session is idle";
+    statusIndicator.setAttribute("aria-label", statusIndicator.title);
     const nameText = document.createElement("span");
     nameText.className = "session-item-name-text";
     nameText.textContent = summary || "Unnamed session";
-    nameLine.appendChild(nameText);
+    nameLine.append(statusIndicator, nameText);
     content.append(nameLine);
     const buttons = [createLogButton(session.id, owner)];
     if (showDraft) buttons.push(createDraftButton(session.id, owner, status));
@@ -98,7 +102,10 @@ export function createSessionListController({
     item.addEventListener("click", (event) => {
       const button = event.target.closest("button");
       if (button && button !== content) return;
-      switchSession(session.id, owner);
+      switchSession(session.id, owner, {
+        knownRunning: status === "running",
+        knownRun: session.activeRun || null,
+      });
     });
     item.addEventListener("contextmenu", (event) => {
       if (event.target.closest("button") && !event.target.closest(".session-item-content")) return;

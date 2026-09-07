@@ -15,6 +15,15 @@ This reference file discusses currently supported DP model types and their usage
 | DPA-4      | SeZM (or "dpa4") | Omat24, v20260704 | Neo           | DPA4-omat24-Neo.pt     |
 | DPA-4      | SeZM (or "dpa4") | Omat24, v20260704 | Mini          | DPA4-omat24-Mini.pt    |
 | DPA-4      | SeZM (or "dpa4") | Omat24, v20260704 | Nano          | DPA4-omat24-Nano.pt    |
+| DPA-4c     | dpa4c            | OMat24, v20260819 | Air           | DPA4C-Air-OMat24-v20260819.pt  |
+| DPA-4c     | dpa4c            | OMat24, v20260819 | Neo           | DPA4C-Neo-OMat24-v20260819.pt  |
+| DPA-4c     | dpa4c            | OMat24, v20260819 | Mini          | DPA4C-Mini-OMat24-v20260819.pt |
+| DPA-4c     | dpa4c            | OMat24, v20260819 | Nano          | DPA4C-Nano-OMat24-v20260819.pt |
+| DPA-4c     | dpa4c            | OMat24, v20260819 | Plus          | DPA4C-Plus-OMat24-v20260819.pt |
+
+> DPA-4c is a **fine-tuning-only** architecture: it is always trained (distilled) from a
+> pretrained DPA-4c checkpoint and its CLI usage differs from all other models — see the
+> "DPA-4c" section at the end of this file.
 
 > The oldest DP descriptors such as se_e2_a, se_e2_r, and se_e3 are no longer supported due
 > to lack of efficiency. Here, we actually use se_atten_v2 with attn_layer=0, yielding virtually 
@@ -89,6 +98,14 @@ When using pretrained models, you should acquire the corresponding model file us
     | DPA4-Neo-OMat24-v20260704.pt  | https://store.aissquare.com/models/9293690b-6758-425b-ac8c-74a6cb53235a/DPA4-Neo-OMat24-v20260704.pt          |
     | DPA4-Mini-OMat24-v20260704.pt | https://store.aissquare.com/models/9293690b-6758-425b-ac8c-74a6cb53235a/DPA4-Mini-OMat24-v20260704.pt         |
     | DPA4-Nano-OMat24-v20260704.pt | https://store.aissquare.com/models/9293690b-6758-425b-ac8c-74a6cb53235a/DPA4-Nano-OMat24-v20260704.pt         |
+    | DPA4C-Air-OMat24-v20260819.pt  | https://store.aissquare.com/models/220858e4-a519-47f5-b167-756b0f4d91f2/DPA4C-Air-OMat24-v20260819.pt   |
+    | DPA4C-Neo-OMat24-v20260819.pt  | https://store.aissquare.com/models/220858e4-a519-47f5-b167-756b0f4d91f2/DPA4C-Neo-OMat24-v20260819.pt   |
+    | DPA4C-Mini-OMat24-v20260819.pt | https://store.aissquare.com/models/220858e4-a519-47f5-b167-756b0f4d91f2/DPA4C-Mini-OMat24-v20260819.pt  |
+    | DPA4C-Nano-OMat24-v20260819.pt | https://store.aissquare.com/models/220858e4-a519-47f5-b167-756b0f4d91f2/DPA4C-Nano-OMat24-v20260819.pt  |
+    | DPA4C-Plus-OMat24-v20260819.pt | https://store.aissquare.com/models/220858e4-a519-47f5-b167-756b0f4d91f2/DPA4C-Plus-OMat24-v20260819.pt  |
+
+    > Each DPA-4c model also ships an official training input `DPA4C-<Variant>-OMat24-v20260819.json`
+    > at the same URL path (replace the `.pt` suffix with `.json`).
 
    > When downloading is required, try downloading to `/opt/models` then `~/.matcreator/models`,
    > and rename the model file as specified in the table above, for quick future reference.
@@ -96,15 +113,17 @@ When using pretrained models, you should acquire the corresponding model file us
 
 ## Model choice guidelines
 
-| Task type                                                                   | Most recommended model                          | Other recommended models                                                                                                 | Prohibited models                                        |
-|-----------------------------------------------------------------------------|-------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------|
-| Common materials inference (lammps, ase, dp test, etc, < 50k atoms)         | DPA-4, Neo                                      | DPA-4 Air (higher accuracy); DPA-4, Mini (higher efficiency)                                                             | DPA-1 (low accuracy)                                     |
-| Fine-tuning                                                                 | DPA-4, Neo                                      | DPA-4 Air (higher accuracy); DPA-4, Mini (higher efficiency)                                                             | DPA-1 (low accuracy)                                     |
-| Distillation (fine-tuned model)                                             | DPA-4, Neo                                      | DPA-4 Air (higher accuracy); DPA-4, Mini (higher efficiency)                                                             | DPA-1 (low accuracy)                                     |
-| Large-scale materials inference after distillation (~ 50k ~ 200k atoms)     | DPA-1, Medium (distilled from fine-tuned DPA-4) | DPA-1, Large (distilled from fine-tuned DPA-4); DPA-1, Small (distilled from fine-tuned DPA-4); DPA-4, Nano (fine-tuned) | DPA-2, DPA-3, DPA-4 Air/Neo/Mini (low efficiency)        | 
-| Extremely large-scale materials inference after distillation (> 200k atoms) | DPA-1, Small (distilled from fine-tuned DPA-4)  | None                                                                                                                     | Other DPA-1 models, DPA-2, DPA-3, DPA-4 (low efficiency) | 
+| Task type                                                                   | Most recommended model               | Other recommended models                                                                                          | Prohibited models                                         |
+|-----------------------------------------------------------------------------|--------------------------------------|-------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------|
+| Zero-shot inference with the pretrained model (lammps, ase, dp test, etc, < 50k atoms; no dataset needed, ready to use) | DPA-4, Neo | DPA-4 Air (higher accuracy); DPA-4, Mini (higher efficiency) | DPA-1 (low accuracy) |
+| Fine-tuning for a specific chemical system (higher accuracy on the target system, requires labeled data) | DPA-4, Neo | DPA-4 Air (higher accuracy); DPA-4, Mini (higher efficiency) | DPA-1 (low accuracy) |
+| Large-scale simulation (≳ 50k atoms)                                        | DPA-4c, Neo (fine-tuned)             | DPA-4c Plus / Air (higher accuracy); DPA-4c Mini / Nano (higher efficiency) — switch only on user request         | DPA-1 (low accuracy), DPA-2, DPA-3, DPA-4 (low efficiency) |
 
 DPA-2 and DPA-3 models are supported but not strongly recommended in any scenario, as DPA-4 models are both more efficient and accurate.
+
+> **DPA-4c variant policy:** **Neo is the default variant** whenever a DPA-4c model is
+> fine-tuned for large-scale simulation. Switch to another variant (Plus / Air for higher
+> accuracy, Mini / Nano for higher efficiency) only when the user explicitly requests it.
 
 
 ## [For bohrium submission] Bohrium image and machine choice guidelines
@@ -138,13 +157,20 @@ DPA-2 and DPA-3 models are supported but not strongly recommended in any scenari
 
 ## DPA-4c ("dpa4c" descriptor, only used during fine-tuning)
 
-DPA-4c is the architecture for fine-tuning from a fine-tuned model.
-Its CLI usage differs from the fine-tuning flow documented elsewhere in this skill:
+DPA-4c is the architecture for fine-tuning (distilling) from a fine-tuned model.
+Its CLI usage differs from the fine-tuning flow documented elsewhere in this skill.
+**The input.json preparation is integrated into `deepmd_prepare.py`**: run `prepare-finetune`
+with `--model_name dpa4c` and `--model_variant` one of `air` / `neo` / `mini` / `nano` / `plus`,
+pointing `--input_model_path` to the matching official checkpoint
+(`DPA4C-<Variant>-OMat24-v20260819.pt`, downloadable from AIS Square — see Model acquisition).
+The script embeds the official per-variant parameters and prints the exact execution
+command — do NOT write the DPA-4c input.json by hand.
 
 **`--finetune` is STRICTLY PROHIBITED for DPA-4c; always train from scratch with `--pt-expt`:**
 
 ```bash
-dp --pt-expt train input.json --init-model <pretrain.pt> --skip-neighbor-stat
+dp --pt-expt train input.json --init-model <pretrain.pt> --skip-neighbor-stat \
+   --use-pretrain-script --output output.json
 ```
 
 - **NEVER use `--finetune` with DPA-4c.** Its bias-adjustment dense forward pass runs out
@@ -154,12 +180,33 @@ dp --pt-expt train input.json --init-model <pretrain.pt> --skip-neighbor-stat
   (PyTorch) backend produces wrong forces + virials/pressure and crashes on the DPA-4c
   `sel=[999999]` selection. This applies to `train`, `freeze`, `compress`, and `test`
   alike. Only regular DPA-4 (and other DPA models) keep `--pt`.
-- `<pretrain.pt>` is the DPA-4c pretrained checkpoint used to initialize the DPA-4c
-  (historically `dpa4c_pretrain_rmse_epoch.pt`); `--skip-neighbor-stat` must be appended.
+- `<pretrain.pt>` is the DPA-4c pretrained checkpoint used to initialize the DPA-4c:
+  the official `DPA4C-<Variant>-OMat24-v20260819.pt` from AIS Square (historically
+  `dpa4c_pretrain_rmse_epoch.pt`); `--skip-neighbor-stat` must be appended.
 
-**Verified input template:** [dpa4c_distill_input.json](dpa4c_distill_input.json) (in this
-`references/` directory) is the input.json actually used in a historical, completed
-DPA-4c fine-tuning run. It is **exclusive to DPA-4c — do NOT use it for any other
+**Official per-variant inputs:** each DPA-4c checkpoint is published together with its
+training input `DPA4C-<Variant>-OMat24-v20260819.json` (see Model acquisition).
+Per the official usage note, the released checkpoints serve as **pretrained initializations**:
+start from the corresponding released input file, keep the entire **model section unchanged**
+(descriptor, fitting net, and the full-periodic-table type_map the type embeddings are
+indexed by), replace only the training/validation data, and use a **small learning rate**
+for fine-tuning (e.g. `start_lr = 1e-4`). `deepmd_prepare.py` follows this guidance — the
+embedded per-variant templates keep the official model section and differ from the released
+inputs only in:
+- `start_lr` is lowered to **1e-4** for downstream fine-tuning (the released inputs' larger
+  lr values were for the original training runs);
+- `batch_size`: the official `mix:N` rule is not supported by the deepmd build used here,
+  so the closest supported rule `max:N` (batch_size × natoms ≤ N) is used instead;
+- default `num_epochs` is **50** (the released inputs' 12 targets the original training
+  runs; the MLFF workflow keeps 50 for fine-tuning, overridable via `--epochs`).
+
+Two extra safeguards are added to the training command:
+- `--use-pretrain-script`: the model section is taken from the checkpoint's stored script
+  instead of the embedded template, preventing mismatches with future DPA-4c releases;
+- `--output output.json`: saves the normalized training parameters actually used after
+  automatic parameter filling — **keep this file as a record of the run**.
+
+DPA-4c input parameters are **exclusive to DPA-4c — do NOT use them for any other
 architecture** (dpa2, dpa3, dpa4/SeZM, se_atten_v2, ...).
 
 **[For bohrium submission] Image and machine:** recommended image

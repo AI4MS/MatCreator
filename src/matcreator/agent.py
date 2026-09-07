@@ -19,7 +19,12 @@ from google.adk.models.lite_llm import LiteLlm
 from .agents.thinking_agent import thinking_agent
 from .agents.execution_agent import execution_agent
 from .agents.orchestrator.agent import PlanningExecutionOrchestrator
+from .adk_compat import install_lenient_tool_argument_parsing
 from .constants import LLM_MODEL, LLM_API_KEY, LLM_BASE_URL
+
+# Must run before any LiteLlm stream finalizes a tool call: repair tool-call
+# argument JSON with unescaped inner quotes instead of crashing the stream.
+install_lenient_tool_argument_parsing()
 
 model_name = os.environ.get("LLM_MODEL", LLM_MODEL)
 model_api_key = os.environ.get("LLM_API_KEY", LLM_API_KEY)

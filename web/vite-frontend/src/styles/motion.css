@@ -8,9 +8,80 @@
 :root {
   --motion-fast: 140ms;
   --motion-panel: 200ms;
+  --motion-chat: 240ms;
   --motion-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --motion-ease-in: cubic-bezier(0.4, 0, 1, 1);
   interpolate-size: allow-keywords;
+}
+
+/* Chat messages arrive with a small lift and settle into place. The class is
+   added only at creation/reveal, so streamed token updates do not re-trigger
+   a distracting entrance animation. */
+.message.is-entering {
+  animation: chat-message-in var(--motion-chat) var(--motion-ease-out) both;
+}
+
+.message.is-entering > .message-avatar {
+  animation: chat-avatar-in var(--motion-chat) var(--motion-ease-out) both;
+}
+
+.message.is-entering > .message-bubble {
+  animation: chat-bubble-in var(--motion-chat) var(--motion-ease-out) both;
+}
+
+/* The first assistant token expands the bubble out of its waiting shell. */
+.agent-message > .message-bubble {
+  transition:
+    opacity var(--motion-fast) ease,
+    translate var(--motion-chat) var(--motion-ease-out),
+    padding-block var(--motion-chat) var(--motion-ease-out),
+    border-block-width var(--motion-chat) var(--motion-ease-out);
+}
+
+.agent-message.is-waiting > .message-bubble {
+  block-size: 0;
+  min-block-size: 0;
+  padding-block: 0;
+  border-block-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  translate: 0 5px;
+}
+
+/* Native details expose their content as a transitionable pseudo-element in
+   current Chromium/WebKit builds. Keeping this list chat-specific avoids
+   changing unrelated settings and file disclosures. */
+:is(
+  details.agent-activity,
+  details.agent-activity-action,
+  details.agent-activity-reasoning-entry,
+  details.timeline-tool-call,
+  details.step-feed-details,
+  details.step-feed-nested,
+  details.step-feed-section-details,
+  details.markdown-deferred
+)::details-content {
+  block-size: 0;
+  overflow: clip;
+  opacity: 0;
+  transition:
+    block-size var(--motion-chat) var(--motion-ease-out),
+    content-visibility var(--motion-chat) allow-discrete,
+    opacity var(--motion-fast) ease;
+}
+
+:is(
+  details.agent-activity,
+  details.agent-activity-action,
+  details.agent-activity-reasoning-entry,
+  details.timeline-tool-call,
+  details.step-feed-details,
+  details.step-feed-nested,
+  details.step-feed-section-details,
+  details.markdown-deferred
+)[open]::details-content {
+  block-size: auto;
+  opacity: 1;
 }
 
 /* Persistent modal surfaces toggled with the shared .hidden utility. */
@@ -223,10 +294,26 @@
   to { opacity: 0; translate: 0 7px; scale: 0.99; }
 }
 
+@keyframes chat-message-in {
+  from { opacity: 0; translate: 0 8px; }
+  to { opacity: 1; translate: 0 0; }
+}
+
+@keyframes chat-avatar-in {
+  from { opacity: 0; scale: 0.86; }
+  to { opacity: 1; scale: 1; }
+}
+
+@keyframes chat-bubble-in {
+  from { opacity: 0; translate: 0 6px; scale: 0.985; }
+  to { opacity: 1; translate: 0 0; scale: 1; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   :root {
     --motion-fast: 1ms;
     --motion-panel: 1ms;
+    --motion-chat: 1ms;
   }
 
   :is(

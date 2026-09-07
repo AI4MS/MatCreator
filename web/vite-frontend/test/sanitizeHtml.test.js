@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isSafeRenderedUrl } from "../src/shared/rendering/sanitizeHtml.js";
+import { isSafeKatexStyle, isSafeRenderedUrl } from "../src/shared/rendering/sanitizeHtml.js";
 
 test("allows ordinary link and image URLs", () => {
   assert.equal(isSafeRenderedUrl("https://example.com/docs"), true);
@@ -21,4 +21,11 @@ test("uses different protocol allowlists for links and images", () => {
   assert.equal(isSafeRenderedUrl("mailto:team@example.com"), true);
   assert.equal(isSafeRenderedUrl("mailto:team@example.com", { image: true }), false);
   assert.equal(isSafeRenderedUrl("blob:https://example.com/id"), false);
+});
+
+test("only permits the constrained inline styles emitted by KaTeX", () => {
+  assert.equal(isSafeKatexStyle("height:1.08em;vertical-align:-0.2em"), true);
+  assert.equal(isSafeKatexStyle("position:relative;top:-3em"), true);
+  assert.equal(isSafeKatexStyle("color:red"), false);
+  assert.equal(isSafeKatexStyle("background:url(javascript:alert(1))"), false);
 });

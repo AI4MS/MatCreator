@@ -1,62 +1,49 @@
+.agent-running-orbital {
+  --orbital-indicator-color: #e88770;
+}
+
+body[data-theme="light"] .agent-running-orbital {
+  --orbital-indicator-color: #315c9a;
+}
+
 .orbital-agent-indicator {
   display: block;
   overflow: visible;
+  isolation: isolate;
 }
 
 .orbital-agent-indicator__motion {
+  opacity: 0.94;
   transform-box: fill-box;
-  transform-origin: 50% 50%;
-  animation: orbital-breathe 5.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  transform-origin: center;
 }
 
-.orbital-agent-indicator__glow {
-  animation: orbital-glow 3.8s ease-in-out infinite;
+.orbital-agent-indicator__cloud,
+.orbital-agent-indicator__density,
+.orbital-agent-indicator__outline,
+.orbital-agent-indicator__ripple {
+  pointer-events: none;
 }
 
-.orbital-agent-indicator--searching .orbital-agent-indicator__motion {
-  animation: orbital-search 3.8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+.orbital-agent-indicator__outline {
+  shape-rendering: geometricPrecision;
 }
 
-.orbital-agent-indicator--computing .orbital-agent-indicator__motion {
-  animation-duration: 2.8s;
+.orbital-agent-indicator--idle .orbital-agent-indicator__motion {
+  opacity: 0.72;
 }
 
 .orbital-agent-indicator--done .orbital-agent-indicator__motion {
-  animation: orbital-done 1.4s cubic-bezier(0.22, 1, 0.36, 1) 1 both;
-}
-
-.orbital-agent-indicator--done .orbital-agent-indicator__glow {
-  animation: orbital-done-glow 1.4s ease-out 1 both;
-}
-
-@keyframes orbital-breathe {
-  0%, 100% { opacity: 0.78; transform: scale(0.94); }
-  50% { opacity: 1; transform: scale(1.04); }
-}
-
-@keyframes orbital-glow {
-  0%, 100% { opacity: 0.38; }
-  50% { opacity: 0.9; }
-}
-
-@keyframes orbital-search {
-  0%, 100% { opacity: 0.8; transform: rotate(-5deg) scale(0.95); }
-  50% { opacity: 1; transform: rotate(5deg) scale(1.05); }
+  animation: orbital-done 1.25s cubic-bezier(0.22, 1, 0.36, 1) 1 both;
 }
 
 @keyframes orbital-done {
-  0%, 100% { opacity: 0.82; transform: scale(1); }
-  35% { opacity: 1; transform: scale(1.14); }
-}
-
-@keyframes orbital-done-glow {
-  0%, 100% { opacity: 0.38; }
-  35% { opacity: 1; }
+  0%, 100% { opacity: 0.9; transform: scale(1); }
+  34% { opacity: 1; transform: scale(1.1); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .orbital-agent-indicator__motion,
-  .orbital-agent-indicator__glow {
+  .orbital-agent-indicator__motion {
     animation: none;
   }
 }
