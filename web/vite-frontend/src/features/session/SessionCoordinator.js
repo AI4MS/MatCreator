@@ -41,7 +41,9 @@ export function createSessionCoordinator({
   async function observeRemoteJobActivity(sessionId, owner, activity = {}) {
     if (destroyed || !state.sessionReady || !isCurrentSession(sessionId, owner)) return;
     const key = sessionRequestKey(sessionId, owner);
-    if (state.activeRequests.has(key)) return;
+    // A stale request entry (its backend run already ended) must not block
+    // attachment of a harness-started wakeup run or a history refresh.
+    if (requestHasActiveRun(state.activeRequests.get(key))) return;
     const runtime = getSessionRuntime();
     if (activity.active_run) {
       runtime.startManagedRunReconnect(activity.active_run, sessionId, owner);

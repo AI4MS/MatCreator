@@ -205,6 +205,8 @@ function createFixture({ controllerOverrides = {}, skin = "rack-lab", windowOver
   const window = {
     clearInterval() {},
     setInterval() { return 1; },
+    clearTimeout() {},
+    setTimeout() { return 1; },
     ...windowOverrides,
   };
   const controller = createRemoteJobsController({
@@ -239,6 +241,38 @@ test("polling forwards root activity even when remote job status has not changed
   state.sessionId = "session-2";
   await controller.load("session-1", "owner-1");
   assert.equal(updates.length, 2);
+  controller.destroy();
+});
+
+test("polling runs fast while remote jobs are active and slow when idle", async () => {
+  const scheduled = [];
+  let pendingTick = null;
+  const { controller, state } = createFixture({
+    controllerOverrides: {
+      dummyMode: false,
+      httpClient: { getJson: async () => ({ jobs: state.remoteJobs }) },
+      pollIntervalMs: 15_000,
+      activePollIntervalMs: 3_000,
+    },
+    windowOverrides: {
+      setTimeout(callback, interval) {
+        scheduled.push(interval);
+        pendingTick = callback;
+        return scheduled.length;
+      },
+      clearTimeout() { pendingTick = null; },
+    },
+  });
+  state.remoteJobs = [{ status: "running" }];
+  controller.startPolling("session-1", "owner-1");
+  assert.deepEqual(scheduled, [3_000]);
+  await pendingTick();
+  assert.deepEqual(scheduled, [3_000, 3_000]);
+  state.remoteJobs = [{ status: "succeeded" }, { status: "failed" }];
+  await pendingTick();
+  assert.deepEqual(scheduled, [3_000, 3_000, 15_000]);
+  controller.stopPolling();
+  assert.equal(pendingTick, null);
   controller.destroy();
 });
 

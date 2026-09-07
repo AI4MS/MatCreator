@@ -9,6 +9,7 @@ import {
   findConversationRequest,
   initializeRequestLifecycle,
   markRequestTerminal,
+  requestHasActiveRun,
 } from "./requestLifecycle.js";
 import { TranscriptStore } from "./TranscriptStore.js";
 import { VirtualTranscript } from "./VirtualTranscript.js";
@@ -595,7 +596,16 @@ export function createSessionRuntime({
     if (!activeRun?.run_id) return;
     const key = sessionRequestKey(sessionId, owner);
     let request = state.activeRequests.get(key);
-    if (request && !request.awaitingRunDiscovery) return request;
+    if (request && !request.awaitingRunDiscovery) {
+      if (requestHasActiveRun(request) || request.runId === activeRun.run_id) return request;
+      // The entry belongs to an earlier, already-terminal run. Release it so
+      // this harness-started run can attach instead of being silently dropped.
+      const isVisible = sessionRequestKey() === key;
+      if (isVisible) viewport.clearLive();
+      releaseSessionRequest(request);
+      if (isVisible && activeContext?.viewKey === key) refreshRows(activeContext, { follow: true });
+      request = null;
+    }
     if (request) {
       request.runId = activeRun.run_id;
       // `latest_sequence` describes what the server has produced, not what

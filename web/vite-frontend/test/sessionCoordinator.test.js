@@ -170,6 +170,28 @@ test("idle remote-job polling reconnects a harness-started root run", async () =
   assert.deepEqual(calls, [[run, "session-a", "user-a"]]);
   });
 
+test("a stale terminal request does not block wakeup-run attachment", async () => {
+  const calls = [];
+  let loads = 0;
+  const { coordinator, state } = createHarness({
+    state: { sessionReady: true },
+    getSessionRuntime: () => ({
+      startManagedRunReconnect: (...args) => calls.push(args),
+      loadSession: async () => { loads += 1; return {}; },
+    }),
+  });
+  state.activeRequests.set("user-a:session-a", { running: false });
+  const run = { run_id: "wakeup-run" };
+  await coordinator.observeRemoteJobActivity("session-a", "user-a", {
+    active_run: run, activity_revision: "running-1",
+  });
+  assert.deepEqual(calls, [[run, "session-a", "user-a"]]);
+  await coordinator.observeRemoteJobActivity("session-a", "user-a", {
+    activity_revision: "completed-1",
+  });
+  assert.equal(loads, 1);
+});
+
 test("a background turn completed between polls reloads history exactly once", async () => {
   let loads = 0;
   const { coordinator } = createHarness({

@@ -8,6 +8,11 @@ const TERMINABLE_JOB_STATUSES = new Set([
   "queued", "running", "pause_requested", "paused", "resume_requested", "resuming",
 ]);
 const LEGACY_PAUSE_PROVIDERS = new Set(["e2b"]);
+// Statuses during which a monitor wakeup run can start at any moment, so the
+// poll that discovers `active_run` must run on the fast interval.
+const ACTIVE_POLL_STATUSES = new Set([
+  "submitting", "queued", "running", "resuming", "collecting",
+]);
 const EXECUTION_PROGRESS_STATUSES = new Set([
   "running", "pause_requested", "paused", "resume_requested", "resuming",
 ]);
@@ -763,6 +768,7 @@ export function createRemoteJobsController({
   document: documentRef = globalThis.document,
   window: windowRef = globalThis.window,
   pollIntervalMs = 15_000,
+  activePollIntervalMs = 3_000,
 } = {}) {
   const list = documentRef.getElementById("remote-job-list");
   const refreshButton = documentRef.getElementById("refresh-remote-jobs");
@@ -1398,11 +1404,24 @@ export function createRemoteJobsController({
   function startPolling(sessionId, owner) {
     stopPolling();
     if (destroyed || presentationJobs !== null || !sessionId || !owner) return;
-    pollTimer = windowRef.setInterval(() => void load(sessionId, owner), pollIntervalMs);
+    const schedule = () => {
+      // A wakeup run can start at any moment while remote jobs are active, and
+      // the poll response is how the frontend discovers it. Poll fast in that
+      // window so a harness-started run attaches within seconds, not a full
+      // idle interval.
+      const interval = state.remoteJobs?.some?.(
+        (job) => ACTIVE_POLL_STATUSES.has(String(job?.status || "").toLowerCase()),
+      ) ? activePollIntervalMs : pollIntervalMs;
+      pollTimer = windowRef.setTimeout(async () => {
+        await load(sessionId, owner);
+        if (pollTimer !== null && !destroyed) schedule();
+      }, interval);
+    };
+    schedule();
   }
 
   function stopPolling() {
-    if (pollTimer !== null) windowRef.clearInterval(pollTimer);
+    if (pollTimer !== null) windowRef.clearTimeout(pollTimer);
     pollTimer = null;
   }
 
