@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 548 505" role="img" aria-labelledby="title description" shape-rendering="geometricPrecision">
+  <title id="title">MatCreator Rack Lab mark</title>
+  <desc id="description">A clean, bold blue hexagonal MatCreator monogram.</desc>
+  <defs>
+    <linearGradient id="rack-blue" x1="90" y1="48" x2="451" y2="437" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#20a5ff"/>
+      <stop offset="0.48" stop-color="#087ee8"/>
+      <stop offset="1" stop-color="#063487"/>
+    </linearGradient>
+    <linearGradient id="rack-blue-dark" x1="177" y1="174" x2="425" y2="324" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0b55ac"/>
+      <stop offset="1" stop-color="#041f61"/>
+    </linearGradient>
+  </defs>
+  <path d="M266 73 423 165 421 333 266 430 111 340 111 164Z" fill="none" stroke="url(#rack-blue)" stroke-width="31" stroke-linecap="round" stroke-linejoin="round"/>
+  <g fill="url(#rack-blue)">
+    <circle cx="266" cy="73" r="25"/>
+    <circle cx="423" cy="165" r="25"/>
+    <circle cx="421" cy="333" r="25"/>
+    <circle cx="266" cy="430" r="25"/>
+    <circle cx="111" cy="340" r="25"/>
+    <circle cx="111" cy="164" r="25"/>
+  </g>
+  <path d="M199 319 199 211 303 278 410 211 410 319" fill="none" stroke="url(#rack-blue-dark)" stroke-width="31" stroke-linecap="round" stroke-linejoin="miter"/>
+  <g fill="url(#rack-blue-dark)">
+    <circle cx="199" cy="211" r="25"/>
+    <circle cx="199" cy="319" r="25"/>
+    <circle cx="410" cy="319" r="25"/>
+  </g>
+</svg>

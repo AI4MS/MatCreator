@@ -1,0 +1,504 @@
+/*
+ * Rack Lab / Remote Jobs liquid-glass experiment.
+ *
+ * The layer split is inspired by liquid-glass-react (MIT, Max Rovensky,
+ * https://github.com/rdev/liquid-glass-react): a displaced backdrop, two
+ * masked edge highlights, and a separate sharp content layer. The filter and
+ * styling below are an MC-native implementation; no React island or upstream
+ * displacement bitmap is bundled.
+ */
+
+body[data-skin="rack-lab"] {
+  --rack-glass-angle: 135deg;
+  --rack-glass-tilt-x: 0deg;
+  --rack-glass-tilt-y: 0deg;
+  --rack-glass-shift-x: 0px;
+  --rack-glass-shift-y: 0px;
+  --rack-glass-blur: 5px;
+  --rack-glass-face-alpha: 0.32;
+  --rack-glass-plaque-alpha: 0.18;
+  --rack-glass-edge-light: rgba(255, 255, 255, 0.62);
+  --rack-glass-edge-shadow: rgba(7, 12, 22, 0.42);
+}
+
+body[data-skin="rack-lab"][data-theme="light"] {
+  --rack-glass-face-alpha: 0.45;
+  --rack-glass-plaque-alpha: 0.28;
+  --rack-glass-edge-light: rgba(255, 255, 255, 0.88);
+  --rack-glass-edge-shadow: rgba(23, 25, 31, 0.28);
+}
+
+body[data-skin="rack-lab"] > .rack-remote-job-liquid-glass-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+body[data-skin="rack-lab"] .remote-jobs-pane {
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px) 0 0 / 22px 22px,
+    linear-gradient(90deg, rgba(255, 255, 255, 0.028) 1px, transparent 1px) 0 0 / 22px 22px,
+    radial-gradient(circle at 16% 18%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 42%),
+    rgba(var(--panel-rgb), 0.88);
+  -webkit-backdrop-filter: blur(7px) saturate(118%);
+  backdrop-filter: blur(7px) saturate(118%);
+}
+
+body[data-skin="rack-lab"] .remote-job {
+  --rack-glass-card-lift: 0px;
+  border: 1px solid color-mix(in srgb, var(--rack-glass-edge-light) 58%, var(--border) 42%);
+  border-left: 2px solid color-mix(in srgb, var(--remote-job-status-color) 78%, var(--rack-glass-edge-light) 22%);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--skin-shell-background) 88%, var(--remote-job-status-color) 12%);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.22) inset,
+    0 -1px 0 rgba(3, 7, 18, 0.2) inset,
+    0 7px 16px rgba(2, 8, 23, 0.2),
+    0 0 0 1px color-mix(in srgb, var(--remote-job-status-color) 10%, transparent);
+  transform:
+    perspective(880px)
+    translate3d(var(--rack-glass-shift-x), calc(var(--rack-glass-card-lift) + var(--rack-glass-shift-y)), 0)
+    rotateX(var(--rack-glass-tilt-x))
+    rotateY(var(--rack-glass-tilt-y));
+  transition:
+    height 340ms cubic-bezier(0.2, 0.72, 0.2, 1),
+    min-height 340ms cubic-bezier(0.2, 0.72, 0.2, 1),
+    border-color 180ms ease,
+    box-shadow 360ms ease,
+    transform 460ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+body[data-skin="rack-lab"] .remote-job.is-liquid-glass-engaged {
+  transition:
+    height 340ms cubic-bezier(0.2, 0.72, 0.2, 1),
+    min-height 340ms cubic-bezier(0.2, 0.72, 0.2, 1),
+    border-color 180ms ease,
+    box-shadow 220ms ease,
+    transform 82ms linear;
+  will-change: transform;
+}
+
+body[data-skin="rack-lab"] .remote-job:hover,
+body[data-skin="rack-lab"] .remote-job:focus-within {
+  --rack-glass-card-lift: -1px;
+  border-color: color-mix(in srgb, var(--remote-job-status-color) 48%, var(--rack-glass-edge-light) 52%);
+  border-left-color: var(--remote-job-status-color);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.3) inset,
+    0 -1px 0 rgba(3, 7, 18, 0.24) inset,
+    0 18px 34px rgba(2, 8, 23, 0.28),
+    0 0 18px color-mix(in srgb, var(--remote-job-status-color) 16%, transparent);
+  will-change: transform;
+}
+
+body[data-skin="rack-lab"] .remote-job.is-flipped {
+  --rack-glass-card-lift: -2px;
+  border-radius: 18px;
+  transform:
+    perspective(880px)
+    translate3d(var(--rack-glass-shift-x), calc(var(--rack-glass-card-lift) + var(--rack-glass-shift-y)), 0)
+    rotateX(var(--rack-glass-tilt-x))
+    rotateY(var(--rack-glass-tilt-y))
+    scale(1.012);
+  will-change: transform;
+}
+
+body[data-skin="rack-lab"] .remote-job.is-flipped:hover,
+body[data-skin="rack-lab"] .remote-job.is-flipped:focus-within {
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.32) inset,
+    0 -1px 0 rgba(3, 7, 18, 0.26) inset,
+    0 24px 48px rgba(2, 8, 23, 0.32),
+    0 0 24px color-mix(in srgb, var(--remote-job-status-color) 18%, transparent);
+}
+
+body[data-skin="rack-lab"] .remote-job:active {
+  --rack-glass-card-lift: 0px;
+}
+
+body[data-skin="rack-lab"] .remote-job-face,
+body[data-skin="rack-lab"] .remote-job-face-details {
+  isolation: isolate;
+  border-radius: 13px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.12), transparent 42%),
+    color-mix(in srgb, var(--skin-shell-background) 88%, var(--remote-job-status-color) 12%);
+}
+
+body[data-skin="rack-lab"] .remote-job.is-flipped .remote-job-face {
+  border-radius: 17px;
+}
+
+body[data-skin="rack-lab"] .remote-job-face::before,
+body[data-skin="rack-lab"] .remote-job-face::after {
+  display: none;
+}
+
+body[data-skin="rack-lab"] .remote-job-face > :not(.remote-job-glass-warp):not(.remote-job-glass-edge) {
+  position: relative;
+  z-index: 2;
+}
+
+body[data-skin="rack-lab"] .remote-job-face > :is(.remote-job-actions, .remote-job-error) {
+  position: absolute;
+}
+
+body[data-skin="rack-lab"] :is(.remote-job-glass-warp, .remote-job-glass-edge) {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+body[data-skin="rack-lab"] .remote-job-glass-warp {
+  z-index: 0;
+  padding: 8px;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.11), rgba(var(--panel-rgb), 0.05) 48%, color-mix(in srgb, var(--remote-job-status-color) 12%, transparent));
+  -webkit-backdrop-filter: blur(var(--rack-glass-blur)) saturate(132%) contrast(104%);
+  backdrop-filter: blur(var(--rack-glass-blur)) saturate(132%) contrast(104%);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  opacity: 0;
+  transform: translate3d(var(--rack-glass-shift-x), var(--rack-glass-shift-y), 0) scale(1.008);
+  transition: opacity 150ms ease, transform 420ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+body[data-skin="rack-lab"] .remote-job-face[aria-hidden="false"] > .remote-job-glass-warp {
+  filter: url("#rack-remote-job-liquid-glass-filter");
+  opacity: 0.94;
+}
+
+body[data-skin="rack-lab"] .remote-job.is-liquid-glass-engaged .remote-job-glass-warp {
+  transform: translate3d(var(--rack-glass-shift-x), var(--rack-glass-shift-y), 0) scale(1.014);
+  transition-duration: 120ms;
+}
+
+body[data-skin="rack-lab"] .remote-job-face[aria-hidden="true"] > .remote-job-glass-warp {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  filter: none;
+  opacity: 0;
+}
+
+body[data-skin="rack-lab"] .remote-job-glass-edge {
+  z-index: 1;
+  padding: 1.25px;
+  background:
+    linear-gradient(
+      var(--rack-glass-angle),
+      transparent 3%,
+      rgba(125, 211, 252, 0.32) 19%,
+      var(--rack-glass-edge-light) 38%,
+      color-mix(in srgb, var(--remote-job-status-color) 66%, rgba(255, 255, 255, 0.2)) 55%,
+      rgba(251, 113, 133, 0.18) 72%,
+      transparent 96%
+    );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  mix-blend-mode: screen;
+  opacity: 0.78;
+  box-shadow:
+    0 0 0 0.5px rgba(255, 255, 255, 0.36) inset,
+    0 1px 3px rgba(255, 255, 255, 0.2) inset,
+    0 1px 4px var(--rack-glass-edge-shadow);
+}
+
+body[data-skin="rack-lab"] .remote-job-glass-edge::before {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  padding: 1px;
+  border-radius: inherit;
+  background: linear-gradient(calc(var(--rack-glass-angle) + 24deg), transparent, rgba(255, 255, 255, 0.32), transparent 72%);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  mix-blend-mode: overlay;
+  opacity: 0.72;
+}
+
+body[data-skin="rack-lab"] .remote-job-face[aria-hidden="true"] > .remote-job-glass-edge {
+  opacity: 0;
+}
+
+body[data-skin="rack-lab"] .remote-job-identity-label,
+body[data-skin="rack-lab"] .remote-job-stage-item,
+body[data-skin="rack-lab"] .remote-job-progress-label,
+body[data-skin="rack-lab"] .remote-job-details-title,
+body[data-skin="rack-lab"] .remote-job-provider,
+body[data-skin="rack-lab"] .remote-job-detail-row > span {
+  text-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.18),
+    0 -1px 0 rgba(2, 8, 23, 0.28);
+}
+
+body[data-skin="rack-lab"] .remote-job-id,
+body[data-skin="rack-lab"] .remote-job-status,
+body[data-skin="rack-lab"] .remote-job-detail-row > code {
+  color: var(--text-primary);
+  text-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.12),
+    0 2px 9px rgba(2, 8, 23, 0.24);
+}
+
+body[data-skin="rack-lab"] .remote-job-status-row,
+body[data-skin="rack-lab"] .remote-job-stage-viewport,
+body[data-skin="rack-lab"] .remote-job-detail-row {
+  border: 1px solid color-mix(in srgb, var(--rack-glass-edge-light) 42%, var(--border) 58%);
+  background:
+    linear-gradient(155deg, rgba(255, 255, 255, 0.12), transparent 44%),
+    rgba(var(--panel-rgb), var(--rack-glass-plaque-alpha));
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.2) inset,
+    0 -1px 0 rgba(2, 8, 23, 0.18) inset;
+}
+
+body[data-skin="rack-lab"] .remote-job-stage-viewport {
+  border-radius: 7px;
+  -webkit-backdrop-filter: blur(2px) saturate(115%);
+  backdrop-filter: blur(2px) saturate(115%);
+}
+
+body[data-skin="rack-lab"] .remote-job-status-row {
+  min-height: 17px;
+  padding: 2px 5px;
+  border-radius: 7px;
+}
+
+body[data-skin="rack-lab"] .remote-job-detail-row {
+  border-radius: 8px;
+}
+
+body[data-skin="rack-lab"] .remote-job-progress {
+  border-color: color-mix(in srgb, var(--rack-glass-edge-light) 36%, var(--border) 64%);
+  background: rgba(2, 8, 23, 0.24);
+  box-shadow:
+    0 1px 2px rgba(2, 8, 23, 0.28) inset,
+    0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+body[data-skin="rack-lab"] .remote-job-progress-fill {
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--remote-job-status-color) 74%, #fff 26%), var(--remote-job-status-color));
+  box-shadow:
+    0 0 8px color-mix(in srgb, var(--remote-job-status-color) 52%, transparent),
+    0 1px 0 rgba(255, 255, 255, 0.42) inset;
+}
+
+/* When the durable upstream snapshot exposes exact MD steps, show them.
+   Until such telemetry arrives, keep the whole glass rail visibly alive
+   instead of presenting the generic short slider as a guessed percentage. */
+body[data-skin="rack-lab"] .remote-job[data-workload-kind="md"][data-current-phase="execute"] .remote-job-progress {
+  height: 7px;
+  border-color: color-mix(in srgb, var(--remote-job-status-color) 42%, var(--rack-glass-edge-light) 58%);
+  background:
+    linear-gradient(180deg, rgba(1, 6, 20, 0.46), rgba(8, 20, 42, 0.3)),
+    rgba(2, 8, 23, 0.3);
+}
+
+body[data-skin="rack-lab"] .remote-job[data-workload-kind="md"][data-current-phase="execute"]
+  .remote-job-progress[data-progress-mode="indeterminate"] .remote-job-progress-fill {
+  width: 100%;
+  transform: none;
+  background:
+    linear-gradient(
+      90deg,
+      transparent 0 18%,
+      color-mix(in srgb, var(--remote-job-status-color) 42%, transparent) 31%,
+      color-mix(in srgb, var(--remote-job-status-color) 72%, #fff 28%) 48%,
+      color-mix(in srgb, var(--remote-job-status-color) 42%, transparent) 65%,
+      transparent 78% 100%
+    ) -72% 0 / 46% 100% no-repeat;
+  animation: rack-md-progress-flow 1.8s cubic-bezier(0.42, 0, 0.58, 1) infinite;
+}
+
+@keyframes rack-md-progress-flow {
+  from { background-position: -72% 0; }
+  to { background-position: 172% 0; }
+}
+
+body[data-skin="rack-lab"] .remote-job-status-dot {
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--remote-job-status-color) 20%, transparent),
+    0 0 9px color-mix(in srgb, var(--remote-job-status-color) 52%, transparent);
+}
+
+body[data-skin="rack-lab"] :is(.remote-job-action, .remote-job-action.refresh-button) {
+  border: 1px solid color-mix(in srgb, var(--rack-glass-edge-light) 42%, var(--border) 58%);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.16), transparent 48%),
+    rgba(var(--panel-rgb), 0.38);
+  -webkit-backdrop-filter: blur(4px) saturate(125%);
+  backdrop-filter: blur(4px) saturate(125%);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.24) inset,
+    0 4px 9px rgba(2, 8, 23, 0.2);
+}
+
+body[data-skin="rack-lab"] .remote-job:has(> .remote-job-card-toggle:focus-visible) {
+  outline-color: var(--focus-ring);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--focus-ring) 68%, transparent),
+    0 18px 34px rgba(2, 8, 23, 0.28);
+}
+
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  body[data-skin="rack-lab"] .remote-job {
+    background: rgba(var(--panel-rgb), 0.2);
+  }
+
+  body[data-skin="rack-lab"] .remote-job-face[aria-hidden="false"] {
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.11), transparent 44%),
+      rgba(var(--panel-rgb), var(--rack-glass-face-alpha));
+    -webkit-backdrop-filter: blur(var(--rack-glass-blur)) saturate(126%) contrast(102%);
+    backdrop-filter: blur(var(--rack-glass-blur)) saturate(126%) contrast(102%);
+  }
+
+  body[data-skin="rack-lab"] .remote-job-face[aria-hidden="true"] {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  body[data-skin="rack-lab"] .remote-jobs-pane {
+    background: rgba(var(--panel-rgb), 0.98);
+  }
+
+  body[data-skin="rack-lab"] .remote-job-glass-warp {
+    display: none;
+  }
+
+  body[data-skin="rack-lab"] .remote-job-face,
+  body[data-skin="rack-lab"] .remote-job-face-details {
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.11), transparent 42%),
+      color-mix(in srgb, var(--skin-shell-background) 92%, var(--remote-job-status-color) 8%);
+  }
+}
+
+@media (max-width: 520px) {
+  body[data-skin="rack-lab"] {
+    --rack-glass-blur: 3px;
+    --rack-glass-tilt-x: 0deg !important;
+    --rack-glass-tilt-y: 0deg !important;
+    --rack-glass-shift-x: 0px !important;
+    --rack-glass-shift-y: 0px !important;
+  }
+
+  body[data-skin="rack-lab"] .remote-job-glass-warp {
+    filter: none !important;
+  }
+
+  body[data-skin="rack-lab"] .remote-job-glass-edge {
+    background: linear-gradient(var(--rack-glass-angle), transparent, var(--rack-glass-edge-light), transparent);
+  }
+}
+
+@container remote-jobs (max-width: 270px) {
+  body[data-skin="rack-lab"] .remote-job-face {
+    padding-inline: 8px;
+  }
+
+  body[data-skin="rack-lab"] .remote-job-glass-warp {
+    padding: 6px;
+    filter: none !important;
+  }
+
+  body[data-skin="rack-lab"] .remote-job-detail-row {
+    padding: 4px 5px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body[data-skin="rack-lab"] .remote-job,
+  body[data-skin="rack-lab"] .remote-job.is-flipped,
+  body[data-skin="rack-lab"] .remote-job:hover,
+  body[data-skin="rack-lab"] .remote-job:focus-within {
+    transform: none !important;
+    transition: none;
+    will-change: auto;
+  }
+
+  body[data-skin="rack-lab"] .remote-job-glass-warp,
+  body[data-skin="rack-lab"] .remote-job-glass-edge {
+    filter: none !important;
+    transform: none;
+    transition: none;
+  }
+
+  body[data-skin="rack-lab"] .remote-job[data-workload-kind="md"][data-current-phase="execute"]
+    .remote-job-progress[data-progress-mode="indeterminate"] .remote-job-progress-fill {
+    animation: none;
+    background-position: 50% 0;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  body[data-skin="rack-lab"] .remote-jobs-pane,
+  body[data-skin="rack-lab"] .remote-job,
+  body[data-skin="rack-lab"] .remote-job-face,
+  body[data-skin="rack-lab"] .remote-job-face-details {
+    background: var(--skin-shell-background);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  body[data-skin="rack-lab"] :is(.remote-job-glass-warp, .remote-job-glass-edge) {
+    display: none;
+  }
+}
+
+@media (forced-colors: active) {
+  body[data-skin="rack-lab"] .remote-jobs-pane,
+  body[data-skin="rack-lab"] .remote-job,
+  body[data-skin="rack-lab"] .remote-job-face,
+  body[data-skin="rack-lab"] .remote-job-face-details,
+  body[data-skin="rack-lab"] .remote-job-stage-viewport,
+  body[data-skin="rack-lab"] .remote-job-status-row,
+  body[data-skin="rack-lab"] .remote-job-detail-row {
+    background: Canvas;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow: none;
+  }
+
+  body[data-skin="rack-lab"] :is(.remote-job-glass-warp, .remote-job-glass-edge) {
+    display: none;
+  }
+
+  body[data-skin="rack-lab"] :is(
+    .remote-job-identity-label,
+    .remote-job-id,
+    .remote-job-stage-item,
+    .remote-job-status,
+    .remote-job-progress-label,
+    .remote-job-details-title,
+    .remote-job-provider,
+    .remote-job-detail-row > span,
+    .remote-job-detail-row > code
+  ) {
+    color: CanvasText;
+    text-shadow: none;
+  }
+}

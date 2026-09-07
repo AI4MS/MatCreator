@@ -47,12 +47,17 @@ import { createPlanGraphPopupController } from "./features/graphs/planGraphPopup
 import { createSkillGraphController } from "./features/skills/SkillGraphController.js";
 import { createKnowledgeReviewController } from "./features/skills/KnowledgeReviewController.js";
 import { createSettingsController } from "./features/settings/SettingsController.js";
+import { createAppearanceController as createSkinAppearanceController } from "./features/settings/AppearanceController.js";
+import { createRackLabBrandMotion } from "./features/brand/RackLabBrandMotion.js";
 import { createEvaluationController } from "./features/evaluation/EvaluationController.js";
 import { createRemoteJobsController } from "./features/remoteJobs/RemoteJobsController.js";
 import { createAuthController } from "./features/auth/AuthController.js";
 import { mountOrbitalAgentIndicator } from "./components/mountOrbitalAgentIndicator.js";
 import { createDisclosureController } from "./features/ui/disclosureState.js";
-import { createAppearanceController, THEME_KEY } from "./features/ui/appearance.js";
+import { createAppearanceController as createBaseAppearanceController, THEME_KEY } from "./features/ui/appearance.js";
+import { createThemeManager } from "./theme/ThemeManager.js";
+import { createThemeRegistry } from "./theme/ThemeRegistry.js";
+import { BUILTIN_SKINS } from "./theme/builtinSkins.js";
 import { removeOverlayWithMotion } from "./shared/ui/overlayMotion.js";
 import { showConfirmDialog } from "./shared/ui/confirmDialog.js";
 import {
@@ -65,6 +70,9 @@ import "./styles/index.css";
 // ---------------------------------------------------------------------------
 
 const APP_NAME = "MatCreator";
+const visualFixture = import.meta.env.DEV
+  ? new URLSearchParams(window.location.search).get("visual-fixture")
+  : null;
 
 const AGENT_MODE_KEY = "mat_agentMode";
 const SESSION_ID_KEY = "mat_sessionId";
@@ -86,6 +94,8 @@ const state = {
   sessionViewCache: new Map(),
   agentMode: localStorage.getItem(AGENT_MODE_KEY) || "normal",
   theme: localStorage.getItem(THEME_KEY) || "dark",
+  skinId: localStorage.getItem("mat_skin") || "matcreator-default",
+  styleRecipeId: "standard",
   customWorkdir: "",
   sessionSummaries: {},   // { sessionId: "summary text" }
   summaryGeneratedFor: new Set(),  // sessionIds that have triggered summary generation
@@ -181,10 +191,32 @@ const {
   updatePreservingReadingPosition,
 } = createChatRenderer({ chatArea, bottomOverlay: inputArea });
 
-const appearanceController = createAppearanceController({
+const themeRegistry = createThemeRegistry(BUILTIN_SKINS);
+const themeManager = createThemeManager({
+  registry: themeRegistry,
+  target: document.body,
+  eventTarget: window,
+  storage: localStorage,
+});
+
+function syncThemeSelection(selection) {
+  state.skinId = selection.skinId;
+  state.styleRecipeId = selection.styleRecipeId;
+  state.theme = selection.colorScheme;
+  themeToggle?.setAttribute("aria-pressed", String(selection.colorScheme === "light"));
+  const label = selection.colorScheme === "light" ? "Toggle dark mode" : "Toggle light mode";
+  themeToggle?.setAttribute("title", label);
+  themeToggle?.setAttribute("aria-label", label);
+}
+
+themeManager.subscribe(syncThemeSelection);
+themeManager.initialize();
+createRackLabBrandMotion();
+
+const appearanceController = createBaseAppearanceController({
   state,
   textInput,
-  themeToggle,
+  themeToggle: null,
 });
 const {
   getFontScale,
@@ -192,6 +224,12 @@ const {
   autoResizeTextInput,
 } = appearanceController;
 appearanceController.init();
+themeToggle?.addEventListener("click", () => themeManager.toggleVariant());
+
+const skinAppearanceController = createSkinAppearanceController({
+  themeManager,
+  document,
+});
 
 const createChatDisclosureController = () => createDisclosureController();
 const chatDisclosureController = createChatDisclosureController();
@@ -277,6 +315,7 @@ const settingsController = createSettingsController({
   applyLogin,
   getFontScale,
   applyFontScale,
+  appearanceController: skinAppearanceController,
 });
 
 const skillGraphController = createSkillGraphController({
@@ -819,3 +858,10 @@ function _doNewSession(customWorkdir) {
 
 authController.init();
 void authController.start();
+
+if (import.meta.env.DEV && visualFixture === "remote-job-cards") {
+  void import("./dev/remoteJobsVisualFixture.js").then(({ REMOTE_JOBS_VISUAL_FIXTURE }) => {
+    remoteJobsController.setPresentationJobs(REMOTE_JOBS_VISUAL_FIXTURE);
+    remoteJobsController.setExpanded(true);
+  });
+}
