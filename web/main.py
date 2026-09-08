@@ -259,6 +259,9 @@ _evaluation_manager = EvaluationManager(
 _remote_job_monitor = RemoteJobMonitor(_remote_job_store, _remote_job_service)
 _remote_job_monitor_task: asyncio.Task[None] | None = None
 _remote_job_monitor_stop = asyncio.Event()
+# Wakeup runs must not start while the client is still handing the previous
+# run's live turn off to durable history (see _resume_remote_job_session).
+_WAKEUP_HANDOFF_GRACE_SECONDS = 2.5
 _LEGACY_ENV_ALIASES = {
     "LLM_API_KEY": "MINIMAX_API_KEY",
     "LLM_BASE_URL": "MINIMAX_API_BASE",
@@ -1277,6 +1280,12 @@ async def _resume_remote_job_session(notification: dict[str, Any]) -> str | None
         await asyncio.to_thread(store.suppress_session_notifications, owner_id, session_id)
         return None
     if _run_registry.active_for(owner_id, session_id) is not None:
+        return None
+    last_run_end = _run_registry.last_terminal_update(owner_id, session_id)
+    if last_run_end is not None and time.time() - last_run_end < _WAKEUP_HANDOFF_GRACE_SECONDS:
+        # The previous run just ended and the client is still handing its live
+        # turn off to durable history; a wakeup starting inside that window
+        # races the frontend's live DOM. The monitor defers a None result.
         return None
     receipt = await asyncio.to_thread(
         _remote_job_notification_receipt, owner_id, session_id, notification["notification_id"],

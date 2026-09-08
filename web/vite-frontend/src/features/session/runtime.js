@@ -10,6 +10,7 @@ import {
   initializeRequestLifecycle,
   markRequestTerminal,
   requestHasActiveRun,
+  requestOwnsLiveDom,
 } from "./requestLifecycle.js";
 import { TranscriptStore } from "./TranscriptStore.js";
 import { VirtualTranscript } from "./VirtualTranscript.js";
@@ -77,6 +78,7 @@ export function createSessionRuntime({
     onRequestStateChange, attachAgentRunningIndicator, updateAgentRunningStatus,
   },
   managedRun: { eventsUrl: managedRunEventsUrl },
+  createViewport = (options) => new VirtualTranscript(options),
 }) {
   const pageSize = 40;
   const contextLimit = 3;
@@ -87,7 +89,7 @@ export function createSessionRuntime({
   const sessionFetchControllers = new Map();
   const metrics = { sessionLoads: 0, historyFetches: 0, managedSnapshotRecoveries: 0 };
 
-  const viewport = new VirtualTranscript({
+  const viewport = createViewport({
     chatArea,
     renderRow: (row, host) => renderPersistedRow(row, host),
     estimateRow: (row) => activeContext?.store.estimateRow(row) || 132,
@@ -598,6 +600,11 @@ export function createSessionRuntime({
     let request = state.activeRequests.get(key);
     if (request && !request.awaitingRunDiscovery) {
       if (requestHasActiveRun(request) || request.runId === activeRun.run_id) return request;
+      // A terminal request whose streamed DOM is still mounted is mid
+      // durable-handoff: clearing it here would destroy content that exists
+      // nowhere else (partial events are never persisted). Defer — the
+      // remote-jobs poll retries after the handoff settles.
+      if (requestOwnsLiveDom(request)) return null;
       // The entry belongs to an earlier, already-terminal run. Release it so
       // this harness-started run can attach instead of being silently dropped.
       const isVisible = sessionRequestKey() === key;
@@ -650,7 +657,12 @@ export function createSessionRuntime({
       startedAt: request.startedAt || Date.now(),
     });
     const shownPlots = new Set();
-    const view = addAgentTimelineMessage(message, shownPlots, undefined, beginLiveOutput(), {
+    // Mounting must not evict another request's still-presenting live turn
+    // (e.g. a harness wakeup attaching while the user's turn hands off).
+    const otherPresentsLive = [...state.activeRequests.values()]
+      .some((other) => other !== request && requestOwnsLiveDom(other));
+    const host = otherPresentsLive ? viewport.liveHost : beginLiveOutput();
+    const view = addAgentTimelineMessage(message, shownPlots, undefined, host, {
       startedAt: message.startedAt, live: true, messageKey: message.id,
     });
     const scheduler = createMessageRenderScheduler({

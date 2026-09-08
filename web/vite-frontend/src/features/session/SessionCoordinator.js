@@ -1,3 +1,5 @@
+import { requestOwnsLiveDom } from "./requestLifecycle.js";
+
 export function createSessionCoordinator({
   state,
   appName,
@@ -43,7 +45,13 @@ export function createSessionCoordinator({
     const key = sessionRequestKey(sessionId, owner);
     // A stale request entry (its backend run already ended) must not block
     // attachment of a harness-started wakeup run or a history refresh.
-    if (requestHasActiveRun(state.activeRequests.get(key))) return;
+    const request = state.activeRequests.get(key);
+    if (requestHasActiveRun(request)) return;
+    // A terminal request whose streamed turn is still mounted is mid
+    // durable-handoff: attaching a wakeup run or refreshing history now
+    // would clear DOM that exists nowhere else and abort the handoff's
+    // fetch. Defer; the next poll retries after the handoff settles.
+    if (requestOwnsLiveDom(request) || requestOwnsLiveDom(activeSessionRequest())) return;
     const runtime = getSessionRuntime();
     if (activity.active_run) {
       runtime.startManagedRunReconnect(activity.active_run, sessionId, owner);

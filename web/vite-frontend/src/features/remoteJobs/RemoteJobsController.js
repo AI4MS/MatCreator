@@ -781,8 +781,11 @@ export function createRemoteJobsController({
   const lastPhaseByJobId = new Map();
   let presentationJobs = null;
   let pollTimer = null;
+  let pollSessionId = null;
+  let pollOwner = null;
   let expanded = false;
   let destroyed = false;
+  let lastActivityHadActiveRun = false;
   let rackLiquidGlassFilterRoot = null;
   let rackLiquidGlassActiveCard = null;
   let rackLiquidGlassPointerFrame = null;
@@ -1379,14 +1382,14 @@ export function createRemoteJobsController({
 
   async function load(sessionId = state.sessionId, owner = state.activeSessionUserId || state.userId) {
     if (destroyed || !sessionId || !owner) return;
-    if (renderPresentationJobs()) return;
-    if (dummyMode) {
-      state.remoteJobs = getDemoJobs(sessionId, owner);
-      render();
-      onJobsChanged();
-      return;
-    }
     try {
+      if (renderPresentationJobs()) return;
+      if (dummyMode) {
+        state.remoteJobs = getDemoJobs(sessionId, owner);
+        render();
+        onJobsChanged();
+        return;
+      }
       const data = await httpClient.getJson(
         `/api/sessions/${encodeURIComponent(sessionId)}/remote-jobs`,
         { query: { user_id: owner } },
@@ -1394,35 +1397,50 @@ export function createRemoteJobsController({
       if (renderPresentationJobs()) return;
       if (sessionId !== state.sessionId || owner !== state.activeSessionUserId) return;
       state.remoteJobs = Array.isArray(data?.jobs) ? data.jobs : [];
+      lastActivityHadActiveRun = Boolean(data?.active_run);
       render();
       onJobsChanged({ sessionId, owner, activity: data });
     } catch (_) {
       // The control plane may be restarting; retain the last visible snapshot.
+    } finally {
+      // A concurrent session-switch load can resolve after polling was already
+      // armed against stale (e.g. just-reset, empty) state. Rearm here so the
+      // freshly discovered activity takes effect immediately instead of
+      // waiting out whatever interval the earlier, stale schedule guessed.
+      rearmPollTimer(sessionId, owner);
     }
+  }
+
+  function pollInterval() {
+    // A wakeup run can start at any moment while remote jobs are active, and
+    // the poll response is how the frontend discovers it. Poll fast in that
+    // window so a harness-started run attaches within seconds, not a full
+    // idle interval. An already-running harness run also keeps the fast
+    // cadence: its attachment may have been deferred mid-handoff.
+    return (lastActivityHadActiveRun || state.remoteJobs?.some?.(
+      (job) => ACTIVE_POLL_STATUSES.has(String(job?.status || "").toLowerCase()),
+    )) ? activePollIntervalMs : pollIntervalMs;
+  }
+
+  function rearmPollTimer(sessionId, owner) {
+    if (destroyed || pollSessionId !== sessionId || pollOwner !== owner) return;
+    if (pollTimer !== null) windowRef.clearTimeout(pollTimer);
+    pollTimer = windowRef.setTimeout(async () => { await load(sessionId, owner); }, pollInterval());
   }
 
   function startPolling(sessionId, owner) {
     stopPolling();
     if (destroyed || presentationJobs !== null || !sessionId || !owner) return;
-    const schedule = () => {
-      // A wakeup run can start at any moment while remote jobs are active, and
-      // the poll response is how the frontend discovers it. Poll fast in that
-      // window so a harness-started run attaches within seconds, not a full
-      // idle interval.
-      const interval = state.remoteJobs?.some?.(
-        (job) => ACTIVE_POLL_STATUSES.has(String(job?.status || "").toLowerCase()),
-      ) ? activePollIntervalMs : pollIntervalMs;
-      pollTimer = windowRef.setTimeout(async () => {
-        await load(sessionId, owner);
-        if (pollTimer !== null && !destroyed) schedule();
-      }, interval);
-    };
-    schedule();
+    pollSessionId = sessionId;
+    pollOwner = owner;
+    pollTimer = windowRef.setTimeout(async () => { await load(sessionId, owner); }, pollInterval());
   }
 
   function stopPolling() {
     if (pollTimer !== null) windowRef.clearTimeout(pollTimer);
     pollTimer = null;
+    pollSessionId = null;
+    pollOwner = null;
   }
 
   function setExpanded(nextExpanded) {
@@ -1438,6 +1456,7 @@ export function createRemoteJobsController({
   function reset({ notify = false } = {}) {
     stopPolling();
     state.remoteJobs = presentationJobs === null ? [] : clonePresentationJobs();
+    lastActivityHadActiveRun = false;
     flippedJobIds.clear();
     lastPhaseByJobId.clear();
     render();

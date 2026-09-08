@@ -101,6 +101,40 @@ def test_busy_session_is_deferred_without_losing_notification(harness, monkeypat
     asyncio.run(exercise())
 
 
+def test_wakeup_defers_through_the_post_run_handoff_grace_window(harness, monkeypatch):
+    async def exercise():
+        web = harness.web
+
+        async def producer(run):
+            return None
+
+        run = await web._run_registry.start(
+            owner_id="alice", session_id="session-1", producer=producer,
+        )
+        await run.task
+        # The client is still handing the just-finished turn's live DOM off to
+        # durable history; a wakeup starting inside that window races it, so
+        # the notification is deferred (monitor retries a None result).
+        assert await web._resume_remote_job_session(harness.notification) is None
+        assert harness.store.list_pending_notifications()
+
+        run.updated_at -= 60
+        captured = []
+        monkeypatch.setattr(web, "_target_url_for_user", _target)
+
+        async def produce(managed_run, payload, target_url, *, started):
+            captured.append(payload)
+            await web._run_registry.publish(managed_run, 'data: {"author":"agent"}\n\n')
+            started.set()
+
+        monkeypatch.setattr(web, "_produce_managed_run", produce)
+        assert await web._resume_remote_job_session(harness.notification) is not None
+        assert len(captured) == 1
+        await web._run_registry.shutdown()
+
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize("reason", ["session-stop", "job-stop", "cancel-file", "deleted-session"])
 def test_user_stops_and_deleted_sessions_never_wake_agent(harness, monkeypatch, reason):
     if reason == "session-stop":

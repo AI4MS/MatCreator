@@ -276,6 +276,70 @@ test("polling runs fast while remote jobs are active and slow when idle", async 
   controller.destroy();
 });
 
+test("polling stays fast while a harness run is active even after jobs finish", async () => {
+  const scheduled = [];
+  let pendingTick = null;
+  // Jobs are already terminal, but a harness wakeup run is active; the poll
+  // response is how a deferred attachment gets retried, so it must stay fast.
+  const response = { jobs: [{ status: "succeeded" }], active_run: { run_id: "wakeup-run" } };
+  const { controller } = createFixture({
+    controllerOverrides: {
+      dummyMode: false,
+      httpClient: { getJson: async () => ({ ...response }) },
+      pollIntervalMs: 15_000,
+      activePollIntervalMs: 3_000,
+    },
+    windowOverrides: {
+      setTimeout(callback, interval) {
+        scheduled.push(interval);
+        pendingTick = callback;
+        return scheduled.length;
+      },
+      clearTimeout() { pendingTick = null; },
+    },
+  });
+  await controller.load("session-1", "owner-1");
+  controller.startPolling("session-1", "owner-1");
+  assert.deepEqual(scheduled, [3_000]);
+  await pendingTick();
+  assert.deepEqual(scheduled, [3_000, 3_000]);
+  delete response.active_run;
+  await pendingTick();
+  assert.deepEqual(scheduled, [3_000, 3_000, 15_000]);
+  controller.destroy();
+});
+
+test("switching into a session with an active job speeds up the already-scheduled poll", async () => {
+  const scheduled = [];
+  let clearedCount = 0;
+  let handleCounter = 0;
+  const response = { jobs: [{ status: "running" }] };
+  const { controller } = createFixture({
+    controllerOverrides: {
+      dummyMode: false,
+      httpClient: { getJson: async () => ({ ...response }) },
+      pollIntervalMs: 15_000,
+      activePollIntervalMs: 3_000,
+    },
+    windowOverrides: {
+      setTimeout(callback, interval) {
+        scheduled.push(interval);
+        handleCounter += 1;
+        return handleCounter;
+      },
+      clearTimeout() { clearedCount += 1; },
+    },
+  });
+  // Mirrors the real switchSession order: startPolling() arms the first tick
+  // against empty/unknown state before the concurrent load() below resolves.
+  controller.startPolling("session-1", "owner-1");
+  assert.deepEqual(scheduled, [15_000]);
+  await controller.load("session-1", "owner-1");
+  assert.equal(clearedCount, 1);
+  assert.deepEqual(scheduled, [15_000, 3_000]);
+  controller.destroy();
+});
+
 function treeText(element) {
   return [element, ...element.descendants()].map((node) => node.textContent || "").join(" ");
 }

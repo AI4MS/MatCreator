@@ -192,6 +192,63 @@ test("a stale terminal request does not block wakeup-run attachment", async () =
   assert.equal(loads, 1);
 });
 
+test("a mid-handoff request defers wakeup attachment and history refresh", async () => {
+  const calls = [];
+  let loads = 0;
+  const { coordinator, state } = createHarness({
+    state: { sessionReady: true },
+    getSessionRuntime: () => ({
+      startManagedRunReconnect: (...args) => calls.push(args),
+      loadSession: async () => { loads += 1; return {}; },
+    }),
+  });
+  // Terminal backend run, but the streamed turn is still mounted in the DOM:
+  // clearing or reloading now would destroy content that exists nowhere else.
+  const midHandoff = { running: false, messageView: { element: { isConnected: true } } };
+  state.activeRequests.set("user-a:session-a", midHandoff);
+  await coordinator.observeRemoteJobActivity("session-a", "user-a", {
+    active_run: { run_id: "wakeup-run" }, activity_revision: "running-1",
+  });
+  await coordinator.observeRemoteJobActivity("session-a", "user-a", {
+    activity_revision: "completed-1",
+  });
+  assert.deepEqual(calls, []);
+  assert.equal(loads, 0);
+
+  // Handoff finished: the same poll payloads now attach and refresh.
+  midHandoff.cleanupDone = true;
+  const run = { run_id: "wakeup-run" };
+  await coordinator.observeRemoteJobActivity("session-a", "user-a", {
+    active_run: run, activity_revision: "running-1",
+  });
+  assert.deepEqual(calls, [[run, "session-a", "user-a"]]);
+  state.activeRequests.clear();
+  await coordinator.observeRemoteJobActivity("session-a", "user-a", {
+    activity_revision: "completed-1",
+  });
+  assert.equal(loads, 1);
+});
+
+test("a presenting request found via activeSessionRequest also defers wakeup handling", async () => {
+  const calls = [];
+  let loads = 0;
+  const { coordinator } = createHarness({
+    state: { sessionReady: true },
+    // Owner-key normalization can park the presenting request under another
+    // map key; the active-session accessor still exposes it.
+    activeSessionRequest: () => ({ running: false, userMessage: { isConnected: true } }),
+    getSessionRuntime: () => ({
+      startManagedRunReconnect: (...args) => calls.push(args),
+      loadSession: async () => { loads += 1; return {}; },
+    }),
+  });
+  await coordinator.observeRemoteJobActivity("session-a", "user-a", {
+    active_run: { run_id: "wakeup-run" }, activity_revision: "running-1",
+  });
+  assert.deepEqual(calls, []);
+  assert.equal(loads, 0);
+});
+
 test("a background turn completed between polls reloads history exactly once", async () => {
   let loads = 0;
   const { coordinator } = createHarness({
