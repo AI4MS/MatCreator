@@ -38,7 +38,10 @@ _JOB_TRANSITIONS: dict[str, frozenset[str]] = {
     "resume_requested": frozenset({"resuming", "running", "failed", "terminate_requested", "lost"}),
     "resuming": frozenset({"running", "succeeded", "failed", "cancelled", "terminate_requested", "lost"}),
     "succeeded": frozenset({"collecting", "failed"}),
-    "collecting": frozenset({"collected", "failed", "lost"}),
+    # A failed collection returns to "succeeded": the provider-side outcome
+    # is unchanged and the outputs must stay collectable with a new
+    # destination instead of durably failing a successful computation.
+    "collecting": frozenset({"collected", "succeeded", "failed", "lost"}),
     "terminate_requested": frozenset({"terminated", "failed", "lost"}),
     "collected": frozenset(),
     "failed": frozenset(),

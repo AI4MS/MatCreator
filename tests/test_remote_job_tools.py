@@ -367,42 +367,123 @@ def test_submit_bohr_batchjob_requires_exactly_one_machine(monkeypatch, selector
     assert not service.submissions
 
 
-def test_submit_bohr_batchjob_resolves_workspace_input_and_env_project(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("given,expected_rel", [
+    ("input", "input"),
+    ("./input", "input"),
+    ("sub/input", "sub/input"),
+    ("__abs_inside_workspace__", "input"),
+])
+def test_submit_bohr_batchjob_resolves_workspace_input_and_env_project(
+    monkeypatch, tmp_path, given, expected_rel,
+) -> None:
     service = _FakeService()
     monkeypatch.setattr(remote_job_tools, "_service", lambda: service)
     monkeypatch.setenv("BOHRIUM_PROJECT_ID", "42")
     context = _context()
     context.state["workspace_dir"] = str(tmp_path)
-    (tmp_path / "input").mkdir()
-    (tmp_path / "input" / "INCAR").write_text("ENCUT=500")
+    for directory in (tmp_path / "input", tmp_path / "sub" / "input"):
+        directory.mkdir(parents=True)
+        (directory / "INCAR").write_text("ENCUT=500")
+    input_path = str(tmp_path / "input") if given == "__abs_inside_workspace__" else given
 
     result = remote_job_tools.submit_bohr_batchjob(
         context, name="n", image="img", command="cmd", sku_id=123,
-        input_path="input", out_files=["OUTCAR", "vasprun.xml"],
+        input_path=input_path, out_files=["OUTCAR", "vasprun.xml"],
         max_run_time="2h", max_wait_time="10m",
     )
 
     assert result["status"] == "running"
     assert service.submissions[0]["spec"] == {
         "project_id": "42", "name": "n", "machine_type": None, "sku_id": 123,
-        "image": "img", "command": "cmd", "input_path": str(tmp_path / "input"),
+        "image": "img", "command": "cmd", "input_path": expected_rel,
+        "input_root": str(tmp_path),
         "out_files": ["OUTCAR", "vasprun.xml"], "max_run_time": "2h", "max_wait_time": "10m",
     }
 
 
-@pytest.mark.parametrize("path", ["../outside", "link", "", "  "])
-def test_submit_bohr_batchjob_rejects_unsafe_input(monkeypatch, tmp_path, path) -> None:
+@pytest.mark.parametrize("given,expected", [
+    (["OUTCAR", "log"], ["OUTCAR", "log"]),
+    ('["OUTCAR", "log"]', ["OUTCAR", "log"]),
+    ("['OUTCAR', 'log']", ["OUTCAR", "log"]),
+    ("OUTCAR", ["OUTCAR"]),
+    ("stdout.log, stderr.log", ["stdout.log", "stderr.log"]),
+    (None, None),
+    ([], None),
+    ("[]", None),
+])
+def test_submit_bohr_batchjob_coerces_stringified_out_files(
+    monkeypatch, tmp_path, given, expected,
+) -> None:
+    # LLM function calls sometimes serialize the out_files array as one
+    # string; the tool must coerce it instead of durably failing the job.
+    service = _FakeService()
+    monkeypatch.setattr(remote_job_tools, "_service", lambda: service)
+    context = _context()
+    context.state["workspace_dir"] = str(tmp_path)
+
+    result = remote_job_tools.submit_bohr_batchjob(
+        context, project_id=42, name="n", image="img", command="cmd",
+        machine_type="cpu", out_files=given,
+    )
+
+    assert result["status"] == "running"
+    assert service.submissions[0]["spec"]["out_files"] == expected
+
+
+@pytest.mark.parametrize("given", [
+    "[1, 2]", '{"vasprun.xml": true}', "", "  ", ["OUTCAR", ""], [3], "OUTCAR,,log",
+])
+def test_submit_bohr_batchjob_rejects_malformed_out_files_before_submission(
+    monkeypatch, tmp_path, given,
+) -> None:
+    service = _FakeService()
+    monkeypatch.setattr(remote_job_tools, "_service", lambda: service)
+    context = _context()
+    context.state["workspace_dir"] = str(tmp_path)
+
+    result = remote_job_tools.submit_bohr_batchjob(
+        context, project_id=42, name="n", image="img", command="cmd",
+        machine_type="cpu", out_files=given,
+    )
+
+    assert result["status"] == "error"
+    assert "JSON array" in result["message"]
+    # No durable record may be created for an argument-shape mistake.
+    assert not service.submissions
+
+
+@pytest.mark.parametrize("path,expected_message", [
+    ("../outside", "must resolve inside the current workspace"),
+    ("/etc/hosts", "must resolve inside the current workspace"),
+    ("link", "symbolic link"),
+    ("", "nonempty"),
+    ("  ", "nonempty"),
+    ("missing-input", "does not exist in the workspace"),
+    (".", "not the workspace root"),
+    ("__workspace_root_abs__", "not the workspace root"),
+])
+def test_submit_bohr_batchjob_rejects_unsafe_input(
+    monkeypatch, tmp_path, path, expected_message,
+) -> None:
     service = _FakeService()
     monkeypatch.setattr(remote_job_tools, "_service", lambda: service)
     context = _context()
     context.state["workspace_dir"] = str(tmp_path)
     (tmp_path / "input").write_text("data")
     (tmp_path / "link").symlink_to(tmp_path / "input")
+    if path == "__workspace_root_abs__":
+        path = str(tmp_path)
     result = remote_job_tools.submit_bohr_batchjob(
         context, project_id=42, name="n", image="img", command="cmd",
         machine_type="cpu", input_path=path,
     )
     assert result["status"] == "error"
+    assert expected_message in result["message"]
+    # Escape errors must be self-correcting: name the real workspace and
+    # steer the caller toward a relative path.
+    if expected_message == "must resolve inside the current workspace":
+        assert str(tmp_path) in result["message"]
+        assert "relative to the workspace" in result["message"]
     assert not service.submissions
 
 
@@ -447,14 +528,55 @@ def test_batchjob_control_and_collection_failures_include_the_error(monkeypatch,
     )
     monkeypatch.setattr(
         service, "collect_job_outputs",
-        lambda job_id, dest: {"job_id": job_id, "status": "failed", "error": "Destination must not exist"},
+        lambda job_id, dest: {"job_id": job_id, "status": "succeeded", "error": "Destination must not exist"},
     )
     terminated = remote_job_tools.terminate_remote_job("job-123", context)
     collected = remote_job_tools.collect_remote_job_outputs("job-123", "out", context)
     assert terminated["status"] == "lost"
     assert "not confirmed" in terminated["error"]
-    assert collected["status"] == "failed"
+    # A failed collection keeps the succeeded provider outcome and tells the
+    # agent how to retry instead of reporting the computation as failed.
+    assert collected["status"] == "succeeded"
     assert "must not exist" in collected["error"]
+    assert "new, nonexistent destination" in collected["message"]
+
+
+def test_collect_remote_job_outputs_rejects_existing_destination_before_service(
+    monkeypatch, tmp_path,
+) -> None:
+    service = _FakeService()
+    monkeypatch.setattr(remote_job_tools, "_service", lambda: service)
+    monkeypatch.setattr(
+        service, "collect_job_outputs",
+        lambda job_id, dest: pytest.fail("service must not be reached for an occupied destination"),
+    )
+    context = _context()
+    context.state["workspace_dir"] = str(tmp_path)
+    (tmp_path / "outputs").mkdir()
+
+    result = remote_job_tools.collect_remote_job_outputs("job-123", "outputs", context)
+
+    assert result["status"] == "error"
+    assert "already exists" in result["message"]
+
+
+def test_collect_remote_job_outputs_replay_of_collected_job_skips_destination_check(
+    monkeypatch, tmp_path,
+) -> None:
+    service = _FakeService()
+    original_get_job = service.get_job
+    monkeypatch.setattr(
+        service, "get_job", lambda job_id: {**original_get_job(job_id), "status": "collected"},
+    )
+    monkeypatch.setattr(remote_job_tools, "_service", lambda: service)
+    context = _context()
+    context.state["workspace_dir"] = str(tmp_path)
+    (tmp_path / "outputs").mkdir()
+
+    result = remote_job_tools.collect_remote_job_outputs("job-123", "outputs", context)
+
+    assert result["status"] == "collected"
+    assert result["artifacts"]
 
 
 def test_remote_job_tools_reject_jobs_from_another_session(monkeypatch) -> None:

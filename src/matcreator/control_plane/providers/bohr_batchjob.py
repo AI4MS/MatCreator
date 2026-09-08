@@ -78,6 +78,13 @@ class BohrBatchJobAdapter(RemoteJobAdapter):
             if not isinstance(input_path, (str, Path)) or not str(input_path).strip():
                 raise ValueError("input_path must be a nonempty local file or directory path")
             args += ["--input", str(input_path)]
+        # input_root pins the CLI's working directory so a relative input_path
+        # resolves against the staged workspace; absent on legacy specs whose
+        # input_path was absolutized by the tool instead.
+        input_root = spec.get("input_root")
+        if input_root is not None:
+            if not isinstance(input_root, (str, Path)) or not str(input_root).strip():
+                raise ValueError("input_root must be a nonempty directory path when present")
         out_files = spec.get("out_files")
         if out_files is not None:
             if not isinstance(out_files, (list, tuple)) or any(
@@ -89,9 +96,9 @@ class BohrBatchJobAdapter(RemoteJobAdapter):
 
         # The CLI owns Go-duration parsing and local-tree safety validation.
         # Preflight even without input so invalid durations never create a job.
-        run_bohr_json([*args, "--dry-run"])
+        run_bohr_json([*args, "--dry-run"], cwd=input_root)
         try:
-            data = run_bohr_json(args)
+            data = run_bohr_json(args, cwd=input_root)
             job_id = data.get("jobId") if isinstance(data, dict) else None
             if not isinstance(job_id, str) or not job_id.strip():
                 raise BohrCLIError(

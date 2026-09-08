@@ -12,8 +12,11 @@ This is noninteractive Batch Job execution, not the
 - Prepare a calculation directory containing `INCAR`, `POSCAR`, `POTCAR`, and
   `KPOINTS` when required (KSPACING-based labeling need not have `KPOINTS`).
   Include required restart inputs such as `CHGCAR` for NSCF.
-- `input_path` must be a regular file or nonempty directory inside the
-  workspace. For VASP, use the calculation directory. No root/nested symlinks,
+- `input_path` must be a **workspace-relative** path (e.g. `./vasp-scf-Al`,
+  never absolute) to a regular file or nonempty directory inside the
+  workspace. For VASP, use the calculation directory; its contents are
+  unpacked at the root of the remote working directory, which is why
+  `command` is `bash run.sh`, not a prefixed path. No root/nested symlinks,
   empty directories, or special files: materialize inputs as regular files.
   Keep unrelated data and credentials out of the uploaded tree.
 - Resolve `project_id` explicitly or from `BOHRIUM_PROJECT_ID`. Stop if missing;

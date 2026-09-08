@@ -68,6 +68,7 @@ def test_batchjob_reference_documents_tool_contract_and_safe_lifecycle() -> None
         "exactly one", "mutually exclusive", "BOHRIUM_PROJECT_ID",
         '"24h"', '"30m"', "--dry-run", "--input", "--out-file",
         "symlinks", "empty directories", "special files", "nonempty directory",
+        "relative to the step workspace", "root of the remote job's working directory",
         "batchjob_id", "job_id", "jobId", "new, nonexistent", "durable",
         "no-op", "safely extracts", "two hours", "needs_replanning",
         "status_name", "terminal", "errorMessage", "errorCode",

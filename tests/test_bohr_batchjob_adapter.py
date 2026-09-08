@@ -132,11 +132,40 @@ def test_create_requires_exactly_one_valid_selector(spec, changes):
     ("max_run_time", 60), ("max_wait_time", None), ("max_run_time", ""),
     ("out_files", "OUTCAR"), ("out_files", [""]), ("out_files", [3]),
     ("input_path", ""), ("input_path", 123),
+    ("input_root", ""), ("input_root", 123),
     ("name", " "), ("image", None), ("project_id", True),
 ])
 def test_create_rejects_invalid_spec_types(spec, field, value):
     spec[field] = value
     with pytest.raises(ValueError, match=field):
+        BohrBatchJobAdapter().create(spec)
+
+
+def test_create_with_input_root_pins_cwd_for_preflight_and_submit(monkeypatch, spec, tmp_path):
+    source = tmp_path / "input dir"
+    source.mkdir()
+    (source / "INCAR").write_text("input")
+    spec.update(input_path="input dir", input_root=str(tmp_path))
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return _ok({"jobId": "batch-job-123"})
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert BohrBatchJobAdapter().create(spec) == "batch-job-123"
+    assert len(calls) == 2
+    for command, kwargs in calls:
+        assert command[command.index("--input") + 1] == "input dir"
+        assert kwargs["cwd"] == str(tmp_path)
+    assert [arg for arg in calls[0][0] if arg != "--dry-run"] == calls[1][0]
+
+
+def test_create_with_missing_input_root_raises_cli_error_not_missing_binary(spec, tmp_path):
+    # A vanished workspace must not be misreported as a missing `bohr` binary;
+    # the autouse no_remote_commands fixture proves subprocess.run is never hit.
+    spec.update(input_path="input", input_root=str(tmp_path / "gone"))
+    with pytest.raises(BohrCLIError, match="working directory does not exist"):
         BohrBatchJobAdapter().create(spec)
 
 

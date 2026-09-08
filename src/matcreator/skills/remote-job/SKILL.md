@@ -44,8 +44,9 @@ new compute. A raw provider ID alone is not a tracked job.
   `project_id` falls back to the `BOHRIUM_PROJECT_ID` environment variable.
 - `submit_bohr_batchjob` — noninteractive Batch Job via `bohr batchjob submit`.
   There is no interactive execution: the entire computation must be expressed
-  in `command`, with inputs staged once via `input_path`. Requires `name`,
-  `image`, `command`, and exactly one of `machine_type` or `sku_id`.
+  in `command`, with inputs staged once via a workspace-relative `input_path`.
+  Requires `name`, `image`, `command`, and exactly one of `machine_type` or
+  `sku_id`.
   Discover selectors with `bohr batchjob machine list -o json`, not a legacy
   or sandbox machine catalog. `project_id` falls back to `BOHRIUM_PROJECT_ID`
   but must resolve explicitly; never choose a billing project automatically.
@@ -67,9 +68,11 @@ new compute. A raw provider ID alone is not a tracked job.
 ## Batch lifecycle
 
 1. Read [the Batch Job reference](references/bohr-batchjob-ref.md). Select an
-   explicit image and outputs. `input_path` accepts a regular file or nonempty
-   directory; symlinks and special files are rejected. The adapter runs a
-   matching CLI `--dry-run` before submitting local input.
+   explicit image and outputs. `input_path` is relative to the workspace and
+   accepts a regular file or nonempty directory; symlinks and special files
+   are rejected. A directory's contents appear at the root of the remote
+   working directory, so `command` uses bare names like `bash run.sh`. The
+   adapter runs a matching CLI `--dry-run` before submitting local input.
 2. Call `submit_bohr_batchjob` once and record durable `job_id` and provider
    `batchjob_id`. Use `job_id` for all tracked tools, not the provider ID.
 3. Call `get_remote_job_status`. If still queued/running, return

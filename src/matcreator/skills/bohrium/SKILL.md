@@ -68,8 +68,10 @@ workflow is unchanged.
 
 Use `submit_bohr_batchjob` from `remote-job`, with `name`, `image`, `command`,
 exactly one machine selector, and the resolved project. Optional `input_path`
-accepts a regular file or nonempty directory (no symlinks/special files);
-the adapter runs matching `--dry-run` preflight before local input submission.
+accepts a **workspace-relative** regular file or nonempty directory (no
+symlinks/special files); its contents land at the root of the remote working
+directory. The adapter runs matching `--dry-run` preflight before local input
+submission.
 Declare retained paths and logs in `out_files` (a list), with duration strings
 `max_run_time="24h"` and `max_wait_time="30m"` by default.
 

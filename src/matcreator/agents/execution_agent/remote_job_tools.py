@@ -13,6 +13,7 @@ submissions go through ``submit_bohr_sandbox``/``submit_bohr_batchjob`` instead.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -250,6 +251,44 @@ def submit_bohr_sandbox(
     )
 
 
+def _coerce_out_files(out_files: Any) -> tuple[list[str] | None, str | None]:
+    """Normalize ``out_files`` into ``(list_of_paths, None)`` or ``(None, error)``.
+
+    LLM function calls sometimes deliver the array serialized as one string
+    (JSON, Python literal, or comma-separated). Coerce those shapes here, and
+    validate BEFORE submission, so an argument-shape mistake never creates a
+    durably failed job record.
+    """
+    if out_files is None:
+        return None, None
+    if isinstance(out_files, str):
+        text = out_files.strip()
+        parsed: Any = None
+        for load in (json.loads, ast.literal_eval):
+            try:
+                parsed = load(text)
+                break
+            except (ValueError, SyntaxError):
+                continue
+        if isinstance(parsed, str):
+            text = parsed.strip()
+            parsed = None
+        if parsed is None:
+            out_files = [part.strip() for part in text.split(",")]
+        else:
+            out_files = parsed
+    if isinstance(out_files, (list, tuple)) and not out_files:
+        return None, None
+    if not isinstance(out_files, (list, tuple)) or any(
+        not isinstance(path, str) or not path.strip() for path in out_files
+    ):
+        return None, (
+            "out_files must be a JSON array of nonempty path strings, "
+            'e.g. ["vasprun.xml", "OUTCAR", "log"]. Got: ' + repr(out_files)[:200]
+        )
+    return list(out_files), None
+
+
 def submit_bohr_batchjob(
     tool_context: ToolContext,
     *,
@@ -268,12 +307,18 @@ def submit_bohr_batchjob(
 
     Supply exactly one of machine_type or sku_id, discovered with
     `bohr batchjob machine list -o json`. project_id falls back to
-    BOHRIUM_PROJECT_ID. input_path is a workspace file or nonempty directory
-    of regular files (no symlinks); out_files lists remote paths to retain.
-    Durations use units, e.g. '2h' or '90s', and must be at least one second.
-    Express the entire computation in command: interactive execution and
-    incremental transfers are not supported. After status succeeds, collect
-    outputs into a new, nonexistent workspace directory.
+    BOHRIUM_PROJECT_ID. input_path is a path RELATIVE to the step's working
+    directory (the workspace) — never an absolute or fabricated path — naming
+    a regular file or nonempty directory of regular files (no symlinks). A
+    directory's contents are unpacked at the root of the remote job's working
+    directory, so command references them by bare names: input_path="si_scf"
+    containing run.sh -> command "bash run.sh". out_files is a JSON array of
+    remote path strings to retain, e.g. ["vasprun.xml", "OUTCAR", "log"] —
+    outputs AND logs, never a single comma-joined string. Durations use units,
+    e.g. '2h' or '90s', and must be at least one second. Express the entire
+    computation in command: interactive execution and incremental transfers
+    are not supported. After status succeeds, collect outputs into a new,
+    nonexistent workspace directory.
     """
     resolved_project_id = project_id if project_id is not None else os.environ.get("BOHRIUM_PROJECT_ID", "")
     missing = [
@@ -293,19 +338,40 @@ def submit_bohr_batchjob(
         }
     if bool(machine_type) == (sku_id is not None):
         return {"status": "error", "message": "Specify exactly one of machine_type or sku_id."}
+    out_files, out_files_error = _coerce_out_files(out_files)
+    if out_files_error:
+        return {"status": "error", "message": out_files_error}
+    input_root: str | None = None
     if input_path is not None:
         if not isinstance(input_path, str) or not input_path.strip():
-            return {"status": "error", "message": "input_path must be a nonempty workspace path."}
-        source, error = _resolve_workspace_child(tool_context, input_path)
+            return {
+                "status": "error",
+                "message": "input_path must be a nonempty path relative to the step workspace.",
+            }
+        source, workspace, error = _resolve_workspace_child(tool_context, input_path)
         if error:
             return {"status": "error", "message": error}
-        assert source is not None
-        original = Path(input_path).expanduser()
-        if not original.is_absolute():
-            original = Path(str(tool_context.state["workspace_dir"])) / original
-        if original.is_symlink():
+        assert source is not None and workspace is not None
+        if source == workspace:
+            return {
+                "status": "error",
+                "message": (
+                    f"input_path must name a file or subdirectory of the workspace ({workspace}), "
+                    "not the workspace root itself."
+                ),
+            }
+        if _workspace_join(tool_context, input_path).is_symlink():
             return {"status": "error", "message": "Batch Job input_path must not be a symbolic link."}
-        input_path = str(source)
+        if not source.exists():
+            return {
+                "status": "error",
+                "message": (
+                    f"input_path '{input_path}' does not exist in the workspace ({workspace}). "
+                    "Create the file or directory there first, then pass its workspace-relative path."
+                ),
+            }
+        input_path = str(source.relative_to(workspace))
+        input_root = str(workspace)
     spec = {
         "project_id": resolved_project_id,
         "name": name,
@@ -314,6 +380,7 @@ def submit_bohr_batchjob(
         "image": image,
         "command": command,
         "input_path": input_path,
+        "input_root": input_root,
         "out_files": out_files,
         "max_run_time": max_run_time,
         "max_wait_time": max_wait_time,
@@ -534,25 +601,41 @@ def poll_remote_job_command(job_id: str, tool_context: ToolContext) -> dict[str,
         return {"status": "error", "message": f"Failed to poll remote command: {exc}"}
 
 
+def _workspace_join(tool_context: ToolContext, user_path: str) -> Path:
+    """Join ``user_path`` against the raw workspace_dir WITHOUT resolving.
+
+    Symlink checks need the unresolved path — ``_resolve_workspace_child``
+    resolves through symlinks, so its result can never reveal one.
+    """
+    original = Path(user_path).expanduser()
+    if original.is_absolute():
+        return original
+    return Path(str(tool_context.state["workspace_dir"])) / original
+
+
 def _resolve_workspace_child(
     tool_context: ToolContext,
     user_path: str,
-) -> tuple[Path | None, str | None]:
+) -> tuple[Path | None, Path | None, str | None]:
     """Resolve ``user_path`` against the current workspace, confining it.
 
-    Returns ``(resolved_path, None)`` on success or ``(None, message)`` if the
-    workspace is unavailable or the path escapes it. Shared by upload (source)
-    and download (destination) so confinement logic cannot drift between them.
+    Returns ``(resolved_path, workspace_root, None)`` on success or
+    ``(None, None, message)`` if the workspace is unavailable or the path
+    escapes it. Shared by upload (source) and download (destination) so
+    confinement logic cannot drift between them.
     """
     workspace_dir = tool_context.state.get("workspace_dir")
     if not workspace_dir:
-        return None, "No workspace_dir is available for the current step."
+        return None, None, "No workspace_dir is available for the current step."
     workspace = Path(str(workspace_dir)).resolve()
     candidate = Path(user_path).expanduser()
     candidate = candidate.resolve() if candidate.is_absolute() else (workspace / candidate).resolve()
     if not candidate.is_relative_to(workspace):
-        return None, "Path must resolve inside the current workspace."
-    return candidate, None
+        return None, None, (
+            f"Path must resolve inside the current workspace ({workspace}). "
+            "Pass a path relative to the workspace, e.g. 'si_scf' or './si_scf'."
+        )
+    return candidate, workspace, None
 
 
 def upload_remote_job_input(
@@ -570,7 +653,7 @@ def upload_remote_job_input(
     job = get_remote_job_status(job_id, tool_context)
     if job.get("status") == "error":
         return job
-    source, error = _resolve_workspace_child(tool_context, source_path)
+    source, _, error = _resolve_workspace_child(tool_context, source_path)
     if error is not None:
         return {"status": "error", "message": f"Upload failed: {error}"}
     try:
@@ -595,7 +678,7 @@ def download_remote_job_output(
     job = get_remote_job_status(job_id, tool_context)
     if job.get("status") == "error":
         return job
-    destination, error = _resolve_workspace_child(tool_context, destination_path)
+    destination, _, error = _resolve_workspace_child(tool_context, destination_path)
     if error is not None:
         return {"status": "error", "message": f"Download failed: {error}"}
     try:
@@ -621,12 +704,21 @@ def collect_remote_job_outputs(
     job = get_remote_job_status(job_id, tool_context)
     if job.get("status") == "error":
         return job
-    _, error = _resolve_workspace_child(tool_context, destination_path)
+    _, _, error = _resolve_workspace_child(tool_context, destination_path)
     if error is not None:
         return {"status": "error", "message": f"Output collection failed: {error}"}
-    original = Path(destination_path).expanduser()
-    if not original.is_absolute():
-        original = Path(str(tool_context.state["workspace_dir"])) / original
+    original = _workspace_join(tool_context, destination_path)
+    # An occupied destination is the most common collection mistake; catch it
+    # before any status churn. A replay of an already-collected job skips this
+    # check because its original destination legitimately exists.
+    if job.get("status") != "collected" and (original.exists() or original.is_symlink()):
+        return {
+            "status": "error",
+            "message": (
+                f"Output collection failed: destination '{original}' already exists. "
+                "Choose a NEW, nonexistent workspace directory; do not pre-create it."
+            ),
+        }
     try:
         collected = _service().collect_job_outputs(job_id, original)
     except Exception as exc:
@@ -638,4 +730,9 @@ def collect_remote_job_outputs(
     }
     if collected.get("error"):
         result["error"] = collected["error"]
+        if collected["status"] == "succeeded":
+            result["message"] = (
+                "Output collection failed but the remote job itself is still succeeded. "
+                "Retry collect_remote_job_outputs with a new, nonexistent destination directory."
+            )
     return result

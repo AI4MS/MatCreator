@@ -169,7 +169,10 @@ If your `prior_context` contains "REMOTE JOB ALREADY SUBMITTED", a tracked remot
   `template`.
 - `submit_bohr_batchjob`: sandbox-based batch job via `bohr batchjob submit`. Requires
   `name`, `image`, `command`, and exactly one of `machine_type` or `sku_id`. Discover
-  machines with `bohr batchjob machine list -o json`. Use `input_path` and `out_files`;
+  machines with `bohr batchjob machine list -o json`. Use `input_path` (a path relative
+  to your working directory, e.g. `si_scf` — never absolute; a directory's contents
+  appear at the root of the remote job's working directory) and `out_files` (a JSON
+  array of path strings, e.g. `["vasprun.xml", "OUTCAR", "log"]`);
   durations include units, e.g. `max_run_time="2h"`. There is no interactive
   command execution for this provider — express the entire computation in `command`, then
   poll `get_remote_job_status` until `succeeded` and call `collect_remote_job_outputs`

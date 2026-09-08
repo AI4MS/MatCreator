@@ -173,7 +173,8 @@ The old `references/bohr.md` is historical legacy guidance only; do not use
 its job/job-group commands for new submissions or reinterpret legacy IDs.
 Older submission pointers in input-generation references are superseded by
 `references/bohr-batchjob.md`. In particular, NSCF `CHGCAR` belongs in the
-directory passed as `input_path`, not a legacy `forward_files` parameter.
+directory passed as `input_path` (a workspace-relative directory), not a
+legacy `forward_files` parameter.
 
 ### Remote sandbox execution
 

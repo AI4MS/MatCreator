@@ -89,11 +89,13 @@ required; the tool does not silently select a billing project.
 
 Optional fields are `input_path`, `out_files` (a list of retained result paths),
 `max_run_time="24h"`, and `max_wait_time="30m"`. Durations are CLI duration
-strings (`90s`, `30m`, `2h`), not numeric seconds. `input_path` maps to `--input`
-and accepts a regular file or nonempty directory, rejecting symlinks and special
-files. Matching CLI `--dry-run` preflight precedes local input submission;
-preflight failure stops submission. Retained outputs and logs must be specified
-explicitly through repeatable CLI `--out-file` flags.
+strings (`90s`, `30m`, `2h`), not numeric seconds. `input_path` maps to `--input`,
+is resolved relative to the step workspace (the CLI runs with the workspace as
+its working directory), and accepts a regular file or nonempty directory,
+rejecting symlinks and special files. Matching CLI `--dry-run` preflight
+precedes local input submission; preflight failure stops submission. Retained
+outputs and logs must be specified explicitly through repeatable CLI
+`--out-file` flags.
 
 The tool returns durable `job_id` plus provider `batchjob_id` (the CLI's string
 `jobId`). Generic tracked tools always take `job_id`; provider commands

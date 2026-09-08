@@ -551,9 +551,14 @@ class RemoteJobService:
         try:
             artifacts = adapter.collect_outputs(job["external_id"], dest_path)
         except Exception as exc:
+            # A failed collection (occupied destination, transient download
+            # error, ...) is a local file-management problem. The provider-side
+            # computation is still succeeded, so return there — keeping the
+            # outputs collectable with a new destination — rather than durably
+            # marking a successful job as failed.
             return self.store.transition_job(
                 job_id,
-                "failed",
+                "succeeded",
                 error=f"{job['provider']} output collection failed: {exc}",
                 expected_revision=collecting["state_revision"],
             )
@@ -561,5 +566,6 @@ class RemoteJobService:
             job_id,
             "collected",
             artifacts=artifacts,
+            error=None,
             expected_revision=collecting["state_revision"],
         )

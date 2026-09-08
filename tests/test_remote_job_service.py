@@ -582,7 +582,8 @@ def test_batch_collection_rejects_dangling_destination_symlink_before_cli(tmp_pa
 
     result = service.collect_job_outputs(job["job_id"], destination)
 
-    assert result["status"] == "failed"
+    # A local collection failure must NOT durably fail a succeeded job.
+    assert result["status"] == "succeeded"
     assert "must not exist" in result["error"]
     assert destination.is_symlink()
     assert not (tmp_path / "missing").exists()
@@ -751,6 +752,47 @@ def test_collect_job_outputs_is_idempotent(tmp_path) -> None:
     replay = service.collect_job_outputs(job["job_id"], tmp_path / "out")
     assert replay["status"] == "collected"
     assert adapter.collect_calls == ["sandbox-123"]
+
+
+def test_failed_collection_leaves_job_succeeded_and_retryable(tmp_path) -> None:
+    class _FlakyBatchAdapter(_FakeAdapter):
+        provider = "bohr_batchjob"
+        capabilities = frozenset({RemoteJobCapability.BATCH_COLLECT})
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.collect_calls: list[str] = []
+
+        def status(self, external_id: str) -> RemoteJobStatus:
+            return RemoteJobStatus(normalized_status="succeeded", snapshot={"phase": "completed"})
+
+        def collect_outputs(self, external_id: str, destination_dir):
+            self.collect_calls.append(external_id)
+            if len(self.collect_calls) == 1:
+                raise ValueError("Batch Job output destination must not exist; choose a new directory")
+            return [{"source": external_id, "destination": str(destination_dir)}]
+
+    adapter = _FlakyBatchAdapter()
+    store = RemoteJobStore(tmp_path / "remote-jobs.db")
+    service = RemoteJobService(store, adapter_overrides={"bohr_batchjob": adapter})
+    job = service.submit_job(
+        owner_id="alice",
+        session_id="session-1",
+        provider="bohr_batchjob",
+        idempotency_key="session-1:node-1:1",
+        spec={"project_id": 1, "name": "n", "machine_type": "c2", "image": "img", "command": "cmd"},
+    )
+    service.reconcile_job(job["job_id"])
+
+    failed_attempt = service.collect_job_outputs(job["job_id"], tmp_path / "occupied")
+    assert failed_attempt["status"] == "succeeded"
+    assert "must not exist" in failed_attempt["error"]
+
+    retried = service.collect_job_outputs(job["job_id"], tmp_path / "fresh")
+    assert retried["status"] == "collected"
+    assert retried["error"] is None
+    assert len(retried["artifacts"]) == 1
+    assert adapter.collect_calls == ["sandbox-123", "sandbox-123"]
 
 
 def test_start_job_command_persists_handle_with_derived_marker_paths(tmp_path) -> None:

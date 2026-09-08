@@ -14,7 +14,7 @@ contract, not an alternative submission to run alongside the tool.
 | `machine_type` | exactly one selector | Machine type from the Batch Job catalog; mutually exclusive with `sku_id`. |
 | `sku_id` | exactly one selector | SKU ID from the Batch Job catalog; mutually exclusive with `machine_type`. |
 | `project_id` | resolved value required | Falls back to `BOHRIUM_PROJECT_ID`; missing both is an error. Never silently select a project. |
-| `input_path` | no | Local regular file or nonempty directory staged once as job input. |
+| `input_path` | no | Workspace-relative path to a regular file or nonempty directory staged once as job input; a directory's contents land at the root of the remote job's working directory. |
 | `out_files` | no | List of result paths to retain, including outputs AND logs; not a comma-separated string. |
 | `max_run_time` | no | Duration string, default `"24h"`. |
 | `max_wait_time` | no | Queue-wait duration string, default `"30m"`. |
@@ -22,6 +22,10 @@ contract, not an alternative submission to run alongside the tool.
 Durations use CLI Go-duration syntax, e.g. `90s`, `30m`, `2h`, `1h30m`,
 with a minimum of one second. CLI preflight validates them; do not pass
 numeric seconds or legacy minute counts.
+
+Pass `out_files` as a real JSON array of path strings. A value accidentally
+serialized as one string (JSON or Python literal) is coerced by the tool, but
+malformed shapes are rejected before any job record is created.
 
 Returns durable `job_id` (use for every tracked tool call) and provider-side
 `batchjob_id` (the nonempty string `jobId` returned by the CLI). These IDs are
@@ -43,11 +47,17 @@ lists, hardcoded historical SKUs, or the sandbox machine catalog. See the
 `bohrium` skill for access setup; select an explicit image compatible with the
 workload and machine.
 
-`input_path` maps to `--input` and accepts a regular file or nonempty directory
-inside the workspace. Root/nested symlinks, empty directories, FIFOs, sockets,
-devices and other special files are rejected. Keep only intended input files
-in the staged tree. The adapter runs matching submit arguments with `--dry-run`
-before submitting local input and stops if preflight fails.
+`input_path` maps to `--input` and is resolved relative to the step workspace —
+the adapter runs the CLI with the workspace as its working directory, so pass
+`si_scf` or `./si_scf`, never an absolute or fabricated path. It accepts a
+regular file or nonempty directory inside the workspace. A directory's contents
+are unpacked at the root of the remote job's working directory, so `command`
+references them by bare names (hence `--input ./calculation` with
+`--command 'bash run.sh'` below). Root/nested symlinks, empty directories,
+FIFOs, sockets, devices and other special files are rejected. Keep only
+intended input files in the staged tree. The adapter runs matching submit
+arguments with `--dry-run` before submitting local input and stops if
+preflight fails.
 
 The equivalent CLI shape is:
 
@@ -84,6 +94,9 @@ Do not use this to import legacy IDs or take over another session's tracked job.
    new, nonexistent directory inside the workspace. Never pre-create it or
    merge into an input/results directory. Already-collected replay is a durable
    no-op and returns the previous collection rather than downloading elsewhere.
+   A failed collection (e.g. an occupied destination) returns the tracked job
+   to `succeeded` with the error recorded — the computation did NOT fail;
+   retry collection with a new directory.
 
 Monitoring belongs to the harness, not the agent: the running control plane
 polls tracked jobs and durably schedules an agent turn on completion or failure,
