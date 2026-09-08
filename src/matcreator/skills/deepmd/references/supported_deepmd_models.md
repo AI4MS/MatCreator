@@ -176,6 +176,9 @@ dp --pt-expt train input.json --init-model <pretrain.pt> --skip-neighbor-stat \
 - **NEVER use `--finetune` with DPA-4c.** Its bias-adjustment dense forward pass runs out
   of memory (OOM) for the DPA-4c selection `sel=[999999]`; the job will crash. Always use
   `--pt-expt ... --init-model ... --skip-neighbor-stat` to train from scratch instead.
+- **`--init-model` is exclusive to DPA-4c.** Every other model — DPA-4 included —
+  must fine-tune with `dp --pt train input.json --finetune <model>` instead;
+  never `--init-model`.
 - **Every DPA-4c CLI backend must use `--pt-expt`, never `--pt`.** The standard `--pt`
   (PyTorch) backend produces wrong forces + virials/pressure and crashes on the DPA-4c
   `sel=[999999]` selection. This applies to `train`, `freeze`, `compress`, and `test`
