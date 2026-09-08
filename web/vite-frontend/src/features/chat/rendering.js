@@ -2,6 +2,7 @@ import { marked } from "marked";
 import markedKatex from "marked-katex-extension";
 import "katex/dist/katex.min.css";
 import { sanitizeRenderedHtml } from "../../shared/rendering/sanitizeHtml.js";
+import { harnessWakeupSummary, isHarnessWakeupMessage } from "./harnessMessages.js";
 
 const BOX_RE = /[┌┐└┘├┤┬┴┼│━─]/;
 const AGENT_AVATAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="rgba(148,163,184,0.9)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -252,7 +253,40 @@ export function createChatRenderer({ chatArea, bottomOverlay = null }) {
   function appendLiveTurnChild(container, child) {
     return container.appendChild(child);
   }
+  function addHarnessNoticeMessage(content, msgIndex, container, options = {}) {
+    const shouldStick = isChatBottomPinned();
+    const message = document.createElement("div");
+    message.className = `message harness-message${msgIndex === undefined ? " is-entering" : ""}`;
+    if (msgIndex !== undefined) message.dataset.msgIndex = String(msgIndex);
+    if (options.messageKey) message.dataset.readingAnchor = `message:${options.messageKey}`;
+    const details = document.createElement("details");
+    details.className = "harness-notice";
+    const summary = document.createElement("summary");
+    const label = document.createElement("span");
+    label.className = "harness-notice-label";
+    label.textContent = harnessWakeupSummary(content);
+    const chevron = document.createElement("span");
+    chevron.className = "harness-notice-chevron";
+    chevron.textContent = "›";
+    summary.append(label, chevron);
+    const body = document.createElement("div");
+    body.className = "harness-notice-content markdown-content";
+    setMarkdownContent(body, content || "", {
+      defer: true,
+      anchorPrefix: options.messageKey || `message:${msgIndex ?? "live"}`,
+    });
+    details.append(summary, body);
+    message.append(details);
+    appendLiveTurnChild(container, message);
+    if (shouldStick) scrollToBottom({ preserveUserPosition: true });
+    return message;
+  }
   function addMessage(role, content, msgIndex, container = chatArea, options = {}) {
+    // A monitor wakeup prompt is harness-injected context, not something the
+    // user typed. Fold it like agent activity instead of a user bubble.
+    if (role === "user" && isHarnessWakeupMessage(content)) {
+      return addHarnessNoticeMessage(content, msgIndex, container, options);
+    }
     const shouldStick = role === "user" || isChatBottomPinned();
     const message = document.createElement("div");
     message.className = `message ${role}-message${msgIndex === undefined ? " is-entering" : ""}`;

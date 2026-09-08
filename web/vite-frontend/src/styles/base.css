@@ -71,6 +71,22 @@ body[data-theme="dark"] {
   --accent-rgb: 195, 100, 77;
   --border: var(--border-subtle);
   --radius: 8px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --control-height-sm: 32px;
+  --control-height-md: 36px;
+  --content-readable: 76ch;
+  --shell-padding: 16px;
+  --shell-height: calc(100svh - (var(--shell-padding) * 2));
+  --rail-left-width: 360px;
+  --rail-right-width: 320px;
   --panel-shadow: 0 12px 60px rgba(0, 0, 0, 0.4);
   --popup-shadow: 0 18px 70px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(195, 100, 77, 0.06);
   --modal-overlay: rgba(18, 22, 22, 0.88);
@@ -141,6 +157,7 @@ body[data-theme="light"] {
   --accent-primary: #315C9A;
   --accent-primary-hover: #264A7D;
   --accent-primary-soft: #DDE6F2;
+  --accent-on-primary: #FFFFFF;
 
   --accent-secondary: #B78A3D;
   --accent-secondary-soft: #F0E4CC;
@@ -241,7 +258,8 @@ body {
   background: var(--bg);
   color: var(--text);
   min-height: 100vh;
-  padding: 16px;
+  padding: var(--shell-padding);
+  overflow: hidden;
 }
 
 html {
@@ -257,6 +275,8 @@ select {
 
 .page {
   width: 100%;
+  min-width: 0;
+  height: var(--shell-height);
   max-width: none;
   margin: 0 auto;
   display: flex;
@@ -272,15 +292,92 @@ select {
   backdrop-filter: blur(10px);
 }
 
-.brand { display: flex; align-items: center; gap: 12px; }
+.brand {
+  --brand-wordmark-ink: color-mix(
+    in srgb,
+    var(--text) 82%,
+    rgb(var(--panel-rgb))
+  );
+  --brand-wordmark-motion: #315f96;
+  --brand-wordmark-motion-rgb: 49, 95, 150;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.brand-mark {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  isolation: isolate;
+}
+
 .brand-icon {
-  width: 38px;
-  height: 38px;
+  width: 34px;
+  height: 32px;
   object-fit: contain;
   flex: 0 0 auto;
+  overflow: visible;
+}
+
+.rack-lab-brand-logo {
+  display: none;
 }
 .brand-title { font-size: var(--font-size-title); font-weight: var(--font-weight-bold); letter-spacing: normal; }
 .brand-sub { font-size: var(--font-size-ui); color: var(--muted); }
+
+.brand-wordmark {
+  position: relative;
+  min-width: 0;
+  margin: 0;
+  color: var(--brand-wordmark-ink);
+  font-size: clamp(1rem, 1.3vw, 1.22rem);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.075em;
+  white-space: nowrap;
+  text-shadow: 0 0 13px rgba(var(--brand-wordmark-motion-rgb), 0.13);
+}
+
+.brand-wordmark-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
+.brand-wordmark-base {
+  position: relative;
+  z-index: 0;
+}
+
+.brand-wordmark-scan {
+  z-index: 1;
+  color: transparent;
+  background: linear-gradient(
+    105deg,
+    transparent 0 38%,
+    rgba(var(--brand-wordmark-motion-rgb), 0.42) 45%,
+    var(--brand-wordmark-motion) 50%,
+    rgba(var(--brand-wordmark-motion-rgb), 0.42) 55%,
+    transparent 62% 100%
+  );
+  background-size: 250% 100%;
+  background-position: 130% 0;
+  background-clip: text;
+  -webkit-background-clip: text;
+}
+
+.brand-wordmark-signal {
+  z-index: -1;
+  color: var(--brand-wordmark-motion);
+  opacity: 0;
+  clip-path: inset(62% 0 18% 0);
+}
 
 .knowledge-review-banner {
   display: flex;
@@ -360,9 +457,18 @@ select {
 .ghost {
   background: transparent; border: 1px solid var(--border);
   color: var(--text); border-radius: 12px; padding: 8px 12px;
-  cursor: pointer; transition: all 0.2s ease;
+  cursor: pointer;
+  transition: border-color var(--motion-fast, 140ms) ease,
+    background-color var(--motion-fast, 140ms) ease,
+    color var(--motion-fast, 140ms) ease,
+    transform var(--motion-fast, 140ms) ease;
 }
 .ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+:where(button, [role="button"], [role="tab"], [role="combobox"], input, textarea, select, summary, a):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
 
 /* Compact, high-visibility refresh control shared across panels. */
 .ghost.refresh-button {
@@ -421,9 +527,12 @@ select {
 .app-grid {
   display: flex;
   flex-direction: row;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 0;
-  min-height: calc(100vh - 32px);
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  height: var(--shell-height);
 }
 
 .card {
@@ -437,3 +546,36 @@ select {
 }
 .eyebrow { text-transform: uppercase; letter-spacing: var(--letter-spacing-label); font-size: var(--font-size-caption); color: var(--muted); margin-bottom: 6px; }
 .card h2 { font-size: var(--font-size-title); font-weight: var(--font-weight-bold); }
+
+@media (max-width: 1180px) and (min-width: 1001px) {
+  :root {
+    --shell-padding: 10px;
+  }
+
+  .brand-sub {
+    font-size: var(--font-size-caption);
+  }
+}
+
+@media (max-width: 1000px) {
+  :root {
+    --shell-padding: 8px;
+    --shell-height: auto;
+  }
+
+  body {
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .page,
+  .app-grid {
+    height: auto;
+  }
+}
+
+@media (max-width: 640px) {
+  :root {
+    --shell-padding: 0px;
+  }
+}

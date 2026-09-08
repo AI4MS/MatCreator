@@ -17,6 +17,7 @@ from ...tools.remoteagent_tool import load_remote_a2a_agents
 from ...tools.util_tools import show_artifact, show_plot, show_structure
 from ...tools.workspace_tools import get_user_skills_root, run_bash, run_python
 from .remote_job_tools import (
+    attach_bohr_batchjob,
     collect_remote_job_outputs,
     download_remote_job_output,
     get_remote_job_status,
@@ -24,7 +25,7 @@ from .remote_job_tools import (
     poll_remote_job_command,
     run_remote_job_command,
     start_remote_job_command,
-    submit_bohr_job,
+    submit_bohr_batchjob,
     submit_bohr_sandbox,
     terminate_remote_job,
     upload_remote_job_input,
@@ -145,7 +146,7 @@ When `prior_context` mentions a previously submitted remote job (e.g. Bohrium/Sl
 If your `prior_context` contains "REMOTE JOB ALREADY SUBMITTED", a tracked remote job
 (sandbox or batch job) for this exact step is already running:
 1. Call `get_remote_job_status` with the given `job_id` FIRST.
-2. NEVER call `submit_bohr_sandbox` or `submit_bohr_job` for that
+2. NEVER call `submit_bohr_sandbox` or `submit_bohr_batchjob` for that
    step — it would duplicate a running job.
 3. If its `snapshot` contains `background_command`, a command is (or was) running in the
    background — call `poll_remote_job_command` FIRST rather than issuing a new command. Never
@@ -156,14 +157,26 @@ If your `prior_context` contains "REMOTE JOB ALREADY SUBMITTED", a tracked remot
    for an interactive sandbox, or `collect_remote_job_outputs` for a batch job — and report success.
 5. If it is still running, call `submit_step_result(status="needs_replanning", ...)` stating
    that the job has not finished yet and quoting its job_id and status.
+6. Legacy `bohr_job` records are unsupported. Report needs_replanning with the recorded
+   job_id and error; never reinterpret its external ID or automatically submit a replacement.
 
 ## Choosing a remote-job submit tool
+- `attach_bohr_batchjob`: track an already-submitted Batch Job using its explicit string
+  `batchjob_id`. It only reads status and never submits. Use it for externally submitted
+  jobs instead of creating a replacement; then use the returned `job_id` for status and outputs.
 - `submit_bohr_sandbox`: interactive sandbox via the `bohr` CLI — the default for any work
   that needs command execution or file transfer after submission. Requires an explicit
   `template`.
-- `submit_bohr_job`: batch/HPC-style job via `bohr job submit`. There is no interactive
+- `submit_bohr_batchjob`: sandbox-based batch job via `bohr batchjob submit`. Requires
+  `name`, `image`, `command`, and exactly one of `machine_type` or `sku_id`. Discover
+  machines with `bohr batchjob machine list -o json`. Use `input_path` (a path relative
+  to your working directory, e.g. `si_scf` — never absolute; a directory's contents
+  appear at the root of the remote job's working directory) and `out_files` (a JSON
+  array of path strings, e.g. `["vasprun.xml", "OUTCAR", "log"]`);
+  durations include units, e.g. `max_run_time="2h"`. There is no interactive
   command execution for this provider — express the entire computation in `command`, then
-  poll `get_remote_job_status` until `succeeded` and call `collect_remote_job_outputs`.
+  poll `get_remote_job_status` until `succeeded` and call `collect_remote_job_outputs`
+  with a new, nonexistent workspace destination directory.
 
 ## Running commands inside a sandbox: blocking vs. background (CRITICAL)
 - `run_remote_job_command` BLOCKS until the command finishes, with no timeout. Only use it
@@ -289,7 +302,8 @@ def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
             FunctionTool(run_python),
             FunctionTool(run_bash),
             FunctionTool(submit_bohr_sandbox),
-            FunctionTool(submit_bohr_job),
+            FunctionTool(submit_bohr_batchjob),
+            FunctionTool(attach_bohr_batchjob),
             FunctionTool(get_remote_job_status),
             FunctionTool(run_remote_job_command),
             FunctionTool(start_remote_job_command),

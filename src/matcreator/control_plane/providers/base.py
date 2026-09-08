@@ -43,6 +43,10 @@ class CapabilityError(NotImplementedError):
         self.capability = capability
 
 
+class RemoteJobSubmissionUncertainError(RuntimeError):
+    """Submission may have created a remote resource and must not be retried."""
+
+
 @dataclass(frozen=True)
 class RemoteJobStatus:
     """Result of probing one external job.

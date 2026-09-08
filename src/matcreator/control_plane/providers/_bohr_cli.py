@@ -1,6 +1,6 @@
 """Shared subprocess boundary for `bohr`-CLI-backed provider adapters.
 
-Both ``bohr_sandbox`` (interactive) and ``bohr_job`` (batch) adapters shell
+Both ``bohr_sandbox`` (interactive) and ``bohr_batchjob`` (batch) adapters shell
 out to the same ``bohr`` binary and expect the same JSON envelope
 (``{"ok": bool, "data": ..., "error": {...}}``), so the invocation and
 error-handling logic lives here once instead of being duplicated per adapter.
@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Any
 
 
@@ -23,23 +24,35 @@ def resolve_bohr_binary() -> str:
     return os.environ.get("BOHR_CLI_PATH") or shutil.which("bohr") or "bohr"
 
 
-def run_bohr_json(args: list[str], *, timeout: float | None = 120) -> Any:
+def run_bohr_json(
+    args: list[str], *, timeout: float | None = 120, cwd: str | Path | None = None
+) -> Any:
     """Run one `bohr` CLI invocation and return its parsed ``data`` payload.
 
     Every invocation appends ``-o json --no-interactive -y`` so output is
     machine-parseable and no command blocks on an interactive confirmation
     prompt. Raises :class:`BohrCLIError` with the CLI's own error message on
     failure, so callers never need to parse stderr or exit codes themselves.
+    ``cwd`` pins the CLI's working directory so relative paths in ``args``
+    (e.g. ``--input``) resolve against the caller's chosen root rather than
+    the server process cwd.
     """
     command = [resolve_bohr_binary(), *args, "-o", "json", "--no-interactive", "-y"]
+    run_kwargs: dict[str, Any] = {
+        "capture_output": True,
+        "text": True,
+        "timeout": timeout,
+        "check": False,
+    }
+    if cwd is not None:
+        # Checked here because subprocess.run maps a missing cwd to the same
+        # FileNotFoundError as a missing binary, which would be misreported
+        # below as the CLI not being installed.
+        if not Path(cwd).is_dir():
+            raise BohrCLIError(f"bohr working directory does not exist: {cwd}")
+        run_kwargs["cwd"] = str(cwd)
     try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        completed = subprocess.run(command, **run_kwargs)
     except FileNotFoundError as exc:
         raise BohrCLIError("The 'bohr' CLI is not installed or not on PATH") from exc
     except subprocess.TimeoutExpired as exc:

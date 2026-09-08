@@ -6,7 +6,13 @@ below — nothing else in the control plane needs to change.
 """
 from __future__ import annotations
 
-from .base import CapabilityError, RemoteJobAdapter, RemoteJobCapability, RemoteJobStatus
+from .base import (
+    CapabilityError,
+    RemoteJobAdapter,
+    RemoteJobCapability,
+    RemoteJobStatus,
+    RemoteJobSubmissionUncertainError,
+)
 from .registry import get_adapter, register_adapter, registered_providers, reset_registry
 
 
@@ -24,14 +30,14 @@ def _register_builtin_adapters() -> None:
 
         return BohrSandboxAdapter()
 
-    def _bohr_job_factory():
-        from .bohr_job import BohrJobAdapter
+    def _bohr_batchjob_factory():
+        from .bohr_batchjob import BohrBatchJobAdapter
 
-        return BohrJobAdapter()
+        return BohrBatchJobAdapter()
 
     register_adapter("e2b", _e2b_factory)
     register_adapter("bohr_sandbox", _bohr_sandbox_factory)
-    register_adapter("bohr_job", _bohr_job_factory)
+    register_adapter("bohr_batchjob", _bohr_batchjob_factory)
 
 
 _register_builtin_adapters()
@@ -40,6 +46,7 @@ __all__ = [
     "RemoteJobAdapter",
     "RemoteJobCapability",
     "RemoteJobStatus",
+    "RemoteJobSubmissionUncertainError",
     "CapabilityError",
     "get_adapter",
     "register_adapter",

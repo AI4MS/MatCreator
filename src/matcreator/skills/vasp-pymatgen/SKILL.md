@@ -17,6 +17,7 @@ metadata:
     - load_skill_resource
   dependent_skills:
     - bohrium
+    - remote-job
   tags:
     - vasp
     - dft
@@ -56,7 +57,7 @@ a full INCAR dict from scratch.
 
 3. **Structure file** readable by ASE — extxyz, POSCAR, CIF, or any ASE-supported format.
 
-- The `bohrium` skill loaded (for job submission).
+- The `bohrium` skill loaded for access/discovery and `remote-job` for tracked submission.
 
 > **Stop and tell the user** if `PMG_VASP_PSP_DIR` is not set or dependencies are missing.
 
@@ -101,8 +102,9 @@ its own defaults — the agent never writes a raw INCAR.
 
 1. **Obtain a structure** — generate or load from file.
 2. **Prepare inputs** — run the appropriate snippet via `run_python`.
-3. **Submit jobs** — pass `calc_dir_list` to the `bohrium` skill.
-4. **Read results** — after the job finishes, run `read_results` or `collect_results`.
+3. **Submit jobs** — use the chosen execution backend (see [Submission](#submission)).
+4. **Read results** — retrieve outputs and run `read_results` or `collect_results`.
+   Verify VASP convergence; successful execution alone is not scientific success.
 
 Run exactly **one property step at a time**. Do not chain relaxation + SCF in a single step.
 
@@ -154,16 +156,25 @@ load_skill_resource(skill_name="vasp-pymatgen", path="references/read-results.md
 
 ## Submission
 
-### `bohrium` skill (Recommended for Bohrium users)
-Submit jobs to Bohrium using the `bohrium` skill, which wraps the `bohr` CLI. This is the recommended submission method for users running on the Bohrium platform.
+### Tracked Bohrium Batch Jobs
+Use `bohrium` for access and Batch Job SKU discovery, then `remote-job`'s
+`submit_bohr_batchjob` for durable submission, monitoring, and collection.
 
 The INCAR/POSCAR/POTCAR generation is platform-agnostic. The submission layer is pluggable — replace `bohrium` with a Slurm or local queue system as needed.
 
-For the full submission template and environment variables for VASP job on bohrium, see:
+For the VASP image, oneAPI/MPI environment, retained outputs, and tracked
+submission template, see:
 
 ```
-load_skill_resource(skill_name="vasp-pymatgen", path="references/bohr.md")
+load_skill_resource(skill_name="vasp-pymatgen", path="references/bohr-batchjob.md")
 ```
+
+The old `references/bohr.md` is historical legacy guidance only; do not use
+its job/job-group commands for new submissions or reinterpret legacy IDs.
+Older submission pointers in input-generation references are superseded by
+`references/bohr-batchjob.md`. In particular, NSCF `CHGCAR` belongs in the
+directory passed as `input_path` (a workspace-relative directory), not a
+legacy `forward_files` parameter.
 
 ### Remote sandbox execution
 

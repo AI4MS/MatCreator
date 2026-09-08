@@ -10,11 +10,20 @@ needed here.
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 import time
 from pathlib import Path
 from typing import Any
 
-from .providers import CapabilityError, RemoteJobAdapter, RemoteJobCapability, get_adapter
+from .providers import (
+    CapabilityError,
+    RemoteJobAdapter,
+    RemoteJobCapability,
+    RemoteJobSubmissionUncertainError,
+    get_adapter,
+)
+from .providers.registry import RetiredProviderError, require_supported_provider
 from .remote_jobs import RemoteJobStore
 
 
@@ -46,6 +55,7 @@ class RemoteJobService:
         lookup as every service method, instead of querying the global
         registry directly and silently ignoring test overrides.
         """
+        require_supported_provider(provider)
         if provider in self._adapter_overrides:
             return self._adapter_overrides[provider]
         return get_adapter(provider)
@@ -57,6 +67,7 @@ class RemoteJobService:
         job = self.store.get_job(job_id)
         if job is None:
             raise KeyError(f"Remote job '{job_id}' was not found")
+        require_supported_provider(job["provider"])
         if not job["external_id"]:
             raise ValueError(f"Remote job '{job_id}' has no provider-side ID")
         return job
@@ -85,6 +96,16 @@ class RemoteJobService:
         creating a second external job; a record that failed before ever
         acquiring an external ID is reset and retried instead.
         """
+        require_supported_provider(provider)
+        if node_id is not None:
+            for existing in self.store.list_jobs(owner_id=owner_id, session_id=session_id):
+                if existing["node_id"] == node_id:
+                    try:
+                        require_supported_provider(existing["provider"])
+                    except RetiredProviderError as exc:
+                        raise RetiredProviderError(
+                            f"Step already tracks legacy job '{existing['job_id']}'. {exc.args[0]}"
+                        ) from exc
         job = self.store.create_job(
             owner_id=owner_id,
             session_id=session_id,
@@ -107,6 +128,14 @@ class RemoteJobService:
         submitting = self.store.transition_job(job["job_id"], "submitting")
         try:
             external_id = adapter.create(spec)
+        except RemoteJobSubmissionUncertainError as exc:
+            return self.store.transition_job(
+                job["job_id"],
+                "lost",
+                error=f"{provider} submission outcome is uncertain: {exc}",
+                snapshot={"provider_status": "submission_uncertain"},
+                expected_revision=submitting["state_revision"],
+            )
         except Exception as exc:
             return self.store.transition_job(
                 job["job_id"],
@@ -118,23 +147,102 @@ class RemoteJobService:
         # Give the adapter a chance to report an initial lifecycle status
         # (e.g. a batch provider that queues before it runs) instead of
         # always assuming "running".
-        initial_status = "running"
-        initial_snapshot: dict[str, Any] = {"provider_status": "running"}
+        initial_status = "queued" if RemoteJobCapability.BATCH_COLLECT in adapter.capabilities else "running"
+        initial_snapshot: dict[str, Any] = {"provider_status": initial_status}
+        initial_error = None
         try:
             probe = adapter.status(external_id)
-        except Exception:
+        except Exception as exc:
             probe = None
+            initial_snapshot = {"provider_status": "unreachable"}
+            initial_error = f"{provider} initial status check failed: {exc}"
         if probe is not None:
-            if probe.normalized_status:
+            if probe.normalized_status in {"queued", "running", "succeeded", "failed", "cancelled", "lost"}:
                 initial_status = probe.normalized_status
             initial_snapshot = {**initial_snapshot, **probe.snapshot}
+            initial_error = probe.error
 
         return self.store.transition_job(
             job["job_id"],
             initial_status,
             external_id=external_id,
             snapshot=initial_snapshot,
+            error=initial_error,
             expected_revision=submitting["state_revision"],
+        )
+
+    def attach_job(
+        self,
+        *,
+        owner_id: str,
+        session_id: str,
+        provider: str,
+        external_id: str,
+        node_id: str | None = None,
+        step_number: int | None = None,
+    ) -> dict[str, Any]:
+        """Track an already-submitted job after a read-only status check; never submit.
+
+        Reuse the record for this owner/session/provider/external ID, including
+        records created through submit_job. A job tracked elsewhere cannot be
+        attached here. Unreadable IDs are rejected without creating a record.
+        """
+        require_supported_provider(provider)
+        if not owner_id or not session_id:
+            raise ValueError("owner_id and session_id are required for attachment")
+        if not isinstance(external_id, str) or not external_id.strip():
+            raise ValueError("An explicit nonempty string external_id is required")
+        external_id = external_id.strip()
+        existing_jobs = self.store.find_jobs_by_external_id(provider=provider, external_id=external_id)
+        if any(
+            job["owner_id"] != owner_id or job["session_id"] != session_id
+            for job in existing_jobs
+        ):
+            raise ValueError("This remote job is already tracked in another session")
+        if existing_jobs:
+            return self.reconcile_job(existing_jobs[0]["job_id"])
+
+        adapter = self._adapter(provider)
+        try:
+            probe = adapter.status(external_id)
+        except Exception as exc:
+            raise ValueError(
+                f"Could not verify the existing {provider} job: {exc}. "
+                "Check the ID and provider account access, then retry attachment. "
+                "No job was submitted."
+            ) from exc
+
+        # A provider-global key prevents concurrent attachments from claiming
+        # the same external job for different owners or sessions.
+        identity = json.dumps([provider, external_id])
+        key = f"remote-job:attach:{hashlib.sha256(identity.encode()).hexdigest()}"
+        job = self.store.create_job(
+            owner_id=owner_id,
+            session_id=session_id,
+            provider=provider,
+            idempotency_key=key,
+            node_id=node_id,
+            step_number=step_number,
+            specification={"attached": True},
+        )
+        if job["external_id"]:
+            return self.reconcile_job(job["job_id"])
+        if job["status"] == "created":
+            job = self.store.transition_job(
+                job["job_id"], "submitting", expected_revision=job["state_revision"],
+            )
+        if job["status"] != "submitting":
+            return job
+        initial_status = probe.normalized_status
+        if initial_status not in {"queued", "running", "succeeded", "failed", "cancelled", "lost"}:
+            initial_status = "queued"
+        return self.store.transition_job(
+            job["job_id"],
+            initial_status,
+            external_id=external_id,
+            snapshot=probe.snapshot,
+            error=probe.error,
+            expected_revision=job["state_revision"],
         )
 
     def pause_job(self, job_id: str) -> dict[str, Any]:
@@ -215,11 +323,24 @@ class RemoteJobService:
         back to an observation rather than raising, since a monitor loop
         must never crash on one bad probe.
         """
-        job = self._get_job(job_id)
+        job = self.store.get_job(job_id)
+        if job is None:
+            raise KeyError(f"Remote job '{job_id}' was not found")
+        try:
+            require_supported_provider(job["provider"])
+        except RetiredProviderError as exc:
+            return self.store.record_observation(
+                job_id,
+                snapshot={**job["snapshot"], "provider_status": "unsupported", "provider_supported": False},
+                error=exc.args[0],
+                expected_revision=job["state_revision"],
+            )
         if job["status"] not in {"queued", "running", "submitting", "resuming"}:
             return job
-        adapter = self._adapter(job["provider"])
+        if not job["external_id"]:
+            return job
         try:
+            adapter = self._adapter(job["provider"])
             probe = adapter.status(job["external_id"])
         except Exception as exc:
             return self.store.record_observation(
@@ -331,7 +452,8 @@ class RemoteJobService:
         or ``{"running": False, "exit_code": ..., "output_tail": ...}`` once
         it has — ``output_tail`` is the last ``tail_bytes`` of combined
         stdout/stderr; use ``download_job_file`` on ``log_path`` for the
-        full output of a long-running command.
+        full output of a long-running command. If the monitor already consumed
+        completion, return its durable result without probing the remote again.
         """
         job = self._get_job(job_id)
         adapter = self._adapter(job["provider"])
@@ -339,6 +461,9 @@ class RemoteJobService:
             raise CapabilityError(job["provider"], RemoteJobCapability.INTERACTIVE_EXEC)
         handle = (job.get("snapshot") or {}).get("background_command")
         if not isinstance(handle, dict) or not handle.get("exit_path"):
+            completed = job["snapshot"].get("last_command_result")
+            if isinstance(completed, dict):
+                return dict(completed)
             raise ValueError(f"Job '{job_id}' has no in-flight background command")
 
         exit_path = handle["exit_path"]
@@ -357,22 +482,20 @@ class RemoteJobService:
 
         try:
             exit_code = int(stdout.split(":", 1)[1].strip())
-        except (IndexError, ValueError):
-            exit_code = None
+        except (IndexError, ValueError) as exc:
+            # Shell redirection creates the marker before echo writes its exit code.
+            raise RuntimeError(f"Job '{job_id}' has an incomplete or invalid exit marker") from exc
         tail = adapter.run_command(
             job["external_id"], f"tail -c {int(tail_bytes)} {log_path} 2>/dev/null || true", user="root"
         )
-        self.store.merge_observation(
-            job_id,
-            snapshot={"provider_status": "reachable", "background_command": None, "last_command_exit_code": exit_code},
-            error=None,
-        )
-        return {
+        result = {
             "running": False,
             "exit_code": exit_code,
             "output_tail": tail.get("stdout", ""),
             "log_path": log_path,
         }
+        self.store.record_command_completion(job_id, handle=handle, result=result)
+        return result
 
     def upload_job_file(self, job_id: str, source: str | Path, destination: str) -> dict[str, Any]:
         """Upload one local input file into a tracked interactive job."""
@@ -424,13 +547,18 @@ class RemoteJobService:
         if RemoteJobCapability.BATCH_COLLECT not in adapter.capabilities:
             raise CapabilityError(job["provider"], RemoteJobCapability.BATCH_COLLECT)
         collecting = self.store.transition_job(job_id, "collecting")
-        dest_path = Path(destination_dir).expanduser().resolve()
+        dest_path = Path(destination_dir).expanduser().absolute()
         try:
             artifacts = adapter.collect_outputs(job["external_id"], dest_path)
         except Exception as exc:
+            # A failed collection (occupied destination, transient download
+            # error, ...) is a local file-management problem. The provider-side
+            # computation is still succeeded, so return there — keeping the
+            # outputs collectable with a new destination — rather than durably
+            # marking a successful job as failed.
             return self.store.transition_job(
                 job_id,
-                "failed",
+                "succeeded",
                 error=f"{job['provider']} output collection failed: {exc}",
                 expected_revision=collecting["state_revision"],
             )
@@ -438,5 +566,6 @@ class RemoteJobService:
             job_id,
             "collected",
             artifacts=artifacts,
+            error=None,
             expected_revision=collecting["state_revision"],
         )

@@ -26,7 +26,8 @@ def test_step_executor_registers_tracked_remote_job_tools() -> None:
 
     assert {
         "submit_bohr_sandbox",
-        "submit_bohr_job",
+        "submit_bohr_batchjob",
+        "attach_bohr_batchjob",
         "get_remote_job_status",
         "run_remote_job_command",
         "start_remote_job_command",

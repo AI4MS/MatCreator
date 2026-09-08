@@ -196,6 +196,16 @@ class ManagedRunRegistry:
         )
         return max(matches, key=lambda run: run.created_at, default=None)
 
+    def last_terminal_update(self, owner_id: str, session_id: str) -> float | None:
+        """Most recent terminal-status timestamp among this session's runs."""
+        updates = [
+            run.updated_at
+            for run in self._runs.values()
+            if run.owner_id == owner_id and run.session_id == session_id
+            and run.status not in ACTIVE_RUN_STATUSES
+        ]
+        return max(updates, default=None)
+
     def active_for_session(self, session_id: str) -> list[ManagedRun]:
         return [
             run
