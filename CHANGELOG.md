@@ -2,6 +2,37 @@
 
 <!-- version list -->
 
+## v2.23.0 (2026-09-08)
+
+### Bug Fixes
+
+- Improve batchjob tools
+  ([`a70e60a`](https://github.com/AI4MS/MatCreator/commit/a70e60ad6ff1ec75e86d26b822dc4dd0146dab0d))
+
+- Issues with stale session upon job completion
+  ([`85e56dd`](https://github.com/AI4MS/MatCreator/commit/85e56dd142f2be0f15b0008f0e55f5ecb99ac4b5))
+
+- Roadmap color not unified with chat color
+  ([`d81611b`](https://github.com/AI4MS/MatCreator/commit/d81611b0867403b21db95611dcda96792c7fe859))
+
+- **frontend**: Align Rack Lab cards with Remote Jobs v2
+  ([`7738b90`](https://github.com/AI4MS/MatCreator/commit/7738b9041106d3c74d873129340f542ae56033b7))
+
+### Features
+
+- Invoke agent session when remote job ends
+  ([`5584046`](https://github.com/AI4MS/MatCreator/commit/55840461af1ad8f7c14e9c32e4e7408091ddc82c))
+
+- **frontend**: Add Rack Lab skin and theme framework
+  ([`e64f735`](https://github.com/AI4MS/MatCreator/commit/e64f735fe495a4363049ba105ddf933bc0f11e0d))
+
+- **frontend**: Project durable workload progress in Rack Lab cards
+  ([`be54979`](https://github.com/AI4MS/MatCreator/commit/be549797ed7a7a324055ff91f87c5663089234f6))
+
+- **frontend**: Render diffractive Rack Lab graph droplets
+  ([`37fb0c3`](https://github.com/AI4MS/MatCreator/commit/37fb0c3be9847b83545956e483c1a2c5cbaee87a))
+
+
 ## v2.22.0 (2026-09-07)
 
 ### Bug Fixes
