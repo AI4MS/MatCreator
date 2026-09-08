@@ -1,3 +1,5 @@
+import { requestOwnsLiveDom } from "./requestLifecycle.js";
+
 export function createSessionCoordinator({
   state,
   appName,
@@ -30,9 +32,44 @@ export function createSessionCoordinator({
   const createOperations = new Map();
   let filesRequestController = null;
   let modeRequestController = null;
+  let destroyed = false;
+  const activityRevisions = new Map();
+  const activityLoads = new Set();
 
   function isCurrentSession(sessionId, owner) {
     return sessionRequestKey(sessionId, owner) === sessionRequestKey();
+  }
+
+  async function observeRemoteJobActivity(sessionId, owner, activity = {}) {
+    if (destroyed || !state.sessionReady || !isCurrentSession(sessionId, owner)) return;
+    const key = sessionRequestKey(sessionId, owner);
+    // A stale request entry (its backend run already ended) must not block
+    // attachment of a harness-started wakeup run or a history refresh.
+    const request = state.activeRequests.get(key);
+    if (requestHasActiveRun(request)) return;
+    // A terminal request whose streamed turn is still mounted is mid
+    // durable-handoff: attaching a wakeup run or refreshing history now
+    // would clear DOM that exists nowhere else and abort the handoff's
+    // fetch. Defer; the next poll retries after the handoff settles.
+    if (requestOwnsLiveDom(request) || requestOwnsLiveDom(activeSessionRequest())) return;
+    const runtime = getSessionRuntime();
+    if (activity.active_run) {
+      runtime.startManagedRunReconnect(activity.active_run, sessionId, owner);
+      return;
+    }
+    const revision = activity.activity_revision;
+    if (!revision || activityRevisions.get(key) === revision || activityLoads.has(key)) return;
+    activityLoads.add(key);
+    try {
+      const snapshot = await runtime.loadSession(sessionId, owner);
+      if (snapshot && !destroyed && isCurrentSession(sessionId, owner)) {
+        activityRevisions.set(key, revision);
+      }
+    } catch (error) {
+      console.error("Failed to refresh background agent results:", error);
+    } finally {
+      activityLoads.delete(key);
+    }
   }
 
   function displayStatus(session, owner) {
@@ -305,6 +342,8 @@ export function createSessionCoordinator({
   }
 
   function destroy() {
+    destroyed = true;
+    activityRevisions.clear();
     switchRevision += 1;
     filesRequestController?.abort();
     modeRequestController?.abort();
@@ -315,6 +354,7 @@ export function createSessionCoordinator({
   }
 
   return {
+    observeRemoteJobActivity,
     displayStatus,
     switchSession,
     refreshFiles,

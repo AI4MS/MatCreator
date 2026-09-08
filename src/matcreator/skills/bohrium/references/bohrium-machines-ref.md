@@ -1,4 +1,10 @@
-# Bohrium Machine Types Reference
+# Historical Bohrium Machine Types Reference — Legacy Catalog
+
+> **Historical table only; not a Batch Job catalog.** Do not follow the legacy
+> discovery commands or assume the SKUs/prices below apply to new Batch Jobs.
+> Use `bohr batchjob machine list -o json` and the
+> [tracked Batch Job reference](../../remote-job/references/bohr-batchjob-ref.md).
+> Interactive sandbox template discovery remains a separate workflow.
 
 Bohrium offers CPU and GPU machines. 
 

@@ -7,6 +7,7 @@ import {
   initializeRequestLifecycle,
   markRequestTerminal,
   requestHasActiveRun,
+  requestOwnsLiveDom,
   requestPresentsLiveTurn,
   requestRetainsVisibleTurn,
 } from "../src/features/session/requestLifecycle.js";
@@ -104,4 +105,25 @@ test("failed and cancelled runs are terminal while unknown requests stay active"
   assert.equal(requestHasActiveRun({ backendStatus: "running" }), true);
   assert.equal(requestHasActiveRun({ backendStatus: "failed" }), false);
   assert.equal(requestHasActiveRun({ backendStatus: "cancelled" }), false);
+});
+
+test("live-DOM ownership tracks mounted views through terminal handoff", async () => {
+  assert.equal(requestOwnsLiveDom(null), false);
+  assert.equal(requestOwnsLiveDom({}), false);
+  // Detached DOM (a stale entry) does not own the live area.
+  assert.equal(requestOwnsLiveDom({ messageView: { element: { isConnected: false } } }), false);
+  assert.equal(requestOwnsLiveDom({ userMessage: { isConnected: false } }), false);
+  // Mounted DOM keeps ownership even after the backend run went terminal.
+  const request = initializeRequestLifecycle({
+    messageView: { element: { isConnected: true } },
+    userMessage: { isConnected: false },
+  });
+  markRequestTerminal(request, "completed");
+  assert.equal(requestHasActiveRun(request), false);
+  assert.equal(requestOwnsLiveDom(request), true);
+  assert.equal(requestOwnsLiveDom({ userMessage: { isConnected: true } }), true);
+  // Cleanup (release/handoff) ends ownership regardless of DOM state.
+  finishRequestCleanup(request);
+  await request.cleanupComplete;
+  assert.equal(requestOwnsLiveDom(request), false);
 });

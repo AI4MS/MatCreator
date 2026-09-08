@@ -19,6 +19,17 @@ export function requestHasActiveRun(request) {
   return Boolean(request && !TERMINAL_RUN_STATUSES.has(request.backendStatus));
 }
 
+/**
+ * Whether the request's streamed turn is still mounted in the live DOM.
+ * True through the terminal durable-handoff window (when
+ * `requestHasActiveRun` is already false but the streamed content exists
+ * nowhere but the DOM); false for stale entries whose DOM was detached.
+ */
+export function requestOwnsLiveDom(request) {
+  if (!request || request.cleanupDone) return false;
+  return Boolean(request.messageView?.element?.isConnected || request.userMessage?.isConnected);
+}
+
 export function requestRetainsVisibleTurn(request) {
   if (!request || request.cleanupDone) return false;
   return Boolean(request.liveTurnClaimed || request.messageView || request.userMessage || request.message);

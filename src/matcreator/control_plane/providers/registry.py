@@ -14,6 +14,19 @@ _FACTORIES: dict[str, Callable[[], RemoteJobAdapter]] = {}
 _INSTANCES: dict[str, RemoteJobAdapter] = {}
 
 
+class RetiredProviderError(KeyError):
+    """An existing record belongs to a provider that is no longer supported."""
+
+
+def require_supported_provider(provider: str) -> None:
+    if provider == "bohr_job":
+        raise RetiredProviderError(
+            "The legacy bohr_job provider is no longer supported. Its IDs cannot be "
+            "used with bohr_batchjob. Inspect/manage the original job in Bohrium; "
+            "do not automatically resubmit it or convert its stored record."
+        )
+
+
 def register_adapter(provider: str, factory: Callable[[], RemoteJobAdapter]) -> None:
     """Register a lazy factory for one provider's adapter.
 
@@ -28,6 +41,7 @@ def register_adapter(provider: str, factory: Callable[[], RemoteJobAdapter]) -> 
 
 def get_adapter(provider: str) -> RemoteJobAdapter:
     """Return the (lazily constructed, cached) adapter for ``provider``."""
+    require_supported_provider(provider)
     if provider not in _FACTORIES:
         raise KeyError(f"No remote-job adapter is registered for provider '{provider}'")
     if provider not in _INSTANCES:

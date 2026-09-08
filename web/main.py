@@ -42,6 +42,7 @@ import sys
 import termios
 import threading
 import time
+from collections.abc import Awaitable, Callable
 from importlib.resources import files
 from pathlib import Path
 from typing import Any, List
@@ -258,6 +259,9 @@ _evaluation_manager = EvaluationManager(
 _remote_job_monitor = RemoteJobMonitor(_remote_job_store, _remote_job_service)
 _remote_job_monitor_task: asyncio.Task[None] | None = None
 _remote_job_monitor_stop = asyncio.Event()
+# Wakeup runs must not start while the client is still handing the previous
+# run's live turn off to durable history (see _resume_remote_job_session).
+_WAKEUP_HANDOFF_GRACE_SECONDS = 2.5
 _LEGACY_ENV_ALIASES = {
     "LLM_API_KEY": "MINIMAX_API_KEY",
     "LLM_BASE_URL": "MINIMAX_API_BASE",
@@ -462,30 +466,49 @@ async def _benchmark_client_for_owner(owner_id: str = "") -> BenchmarkClient:
 
 
 async def _run_remote_job_monitor() -> None:
-    """Reconcile local jobs or each user-owned store in server mode."""
+    """Keep provider polling and agent wakeups alive without a browser connection."""
+    global _remote_job_monitor
     if _MATCREATOR_MODE != "server":
+        _remote_job_monitor = RemoteJobMonitor(
+            _remote_job_store, _remote_job_service,
+            on_job_finished=_resume_remote_job_session, callback_timeout_seconds=60,
+        )
         await _remote_job_monitor.run()
         return
 
-    monitors: dict[str, RemoteJobMonitor] = {}
-    while not _remote_job_monitor_stop.is_set():
-        if _USERS_DATA_ROOT.exists():
-            for user_root in _USERS_DATA_ROOT.iterdir():
-                if not user_root.is_dir():
-                    continue
-                owner_id = user_root.name
-                monitor = monitors.setdefault(
-                    owner_id,
-                    RemoteJobMonitor(
-                        _remote_job_store_for_owner(owner_id),
-                        _remote_job_service_for_owner(owner_id),
-                    ),
-                )
-                await monitor.reconcile_once()
-        try:
-            await asyncio.wait_for(_remote_job_monitor_stop.wait(), timeout=15)
-        except TimeoutError:
-            pass
+    monitors: dict[str, tuple[RemoteJobMonitor, asyncio.Task[None]]] = {}
+    try:
+        while not _remote_job_monitor_stop.is_set():
+            if _USERS_DATA_ROOT.exists():
+                for db_path in _USERS_DATA_ROOT.glob("*/.matcreator/.adk/remote-jobs.db"):
+                    owner_id = db_path.parents[2].name
+                    previous = monitors.get(owner_id)
+                    if previous is not None and not previous[1].done():
+                        continue
+                    if previous is not None:
+                        try:
+                            previous[1].result()
+                        except Exception:
+                            logger.exception("Restarting failed remote job monitor for owner %s", owner_id)
+                    try:
+                        monitor = RemoteJobMonitor(
+                            _remote_job_store_for_owner(owner_id),
+                            _remote_job_service_for_owner(owner_id),
+                            on_job_finished=_resume_remote_job_session,
+                            callback_timeout_seconds=60,
+                        )
+                    except (OSError, sqlite3.Error, ValueError):
+                        logger.exception("Cannot initialize remote job monitor for owner %s", owner_id)
+                        continue
+                    monitors[owner_id] = (monitor, asyncio.create_task(monitor.run()))
+            try:
+                await asyncio.wait_for(_remote_job_monitor_stop.wait(), timeout=15)
+            except TimeoutError:
+                pass
+    finally:
+        for monitor, _ in monitors.values():
+            monitor.stop()
+        await asyncio.gather(*(task for _, task in monitors.values()), return_exceptions=True)
 
 
 async def _sync_skill_graph_after_startup() -> None:
@@ -1129,7 +1152,13 @@ async def _target_url_for_user(user_id: str) -> str:
     return await asyncio.to_thread(ensure_worker_running, user_id)
 
 
-async def _produce_managed_run(run: ManagedRun, payload: dict[str, Any], target_url: str) -> None:
+async def _produce_managed_run(
+    run: ManagedRun,
+    payload: dict[str, Any],
+    target_url: str,
+    *,
+    started: asyncio.Event | None = None,
+) -> None:
     url = f"{target_url.rstrip('/')}/run_sse"
     headers = {
         "Content-Type": "application/json",
@@ -1139,6 +1168,16 @@ async def _produce_managed_run(run: ManagedRun, payload: dict[str, Any], target_
     }
     records = SseRecordBuffer()
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+    async def publish_record(record: str) -> None:
+        await _run_registry.publish(run, record)
+        if upstream_error := sse_error_message(record):
+            raise RuntimeError(upstream_error)
+        if started is not None and not is_sse_done(record) and any(
+            line.startswith("data:") and line[5:].strip() for line in record.splitlines()
+        ):
+            started.set()
+
     async with httpx.AsyncClient(timeout=None) as client:
         async with client.stream(
             method="POST",
@@ -1154,19 +1193,13 @@ async def _produce_managed_run(run: ManagedRun, payload: dict[str, Any], target_
                     raise asyncio.CancelledError()
                 if chunk:
                     for record in records.feed(decoder.decode(chunk)):
-                        await _run_registry.publish(run, record)
-                        if upstream_error := sse_error_message(record):
-                            raise RuntimeError(upstream_error)
+                        await publish_record(record)
                         if is_sse_done(record):
                             return
             for record in records.feed(decoder.decode(b"", final=True)):
-                await _run_registry.publish(run, record)
-                if upstream_error := sse_error_message(record):
-                    raise RuntimeError(upstream_error)
+                await publish_record(record)
             for record in records.flush():
-                await _run_registry.publish(run, record)
-                if upstream_error := sse_error_message(record):
-                    raise RuntimeError(upstream_error)
+                await publish_record(record)
 
 
 async def _start_managed_run(
@@ -1174,13 +1207,161 @@ async def _start_managed_run(
     owner_id: str,
     session_id: str,
     payload: dict[str, Any],
+    started: asyncio.Event | None = None,
+    before_start: Callable[[], Awaitable[bool]] | None = None,
 ) -> ManagedRun:
     target_url = await _target_url_for_user(owner_id)
+    if before_start is not None and not await before_start():
+        raise RuntimeError("Remote job notification was suppressed before agent startup")
 
     async def producer(run: ManagedRun) -> None:
-        await _produce_managed_run(run, payload, target_url)
+        if before_start is not None and not await before_start():
+            raise RuntimeError("Remote job notification was suppressed before agent startup")
+        if started is None:
+            await _produce_managed_run(run, payload, target_url)
+        else:
+            await _produce_managed_run(run, payload, target_url, started=started)
 
     return await _run_registry.start(owner_id=owner_id, session_id=session_id, producer=producer)
+
+
+def _remote_job_session_exists(owner_id: str, session_id: str) -> bool:
+    for _, db_path in _iter_session_db_paths(owner_id):
+        with sqlite3.connect(db_path) as connection:
+            row = connection.execute(
+                "SELECT 1 FROM sessions WHERE app_name = ? AND user_id = ? AND id = ?",
+                (APP_NAME, owner_id, session_id),
+            ).fetchone()
+        if row is not None:
+            return True
+    return False
+
+
+def _remote_job_notification_receipt(owner_id: str, session_id: str, notification_id: str) -> str | None:
+    marker = f"Notification ID: {notification_id}\n"
+    for _, db_path in _iter_session_db_paths(owner_id):
+        with sqlite3.connect(db_path) as connection:
+            rows = connection.execute(
+                "SELECT rowid, event_data FROM events "
+                "WHERE app_name = ? AND user_id = ? AND session_id = ? AND event_data LIKE ?",
+                (APP_NAME, owner_id, session_id, f"%Notification ID: {notification_id}%"),
+            )
+            for event_id, raw in rows:
+                event = json.loads(raw)
+                content = event.get("content") or {}
+                if event.get("author") != "user" and content.get("role") != "user":
+                    continue
+                if any(
+                    part.get("text", "").startswith("REMOTE JOB STATUS UPDATE from the harness.\n")
+                    and marker in part.get("text", "")
+                    for part in content.get("parts", [])
+                ):
+                    return str(event.get("invocation_id") or event.get("invocationId") or f"session-event:{event_id}")
+    return None
+
+
+async def _resume_remote_job_session(notification: dict[str, Any]) -> str | None:
+    """Start an ordinary managed turn for one durable completion notification."""
+    owner_id = notification["owner_id"]
+    session_id = notification["session_id"]
+    store = _remote_job_store_for_owner(owner_id)
+    if _remote_job_monitor_stop.is_set():
+        return None
+    if await asyncio.to_thread(
+        store.notifications_suppressed, owner_id, session_id, job_id=notification["job_id"],
+    ):
+        await asyncio.to_thread(store.suppress_notification, notification["notification_id"], "Session stopped")
+        return None
+    if not await asyncio.to_thread(_remote_job_session_exists, owner_id, session_id):
+        await asyncio.to_thread(store.suppress_session_notifications, owner_id, session_id)
+        return None
+    cancellation_root = _cancellation_workspace_root(session_id, owner_id)
+    if is_cancellation_requested(session_id, workspace_root=cancellation_root):
+        await asyncio.to_thread(store.suppress_session_notifications, owner_id, session_id)
+        return None
+    if _run_registry.active_for(owner_id, session_id) is not None:
+        return None
+    last_run_end = _run_registry.last_terminal_update(owner_id, session_id)
+    if last_run_end is not None and time.time() - last_run_end < _WAKEUP_HANDOFF_GRACE_SECONDS:
+        # The previous run just ended and the client is still handing its live
+        # turn off to durable history; a wakeup starting inside that window
+        # races the frontend's live DOM. The monitor defers a None result.
+        return None
+    receipt = await asyncio.to_thread(
+        _remote_job_notification_receipt, owner_id, session_id, notification["notification_id"],
+    )
+    if receipt:
+        return receipt
+    job = await asyncio.to_thread(store.get_job, notification["job_id"])
+    if job is None:
+        raise KeyError(f"Remote job '{notification['job_id']}' was not found for notification")
+    if job["owner_id"] != owner_id or job["session_id"] != session_id:
+        raise ValueError("Remote job notification does not match its owning session")
+    controls = await asyncio.to_thread(store.list_events, job["job_id"])
+    if any(event["event_type"] == "user_control" for event in controls):
+        await asyncio.to_thread(store.suppress_notification, notification["notification_id"], "Job stopped by user")
+        return None
+    message = (
+        "REMOTE JOB STATUS UPDATE from the harness.\n"
+        f"Notification ID: {notification['notification_id']}\n"
+        f"Tracked job_id: {job['job_id']}\n"
+        f"Graph node: {job.get('node_id')}\n"
+        f"Provider: {job['provider']}\n"
+        f"Event kind: {notification.get('kind', 'lifecycle')}\n"
+        f"Observed outcome: {notification['status']}; current allocation status: {job['status']}\n"
+        "Read get_remote_job_status with this job_id first. Process the results of "
+        "this already-submitted work: collect and validate available outputs on success, "
+        "or inspect and report failure/timeout. If a sandbox background command finished, "
+        "inspect its persisted result without rerunning it. Reuse already-collected artifacts. "
+        "Respect user controls and any newer session instructions. Do not submit a replacement "
+        "job, repeat the computation, or authorize additional compute automatically. "
+        "If this notification has already been handled, do not repeat its side effects."
+    )
+    payload = {
+        "app_name": APP_NAME,
+        "user_id": owner_id,
+        "session_id": session_id,
+        "new_message": {"role": "user", "parts": [{"text": message}]},
+        "streaming": True,
+    }
+    started = asyncio.Event()
+
+    async def still_allowed() -> bool:
+        if _remote_job_monitor_stop.is_set():
+            return False
+        if await asyncio.to_thread(
+            store.notifications_suppressed, owner_id, session_id, job_id=job["job_id"],
+        ) or is_cancellation_requested(session_id, workspace_root=cancellation_root):
+            await asyncio.to_thread(store.suppress_notification, notification["notification_id"], "Session stopped")
+            return False
+        latest_controls = await asyncio.to_thread(store.list_events, job["job_id"])
+        if any(event["event_type"] == "user_control" for event in latest_controls):
+            await asyncio.to_thread(store.suppress_notification, notification["notification_id"], "Job stopped by user")
+            return False
+        return True
+
+    try:
+        run = await _start_managed_run(
+            owner_id=owner_id, session_id=session_id, payload=payload,
+            started=started, before_start=still_allowed,
+        )
+    except RuntimeError:
+        if _run_registry.active_for(owner_id, session_id) is not None:
+            return None
+        raise
+    if run.task is None:
+        raise RuntimeError("Remote job agent run was not scheduled")
+    waiter = asyncio.create_task(started.wait())
+    try:
+        await asyncio.wait({waiter, run.task}, timeout=30, return_when=asyncio.FIRST_COMPLETED)
+        if started.is_set():
+            return run.run_id
+        if run.task.done():
+            raise RuntimeError(run.error or "Remote job agent run ended before accepting the notification")
+        return None
+    finally:
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
 
 
 @app.post("/api/runs")
@@ -2590,6 +2771,7 @@ async def _on_startup() -> None:
     _skill_graph_sync_task = asyncio.create_task(_sync_skill_graph_after_startup())
     if _MATCREATOR_MODE == "server" and _WORKER_IDLE_TIMEOUT_SECONDS > 0:
         asyncio.create_task(_idle_worker_reaper())
+    _remote_job_monitor_stop.clear()
     _remote_job_monitor_task = asyncio.create_task(_run_remote_job_monitor())
     if _MATCREATOR_MODE == "local":
         _evaluation_recovery_task = asyncio.create_task(_recover_local_evaluations_after_startup())
@@ -3075,12 +3257,28 @@ async def list_session_remote_jobs(
     user_id: str = Query(..., description="Current signed-in user"),
 ) -> JSONResponse:
     """Return durable remote-job snapshots owned by one user/session."""
+    store = _remote_job_store_for_owner(user_id)
+    active_run = _run_registry.active_for(user_id, session_id)
+    latest_run = _run_registry.latest_for(user_id, session_id)
+    notifications = [
+        notification for notification in store.list_notifications()
+        if notification["owner_id"] == user_id and notification["session_id"] == session_id
+    ]
+    activity_revision = json.dumps([
+        [item["notification_id"], item["delivery_status"], item["updated_at"]]
+        for item in notifications
+    ] + ([[
+        latest_run.run_id, latest_run.status, latest_run.updated_at,
+    ]] if latest_run else []))
     return JSONResponse(
         {
             "session_id": session_id,
-            "jobs": _remote_job_store_for_owner(user_id).list_jobs(
+            "jobs": store.list_jobs(
                 owner_id=user_id, session_id=session_id
             ),
+            "active_run": active_run.summary() if active_run else None,
+            "activity_revision": hashlib.sha256(activity_revision.encode()).hexdigest()
+            if notifications or latest_run else None,
         }
     )
 
@@ -3097,7 +3295,14 @@ async def list_session_remote_job_events(
     job = store.get_job(job_id)
     if job is None or job["owner_id"] != user_id or job["session_id"] != session_id:
         raise HTTPException(status_code=404, detail="Remote job not found")
-    return JSONResponse({"job": job, "events": store.list_events(job_id, after=after)})
+    notifications = [
+        notification for notification in store.list_notifications()
+        if notification["job_id"] == job_id
+        and notification["owner_id"] == user_id and notification["session_id"] == session_id
+    ]
+    return JSONResponse({
+        "job": job, "events": store.list_events(job_id, after=after), "notifications": notifications,
+    })
 
 
 def _get_owned_remote_job(session_id: str, job_id: str, user_id: str) -> dict[str, Any]:
@@ -3115,17 +3320,15 @@ async def pause_session_remote_job(
 ) -> JSONResponse:
     """Pause one remote job (if its provider supports pausing) and notify its linked executor without stopping it."""
     job = _get_owned_remote_job(session_id, job_id, user_id)
+    await asyncio.to_thread(
+        _remote_job_store_for_owner(user_id).record_user_control, job_id, "pause",
+    )
     try:
         paused = await asyncio.to_thread(_remote_job_service_for_owner(user_id).pause_job, job_id)
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except CapabilityError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    await asyncio.to_thread(
-        _remote_job_store_for_owner(user_id).record_user_control,
-        job_id,
-        "pause",
-    )
     return JSONResponse(paused)
 
 
@@ -3137,15 +3340,13 @@ async def terminate_session_remote_job(
 ) -> JSONResponse:
     """Terminate one remote job and notify its linked executor without stopping it."""
     job = _get_owned_remote_job(session_id, job_id, user_id)
+    await asyncio.to_thread(
+        _remote_job_store_for_owner(user_id).record_user_control, job_id, "terminate",
+    )
     try:
         terminated = await asyncio.to_thread(_remote_job_service_for_owner(user_id).terminate_job, job_id)
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    await asyncio.to_thread(
-        _remote_job_store_for_owner(user_id).record_user_control,
-        job_id,
-        "terminate",
-    )
     return JSONResponse(terminated)
 
 
@@ -4328,19 +4529,33 @@ async def cancel_session_execution(
     when the orchestrator routes back to the planner.
     """
     paused_jobs = []
+    if not user_id:
+        owners: set[str] = set()
+        for _, db_path in _iter_session_db_paths():
+            with sqlite3.connect(db_path) as connection:
+                owners.update(
+                    row[0] for row in connection.execute(
+                        "SELECT user_id FROM sessions WHERE app_name = ? AND id = ?",
+                        (APP_NAME, session_id),
+                    ) if row[0]
+                )
+        if len(owners) > 1:
+            raise HTTPException(status_code=409, detail="Specify user_id to cancel this session")
+        if owners:
+            user_id = owners.pop()
+    cancellation_root = _cancellation_workspace_root(session_id, user_id)
+    await asyncio.to_thread(
+        request_cancellation, session_id, reason, workspace_root=cancellation_root,
+    )
     if user_id:
+        await asyncio.to_thread(
+            _remote_job_store_for_owner(user_id).suppress_session_notifications, user_id, session_id,
+        )
         paused_jobs = await asyncio.to_thread(
             _remote_job_service_for_owner(user_id).pause_active_session_jobs,
             owner_id=user_id,
             session_id=session_id,
         )
-    cancellation_root = _cancellation_workspace_root(session_id, user_id)
-    await asyncio.to_thread(
-        request_cancellation,
-        session_id,
-        reason,
-        workspace_root=cancellation_root,
-    )
     await asyncio.to_thread(
         AgentGraphLogger(session_id).mark_running_nodes_cancelled,
         summary=f"Cancelled by user ({reason})"
