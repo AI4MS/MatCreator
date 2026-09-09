@@ -19,18 +19,20 @@ so the session can monitor and reattach without duplicate submission.
 Verify: `bohr version`
 
 If not installed, run the following command to install it:
-- **Linux/macOS**: `curl -fsSL https://bohrium.com/download/bohr | sh`
+- **Linux/macOS**: `npm install -g @dptech-corp/bohr-cli`
 
 
 ### 2. Verify user access
 
 ```bash
-test -n "$ACCESS_KEY" && echo "ACCESS_KEY is set"
+bohr auth whoami
 ```
-If not set, notify the user to provide the access key as an environment variable, or set an environment variable
-through MatCreator's WebUI.
+If not set, notify the user to provide the access key as an environment variable, or set an environment variable through MatCreator's WebUI. Tell the users that access key can be found in the Bohrium main dashboard under `User Profile` -> `Access Key`.
 
-Tell the users that access key can be found in the Bohrium main dashboard under `User Profile` -> `Access Key`.
+Users can login using command
+```bash
+bohr auth login --ak <access_key>
+```
 
 ### 3. Get your project ID
 
@@ -41,7 +43,7 @@ echo $BOHRIUM_PROJECT_ID
 
 If not set, then run:
 ```bash
-bohr project list --json
+bohr project list
 # Note the project ID you want to use
 ```
 Ask the user to choose the billing project if it is not already specified.
@@ -50,6 +52,12 @@ set `BOHRIUM_PROJECT_ID`; tracked Batch Job submission requires a resolved ID
 even though the raw CLI has a default.
 
 To the users that the project ID can also be found in the Bohrium Cloud dashboard under `Projects`.
+
+For further information, check for the help message of `bohr` CLI:
+```bash
+bohr --help
+bohr auth --help
+```
 
 ## Machine Types
 For new Batch Jobs, discover current selectors and core/memory counts with:
@@ -66,7 +74,7 @@ workflow is unchanged.
 ## Job submission and management
 
 
-Use `submit_bohr_batchjob` from `remote-job`, with `name`, `image`, `command`,
+Use `submit_bohr_batchjob` from `remote-job` skill, with `name`, `image`, `command`,
 exactly one machine selector, and the resolved project. Optional `input_path`
 accepts a **workspace-relative** regular file or nonempty directory (no
 symlinks/special files); its contents land at the root of the remote working
@@ -75,11 +83,8 @@ submission.
 Declare retained paths and logs in `out_files` (a list), with duration strings
 `max_run_time="24h"` and `max_wait_time="30m"` by default.
 
-Read the [tracked Batch Job reference](../remote-job/references/bohr-batchjob-ref.md).
-For VASP, also read the [VASP Batch Job reference](../vasp-pymatgen/references/bohr-batchjob.md).
-Record durable `job_id` and provider `batchjob_id`; use the durable ID in all
-tracked status/control/collection tools. For queued/running jobs return
-`needs_replanning`, not an in-step polling loop.
+Read the tracked Batch Job reference from `remote-job` skill. Record durable `job_id` and provider `batchjob_id`; use the durable ID in all
+tracked status/control/collection tools. 
 
 
 ## Tips and Pitfalls
@@ -119,11 +124,5 @@ tracked status/control/collection tools. For queued/running jobs return
 | Out of memory | Use machine with more RAM                 |
 
 ## References
-- [Tracked Batch Job reference](../remote-job/references/bohr-batchjob-ref.md) — active submission and lifecycle guidance.
-- [references/bohrium-cli-ref.md](references/bohrium-cli-ref.md) — historical legacy CLI material only; not for new tracked jobs.
-- [references/bohrium-machines-ref.md](references/bohrium-machines-ref.md) — historical legacy SKU table only; not a Batch Job catalog.
-- Full docs online: https://bohrium.com/docs/cli
+- Tracked Batch Job reference from `remote-job` skill — active submission and lifecycle guidance.
 
-Legacy `bohr_job` records remain inspectable but operations are unsupported.
-Never reinterpret legacy IDs or auto-resubmit old jobs. Respect user controls
-and reattach to existing tracked jobs before taking any new action.
