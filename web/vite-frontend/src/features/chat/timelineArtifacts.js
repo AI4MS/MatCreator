@@ -44,7 +44,8 @@ export function createTimelineArtifactRenderer({
     const li = document.createElement("li");
     li.title = path;
     if (classifyPath(path) === "structure") li.appendChild(createStructureViewButtonGroup([path]));
-    else li.textContent = path.split("/").pop();
+    else if (classifyPath(path) === "image") li.appendChild(createTimelineImage(path));
+    else li.textContent = path.split(/[\\/]/).pop();
     return li;
   }
 
@@ -52,7 +53,13 @@ export function createTimelineArtifactRenderer({
     const fallback = document.createElement("div");
     fallback.className = "timeline-image-error";
     fallback.setAttribute("role", "alert");
-    fallback.textContent = `⚠ Image preview unavailable: ${path.split("/").pop()}`;
+    fallback.textContent = `⚠ Image preview unavailable: ${path.split(/[\\/]/).pop()}. Place the file in this session's workspace and call show_plot again. `;
+    const link = document.createElement("a");
+    link.href = pathToApiUrl(path);
+    link.textContent = "Open file";
+    link.target = "_blank";
+    link.rel = "noopener";
+    fallback.appendChild(link);
     return fallback;
   }
 
@@ -61,10 +68,10 @@ export function createTimelineArtifactRenderer({
     wrap.className = "timeline-image-wrap";
     const loading = document.createElement("div");
     loading.className = "timeline-image-loading";
-    loading.textContent = `Loading image: ${path.split("/").pop()}`;
+    loading.textContent = `Loading image: ${path.split(/[\\/]/).pop()}`;
     const img = document.createElement("img");
     img.className = "timeline-image";
-    img.alt = path.split("/").pop();
+    img.alt = path.split(/[\\/]/).pop();
     img.hidden = true;
     img.style.cursor = "zoom-in";
     img.addEventListener("load", () => updatePreservingReadingPosition(() => {

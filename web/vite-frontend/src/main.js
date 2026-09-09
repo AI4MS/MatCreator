@@ -368,6 +368,7 @@ const activityRenderer = createActivityRenderer({
 const stepFeedRenderer = createStepFeedRenderer({
   activityRenderer,
   createStructureViewButtonGroup,
+  createTimelineImage,
 });
 const {
   renderTimeline,

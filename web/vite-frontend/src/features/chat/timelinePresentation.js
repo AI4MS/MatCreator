@@ -15,8 +15,19 @@ export function getPlotPaths(response) {
   const add = (path) => {
     if (typeof path === "string" && path && !paths.includes(path)) paths.push(path);
   };
-  add(response?.plot_path);
-  if (Array.isArray(response?.plot_paths)) response.plot_paths.forEach(add);
+  const visit = (value, key = "") => {
+    if (!value) return;
+    if (key === "plot_path") return add(value);
+    if (key === "plot_paths" && Array.isArray(value)) return value.forEach(add);
+    if (["artifacts", "artifact_paths"].includes(key) && Array.isArray(value)) {
+      return value.forEach((path) => {
+        if (typeof path === "string" && classifyPath(path) === "image") add(path);
+      });
+    }
+    if (Array.isArray(value)) return value.forEach((item) => visit(item));
+    if (typeof value === "object") Object.entries(value).forEach(([name, child]) => visit(child, name));
+  };
+  visit(response);
   return paths;
 }
 
