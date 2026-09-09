@@ -51,6 +51,16 @@
 .workspace-terminal .xterm { height: 100%; }
 .workspace-terminal .xterm-viewport { border-radius: 8px; }
 
+.files-load-error { color: var(--danger); }
+.files-skipped-notice {
+  padding: 7px 9px;
+  border: 1px solid var(--warning);
+  border-radius: 7px;
+  color: var(--warning);
+  font-size: var(--font-size-caption);
+  line-height: 1.4;
+}
+
 .detail-section {
   font-size: var(--font-size-panel);
   margin-top: 2px;

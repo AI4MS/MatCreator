@@ -16,11 +16,27 @@ export function mergeUploadedFiles(existingFiles = [], newFiles = []) {
 }
 
 export function sessionRelativeUploadPath(file, sessionId) {
+  if (file?.relative_path) return file.relative_path;
   const normalized = String(file?.path || "").replaceAll("\\", "/");
   const marker = sessionId ? `/${sessionId}/` : "";
   const markerIndex = marker ? normalized.indexOf(marker) : -1;
   if (markerIndex >= 0) return normalized.slice(markerIndex + marker.length);
   return file?.name ? `uploads/${file.name}` : normalized;
+}
+
+export function buildUploadTree(files = [], sessionId = "") {
+  const root = { folders: new Map(), files: [] };
+  for (const file of normalizedUploads(files)) {
+    const path = sessionRelativeUploadPath(file, sessionId).replace(/^uploads\//, "");
+    const parts = path.split("/");
+    let node = root;
+    for (const part of parts.slice(0, -1)) {
+      if (!node.folders.has(part)) node.folders.set(part, { folders: new Map(), files: [] });
+      node = node.folders.get(part);
+    }
+    node.files.push(file);
+  }
+  return root;
 }
 
 export function formatUploadNames(uploadNames = []) {
@@ -75,7 +91,7 @@ export function createSessionUploadsController({
   showReadOnlyMessage,
   fetchImpl = globalThis.fetch,
 }) {
-  const { button, input, status } = elements;
+  const { button, input, folderButton, folderInput, menu, filesChoice, status } = elements;
   let initialized = false;
   let activeController = null;
 
@@ -90,7 +106,19 @@ export function createSessionUploadsController({
     status.replaceChildren();
     status.className = "upload-status upload-file-list";
 
-    normalizedUploads(state.currentUploads).forEach((file) => {
+    function renderNode(node, container) {
+      for (const [folderName, child] of node.folders) {
+        const folder = document.createElement("details");
+        folder.className = "upload-folder";
+        const summary = document.createElement("summary");
+        summary.textContent = `📁 ${folderName}`;
+        const children = document.createElement("div");
+        children.className = "upload-folder-children";
+        renderNode(child, children);
+        folder.append(summary, children);
+        container.appendChild(folder);
+      }
+      node.files.forEach((file) => {
       const chip = document.createElement("span");
       chip.className = "upload-file-chip";
 
@@ -107,8 +135,10 @@ export function createSessionUploadsController({
       removeButton.addEventListener("click", () => remove(file));
 
       chip.append(name, removeButton);
-      status.appendChild(chip);
-    });
+      container.appendChild(chip);
+      });
+    }
+    renderNode(buildUploadTree(state.currentUploads, state.sessionId), status);
   }
 
   function clear() {
@@ -164,13 +194,15 @@ export function createSessionUploadsController({
     const controller = new AbortController();
     activeController = controller;
     if (button) button.disabled = true;
+    if (folderButton) folderButton.disabled = true;
     const uploaded = [];
 
     try {
       for (const file of files) {
-        setStatus(`Uploading ${file.name}...`, "busy");
+        setStatus(`Uploading ${file.webkitRelativePath || file.name} (${uploaded.length + 1}/${files.length})...`, "busy");
         const formData = new FormData();
         formData.append("file", file);
+        if (file.webkitRelativePath) formData.append("relative_path", file.webkitRelativePath);
         const response = await fetchImpl(`/api/sessions/${encodeURIComponent(sessionId)}/files`, {
           method: "POST",
           body: formData,
@@ -190,6 +222,10 @@ export function createSessionUploadsController({
       }
       return uploaded;
     } catch (error) {
+      if (state.sessionId === sessionId) {
+        state.currentUploads = mergeUploadedFiles(state.currentUploads, uploaded);
+        await refreshFiles?.(sessionId);
+      }
       if (error.name !== "AbortError") {
         setStatus(`Upload failed: ${error.message || error}`, "error");
       }
@@ -198,19 +234,48 @@ export function createSessionUploadsController({
       if (activeController === controller) {
         activeController = null;
         if (button) button.disabled = false;
+        if (folderButton) folderButton.disabled = false;
         if (input) input.value = "";
+        if (folderInput) folderInput.value = "";
       }
     }
   }
 
-  const handleButtonClick = () => input?.click();
+  function closeMenu() {
+    if (menu) menu.hidden = true;
+    button?.setAttribute("aria-expanded", "false");
+  }
+  const handleButtonClick = () => {
+    if (!menu) return input?.click();
+    menu.hidden = !menu.hidden;
+    button?.setAttribute("aria-expanded", String(!menu.hidden));
+    if (!menu.hidden) filesChoice?.focus();
+  };
+  const handleFilesClick = () => { closeMenu(); input?.click(); };
+  const handleFolderClick = () => { closeMenu(); folderInput?.click(); };
+  const handleOutsideClick = (event) => {
+    if (!menu?.contains(event.target) && !button?.contains(event.target)) closeMenu();
+  };
+  const handleEscape = (event) => {
+    if (event.key === "Escape" && menu && !menu.hidden) {
+      closeMenu();
+      button?.focus();
+    }
+  };
   const handleInputChange = (event) => upload(event.target.files);
 
   function init() {
     if (initialized) return;
     initialized = true;
     button?.addEventListener("click", handleButtonClick);
+    filesChoice?.addEventListener("click", handleFilesClick);
+    if (menu) {
+      document.addEventListener("click", handleOutsideClick);
+      document.addEventListener("keydown", handleEscape);
+    }
     input?.addEventListener("change", handleInputChange);
+    folderButton?.addEventListener("click", handleFolderClick);
+    folderInput?.addEventListener("change", handleInputChange);
     render();
   }
 
@@ -219,8 +284,16 @@ export function createSessionUploadsController({
     initialized = false;
     activeController?.abort();
     activeController = null;
+    closeMenu();
     button?.removeEventListener("click", handleButtonClick);
+    filesChoice?.removeEventListener("click", handleFilesClick);
+    if (menu) {
+      document.removeEventListener("click", handleOutsideClick);
+      document.removeEventListener("keydown", handleEscape);
+    }
     input?.removeEventListener("change", handleInputChange);
+    folderButton?.removeEventListener("click", handleFolderClick);
+    folderInput?.removeEventListener("change", handleInputChange);
   }
 
   return {

@@ -2192,14 +2192,14 @@ def _safe_upload_filename(filename: str) -> str:
 
 def _available_upload_path(upload_dir: Path, filename: str) -> Path:
     candidate = upload_dir / filename
-    if not candidate.exists():
+    if not candidate.exists() and not candidate.is_symlink():
         return candidate
 
     stem = candidate.stem or "upload"
     suffix = candidate.suffix
     for i in range(1, 10000):
         next_candidate = upload_dir / f"{stem}-{i}{suffix}"
-        if not next_candidate.exists():
+        if not next_candidate.exists() and not next_candidate.is_symlink():
             return next_candidate
 
     raise HTTPException(status_code=409, detail="Too many files with the same name")
@@ -4444,29 +4444,61 @@ async def list_session_files(session_id: str) -> JSONResponse:
     # files to the user-facing explorer when a session uses the shared root.
     internal_roots = {"cancellation", "trajectories"}
     files = []
+    skipped_files = 0
     for file_path in sorted(session_dir.rglob("*")):
         if not file_path.is_file():
             continue
-        relative_path = file_path.relative_to(session_dir).as_posix()
-        if relative_path.split("/", 1)[0] in internal_roots:
+        try:
+            relative_path = file_path.relative_to(session_dir).as_posix()
+            if relative_path.split("/", 1)[0] in internal_roots:
+                continue
+            exposed_path = (
+                _control_plane_path_to_worker(owner_id, file_path)
+                if owner_id
+                else str(file_path)
+            )
+            item = {
+                "name": file_path.name,
+                "path": exposed_path,
+                "relative_path": relative_path,
+                "size": file_path.stat().st_size,
+            }
+            # Linux permits arbitrary non-NUL bytes in filenames. Python
+            # represents invalid UTF-8 bytes as surrogate code points, which
+            # JSONResponse cannot encode. Skip only that entry so one damaged
+            # filename does not hide every valid workspace file.
+            for value in (item["name"], item["path"], item["relative_path"]):
+                value.encode("utf-8", errors="strict")
+        except (OSError, UnicodeEncodeError, ValueError) as exc:
+            skipped_files += 1
+            logger.warning("Skipping unreadable session file path %r: %s", file_path, exc)
             continue
-        files.append({
-            "name": file_path.name,
-            "path": _control_plane_path_to_worker(owner_id, file_path) if owner_id else str(file_path),
-            "relative_path": relative_path,
-            "size": file_path.stat().st_size,
-        })
-    return JSONResponse({"files": files})
+        files.append(item)
+    return JSONResponse({"files": files, "skipped_files": skipped_files})
 
 
 @app.post("/api/sessions/{session_id}/files")
-async def upload_session_file(session_id: str, file: UploadFile = File(...)) -> JSONResponse:
+async def upload_session_file(
+    session_id: str, file: UploadFile = File(...), relative_path: str = Form("")
+) -> JSONResponse:
     owner_id, _ = _load_session_state(session_id)
     session_dir = _get_workdir_for_session(session_id)
     upload_dir = session_dir / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    filename = _safe_upload_filename(file.filename or "")
+    # Browsers send webkitRelativePath including the selected root folder.
+    if relative_path:
+        parts = relative_path.replace("\\", "/").split("/")
+        if any(part in {"", ".", ".."} or ":" in part or any(ord(c) < 32 for c in part) for part in parts):
+            raise HTTPException(status_code=400, detail="Invalid upload relative path")
+        target_parent = upload_dir.joinpath(*parts[:-1])
+        if not target_parent.resolve().is_relative_to(upload_dir.resolve()):
+            raise HTTPException(status_code=400, detail="Upload path escapes uploads directory")
+        target_parent.mkdir(parents=True, exist_ok=True)
+        upload_dir = target_parent
+        filename = parts[-1]
+    else:
+        filename = _safe_upload_filename(file.filename or "")
     target = _available_upload_path(upload_dir, filename)
 
     size = 0
@@ -4482,6 +4514,7 @@ async def upload_session_file(session_id: str, file: UploadFile = File(...)) -> 
 
     return JSONResponse({
         "name": target.name,
+        "relative_path": target.relative_to(session_dir).as_posix(),
         "path": _control_plane_path_to_worker(owner_id, target) if owner_id else str(target),
         "size": size,
     })
