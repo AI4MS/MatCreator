@@ -109,6 +109,19 @@ class RemoteJobMonitor:
         return started
 
     def _reconcile_and_poll(self, job_id: str) -> dict[str, Any]:
+        """Combine the two independent things a periodic probe does for one job.
+
+        ``reconcile_job`` is a liveness/lifecycle probe; for a batch-style
+        provider it is what discovers ``succeeded``/``failed``, while for an
+        interactive provider (e.g. ``bohr_sandbox``) it can only ever
+        discover that the sandbox was lost/evicted, since such providers have
+        no server-driven terminal outcome to poll for otherwise. The
+        ``poll_job_command`` call below is unrelated and provider-agnostic:
+        it checks a background command started via ``start_job_command``, the
+        mechanism that lets an interactive sandbox run a long step
+        asynchronously the same way a batch job does. Both stay useful for
+        sandboxes and neither substitutes for the other.
+        """
         updated = self.service.reconcile_job(job_id)
         if (
             updated["status"] in {"queued", "running", "resuming"}
