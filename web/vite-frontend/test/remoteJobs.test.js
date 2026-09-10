@@ -253,6 +253,7 @@ test("polling runs fast while remote jobs are active and slow when idle", async 
       httpClient: { getJson: async () => ({ jobs: state.remoteJobs }) },
       pollIntervalMs: 15_000,
       activePollIntervalMs: 3_000,
+      terminalGraceMs: 6_000,
     },
     windowOverrides: {
       setTimeout(callback, interval) {
@@ -270,7 +271,13 @@ test("polling runs fast while remote jobs are active and slow when idle", async 
   assert.deepEqual(scheduled, [3_000, 3_000]);
   state.remoteJobs = [{ status: "succeeded" }, { status: "failed" }];
   await pendingTick();
-  assert.deepEqual(scheduled, [3_000, 3_000, 15_000]);
+  // Still fast right after the active -> idle transition: a grace window
+  // covers the backend's own delay in starting a wakeup run.
+  assert.deepEqual(scheduled, [3_000, 3_000, 3_000]);
+  await pendingTick();
+  assert.deepEqual(scheduled, [3_000, 3_000, 3_000, 3_000]);
+  await pendingTick();
+  assert.deepEqual(scheduled, [3_000, 3_000, 3_000, 3_000, 15_000]);
   controller.stopPolling();
   assert.equal(pendingTick, null);
   controller.destroy();
@@ -288,6 +295,7 @@ test("polling stays fast while a harness run is active even after jobs finish", 
       httpClient: { getJson: async () => ({ ...response }) },
       pollIntervalMs: 15_000,
       activePollIntervalMs: 3_000,
+      terminalGraceMs: 6_000,
     },
     windowOverrides: {
       setTimeout(callback, interval) {
@@ -305,7 +313,95 @@ test("polling stays fast while a harness run is active even after jobs finish", 
   assert.deepEqual(scheduled, [3_000, 3_000]);
   delete response.active_run;
   await pendingTick();
-  assert.deepEqual(scheduled, [3_000, 3_000, 15_000]);
+  assert.deepEqual(scheduled, [3_000, 3_000, 3_000]);
+  await pendingTick();
+  assert.deepEqual(scheduled, [3_000, 3_000, 3_000, 3_000]);
+  await pendingTick();
+  assert.deepEqual(scheduled, [3_000, 3_000, 3_000, 3_000, 15_000]);
+  controller.destroy();
+});
+
+test("grace period expires with no active_run appearing, then reverts to slow polling", async () => {
+  const scheduled = [];
+  let pendingTick = null;
+  const { controller, state } = createFixture({
+    controllerOverrides: {
+      dummyMode: false,
+      httpClient: { getJson: async () => ({ jobs: state.remoteJobs }) },
+      pollIntervalMs: 15_000,
+      activePollIntervalMs: 3_000,
+      terminalGraceMs: 9_000,
+    },
+    windowOverrides: {
+      setTimeout(callback, interval) {
+        scheduled.push(interval);
+        pendingTick = callback;
+        return scheduled.length;
+      },
+      clearTimeout() { pendingTick = null; },
+    },
+  });
+  state.remoteJobs = [{ status: "running" }];
+  controller.startPolling("session-1", "owner-1");
+  assert.deepEqual(scheduled, [3_000]);
+  state.remoteJobs = [{ status: "succeeded" }];
+  // terminalGraceMs / activePollIntervalMs = 3 grace ticks, all fast.
+  await pendingTick();
+  assert.deepEqual(scheduled, [3_000, 3_000]);
+  await pendingTick();
+  assert.deepEqual(scheduled, [3_000, 3_000, 3_000]);
+  await pendingTick();
+  assert.deepEqual(scheduled, [3_000, 3_000, 3_000, 3_000]);
+  // Grace window exhausted: next poll reverts to the slow cadence.
+  await pendingTick();
+  assert.deepEqual(scheduled, [3_000, 3_000, 3_000, 3_000, 15_000]);
+  controller.destroy();
+});
+
+test("active_run appearing mid-grace keeps polling fast and restarts the grace window later", async () => {
+  const scheduled = [];
+  let pendingTick = null;
+  const response = { jobs: [{ status: "succeeded" }] };
+  const { controller } = createFixture({
+    controllerOverrides: {
+      dummyMode: false,
+      httpClient: { getJson: async () => ({ ...response }) },
+      pollIntervalMs: 15_000,
+      activePollIntervalMs: 3_000,
+      terminalGraceMs: 6_000,
+    },
+    windowOverrides: {
+      setTimeout(callback, interval) {
+        scheduled.push(interval);
+        pendingTick = callback;
+        return scheduled.length;
+      },
+      clearTimeout() { pendingTick = null; },
+    },
+  });
+  // Start already idle-but-in-grace by first observing an active run, then
+  // losing it, to enter the grace window.
+  response.active_run = { run_id: "wakeup-run" };
+  await controller.load("session-1", "owner-1");
+  controller.startPolling("session-1", "owner-1");
+  assert.deepEqual(scheduled, [3_000]);
+  delete response.active_run;
+  await pendingTick();
+  // Enters grace window (still fast).
+  assert.deepEqual(scheduled, [3_000, 3_000]);
+  // active_run reappears mid-grace: stays fast (unaffected), and grace is
+  // cleared so a later disappearance restarts the full window.
+  response.active_run = { run_id: "wakeup-run-2" };
+  await pendingTick();
+  assert.deepEqual(scheduled, [3_000, 3_000, 3_000]);
+  delete response.active_run;
+  // Full grace window restarts: 2 more fast ticks before reverting to slow.
+  await pendingTick();
+  assert.deepEqual(scheduled, [3_000, 3_000, 3_000, 3_000]);
+  await pendingTick();
+  assert.deepEqual(scheduled, [3_000, 3_000, 3_000, 3_000, 3_000]);
+  await pendingTick();
+  assert.deepEqual(scheduled, [3_000, 3_000, 3_000, 3_000, 3_000, 15_000]);
   controller.destroy();
 });
 

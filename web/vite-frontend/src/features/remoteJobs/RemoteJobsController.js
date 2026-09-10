@@ -769,6 +769,7 @@ export function createRemoteJobsController({
   window: windowRef = globalThis.window,
   pollIntervalMs = 15_000,
   activePollIntervalMs = 3_000,
+  terminalGraceMs = 15_000, // ~ backend interval_seconds (15s) + callback_timeout_seconds (60s) + margin
 } = {}) {
   const list = documentRef.getElementById("remote-job-list");
   const refreshButton = documentRef.getElementById("refresh-remote-jobs");
@@ -786,6 +787,8 @@ export function createRemoteJobsController({
   let expanded = false;
   let destroyed = false;
   let lastActivityHadActiveRun = false;
+  let wasActive = false;
+  let graceRemainingMs = 0;
   let rackLiquidGlassFilterRoot = null;
   let rackLiquidGlassActiveCard = null;
   let rackLiquidGlassPointerFrame = null;
@@ -1417,9 +1420,26 @@ export function createRemoteJobsController({
     // window so a harness-started run attaches within seconds, not a full
     // idle interval. An already-running harness run also keeps the fast
     // cadence: its attachment may have been deferred mid-handoff.
-    return (lastActivityHadActiveRun || state.remoteJobs?.some?.(
+    const activeNow = lastActivityHadActiveRun || state.remoteJobs?.some?.(
       (job) => ACTIVE_POLL_STATUSES.has(String(job?.status || "").toLowerCase()),
-    )) ? activePollIntervalMs : pollIntervalMs;
+    );
+    if (activeNow) {
+      wasActive = true;
+      graceRemainingMs = 0;
+      return activePollIntervalMs;
+    }
+    if (wasActive) {
+      // Just transitioned active -> idle: a backend wakeup may still be
+      // starting (interval_seconds tick + callback_timeout_seconds). Stay
+      // fast for a grace window instead of reverting immediately.
+      graceRemainingMs = terminalGraceMs;
+      wasActive = false;
+    }
+    if (graceRemainingMs > 0) {
+      graceRemainingMs = Math.max(0, graceRemainingMs - activePollIntervalMs);
+      return activePollIntervalMs;
+    }
+    return pollIntervalMs;
   }
 
   function rearmPollTimer(sessionId, owner) {
@@ -1457,6 +1477,8 @@ export function createRemoteJobsController({
     stopPolling();
     state.remoteJobs = presentationJobs === null ? [] : clonePresentationJobs();
     lastActivityHadActiveRun = false;
+    wasActive = false;
+    graceRemainingMs = 0;
     flippedJobIds.clear();
     lastPhaseByJobId.clear();
     render();
