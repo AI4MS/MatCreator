@@ -452,6 +452,29 @@ def attach_bohr_batchjob(
     }
 
 
+def list_remote_jobs(tool_context: ToolContext, active_only: bool = False) -> dict[str, Any]:
+    """List remote jobs tracked for the current session, newest-updated first.
+
+    Returns a compact per-job projection (``job_id``, ``provider``, ``node_id``,
+    ``status``, ``external_id``, ``updated_at``, ``error``) instead of full
+    snapshots/events, so it is cheap to call before answering questions about
+    running jobs or after a restart, without resorting to ``read_session_log``
+    or scrollback. Set ``active_only=True`` to hide terminal jobs.
+    """
+    session_id = tool_context.state.get("session_id")
+    if not session_id:
+        return {"status": "error", "message": "No session_id found in state."}
+    service = _service()
+    jobs = service.store.list_jobs(owner_id=_owner_id(tool_context), session_id=str(session_id))
+    if active_only:
+        jobs = [job for job in jobs if job["status"] not in TERMINAL_REMOTE_JOB_STATUSES]
+    summaries = [
+        {key: job.get(key) for key in ("job_id", "provider", "node_id", "status", "external_id", "updated_at", "error")}
+        for job in jobs
+    ]
+    return {"status": "ok", "job_count": len(summaries), "jobs": summaries}
+
+
 def get_remote_job_status(job_id: str, tool_context: ToolContext) -> dict[str, Any]:
     """Read one tracked remote job (any provider) owned by the current session."""
     service = _service()

@@ -13,6 +13,7 @@ class _FakeService:
     def __init__(self) -> None:
         self.submissions: list[dict] = []
         self.store = self
+        self.jobs: list[dict] = []
 
     def submit_job(self, **kwargs):
         self.submissions.append(kwargs)
@@ -39,6 +40,13 @@ class _FakeService:
 
     def list_events(self, job_id: str):
         return [{"event_type": "user_control", "payload": {"action": "terminate", "source": "ui"}}]
+
+    def list_jobs(self, *, owner_id: str, session_id: str):
+        return [
+            job
+            for job in self.jobs
+            if job["owner_id"] == owner_id and job["session_id"] == session_id
+        ]
 
     def pause_job(self, job_id: str):
         return {"job_id": job_id, "status": "paused", "external_id": "sandbox-123"}
@@ -715,3 +723,122 @@ def test_poll_remote_job_command_surfaces_service_errors(monkeypatch) -> None:
 
     assert result["status"] == "error"
     assert "no in-flight background command" in result["message"]
+
+
+def test_list_remote_jobs_returns_compact_projection_for_current_session(monkeypatch) -> None:
+    service = _FakeService()
+    service.jobs = [
+        {
+            "job_id": "job-123",
+            "owner_id": "alice",
+            "session_id": "session-1",
+            "provider": "e2b",
+            "node_id": "relax",
+            "status": "running",
+            "external_id": "sandbox-123",
+            "updated_at": 2,
+            "error": None,
+            "snapshot": {"secret": "hide-me"},
+        },
+        {
+            "job_id": "job-456",
+            "owner_id": "alice",
+            "session_id": "session-1",
+            "provider": "bohr_batchjob",
+            "node_id": "scf",
+            "status": "collected",
+            "external_id": "batch-456",
+            "updated_at": 1,
+            "error": None,
+        },
+        {
+            "job_id": "job-other-session",
+            "owner_id": "alice",
+            "session_id": "session-2",
+            "provider": "e2b",
+            "node_id": "relax",
+            "status": "running",
+            "external_id": "sandbox-999",
+            "updated_at": 3,
+            "error": None,
+        },
+    ]
+    monkeypatch.setattr(remote_job_tools, "_service", lambda: service)
+
+    result = remote_job_tools.list_remote_jobs(_context())
+
+    assert result["status"] == "ok"
+    assert result["job_count"] == 2
+    assert result["jobs"] == [
+        {
+            "job_id": "job-123",
+            "provider": "e2b",
+            "node_id": "relax",
+            "status": "running",
+            "external_id": "sandbox-123",
+            "updated_at": 2,
+            "error": None,
+        },
+        {
+            "job_id": "job-456",
+            "provider": "bohr_batchjob",
+            "node_id": "scf",
+            "status": "collected",
+            "external_id": "batch-456",
+            "updated_at": 1,
+            "error": None,
+        },
+    ]
+    assert "snapshot" not in result["jobs"][0]
+
+
+def test_list_remote_jobs_active_only_filters_terminal_jobs(monkeypatch) -> None:
+    service = _FakeService()
+    service.jobs = [
+        {
+            "job_id": "job-running",
+            "owner_id": "alice",
+            "session_id": "session-1",
+            "provider": "e2b",
+            "node_id": "relax",
+            "status": "running",
+            "external_id": "sandbox-1",
+            "updated_at": 2,
+            "error": None,
+        },
+        {
+            "job_id": "job-terminated",
+            "owner_id": "alice",
+            "session_id": "session-1",
+            "provider": "e2b",
+            "node_id": "scf",
+            "status": "terminated",
+            "external_id": "sandbox-2",
+            "updated_at": 1,
+            "error": None,
+        },
+    ]
+    monkeypatch.setattr(remote_job_tools, "_service", lambda: service)
+
+    result = remote_job_tools.list_remote_jobs(_context(), active_only=True)
+
+    assert result["job_count"] == 1
+    assert result["jobs"][0]["job_id"] == "job-running"
+
+
+def test_list_remote_jobs_returns_empty_when_no_jobs_tracked(monkeypatch) -> None:
+    service = _FakeService()
+    monkeypatch.setattr(remote_job_tools, "_service", lambda: service)
+
+    result = remote_job_tools.list_remote_jobs(_context())
+
+    assert result == {"status": "ok", "job_count": 0, "jobs": []}
+
+
+def test_list_remote_jobs_requires_session_id(monkeypatch) -> None:
+    monkeypatch.setattr(remote_job_tools, "_service", lambda: pytest.fail("missing session must not access store"))
+    context = SimpleNamespace(state={}, _invocation_context=SimpleNamespace(user_id="alice"))
+
+    result = remote_job_tools.list_remote_jobs(context)
+
+    assert result == {"status": "error", "message": "No session_id found in state."}
