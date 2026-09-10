@@ -368,6 +368,7 @@ const activityRenderer = createActivityRenderer({
 const stepFeedRenderer = createStepFeedRenderer({
   activityRenderer,
   createStructureViewButtonGroup,
+  createTimelineImage,
 });
 const {
   renderTimeline,
@@ -657,6 +658,10 @@ const sessionUploadsController = createSessionUploadsController({
   elements: {
     button: fileUploadBtn,
     input: fileUploadInput,
+    menu: document.getElementById("upload-picker-menu"),
+    filesChoice: document.getElementById("upload-files-choice"),
+    folderButton: document.getElementById("folder-upload-btn"),
+    folderInput: document.getElementById("folder-upload-input"),
     status: uploadStatus,
   },
   ensureSession: createSession,

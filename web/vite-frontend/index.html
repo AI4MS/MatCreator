@@ -245,8 +245,15 @@
                     <textarea class="text-input" id="text-input" aria-label="Message MatCreator" placeholder="Ask for a plan, run, or assessment…" rows="1"></textarea>
                   </div>
                   <div class="composer-toolbar">
-                    <button class="tool-btn" id="file-upload-btn" type="button" title="Upload file" aria-label="Upload files">+</button>
-                    <input type="file" id="file-upload-input" multiple style="display:none">
+                    <div class="upload-picker">
+                      <button class="tool-btn" id="file-upload-btn" type="button" title="Upload" aria-label="Upload" aria-expanded="false" aria-controls="upload-picker-menu">+</button>
+                      <div id="upload-picker-menu" class="upload-picker-menu" hidden>
+                        <button id="upload-files-choice" type="button">上传文件</button>
+                        <button id="folder-upload-btn" type="button">上传文件夹</button>
+                      </div>
+                      <input type="file" id="file-upload-input" multiple style="display:none">
+                      <input type="file" id="folder-upload-input" webkitdirectory multiple style="display:none">
+                    </div>
                     <div class="mode-selector" id="mode-selector">
                       <button class="mode-trigger" id="mode-trigger" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="mode-menu" title="Choose agent mode">
                         <span class="mode-trigger-icon" aria-hidden="true"></span>

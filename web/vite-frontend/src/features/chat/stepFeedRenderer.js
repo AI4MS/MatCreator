@@ -1,4 +1,4 @@
-import { getStructurePaths } from "./timelinePresentation.js";
+import { getPlotPaths, getStructurePaths } from "./timelinePresentation.js";
 import { createPayloadBlock } from "./payloadViews.js";
 
 export function formatStepDuration(node, now = Date.now()) {
@@ -38,6 +38,7 @@ export function stepFeedStatusIcon(status) {
 export function createStepFeedRenderer({
   activityRenderer,
   createStructureViewButtonGroup,
+  createTimelineImage,
 }) {
   const { createTimelineReasoning, createActivityAction } = activityRenderer;
 
@@ -107,6 +108,9 @@ export function createStepFeedRenderer({
     const raw = details?.querySelector(".tool-call-raw");
     const structurePaths = getStructurePaths(toolCallData);
     if (structurePaths.length) raw?.appendChild(createStructureViewButtonGroup(structurePaths));
+    if (createTimelineImage) {
+      getPlotPaths(toolCall.output).forEach((path) => details?.appendChild(createTimelineImage(path)));
+    }
     return details;
   }
 

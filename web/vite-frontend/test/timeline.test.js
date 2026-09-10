@@ -34,6 +34,15 @@ test("normalizes timeline protocol variants and artifact paths", () => {
   }), ["structures/optimized.cif", "structures/initial.xyz"]);
 });
 
+test("delegated plot artifacts survive nested executor results and deduplicate", () => {
+  assert.deepEqual(getPlotPaths({
+    result: { artifacts: ["C:\\plots\\parity.PNG", "relaxed.cif", "checkpoint.pt"] },
+    output: { plot_paths: ["C:\\plots\\parity.PNG", "energy.png"] },
+    prose: "unregistered.png",
+  }), ["C:\\plots\\parity.PNG", "energy.png"]);
+  assert.deepEqual(getPlotPaths({ error: "missing plot.png" }), []);
+});
+
 test("assistant message lifecycle has one deterministic completion owner", () => {
   const message = createAssistantMessage({ id: "assistant:test", startedAt: 10 });
   assert.equal(message.lifecycle, "created");

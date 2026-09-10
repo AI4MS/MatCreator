@@ -45,6 +45,7 @@ from ...tools.util_tools import (
     show_structure
 )
 from .history_tools import read_session_log
+from ..execution_agent.remote_job_tools import list_remote_jobs
 
 
 logger = logging.getLogger(__name__)
@@ -395,6 +396,10 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
     - When the user asks to check on it or the job is expected to be done, call
       `set_node_status(node_id="...", status="pending")` and hand control back so the
       node runs again; its executor automatically re-attaches to the same job.
+- Before answering questions about running/tracked jobs, or after a restart, call
+    `list_remote_jobs()` for an authoritative, low-noise list of this session's remote
+    jobs (job IDs, providers, statuses) instead of relying on conversation history.
+    Pass `active_only=True` to hide finished jobs.
 - As a last-resort debug path, call `read_session_log(view="overview")` first to inspect
     the coarse executor graph. Only then call `read_session_log(view="detail", step_id="...")`
     or `node_id="..."` for one executor of interest; do not request bulk detail by default.
@@ -493,6 +498,7 @@ thinking_agent = LlmAgent(
         FunctionTool(run_bash),
         FunctionTool(run_flash_step),
         FunctionTool(read_session_log),
+        FunctionTool(list_remote_jobs),
         FunctionTool(load_skill),
         show_artifact,
         show_plot,

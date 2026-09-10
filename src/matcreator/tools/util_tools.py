@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import shutil
 from pathlib import Path
 
 
@@ -20,13 +22,13 @@ def show_plot(plot_path: str) -> dict:
         dict with ``plot_path`` (resolved absolute path) on success, or an
         ``error`` key if the file cannot be found.
     """
-    # Resolve relative paths against MATCLAW_WORKSPACE
+    from matcreator.workspace import get_workspace_root
+
+    ws_root = get_workspace_root().resolve()
+    # Use the same workspace resolution as the file-serving API.
     p = Path(plot_path)
     if not p.is_absolute():
-        ws_root = os.environ.get("MATCLAW_WORKSPACE") or str(
-            Path(__file__).parent / ".workspace"
-        )
-        p = Path(ws_root) / p
+        p = ws_root / p
 
     p = p.resolve()
 
@@ -35,6 +37,22 @@ def show_plot(plot_path: str) -> dict:
 
     if not p.is_file():
         return {"error": f"Path is not a file: {p}"}
+
+    # The browser can only read workspace files. Publish a stable copy of an
+    # explicitly registered external plot without widening the HTTP boundary.
+    if not p.is_relative_to(ws_root):
+        if p.suffix.lower() not in {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}:
+            return {"error": f"Unsupported plot image format: {p.suffix}"}
+        try:
+            with p.open("rb") as source:
+                digest = hashlib.file_digest(source, "sha256").hexdigest()
+            published = ws_root / "plots" / "imported" / digest / p.name
+            published.parent.mkdir(parents=True, exist_ok=True)
+            if not published.is_file():
+                shutil.copy2(p, published)
+            p = published
+        except OSError as exc:
+            return {"error": f"Cannot publish plot into workspace: {exc}"}
 
     return {"plot_path": str(p)}
 

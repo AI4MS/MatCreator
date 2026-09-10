@@ -141,6 +141,23 @@ dp show <model_file> descriptor
 
 ---
 
+# Standard fine-tuning (DPA-1 / DPA-2 / DPA-3 / DPA-4)
+
+All models except DPA-4c fine-tune with the regular `--pt` backend and the
+**`--finetune`** flag:
+
+```bash
+dp --pt train input.json --finetune <model> > train_log 2>&1
+```
+
+The exact command (head selection, freeze, and `dp test` steps included) is
+printed by `deepmd_prepare.py prepare-finetune` in Phase 1 — run it as-is.
+
+> **`--init-model` is exclusive to DPA-4c.** DPA-4 — and every other model —
+> must use `--finetune` for fine-tuning; never `--init-model`.
+
+---
+
 # DPA-4c fine-tuning
 
 Fine-tuning a DPA-4c model from a fine-tuned model is the only scenario where

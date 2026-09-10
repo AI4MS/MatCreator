@@ -1,6 +1,6 @@
 ---
 name: machine-learning-force-field
-description: Concept skill for Machine Learning Force Fields (MLFFs). Describes what MLFFs are, the unified init-model fine-tuning workflow with base-model selection (DPA4 vs DPA4c), and which tool skills to use. Load this before selecting a specific MLFF framework (DeePMD, MatterSim, etc.).
+description: Concept skill for Machine Learning Force Fields (MLFFs). Describes what MLFFs are, the unified fine-tuning workflow with base-model selection (DPA4 vs DPA4c; DPA4 fine-tunes via --finetune, only DPA4c uses --init-model), and which tool skills to use. Load this before selecting a specific MLFF framework (DeePMD, MatterSim, etc.).
 metadata:
   dependent_skills:
     - deepmd
@@ -24,12 +24,12 @@ MLFFs enable large-scale and long-timescale molecular dynamics simulations that 
 
 | Task name                 | Description                                                                                                   |
 |---------------------------|---------------------------------------------------------------------------------------------------------------|
-| **Fine-tuning**           | Init-model fine-tune a pre-trained model to a target system using DFT-labeled (or optionally model-labeled) data in that system. |
+| **Fine-tuning**           | Fine-tune a pre-trained model to a target system using DFT-labeled (or optionally model-labeled) data in that system. |
 | **Inference / MD**        | Deploy the MLFF model for structure relaxation or molecular dynamics.                                         |
 
 ## When to Use
 
-- Init-model fine-tuning of a pre-trained model is the most common use case.
+- Fine-tuning of a pre-trained model (starting from the pretrained weights) is the most common use case.
 - When the pre-trained or fine-tuned model is too large for productive MD simulations, choose the lightweight **DPA4c** base model (see base-model selection below).
 - Act as the energy, force and stress provider for the majority of atomistic property calculations
   (after confirmed accuracy on DFT-labeled testing set.)
@@ -51,17 +51,18 @@ Load the appropriate tool skill when needing detailed instructions (e.g., `load_
 
 # Base-model selection: DPA4 vs DPA4c
 
-Two deepmd base models cover all MLFF generation needs. Both use **init-model fine-tuning** — the only systematic differences are the **base model** and the **input.json** template. Choose based on the intended use:
+Two deepmd base models cover all MLFF generation needs. Both are fine-tuned starting from the pretrained weights, but the fine-tuning mode differs: **DPA4 must use `--finetune`**, while **only DPA4c may use `--init-model`**. The **base model** and **input.json** template also differ (concrete CLI is owned by the `deepmd` skill). Choose based on the intended use:
 
 | Base model | Choose when | Typical role |
 |------------|-------------|--------------|
-| **DPA4** | **High-accuracy** force fields | Pre-trained general-purpose model, init-model fine-tuned on DFT-labeled data of the target system. Best accuracy. |
-| **DPA4c** | **High-efficiency / large-scale simulation** force fields | Lightweight model, init-model fine-tuned on DFT-labeled or model-labeled data. Best inference speed for production MD (> 100 K atoms, > 1 ns). |
+| **DPA4** | **High-accuracy** force fields | Pre-trained general-purpose model, fine-tuned (`--finetune`) on DFT-labeled data of the target system. Best accuracy. |
+| **DPA4c** | **High-efficiency / large-scale simulation** force fields | Lightweight model, fine-tuned (`--init-model`) on DFT-labeled or model-labeled data. Best inference speed for production MD (> 100 K atoms, > 1 ns). |
 
 > **Summary in plain language:**
 > - Need **high precision** → choose **DPA4**.
 > - Need **high efficiency** or **large-scale simulation** → choose **DPA4c**.
-> - Both are fine-tuned the same way (init-model); the only differences are the base model and input.json.
+> - Fine-tuning mode differs: **DPA4 uses `--finetune`**; **only DPA4c uses `--init-model`**.
+>   The base model and input.json also differ.
 
 ### DPA4c model labeling
 
@@ -102,7 +103,7 @@ fine-tuned single-task model, and only then come back to DPA4c.
 
 ---
 
-# Unified MLFF generation workflow (init-model fine-tuning)
+# Unified MLFF generation workflow (fine-tuning from pretrained weights)
 
 Both DPA4 and DPA4c follow the **same procedure** below (see base-model selection
 above for the differences between them). DPA4c additionally supports **optional
@@ -241,10 +242,10 @@ Label the entropy-selected structures to obtain energy, forces, and virial:
    DPA4c), use the `deepmd` skill's preparation script. Train/test split ratio
    is **4:1** for all labeled frames.
 
-2. **Train (both DPA4 & DPA4c):** Init-model fine-tune the pre-trained model
-   on the labeled data (both base models are initialized from the pretrained
-   weights; the concrete CLI differs between DPA4 and DPA4c and is owned by
-   the `deepmd` skill). Both base models default to **50 epochs** (do NOT
+2. **Train (both DPA4 & DPA4c):** Fine-tune the pre-trained model on the labeled
+   data (both base models start from the pretrained weights; **DPA4 must use
+   `--finetune`**, and **only DPA4c uses `--init-model`** — the concrete CLI is
+   owned by the `deepmd` skill). Both base models default to **50 epochs** (do NOT
    instruct training in steps). Submit the training job on Bohrium via the
    `bohrium` skill.
 
@@ -332,5 +333,5 @@ See the `deepmd` skill for details.
 - **Evaluation always compares pretrained vs fine-tuned** for both DPA4 and
   DPA4c; if model labeling was used, also compare DPA4c vs the fine-tuned
   model (two-level).
-- Both base models (DPA4 and DPA4c) use **init-model fine-tuning** and default
-  to **50 epochs**.
+- Both base models (DPA4 and DPA4c) fine-tune from pretrained weights — **DPA4
+  via `--finetune`**, **DPA4c via `--init-model`** — and default to **50 epochs**.
