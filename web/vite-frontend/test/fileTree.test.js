@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { relativePathForFile } from "../src/features/session/fileTree.js";
+import {
+  formatSkippedFilesNotice,
+  relativePathForFile,
+} from "../src/features/session/fileTree.js";
+
+test("formats a notice only when session files were skipped", () => {
+  assert.equal(formatSkippedFilesNotice(4090, 1), "已显示 4090 个文件，另有 1 个异常文件名被隐藏");
+  assert.equal(formatSkippedFilesNotice(12, 0), "");
+});
 
 test("uses the API relative path even when a filename contains the session id", () => {
   const files = [

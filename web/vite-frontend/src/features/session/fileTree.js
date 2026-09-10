@@ -44,6 +44,12 @@ export function relativePathForFile(files, file, fallbackPrefix = commonPathPref
   return file.path.slice(fallbackPrefix.length).replace(/^\//, "");
 }
 
+export function formatSkippedFilesNotice(displayedCount, skippedCount) {
+  const skipped = Number(skippedCount) || 0;
+  if (skipped <= 0) return "";
+  return `已显示 ${Number(displayedCount) || 0} 个文件，另有 ${skipped} 个异常文件名被隐藏`;
+}
+
 function createTreeIcon(type) {
   const icon = document.createElement("span");
   icon.className = `tree-icon tree-icon-${type}`;
@@ -170,10 +176,25 @@ export function createSessionFileTree({ pathToApiUrl, openStructure, openFile })
     for (const file of files) container.appendChild(createFileItem(file));
   }
 
-  function render(files) {
+  function render(files, errorMessage = "", skippedFiles = 0) {
     const rootElement = document.getElementById("session-files-tree");
     rootElement.innerHTML = "";
+    if (errorMessage) {
+      const error = document.createElement("li");
+      error.className = "empty files-load-error";
+      error.textContent = errorMessage;
+      rootElement.appendChild(error);
+      return;
+    }
+    const skippedNotice = formatSkippedFilesNotice(files.length, skippedFiles);
+    if (skippedNotice) {
+      const notice = document.createElement("li");
+      notice.className = "files-skipped-notice";
+      notice.textContent = skippedNotice;
+      rootElement.appendChild(notice);
+    }
     if (!files.length) {
+      if (skippedNotice) return;
       const empty = document.createElement("li");
       empty.className = "empty";
       empty.textContent = "No files yet";

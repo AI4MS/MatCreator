@@ -1701,6 +1701,33 @@ details.step-feed-nested {
   color: var(--muted);
   font-size: var(--font-size-caption);
 }
+.upload-picker { position: relative; }
+.upload-picker-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 20;
+  min-width: 150px;
+  padding: 5px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+}
+.upload-picker-menu button {
+  display: block;
+  width: 100%;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.upload-picker-menu button:hover,
+.upload-picker-menu button:focus-visible { background: var(--bg-surface); }
 .upload-status:empty { display: none; }
 .upload-status-busy { color: var(--accent); }
 .upload-status-done { color: #34D399; }
@@ -1710,18 +1737,40 @@ details.step-feed-nested {
   flex-wrap: wrap;
   gap: 6px;
 }
+.upload-folder {
+  max-width: 100%;
+  color: var(--text);
+}
+.upload-folder > summary {
+  cursor: pointer;
+  padding: 4px 9px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-elevated);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.upload-folder-children {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 6px 0 0 14px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
 .upload-file-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   max-width: 220px;
   padding: 4px 6px 4px 9px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--bg-elevated);
   color: var(--text);
 }
 .upload-file-name {
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1731,8 +1780,8 @@ details.step-feed-nested {
   height: 18px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--muted);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
   cursor: pointer;
   line-height: 1;
 }

@@ -182,13 +182,21 @@ export function createSessionCoordinator({
       const response = await fetchImpl(`/api/sessions/${encodeURIComponent(sessionId)}/files`, {
         signal: controller.signal,
       });
-      if (!response.ok) return [];
+      if (!response.ok) {
+        if (!controller.signal.aborted && isCurrentSession(sessionId, owner)) {
+          renderSessionFilesTree([], `Could not load files (HTTP ${response.status}).`);
+        }
+        return [];
+      }
       const data = await response.json();
       if (!controller.signal.aborted && isCurrentSession(sessionId, owner)) {
-        renderSessionFilesTree(data.files || []);
+        renderSessionFilesTree(data.files || [], "", data.skipped_files || 0);
       }
       return data.files || [];
     } catch (error) {
+      if (error?.name !== "AbortError" && isCurrentSession(sessionId, owner)) {
+        renderSessionFilesTree([], "Could not load files. Use refresh to try again.");
+      }
       return [];
     } finally {
       if (filesRequestController === controller) filesRequestController = null;
