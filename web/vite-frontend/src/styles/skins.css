@@ -71,6 +71,14 @@ body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .app-grid {
   filter: drop-shadow(0 8px 14px rgba(23, 25, 31, 0.08));
 }
 
+body[data-style-recipe="rack-lab"] .markdown-content :not(pre) > code {
+  color: var(--text-primary);
+  border: 1px solid color-mix(in srgb, var(--text-primary) 14%, transparent);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  overflow-wrap: anywhere;
+}
+
 body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .graph-rail {
   --text: #F7F4EA;
   --muted: #C3C0B7;
