@@ -54,7 +54,14 @@ export function createSessionCoordinator({
     if (requestOwnsLiveDom(request) || requestOwnsLiveDom(activeSessionRequest())) return;
     const runtime = getSessionRuntime();
     if (activity.active_run) {
-      runtime.startManagedRunReconnect(activity.active_run, sessionId, owner);
+      // A harness-started (wakeup) run streams through the same managed SSE
+      // channel as a composed turn, but only the composer path started graph
+      // polling. Without it, delegated-task progress inside the wakeup turn
+      // never updates until the run terminates.
+      if (runtime.startManagedRunReconnect(activity.active_run, sessionId, owner)) {
+        agentGraph.startPolling(sessionId);
+        planGraph.startPolling(sessionId);
+      }
       return;
     }
     const revision = activity.activity_revision;
@@ -227,6 +234,13 @@ export function createSessionCoordinator({
         if (state.sessionId !== sessionId || state.userId !== owner) return false;
         state.sessionReady = true;
         storeSessionSelection(sessionId, state.activeSessionUserId);
+        // Sessions created in-app (new chat / first message) must poll remote
+        // jobs just like sessions entered via switchSession. This poll is also
+        // the only channel that discovers a harness-started wakeup run, so
+        // without it the session never auto-refreshes job status or attaches
+        // to the wakeup turn.
+        remoteJobsController.startPolling(sessionId, state.activeSessionUserId);
+        void remoteJobsController.load(sessionId, state.activeSessionUserId);
         await loadSessions();
         return true;
       } catch (error) {

@@ -4,6 +4,7 @@ import {
   createAssistantMessage,
 } from "../chat/timeline.js";
 import { createMessageRenderScheduler, messageRenderInterval } from "../chat/messageRenderScheduler.js";
+import { phaseForTool } from "../chat/agentPhases.js";
 import { appendRunFailure, markRunFailureView, runFailureMarkdown } from "../chat/runFailure.js";
 import {
   findConversationRequest,
@@ -193,10 +194,20 @@ export function createSessionRuntime({
     // The active run always belongs to the newest persisted user turn. Do not
     // compare text here: the durable message can contain upload context or
     // other normalization that differs from `request.backendMessage`.
-    const activeUserIndex = request
+    const lastUserRecord = request
       ? [...context.store.records.values()].sort((left, right) => left.index - right.index)
-        .findLast(({ event }) => event?.author === "user")?.index
+        .findLast(({ event }) => event?.author === "user")
       : null;
+    // A harness-started (wakeup) run attaches against whatever snapshot is
+    // already loaded. Until that snapshot contains the run's own user event
+    // (persisted at run start), the newest stored user turn is an earlier,
+    // completed conversation — claiming the rows after it would blank the
+    // previous reply for the whole run. Both timestamps below come from the
+    // server clock, so ownership is decided by "did this user turn start
+    // with (or after) the active run".
+    const anchorsLiveTurn = lastUserRecord && (!request?.managedReconnect
+      || eventTimestamp(lastUserRecord.event) >= (request.startedAt || 0) - 2000);
+    const activeUserIndex = anchorsLiveTurn ? lastUserRecord.index : null;
     const rows = context.store.rows()
       // The live message owns the active turn until the request is released.
       // Session snapshots can arrive before then; rendering their partial
@@ -647,7 +658,32 @@ export function createSessionRuntime({
     createManagedPresentation(request);
     updateSendButtonState();
     void streamManagedRunEvents(request);
+    void revealManagedTrigger(request);
     return request;
+  }
+
+  function managedTriggerLoaded(request) {
+    const context = contexts.get(request.key);
+    if (!context) return false;
+    // Same server-clock ownership rule as refreshRows: the run's own trigger
+    // is the newest user event persisted at (or after) the run start.
+    return [...context.store.records.values()].some(({ event }) => event?.author === "user"
+      && eventTimestamp(event, 0) >= (request.startedAt || 0) - 2000);
+  }
+
+  async function revealManagedTrigger(request) {
+    // A harness wakeup's trigger prompt is persisted as a durable user event
+    // at run start, and the managed SSE channel never replays user events.
+    // Load it while the run is still streaming so its folded notice appears
+    // above the live turn instead of only after the terminal handoff. The
+    // commit can lag run discovery slightly, hence the bounded retries.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      if (state.activeRequests.get(request.key) !== request
+        || !requestHasActiveRun(request) || managedTriggerLoaded(request)) return;
+      await loadSession(request.sessionId, request.owner);
+      if (managedTriggerLoaded(request)) return;
+      await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+    }
   }
 
   function createManagedPresentation(request) {
@@ -749,6 +785,20 @@ export function createSessionRuntime({
     }
   }
 
+  function updateManagedPhase(live, applied) {
+    // Mirror the composer stream: the status line follows the event flow
+    // (thinking / searching / executing / …) instead of freezing on the
+    // initial "working" phase for the whole reconnected run.
+    if (live.streamFinished) return;
+    if (sessionRequestKey(live.request.sessionId, live.request.owner) !== sessionRequestKey()) return;
+    for (const { part, normalized } of applied) {
+      if (part.thought) updateAgentRunningStatus?.("thinking");
+      else if (normalized.type === "function_call" || normalized.type === "function_response") {
+        updateAgentRunningStatus?.(phaseForTool(normalized.name));
+      } else if (normalized.type === "text") updateAgentRunningStatus?.("thinking");
+    }
+  }
+
   function applyManagedPayload(live, payload) {
     let streamFinished = false;
     live.lineBuffer = `${live.lineBuffer || ""}${String(payload || "")}`;
@@ -763,7 +813,7 @@ export function createSessionRuntime({
       }
       try {
         const event = JSON.parse(data);
-        appendEvent(live.message, event);
+        updateManagedPhase(live, applyAssistantMessageEvent(live.message, event));
         void recoverManagedStepNodes(live, event);
       } catch (_) { /* malformed replay event */ }
     });

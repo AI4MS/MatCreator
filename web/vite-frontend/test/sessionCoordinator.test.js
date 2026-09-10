@@ -47,9 +47,9 @@ function createHarness(overrides = {}) {
       stepExecutionFeed: { reset() {} },
       renderSessionFilesTree() {},
       clearCurrentUploads() {},
-      remoteJobsController: { reset() {} },
-      agentGraph: { reset() {} },
-      planGraph: { reset() {} },
+      remoteJobsController: { reset() {}, startPolling() {}, async load() {} },
+      agentGraph: { reset() {}, startPolling() {} },
+      planGraph: { reset() {}, startPolling() {} },
       hidePlanGraph() {},
       clearDisclosures() {},
       renderSessionBanner() {},
@@ -156,10 +156,13 @@ test("session log download releases its temporary object URL", async () => {
 
 test("idle remote-job polling reconnects a harness-started root run", async () => {
   const calls = [];
+  const graphPolls = [];
   const { coordinator } = createHarness({
     state: { sessionReady: true },
+    agentGraph: { reset() {}, startPolling: (sessionId) => graphPolls.push(["agent", sessionId]) },
+    planGraph: { reset() {}, startPolling: (sessionId) => graphPolls.push(["plan", sessionId]) },
     getSessionRuntime: () => ({
-      startManagedRunReconnect: (...args) => calls.push(args),
+      startManagedRunReconnect: (...args) => { calls.push(args); return { key: "attached" }; },
       loadSession: async () => { throw new Error("Active runs should stream, not reload"); },
     }),
   });
@@ -168,7 +171,56 @@ test("idle remote-job polling reconnects a harness-started root run", async () =
     active_run: run, activity_revision: "running-1",
   });
   assert.deepEqual(calls, [[run, "session-a", "user-a"]]);
+  // The wakeup turn streams delegated-task progress via the graphs; attaching
+  // must start their polling exactly as a composed turn would.
+  assert.deepEqual(graphPolls, [["agent", "session-a"], ["plan", "session-a"]]);
+});
+
+test("a deferred wakeup attachment does not start graph polling", async () => {
+  const graphPolls = [];
+  const { coordinator } = createHarness({
+    state: { sessionReady: true },
+    agentGraph: { reset() {}, startPolling: (sessionId) => graphPolls.push(sessionId) },
+    planGraph: { reset() {}, startPolling: (sessionId) => graphPolls.push(sessionId) },
+    getSessionRuntime: () => ({
+      startManagedRunReconnect: () => null,
+      loadSession: async () => ({}),
+    }),
   });
+  await coordinator.observeRemoteJobActivity("session-a", "user-a", {
+    active_run: { run_id: "wakeup-run" }, activity_revision: "running-1",
+  });
+  assert.deepEqual(graphPolls, []);
+});
+
+test("session creation starts remote-job polling for the created session", async () => {
+  const polls = [];
+  const loads = [];
+  const { coordinator } = createHarness({
+    remoteJobsController: {
+      reset() {},
+      startPolling: (...args) => polls.push(args),
+      load: async (...args) => loads.push(args),
+    },
+  });
+  assert.equal(await coordinator.createSession(), true);
+  assert.deepEqual(polls, [["session-a", "user-a"]]);
+  assert.deepEqual(loads, [["session-a", "user-a"]]);
+});
+
+test("session creation does not start polling once the session changed", async () => {
+  const polls = [];
+  const gate = deferred();
+  const { coordinator, state } = createHarness({
+    fetchImpl: () => gate.promise,
+    remoteJobsController: { reset() {}, startPolling: (...args) => polls.push(args), async load() {} },
+  });
+  const creation = coordinator.createSession();
+  state.sessionId = "session-b";
+  gate.resolve({ ok: true, status: 200 });
+  assert.equal(await creation, false);
+  assert.deepEqual(polls, []);
+});
 
 test("a stale terminal request does not block wakeup-run attachment", async () => {
   const calls = [];
