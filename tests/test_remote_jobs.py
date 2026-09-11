@@ -235,6 +235,99 @@ def test_outbox_insert_failure_rolls_back_terminal_transition(tmp_path, monkeypa
     assert store.list_events(job["job_id"])[-1]["payload"]["to"] == "running"
 
 
+def test_job_group_suppresses_member_wakeups_until_all_outcomes(tmp_path):
+    store = RemoteJobStore(tmp_path / "jobs.db")
+    group = store.create_job_group(
+        owner_id="alice", session_id="s", name="parameter-sweep", expected_jobs=2,
+    )
+    first = store.create_job(
+        owner_id="alice", session_id="s", provider="bohr_batchjob",
+        idempotency_key="first", group_id=group["group_id"],
+    )
+    second = store.create_job(
+        owner_id="alice", session_id="s", provider="bohr_batchjob",
+        idempotency_key="second", group_id=group["group_id"],
+    )
+    for job, external_id in ((first, "batch-1"), (second, "batch-2")):
+        store.transition_job(job["job_id"], "submitting")
+        store.transition_job(job["job_id"], "running", external_id=external_id)
+
+    store.transition_job(first["job_id"], "succeeded")
+    assert store.list_pending_notifications() == []
+    store.transition_job(second["job_id"], "failed", error="queue timeout")
+
+    notification, = store.list_pending_notifications()
+    assert notification["kind"] == "group"
+    assert notification["status"] == notification["group_reason"] == "all_terminal"
+    assert notification["outcome_jobs"] == 2
+    assert notification["failed_jobs"] == 1
+    assert [job["status"] for job in notification["jobs"]] == ["succeeded", "failed"]
+    assert store.get_job_group(group["group_id"])["delivery_reason"] == "all_terminal"
+
+
+def test_job_group_wakes_once_on_failure_ratio(tmp_path):
+    store = RemoteJobStore(tmp_path / "jobs.db")
+    group = store.create_job_group(
+        owner_id="alice", session_id="s", name="screening", expected_jobs=1,
+        failure_ratio=0.25,
+    )
+    job = store.create_job(
+        owner_id="alice", session_id="s", provider="bohr_batchjob",
+        idempotency_key="failed-member", group_id=group["group_id"],
+    )
+    store.transition_job(job["job_id"], "submitting")
+    store.transition_job(job["job_id"], "running", external_id="batch-1")
+    store.transition_job(job["job_id"], "cancelled")
+    store.evaluate_job_groups()
+
+    notification, = store.list_pending_notifications()
+    assert notification["group_reason"] == "failure_ratio"
+    assert len(store.list_notifications()) == 1
+
+
+def test_job_group_deadline_is_evaluated_by_monitor_tick(tmp_path, monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr("matcreator.control_plane.remote_jobs.time.time", lambda: clock[0])
+    store = RemoteJobStore(tmp_path / "jobs.db")
+    group = store.create_job_group(
+        owner_id="alice", session_id="s", name="deadline", expected_jobs=2,
+        deadline_seconds=10,
+    )
+    job = store.create_job(
+        owner_id="alice", session_id="s", provider="bohr_batchjob",
+        idempotency_key="running-member", group_id=group["group_id"],
+    )
+    store.transition_job(job["job_id"], "submitting")
+    store.transition_job(job["job_id"], "running", external_id="batch-1")
+    clock[0] = 111.0
+
+    assert store.evaluate_job_groups() == 1
+    notification, = store.list_pending_notifications()
+    assert notification["group_reason"] == "deadline"
+    assert notification["outcome_jobs"] == 0
+
+
+def test_job_group_validates_membership_and_policy(tmp_path):
+    store = RemoteJobStore(tmp_path / "jobs.db")
+    group = store.create_job_group(
+        owner_id="alice", session_id="s", name="one", expected_jobs=1,
+    )
+    store.create_job(
+        owner_id="alice", session_id="s", provider="bohr_batchjob",
+        idempotency_key="member", group_id=group["group_id"],
+    )
+    with pytest.raises(ValueError, match="expected number"):
+        store.create_job(
+            owner_id="alice", session_id="s", provider="bohr_batchjob",
+            idempotency_key="extra", group_id=group["group_id"],
+        )
+    with pytest.raises(ValueError, match="different session"):
+        store.create_job(
+            owner_id="bob", session_id="other", provider="bohr_batchjob",
+            idempotency_key="foreign", group_id=group["group_id"],
+        )
+
+
 def test_session_stop_cutoff_allows_newly_approved_jobs_after_restart(tmp_path, monkeypatch):
     clock = [100.0]
     monkeypatch.setattr("matcreator.control_plane.remote_jobs.time.time", lambda: clock[0])

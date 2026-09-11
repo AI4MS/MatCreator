@@ -12,6 +12,10 @@ from typing import Any
 TERMINAL_REMOTE_JOB_STATUSES = frozenset(
     {"collected", "failed", "cancelled", "terminated", "lost"}
 )
+GROUP_OUTCOME_STATUSES = frozenset(
+    {"succeeded", "collected", "failed", "cancelled", "terminated", "lost"}
+)
+GROUP_FAILURE_STATUSES = frozenset({"failed", "cancelled", "terminated", "lost"})
 ACTIVE_REMOTE_JOB_STATUSES = frozenset(
     {
         "created",
@@ -97,6 +101,7 @@ class RemoteJobStore:
                     artifacts TEXT NOT NULL DEFAULT '[]',
                     output_dir TEXT,
                     error TEXT,
+                    group_id TEXT,
                     state_revision INTEGER NOT NULL DEFAULT 0,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
@@ -110,6 +115,21 @@ class RemoteJobStore:
 
                 CREATE INDEX IF NOT EXISTS idx_remote_jobs_external
                 ON remote_jobs(provider, external_id);
+
+                CREATE TABLE IF NOT EXISTS remote_job_groups (
+                    group_id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    expected_jobs INTEGER NOT NULL,
+                    failure_ratio REAL,
+                    deadline_at REAL,
+                    delivery_reason TEXT,
+                    state_revision INTEGER NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    UNIQUE(owner_id, session_id, name)
+                );
 
                 CREATE TABLE IF NOT EXISTS remote_job_events (
                     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,6 +174,14 @@ class RemoteJobStore:
                 ON remote_job_notifications(delivery_status, available_at, lease_until);
                 """
             )
+            columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(remote_jobs)").fetchall()
+            }
+            if "group_id" not in columns:
+                connection.execute("ALTER TABLE remote_jobs ADD COLUMN group_id TEXT")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_remote_jobs_group ON remote_jobs(group_id, status)"
+            )
 
     @staticmethod
     def _decode(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -178,6 +206,7 @@ class RemoteJobStore:
         step_number: int | None = None,
         specification: dict[str, Any] | None = None,
         output_dir: str | None = None,
+        group_id: str | None = None,
     ) -> dict[str, Any]:
         if not owner_id or not session_id or not provider or not idempotency_key:
             raise ValueError("owner_id, session_id, provider, and idempotency_key are required")
@@ -194,15 +223,31 @@ class RemoteJobStore:
                     existing_data["owner_id"] != owner_id
                     or existing_data["session_id"] != session_id
                     or existing_data["provider"] != provider
+                    or existing_data.get("group_id") != group_id
                 ):
                     raise ValueError("Job idempotency key belongs to different work")
                 return existing_data
+            if group_id is not None:
+                group = connection.execute(
+                    "SELECT * FROM remote_job_groups WHERE group_id = ?", (group_id,)
+                ).fetchone()
+                if group is None:
+                    raise ValueError(f"Remote job group '{group_id}' was not found")
+                if group["owner_id"] != owner_id or group["session_id"] != session_id:
+                    raise ValueError("Remote job group belongs to a different session")
+                member_count = connection.execute(
+                    "SELECT COUNT(*) FROM remote_jobs WHERE group_id = ?", (group_id,)
+                ).fetchone()[0]
+                if member_count >= group["expected_jobs"]:
+                    raise ValueError("Remote job group already has its expected number of jobs")
+                if group["delivery_reason"] is not None:
+                    raise ValueError("Remote job group has already emitted its wakeup")
             connection.execute(
                 """
                 INSERT INTO remote_jobs (
                     job_id, owner_id, session_id, node_id, step_number, provider,
-                    idempotency_key, status, specification, output_dir, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'created', ?, ?, ?, ?)
+                    idempotency_key, status, specification, output_dir, group_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -214,12 +259,92 @@ class RemoteJobStore:
                     idempotency_key,
                     json.dumps(specification or {}, sort_keys=True),
                     output_dir,
+                    group_id,
                     now,
                     now,
                 ),
             )
             self._append_event(connection, job_id, "created", {"status": "created"}, now)
         return self.get_job(job_id) or {}
+
+    def create_job_group(
+        self,
+        *,
+        owner_id: str,
+        session_id: str,
+        name: str,
+        expected_jobs: int,
+        failure_ratio: float | None = None,
+        deadline_seconds: float = 172800,
+    ) -> dict[str, Any]:
+        if not owner_id or not session_id or not isinstance(name, str) or not name.strip():
+            raise ValueError("owner_id, session_id, and a nonempty group name are required")
+        if isinstance(expected_jobs, bool) or not isinstance(expected_jobs, int) or expected_jobs < 1:
+            raise ValueError("expected_jobs must be a positive integer")
+        if failure_ratio is not None and (
+            isinstance(failure_ratio, bool)
+            or not isinstance(failure_ratio, (int, float))
+            or not 0 < float(failure_ratio) <= 1
+        ):
+            raise ValueError("failure_ratio must be greater than 0 and at most 1")
+        if (
+            isinstance(deadline_seconds, bool)
+            or not isinstance(deadline_seconds, (int, float))
+            or float(deadline_seconds) <= 0
+        ):
+            raise ValueError("deadline_seconds must be positive")
+        now = time.time()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                """SELECT * FROM remote_job_groups
+                   WHERE owner_id = ? AND session_id = ? AND name = ?""",
+                (owner_id, session_id, name.strip()),
+            ).fetchone()
+            deadline_at = now + float(deadline_seconds)
+            if existing is not None:
+                existing_deadline_seconds = existing["deadline_at"] - existing["created_at"]
+                if (
+                    existing["expected_jobs"] != expected_jobs
+                    or existing["failure_ratio"] != (
+                        float(failure_ratio) if failure_ratio is not None else None
+                    )
+                    or abs(existing_deadline_seconds - float(deadline_seconds)) > 0.001
+                ):
+                    raise ValueError("Remote job group name already has a different policy")
+                return dict(existing)
+            group_id = uuid.uuid4().hex
+            connection.execute(
+                """INSERT INTO remote_job_groups (
+                   group_id, owner_id, session_id, name, expected_jobs, failure_ratio,
+                   deadline_at, created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    group_id, owner_id, session_id, name.strip(), expected_jobs,
+                    float(failure_ratio) if failure_ratio is not None else None,
+                    deadline_at, now, now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM remote_job_groups WHERE group_id = ?", (group_id,)
+            ).fetchone()
+        return dict(row)
+
+    def get_job_group(self, group_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM remote_job_groups WHERE group_id = ?", (group_id,)
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_job_groups(self, *, owner_id: str, session_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM remote_job_groups WHERE owner_id = ? AND session_id = ?
+                   ORDER BY created_at DESC""",
+                (owner_id, session_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         with self._connect() as connection:
@@ -311,15 +436,100 @@ class RemoteJobStore:
                 {"from": current["status"], "to": status},
                 now,
             )
-            if status != current["status"] and status in {"succeeded", "failed", "cancelled", "lost"}:
-                self._enqueue_notification(
-                    connection,
-                    {**current, "external_id": resulting_external_id, "status": status,
-                     "state_revision": current["state_revision"] + 1, "snapshot": merged_snapshot,
-                     "error": current["error"] if error is _UNSET else error},
-                    kind="lifecycle", now=now,
-                )
+            if status != current["status"]:
+                transitioned = {
+                    **current,
+                    "external_id": resulting_external_id,
+                    "status": status,
+                    "state_revision": current["state_revision"] + 1,
+                    "snapshot": merged_snapshot,
+                    "error": current["error"] if error is _UNSET else error,
+                }
+                if status in {"succeeded", "failed", "cancelled", "lost"} and not current.get("group_id"):
+                    self._enqueue_notification(connection, transitioned, kind="lifecycle", now=now)
+                if current.get("group_id"):
+                    self._evaluate_job_group(connection, current["group_id"], now=now)
         return self.get_job(job_id) or {}
+
+    def evaluate_job_groups(self) -> int:
+        """Evaluate pending deadlines and return the number of newly queued group wakeups."""
+        now = time.time()
+        queued = 0
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT group_id FROM remote_job_groups WHERE delivery_reason IS NULL"
+            ).fetchall()
+            for row in rows:
+                queued += int(self._evaluate_job_group(connection, row["group_id"], now=now))
+        return queued
+
+    @staticmethod
+    def _evaluate_job_group(
+        connection: sqlite3.Connection, group_id: str, *, now: float,
+    ) -> bool:
+        group = connection.execute(
+            "SELECT * FROM remote_job_groups WHERE group_id = ?", (group_id,)
+        ).fetchone()
+        if group is None or group["delivery_reason"] is not None:
+            return False
+        jobs = connection.execute(
+            """SELECT job_id, provider, external_id, node_id, status, error, snapshot
+               FROM remote_jobs WHERE group_id = ? ORDER BY created_at, job_id""",
+            (group_id,),
+        ).fetchall()
+        if not jobs:
+            return False
+        expected = group["expected_jobs"]
+        outcomes = sum(job["status"] in GROUP_OUTCOME_STATUSES for job in jobs)
+        failures = sum(job["status"] in GROUP_FAILURE_STATUSES for job in jobs)
+        reason = None
+        if (
+            len(jobs) == expected
+            and group["failure_ratio"] is not None
+            and failures / expected >= group["failure_ratio"]
+        ):
+            reason = "failure_ratio"
+        elif len(jobs) == expected and outcomes == expected:
+            reason = "all_terminal"
+        elif group["deadline_at"] is not None and now >= group["deadline_at"]:
+            reason = "deadline"
+        if reason is None:
+            return False
+        revision = group["state_revision"] + 1
+        updated = connection.execute(
+            """UPDATE remote_job_groups SET delivery_reason = ?, state_revision = ?, updated_at = ?
+               WHERE group_id = ? AND delivery_reason IS NULL AND state_revision = ?""",
+            (reason, revision, now, group_id, group["state_revision"]),
+        )
+        if updated.rowcount != 1:
+            return False
+        summary = []
+        for job in jobs:
+            item = dict(job)
+            item["snapshot"] = json.loads(item["snapshot"])
+            summary.append(item)
+        anchor = jobs[-1]
+        payload = {
+            "group_id": group_id,
+            "group_name": group["name"],
+            "group_reason": reason,
+            "expected_jobs": expected,
+            "outcome_jobs": outcomes,
+            "failed_jobs": failures,
+            "jobs": summary,
+        }
+        connection.execute(
+            """INSERT OR IGNORE INTO remote_job_notifications (
+               notification_id, job_id, owner_id, session_id, state_revision, kind, status,
+               payload, available_at, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, 'group', ?, ?, ?, ?, ?)""",
+            (
+                uuid.uuid4().hex, anchor["job_id"], group["owner_id"], group["session_id"],
+                revision, reason, json.dumps(payload, sort_keys=True), now, now, now,
+            ),
+        )
+        return True
 
     def reset_failed_job_for_retry(self, job_id: str) -> dict[str, Any]:
         """Return a failed job that never acquired an external ID to ``created``.
@@ -466,26 +676,36 @@ class RemoteJobStore:
             connection.execute(
                 """UPDATE remote_job_notifications SET delivery_status = 'suppressed',
                    last_error = 'explicit user control', claim_token = NULL, lease_until = NULL,
-                   updated_at = ? WHERE job_id = ? AND delivery_status IN ('pending', 'claimed')""",
+                   updated_at = ? WHERE job_id = ? AND kind != 'group'
+                   AND delivery_status IN ('pending', 'claimed')""",
                 (time.time(), job_id),
             )
 
     def notifications_suppressed(
-        self, owner_id: str, session_id: str, *, job_id: str | None = None,
+        self,
+        owner_id: str,
+        session_id: str,
+        *,
+        job_id: str | None = None,
+        include_user_control: bool = True,
     ) -> bool:
         """Check a stop marker, or a specific job's cutoff and explicit controls."""
         with self._connect() as connection:
             if job_id is not None:
-                return connection.execute(
+                stop = connection.execute(
                     """SELECT 1 FROM remote_job_notification_stops s JOIN remote_jobs j
                        ON j.owner_id = s.owner_id AND j.session_id = s.session_id
                        WHERE s.owner_id = ? AND s.session_id = ? AND j.job_id = ?
-                         AND j.created_at <= s.stopped_at
-                       UNION ALL
-                       SELECT 1 FROM remote_job_events e JOIN remote_jobs j ON j.job_id = e.job_id
+                         AND j.created_at <= s.stopped_at LIMIT 1""",
+                    (owner_id, session_id, job_id),
+                ).fetchone()
+                if stop is not None or not include_user_control:
+                    return stop is not None
+                return connection.execute(
+                    """SELECT 1 FROM remote_job_events e JOIN remote_jobs j ON j.job_id = e.job_id
                        WHERE j.owner_id = ? AND j.session_id = ? AND j.job_id = ?
                          AND e.event_type = 'user_control' LIMIT 1""",
-                    (owner_id, session_id, job_id, owner_id, session_id, job_id),
+                    (owner_id, session_id, job_id),
                 ).fetchone() is not None
             return connection.execute(
                 "SELECT 1 FROM remote_job_notification_stops WHERE owner_id = ? AND session_id = ?",
@@ -565,7 +785,9 @@ class RemoteJobStore:
                          AND j.created_at <= s.stopped_at)
                    AND NOT EXISTS (
                        SELECT 1 FROM remote_job_events e
-                       WHERE e.job_id = remote_job_notifications.job_id AND e.event_type = 'user_control')""",
+                       WHERE remote_job_notifications.kind != 'group'
+                         AND e.job_id = remote_job_notifications.job_id
+                         AND e.event_type = 'user_control')""",
                 (token, now + lease_seconds, now, notification_id, now, now),
             )
             if updated.rowcount != 1:

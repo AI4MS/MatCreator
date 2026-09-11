@@ -19,6 +19,7 @@ from ...tools.workspace_tools import get_user_skills_root, run_bash, run_python
 from .remote_job_tools import (
     attach_bohr_batchjob,
     collect_remote_job_outputs,
+    create_remote_job_group,
     download_remote_job_output,
     get_remote_job_status,
     pause_remote_job,
@@ -302,6 +303,7 @@ def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
             FunctionTool(run_python),
             FunctionTool(run_bash),
             FunctionTool(submit_bohr_sandbox),
+            FunctionTool(create_remote_job_group),
             FunctionTool(submit_bohr_batchjob),
             FunctionTool(attach_bohr_batchjob),
             FunctionTool(get_remote_job_status),

@@ -4,6 +4,7 @@ description: Submit, monitor, and control tracked remote jobs on the Bohrium pla
 metadata:
   tools:
     - submit_bohr_sandbox
+    - create_remote_job_group
     - submit_bohr_batchjob
     - attach_bohr_batchjob
     - get_remote_job_status
@@ -52,6 +53,12 @@ new compute. A raw provider ID alone is not a tracked job.
   but must resolve explicitly; never choose a billing project automatically.
   Optional: `out_files` (list of retained paths), `max_run_time="24h"`,
   `max_wait_time="30m"` (duration strings, not numeric seconds).
+
+  For several independent Batch Jobs whose outcomes should be handled together,
+  call `create_remote_job_group` first with the exact `expected_jobs`, then pass
+  its `group_id` to every submission. Grouped jobs suppress individual lifecycle
+  wakeups and emit one aggregate wakeup when all expected jobs have outcomes, or
+  when the deadline (48 hours by default) or optional failed-job ratio is reached.
 
 ## Sandbox lifecycle
 

@@ -19,6 +19,7 @@ class _FakeService:
         self.submissions.append(kwargs)
         return {
             "job_id": "job-123",
+            "group_id": None,
             "status": "running",
             "external_id": "sandbox-123",
         }
@@ -265,7 +266,7 @@ def test_submit_bohr_batchjob_exposes_the_expected_adk_schema() -> None:
     assert set(parameters["required"]) == {"name", "image", "command"}
     assert set(parameters["properties"]) == {
         "name", "image", "command", "project_id", "machine_type", "sku_id",
-        "input_path", "out_files", "max_run_time", "max_wait_time",
+        "input_path", "out_files", "max_run_time", "max_wait_time", "group_id",
     }
 
 
@@ -276,7 +277,7 @@ def test_attach_bohr_batchjob_exposes_required_string_id() -> None:
     parameters = payload.get("parameters_json_schema") or payload.get("parameters")
     assert payload["name"] == "attach_bohr_batchjob"
     assert parameters["required"] == ["batchjob_id"]
-    assert set(parameters["properties"]) == {"batchjob_id"}
+    assert set(parameters["properties"]) == {"batchjob_id", "group_id"}
     assert parameters["properties"]["batchjob_id"]["type"].lower() == "string"
 
 
@@ -299,6 +300,7 @@ def test_attach_bohr_batchjob_records_context_and_preserves_status(monkeypatch, 
     assert calls == [{
         "owner_id": "alice", "session_id": "session-1", "provider": "bohr_batchjob",
         "external_id": "external-123", "node_id": "relax", "step_number": 2,
+        "group_id": None,
     }]
     assert references == [{
         "session_id": "session-1", "node_id": "relax", "job_id": "job-123",
@@ -361,6 +363,31 @@ def test_submit_bohr_batchjob_tool_submits_batch_spec(monkeypatch) -> None:
     assert submission["spec"]["command"] == "vasp_std"
     assert submission["spec"]["max_run_time"] == "24h"
     assert submission["spec"]["max_wait_time"] == "30m"
+
+
+def test_create_remote_job_group_exposes_policy_and_context(monkeypatch) -> None:
+    calls = []
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        return {
+            "group_id": "group-123", "name": "sweep", "expected_jobs": 3,
+            "failure_ratio": 0.5, "deadline_at": 1000,
+        }
+
+    monkeypatch.setattr(
+        remote_job_tools, "_service", lambda: SimpleNamespace(create_job_group=create),
+    )
+    result = remote_job_tools.create_remote_job_group(
+        _context(), name="sweep", expected_jobs=3, failure_ratio=0.5, deadline_seconds=600,
+    )
+
+    assert result["status"] == "ready"
+    assert result["group_id"] == "group-123"
+    assert calls == [{
+        "owner_id": "alice", "session_id": "session-1", "name": "sweep",
+        "expected_jobs": 3, "failure_ratio": 0.5, "deadline_seconds": 600,
+    }]
 
 
 @pytest.mark.parametrize("selectors", [{}, {"machine_type": "cpu", "sku_id": 123}])
@@ -742,6 +769,7 @@ def test_list_remote_jobs_returns_compact_projection_for_current_session(monkeyp
         },
         {
             "job_id": "job-456",
+            "group_id": None,
             "owner_id": "alice",
             "session_id": "session-1",
             "provider": "bohr_batchjob",
@@ -772,6 +800,7 @@ def test_list_remote_jobs_returns_compact_projection_for_current_session(monkeyp
     assert result["jobs"] == [
         {
             "job_id": "job-123",
+            "group_id": None,
             "provider": "e2b",
             "node_id": "relax",
             "status": "running",
@@ -781,6 +810,7 @@ def test_list_remote_jobs_returns_compact_projection_for_current_session(monkeyp
         },
         {
             "job_id": "job-456",
+            "group_id": None,
             "provider": "bohr_batchjob",
             "node_id": "scf",
             "status": "collected",

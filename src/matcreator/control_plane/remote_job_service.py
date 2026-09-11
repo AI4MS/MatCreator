@@ -84,6 +84,7 @@ class RemoteJobService:
         step_number: int | None = None,
         output_dir: str | None = None,
         persisted_specification: dict[str, Any] | None = None,
+        group_id: str | None = None,
     ) -> dict[str, Any]:
         """Create one external job/sandbox once and persist its external ID.
 
@@ -115,6 +116,7 @@ class RemoteJobService:
             step_number=step_number,
             specification=persisted_specification if persisted_specification is not None else spec,
             output_dir=output_dir,
+            group_id=group_id,
         )
         if job["status"] == "failed" and not job["external_id"]:
             # The previous attempt died before the provider handed back an
@@ -180,6 +182,7 @@ class RemoteJobService:
         external_id: str,
         node_id: str | None = None,
         step_number: int | None = None,
+        group_id: str | None = None,
     ) -> dict[str, Any]:
         """Track an already-submitted job after a read-only status check; never submit.
 
@@ -200,6 +203,8 @@ class RemoteJobService:
         ):
             raise ValueError("This remote job is already tracked in another session")
         if existing_jobs:
+            if existing_jobs[0].get("group_id") != group_id:
+                raise ValueError("This remote job is already tracked with different grouping")
             return self.reconcile_job(existing_jobs[0]["job_id"])
 
         adapter = self._adapter(provider)
@@ -224,6 +229,7 @@ class RemoteJobService:
             node_id=node_id,
             step_number=step_number,
             specification={"attached": True},
+            group_id=group_id,
         )
         if job["external_id"]:
             return self.reconcile_job(job["job_id"])
@@ -243,6 +249,25 @@ class RemoteJobService:
             snapshot=probe.snapshot,
             error=probe.error,
             expected_revision=job["state_revision"],
+        )
+
+    def create_job_group(
+        self,
+        *,
+        owner_id: str,
+        session_id: str,
+        name: str,
+        expected_jobs: int,
+        failure_ratio: float | None = None,
+        deadline_seconds: float = 172800,
+    ) -> dict[str, Any]:
+        return self.store.create_job_group(
+            owner_id=owner_id,
+            session_id=session_id,
+            name=name,
+            expected_jobs=expected_jobs,
+            failure_ratio=failure_ratio,
+            deadline_seconds=deadline_seconds,
         )
 
     def pause_job(self, job_id: str) -> dict[str, Any]:
