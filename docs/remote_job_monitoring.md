@@ -116,8 +116,8 @@ not pre-create it or merge/overwrite existing files. Allow the CLI's bounded
 download timeout (default two hours). Already-collected replay remains a
 durable no-op returning the existing collection.
 
-See the [Batch Job skill reference](../src/matcreator/skills/remote-job/references/bohr-batchjob-ref.md)
-and [VASP Batch Job guide](../src/matcreator/skills/vasp-pymatgen/references/bohr-batchjob.md).
+See the [Batch Job skill reference](https://github.com/AI4MS/MatCreator/blob/main/src/matcreator/skills/remote-job/references/bohr-batchjob-ref.md)
+and [VASP Batch Job guide](https://github.com/AI4MS/MatCreator/blob/main/src/matcreator/skills/vasp-pymatgen/references/bohr-batchjob.md).
 
 ### Legacy retirement
 
