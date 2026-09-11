@@ -292,6 +292,25 @@ body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] :is(
   box-shadow: var(--skin-control-pressed-shadow);
 }
 
+/* Keep the primary action's foreground and surface paired after the rack
+   control treatment overrides the shared chat button background. */
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .plan-approval-btn.is-approve {
+  background: var(--accent-primary);
+  color: var(--accent-on-primary);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .plan-approval-btn.is-approve:hover:not(:disabled) {
+  background: var(--accent-primary-hover);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .plan-approval-btn.is-approve:active:not(:disabled) {
+  background: var(--accent-primary-active);
+}
+
+body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .plan-approval-btn:disabled {
+  box-shadow: none;
+}
+
 body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .left-action-row {
   --action-control-surface: var(--skin-control-background);
   --action-control-shadow-dark: rgba(15, 16, 20, 0.72);
