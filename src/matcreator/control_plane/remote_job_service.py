@@ -322,6 +322,20 @@ class RemoteJobService:
         transition reported by a confused/stale adapter observation falls
         back to an observation rather than raising, since a monitor loop
         must never crash on one bad probe.
+
+        For an interactive provider such as ``bohr_sandbox``, the adapter's
+        ``status()`` intentionally never reports a normalized status other
+        than ``lost`` (see ``BohrSandboxAdapter.status``): a sandbox has no
+        server-driven "succeeded" outcome to discover by polling, it only
+        becomes terminal when the agent explicitly cancels it. This call is
+        still worth making for such providers, though, purely as a liveness
+        probe: it is the only mechanism that notices a sandbox was evicted or
+        expired server-side between agent turns. Separately,
+        ``RemoteJobMonitor`` also polls any in-flight background command via
+        ``poll_job_command`` regardless of provider; that is the async-command
+        completion path an interactive sandbox needs to behave like a batch
+        job for long-running steps, and is not redundant with this liveness
+        probe.
         """
         job = self.store.get_job(job_id)
         if job is None:
