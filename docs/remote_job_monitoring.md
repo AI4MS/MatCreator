@@ -152,7 +152,9 @@ from the current one — see [Provider Plugin Architecture](#provider-plugin-arc
 
 Batch Job `prepared`/`pending` normalize to `queued`, `active`/`running` to
 `running`, `succeeded` to `succeeded`, `failed` to `failed`, and
-`deleted`/`killed` to `cancelled`. `prepared` remains visibly incomplete;
+`deleted`/`killed`/`stopped`/`terminated`/`cancelled` to `cancelled`, with
+`termination_origin=provider_observed`. This records what the provider reported
+without claiming which person or system initiated the stop. `prepared` remains visibly incomplete;
 unknown statuses are nonterminal observations with no guessed transition.
 Use `status_name`, `terminal`, and concrete `errorMessage` / `errorCode` details,
 never numeric backend status or `exitCode`. Curated snapshots must not persist
@@ -200,6 +202,15 @@ The same applies to a finished tracked sandbox background command, without
 terminating its sandbox allocation. Initial terminal probes and explicit
 refreshes use the same transactional path. Queue-to-running updates do not
 invoke the agent.
+
+For parallel work, an agent can call `create_remote_job_group` with an exact
+expected member count, then pass the returned `group_id` to each Batch Job
+submission or attachment. Grouped jobs retain their individual lifecycle
+events but suppress individual lifecycle wakeups. The group creates one durable
+aggregate notification when all expected jobs have outcomes, when its optional
+failed-job ratio is reached, or when its deadline expires (48 hours by default). The first
+policy reached wins, and its notification includes a snapshot of every current
+member. Group policy and delivery state survive control-plane restarts.
 
 The durable outbox claims notifications with leases, defers busy sessions,
 retries delivery errors with bounded backoff, and records delivery status,

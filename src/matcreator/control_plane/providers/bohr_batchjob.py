@@ -21,8 +21,15 @@ _STATUS_TO_NORMALIZED = {
     "failed": "failed",
     "deleted": "cancelled",
     "killed": "cancelled",
+    "stopped": "cancelled",
+    "terminated": "cancelled",
+    "cancelled": "cancelled",
+    "canceled": "cancelled",
 }
-_TERMINAL_STATUSES = {"succeeded", "failed", "deleted", "killed"}
+_TERMINAL_STATUSES = {
+    "succeeded", "failed", "deleted", "killed", "stopped", "terminated", "cancelled", "canceled",
+}
+_CANCELLED_STATUSES = {"deleted", "killed", "stopped", "terminated", "cancelled", "canceled"}
 _DOWNLOAD_TIMEOUT_SECONDS = 2 * 60 * 60 + 120
 
 
@@ -125,6 +132,8 @@ class BohrBatchJobAdapter(RemoteJobAdapter):
             "status_name": status_name or None,
             "terminal": status_name in _TERMINAL_STATUSES,
         }
+        if status_name in _CANCELLED_STATUSES:
+            snapshot["termination_origin"] = "provider_observed"
         for field in ("errorMessage", "errorCode"):
             value = data.get(field)
             if isinstance(value, (str, int, float)) and not isinstance(value, bool):

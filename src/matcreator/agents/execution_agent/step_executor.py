@@ -19,6 +19,7 @@ from ...tools.workspace_tools import get_user_skills_root, run_bash, run_python
 from .remote_job_tools import (
     attach_bohr_batchjob,
     collect_remote_job_outputs,
+    create_remote_job_group,
     download_remote_job_output,
     get_remote_job_status,
     pause_remote_job,
@@ -161,6 +162,10 @@ If your `prior_context` contains "REMOTE JOB ALREADY SUBMITTED", a tracked remot
    job_id and error; never reinterpret its external ID or automatically submit a replacement.
 
 ## Choosing a remote-job submit tool
+- When submitting two or more similar or simultaneous Batch Jobs in this step,
+  ALWAYS call `create_remote_job_group` once first and pass its returned
+  `group_id` to every related `submit_bohr_batchjob` or `attach_bohr_batchjob`
+  call. Set `expected_jobs` to the exact number of jobs in that group.
 - `attach_bohr_batchjob`: track an already-submitted Batch Job using its explicit string
   `batchjob_id`. It only reads status and never submits. Use it for externally submitted
   jobs instead of creating a replacement; then use the returned `job_id` for status and outputs.
@@ -302,6 +307,7 @@ def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
             FunctionTool(run_python),
             FunctionTool(run_bash),
             FunctionTool(submit_bohr_sandbox),
+            FunctionTool(create_remote_job_group),
             FunctionTool(submit_bohr_batchjob),
             FunctionTool(attach_bohr_batchjob),
             FunctionTool(get_remote_job_status),

@@ -287,6 +287,8 @@ def test_real_submission_cli_failures_are_uncertain(monkeypatch, spec, failure):
     ("active", "running", False), ("running", "running", False),
     ("succeeded", "succeeded", True), ("failed", "failed", True),
     ("deleted", "cancelled", True), ("killed", "cancelled", True),
+    ("stopped", "cancelled", True), ("terminated", "cancelled", True),
+    ("cancelled", "cancelled", True), ("canceled", "cancelled", True),
     ("unknown", None, False), ("future-status", None, False),
     ("", None, False),
 ])
@@ -301,11 +303,14 @@ def test_status_semantics_ignore_numeric_status_and_exit_code(monkeypatch, name,
     monkeypatch.setattr(subprocess, "run", fake_run)
     status = BohrBatchJobAdapter().status("batch-job-123")
     assert status.normalized_status == normalized
-    assert status.snapshot == {
+    expected = {
         "provider_status": name or "unknown",
         "status_name": name or None,
         "terminal": terminal,
     }
+    if normalized == "cancelled":
+        expected["termination_origin"] = "provider_observed"
+    assert status.snapshot == expected
 
 
 @pytest.mark.parametrize("name,normalized", [
@@ -321,6 +326,7 @@ def test_terminal_snapshot_matches_semantic_outcome(monkeypatch, name, normalize
     assert status.normalized_status == normalized
     assert status.snapshot == {
         "provider_status": name, "status_name": name, "terminal": True,
+        **({"termination_origin": "provider_observed"} if normalized == "cancelled" else {}),
     }
 
 
@@ -391,6 +397,7 @@ def test_status_observed_bohr_2_6_86_describe_shape(
         "terminal": terminal,
         "errorCode": 0,
         "errorMessage": data["errorMessage"],
+        **({"termination_origin": "provider_observed"} if normalized == "cancelled" else {}),
     }
 
 
