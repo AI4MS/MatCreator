@@ -6,6 +6,7 @@ import pytest
 from google.adk.tools.function_tool import FunctionTool
 
 from matcreator.agents.execution_agent import remote_job_tools
+from matcreator.agents.execution_agent.step_executor import _STEP_EXECUTOR_INSTRUCTION
 from matcreator.control_plane.providers.e2b import E2BConnectionConfig
 
 
@@ -388,6 +389,24 @@ def test_create_remote_job_group_exposes_policy_and_context(monkeypatch) -> None
         "owner_id": "alice", "session_id": "session-1", "name": "sweep",
         "expected_jobs": 3, "failure_ratio": 0.5, "deadline_seconds": 600,
     }]
+
+
+def test_parallel_batch_job_tools_require_one_shared_group() -> None:
+    assert "ALWAYS call `create_remote_job_group` once first" in _STEP_EXECUTOR_INSTRUCTION
+    assert "exact number of jobs in that group" in _STEP_EXECUTOR_INSTRUCTION
+
+    group_description = FunctionTool(
+        remote_job_tools.create_remote_job_group
+    )._get_declaration().description
+    submit_description = FunctionTool(
+        remote_job_tools.submit_bohr_batchjob
+    )._get_declaration().description
+    attach_description = FunctionTool(
+        remote_job_tools.attach_bohr_batchjob
+    )._get_declaration().description
+    assert "ALWAYS call this once" in group_description
+    assert "similar or simultaneous Batch Jobs" in submit_description
+    assert "two or more related Batch Jobs" in attach_description
 
 
 @pytest.mark.parametrize("selectors", [{}, {"machine_type": "cpu", "sku_id": 123}])

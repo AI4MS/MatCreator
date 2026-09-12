@@ -308,6 +308,10 @@ def submit_bohr_batchjob(
 ) -> dict[str, Any]:
     """Submit or reuse a tracked sandbox-based job through `bohr batchjob submit`.
 
+    When this step will submit two or more similar or simultaneous Batch Jobs,
+    first call create_remote_job_group once and pass its returned group_id to
+    every related submission.
+
     Supply exactly one of machine_type or sku_id, discovered with
     `bohr batchjob machine list -o json`. project_id falls back to
     BOHRIUM_PROJECT_ID. input_path is a path RELATIVE to the step's working
@@ -413,6 +417,9 @@ def attach_bohr_batchjob(
 ) -> dict[str, Any]:
     """Attach an already-submitted Batch Job by its explicit string ID; never submit.
 
+    When attaching two or more related Batch Jobs together, first call
+    create_remote_job_group once and pass its group_id to every attachment.
+
     Uses the existing bohr account authentication to read the remote status.
     Repeated attachment reuses the current session's durable job record.
     Use the returned job_id for status, controls, and output collection.
@@ -468,6 +475,8 @@ def create_remote_job_group(
 ) -> dict[str, Any]:
     """Create or reuse a durable group that emits one aggregate agent wakeup.
 
+    ALWAYS call this once before submitting or attaching two or more similar or
+    simultaneous Batch Jobs in one step. Set expected_jobs to the exact count.
     Add the returned group_id to each submit_bohr_batchjob or
     attach_bohr_batchjob call. The group wakes once when all expected jobs have
     outcomes, the optional failed-job ratio is reached, or the optional
