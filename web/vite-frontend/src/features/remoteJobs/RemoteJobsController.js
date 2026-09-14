@@ -1151,6 +1151,7 @@ export function createRemoteJobsController({
   function renderPresentationJobs() {
     if (presentationJobs === null) return false;
     state.remoteJobs = clonePresentationJobs();
+    state.remoteJobGroups = [];
     render();
     onJobsChanged();
     return true;
@@ -1226,12 +1227,16 @@ export function createRemoteJobsController({
     }
 
     const currentJobIds = new Set();
+    const groupsById = new Map(
+      (state.remoteJobGroups || []).map((group) => [String(group.group_id), group]),
+    );
     state.remoteJobs.forEach((job, index) => {
       const item = documentRef.createElement("li");
       const lifecycle = remoteJobLifecycle(projectedLifecycleKey(job));
       const presentation = normalizeRemoteJobPresentation(job);
       const jobKey = String(job.job_id || job.external_id || `remote-job-${index}`);
       const jobLabel = String(job.external_id || job.job_id || "remote job");
+      const group = job.group_id ? groupsById.get(String(job.group_id)) : null;
       const summaryId = `remote-job-summary-${index}`;
       const detailsId = `remote-job-details-${index}`;
       currentJobIds.add(jobKey);
@@ -1278,6 +1283,13 @@ export function createRemoteJobsController({
       identifier.textContent = job.external_id || job.job_id || "—";
       identifier.title = String(job.external_id || job.job_id || "—");
       identity.append(identityLabel, identifier);
+      if (job.group_id) {
+        const groupBadge = documentRef.createElement("span");
+        groupBadge.className = "remote-job-group";
+        groupBadge.textContent = group?.name ? `Group · ${group.name}` : "Grouped job";
+        groupBadge.title = `Group ID: ${job.group_id}`;
+        identity.appendChild(groupBadge);
+      }
       const statusRow = documentRef.createElement("div");
       statusRow.className = "remote-job-status-row";
       const status = documentRef.createElement("span");
@@ -1339,6 +1351,16 @@ export function createRemoteJobsController({
       const detailRows = documentRef.createElement("div");
       detailRows.className = "remote-job-detail-rows";
       detailRows.appendChild(createDetailRow("Job ID", job.job_id));
+      if (job.group_id) {
+        detailRows.appendChild(createDetailRow("Group ID", job.group_id));
+        if (group?.name) detailRows.appendChild(createDetailRow("Group name", group.name));
+        if (group?.expected_jobs) {
+          detailRows.appendChild(createDetailRow("Expected jobs", group.expected_jobs));
+        }
+        if (group?.delivery_reason) {
+          detailRows.appendChild(createDetailRow("Group wakeup", group.delivery_reason));
+        }
+      }
       detailRows.appendChild(createDetailRow(
         SANDBOX_PROVIDERS.has(String(job.provider || "").toLowerCase()) ? "Sandbox ID" : "Provider ID",
         job.external_id,
@@ -1400,6 +1422,7 @@ export function createRemoteJobsController({
       if (renderPresentationJobs()) return;
       if (sessionId !== state.sessionId || owner !== state.activeSessionUserId) return;
       state.remoteJobs = Array.isArray(data?.jobs) ? data.jobs : [];
+      state.remoteJobGroups = Array.isArray(data?.groups) ? data.groups : [];
       lastActivityHadActiveRun = Boolean(data?.active_run);
       render();
       onJobsChanged({ sessionId, owner, activity: data });
@@ -1476,6 +1499,7 @@ export function createRemoteJobsController({
   function reset({ notify = false } = {}) {
     stopPolling();
     state.remoteJobs = presentationJobs === null ? [] : clonePresentationJobs();
+    state.remoteJobGroups = [];
     lastActivityHadActiveRun = false;
     wasActive = false;
     graceRemainingMs = 0;

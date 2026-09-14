@@ -51,6 +51,12 @@ export function managedRecoverySource(activeRun = {}) {
     : "replay";
 }
 
+function managedEventKey(event) {
+  const explicit = event?.id ?? event?.event_id ?? event?.eventId;
+  if (explicit !== undefined && explicit !== null && String(explicit)) return `id:${explicit}`;
+  return `event:${JSON.stringify(event)}`;
+}
+
 export function shouldShowApproval(sessionId, sessionData, events, options = {}) {
   const normalized = typeof options === "function" ? { isSuppressed: options } : (options || {});
   const suppressedPlanApprovalTurns = normalized.suppressedPlanApprovalTurns || new Map();
@@ -713,6 +719,7 @@ export function createSessionRuntime({
       message, messageView: view,
       managedPresentation: {
         message, shownPlots, view, scheduler, lineBuffer: "", hydratedRevision: null, request,
+        appliedEventKeys: new Set(),
         requestedStepNodeIds: new Set(), recoveredStepNodes: new Map(),
       },
     });
@@ -747,14 +754,20 @@ export function createSessionRuntime({
       return stepNodesChanged;
     }
     const { assistantEvents } = latestConversationTurn(events || []);
-    assistantEvents.forEach((event) => appendEvent(live.message, event));
+    const newEvents = assistantEvents.filter((event) => {
+      const key = managedEventKey(event);
+      if (live.appliedEventKeys.has(key)) return false;
+      live.appliedEventKeys.add(key);
+      return true;
+    });
+    newEvents.forEach((event) => appendEvent(live.message, event));
     if (context) attachStepNodes(live.message.items, context);
     if (revision) live.hydratedRevision = revision;
     // Snapshot hydration is a recovery transaction, not a streamed update:
     // commit it synchronously so the recovered bubble never waits for a
     // throttle interval or another SSE token before becoming visible.
     renderTimeline(live.view, live.message, live.shownPlots);
-    return assistantEvents.length > 0;
+    return newEvents.length > 0;
   }
 
   function finishManagedPresentation(live) {
@@ -813,6 +826,9 @@ export function createSessionRuntime({
       }
       try {
         const event = JSON.parse(data);
+        const eventKey = managedEventKey(event);
+        if (live.appliedEventKeys.has(eventKey)) return;
+        live.appliedEventKeys.add(eventKey);
         updateManagedPhase(live, applyAssistantMessageEvent(live.message, event));
         void recoverManagedStepNodes(live, event);
       } catch (_) { /* malformed replay event */ }
