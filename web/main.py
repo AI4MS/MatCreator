@@ -1264,11 +1264,16 @@ async def _resume_remote_job_session(notification: dict[str, Any]) -> str | None
     """Start an ordinary managed turn for one durable completion notification."""
     owner_id = notification["owner_id"]
     session_id = notification["session_id"]
+    is_group = notification.get("kind") == "group"
     store = _remote_job_store_for_owner(owner_id)
     if _remote_job_monitor_stop.is_set():
         return None
     if await asyncio.to_thread(
-        store.notifications_suppressed, owner_id, session_id, job_id=notification["job_id"],
+        store.notifications_suppressed,
+        owner_id,
+        session_id,
+        job_id=notification["job_id"],
+        include_user_control=not is_group,
     ):
         await asyncio.to_thread(store.suppress_notification, notification["notification_id"], "Session stopped")
         return None
@@ -1298,25 +1303,45 @@ async def _resume_remote_job_session(notification: dict[str, Any]) -> str | None
     if job["owner_id"] != owner_id or job["session_id"] != session_id:
         raise ValueError("Remote job notification does not match its owning session")
     controls = await asyncio.to_thread(store.list_events, job["job_id"])
-    if any(event["event_type"] == "user_control" for event in controls):
+    if not is_group and any(event["event_type"] == "user_control" for event in controls):
         await asyncio.to_thread(store.suppress_notification, notification["notification_id"], "Job stopped by user")
         return None
-    message = (
-        "REMOTE JOB STATUS UPDATE from the harness.\n"
-        f"Notification ID: {notification['notification_id']}\n"
-        f"Tracked job_id: {job['job_id']}\n"
-        f"Graph node: {job.get('node_id')}\n"
-        f"Provider: {job['provider']}\n"
-        f"Event kind: {notification.get('kind', 'lifecycle')}\n"
-        f"Observed outcome: {notification['status']}; current allocation status: {job['status']}\n"
-        "Read get_remote_job_status with this job_id first. Process the results of "
-        "this already-submitted work: collect and validate available outputs on success, "
-        "or inspect and report failure/timeout. If a sandbox background command finished, "
-        "inspect its persisted result without rerunning it. Reuse already-collected artifacts. "
-        "Respect user controls and any newer session instructions. Do not submit a replacement "
-        "job, repeat the computation, or authorize additional compute automatically. "
-        "If this notification has already been handled, do not repeat its side effects."
-    )
+    if is_group:
+        group_jobs = notification.get("jobs") or []
+        job_lines = "\n".join(
+            f"- {item.get('job_id')}: {item.get('status')} ({item.get('provider')})"
+            for item in group_jobs
+        )
+        message = (
+            "REMOTE JOB STATUS UPDATE from the harness.\n"
+            f"Notification ID: {notification['notification_id']}\n"
+            f"Remote job group: {notification.get('group_name')} ({notification.get('group_id')})\n"
+            f"Wakeup reason: {notification.get('group_reason')}\n"
+            f"Outcomes: {notification.get('outcome_jobs')}/{notification.get('expected_jobs')}; "
+            f"failed/cancelled/lost: {notification.get('failed_jobs')}\n"
+            f"Jobs:\n{job_lines}\n"
+            "Call list_remote_jobs, then read get_remote_job_status for every listed job before "
+            "processing this already-submitted work. Collect and validate successful outputs and "
+            "inspect failures or timeouts. Respect user controls and newer session instructions. "
+            "Do not resubmit jobs or authorize additional compute automatically."
+        )
+    else:
+        message = (
+            "REMOTE JOB STATUS UPDATE from the harness.\n"
+            f"Notification ID: {notification['notification_id']}\n"
+            f"Tracked job_id: {job['job_id']}\n"
+            f"Graph node: {job.get('node_id')}\n"
+            f"Provider: {job['provider']}\n"
+            f"Event kind: {notification.get('kind', 'lifecycle')}\n"
+            f"Observed outcome: {notification['status']}; current allocation status: {job['status']}\n"
+            "Read get_remote_job_status with this job_id first. Process the results of "
+            "this already-submitted work: collect and validate available outputs on success, "
+            "or inspect and report failure/timeout. If a sandbox background command finished, "
+            "inspect its persisted result without rerunning it. Reuse already-collected artifacts. "
+            "Respect user controls and any newer session instructions. Do not submit a replacement "
+            "job, repeat the computation, or authorize additional compute automatically. "
+            "If this notification has already been handled, do not repeat its side effects."
+        )
     payload = {
         "app_name": APP_NAME,
         "user_id": owner_id,
@@ -1330,7 +1355,11 @@ async def _resume_remote_job_session(notification: dict[str, Any]) -> str | None
         if _remote_job_monitor_stop.is_set():
             return False
         if await asyncio.to_thread(
-            store.notifications_suppressed, owner_id, session_id, job_id=job["job_id"],
+            store.notifications_suppressed,
+            owner_id,
+            session_id,
+            job_id=job["job_id"],
+            include_user_control=not is_group,
         ) or is_cancellation_requested(session_id, workspace_root=cancellation_root):
             await asyncio.to_thread(store.suppress_notification, notification["notification_id"], "Session stopped")
             return False
@@ -3276,6 +3305,7 @@ async def list_session_remote_jobs(
             "jobs": store.list_jobs(
                 owner_id=user_id, session_id=session_id
             ),
+            "groups": store.list_job_groups(owner_id=user_id, session_id=session_id),
             "active_run": active_run.summary() if active_run else None,
             "activity_revision": hashlib.sha256(activity_revision.encode()).hexdigest()
             if notifications or latest_run else None,

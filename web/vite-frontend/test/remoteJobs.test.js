@@ -199,6 +199,7 @@ function createFixture({ controllerOverrides = {}, skin = "rack-lab", windowOver
   const state = {
     activeSessionUserId: "owner-1",
     remoteJobs: [],
+    remoteJobGroups: [],
     sessionId: "session-1",
     userId: "owner-1",
   };
@@ -1517,5 +1518,62 @@ test("latest provider identity is visible and unsupported pause is capability-ga
   assert.match(rowText, /Provider statusRUNNING/);
   assert.equal(card.querySelector(".remote-job-action.pause").disabled, true);
   assert.equal(card.querySelector(".remote-job-action.terminate").disabled, false);
+  fixture.controller.destroy();
+});
+
+test("grouped jobs show their group identity and policy metadata", async () => {
+  const data = {
+    jobs: [{
+      job_id: "mc-job-42",
+      group_id: "group-abc-123",
+      external_id: "bohr-batch-314",
+      provider: "bohr_batchjob",
+      status: "running",
+      snapshot: { provider_status: "RUNNING" },
+    }],
+    groups: [{
+      group_id: "group-abc-123",
+      name: "parameter-sweep",
+      expected_jobs: 2,
+      delivery_reason: null,
+    }],
+  };
+  const fixture = createFixture({
+    controllerOverrides: {
+      dummyMode: false,
+      httpClient: { getJson: async () => data },
+    },
+  });
+
+  await fixture.controller.load("session-1", "owner-1");
+
+  const card = fixture.list.children[0];
+  assert.equal(card.querySelector(".remote-job-group").textContent, "Group · parameter-sweep");
+  assert.equal(card.querySelector(".remote-job-group").title, "Group ID: group-abc-123");
+  const rowText = card.querySelectorAll(".remote-job-detail-row")
+    .map((row) => `${row.children[0]?.textContent}${row.children[1]?.textContent}`)
+    .join(" | ");
+  assert.match(rowText, /Group IDgroup-abc-123/);
+  assert.match(rowText, /Group nameparameter-sweep/);
+  assert.match(rowText, /Expected jobs2/);
+  assert.deepEqual(fixture.state.remoteJobGroups, data.groups);
+  fixture.controller.destroy();
+});
+
+test("ungrouped jobs do not show group metadata", () => {
+  const fixture = createFixture();
+  fixture.controller.setPresentationJobs([{
+    job_id: "mc-job-42",
+    external_id: "bohr-batch-314",
+    provider: "bohr_batchjob",
+    status: "running",
+    snapshot: { provider_status: "RUNNING" },
+  }]);
+
+  const card = fixture.list.children[0];
+  assert.equal(card.querySelector(".remote-job-group"), null);
+  const labels = card.querySelectorAll(".remote-job-detail-row")
+    .map((row) => row.children[0]?.textContent);
+  assert.equal(labels.includes("Group ID"), false);
   fixture.controller.destroy();
 });
