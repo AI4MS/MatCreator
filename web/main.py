@@ -1174,7 +1174,7 @@ async def _produce_managed_run(
         if upstream_error := sse_error_message(record):
             raise RuntimeError(upstream_error)
         if started is not None and not is_sse_done(record) and any(
-            line.startswith("data:") and line[5:].strip() for line in record.splitlines()
+            line.startswith("data:") and line[5:].strip() for line in record.split("\n")
         ):
             started.set()
 

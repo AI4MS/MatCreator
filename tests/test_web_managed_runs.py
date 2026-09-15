@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -35,6 +36,23 @@ def test_sse_error_message_recognizes_adk_generator_failures() -> None:
     assert sse_error_message('data: {not-json}\n\n') == (
         "The agent backend returned a malformed streaming event."
     )
+
+
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+def test_sse_unicode_separators_inside_json_are_not_event_boundaries(separator: str) -> None:
+    payload = {"content": {"parts": [{"text": f"before{separator}data: [DONE]{separator}after"}]}}
+    record = "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+    buffer = SseRecordBuffer()
+    assert buffer.feed(record) == [record]
+    assert sse_error_message(record) is None
+    assert not is_sse_done(record)
+    error_record = "data: " + json.dumps({"error": f"before{separator}after"}, ensure_ascii=False) + "\n\n"
+    assert sse_error_message(error_record) == f"before{separator}after"
+
+
+def test_sse_error_message_joins_multiline_data_fields() -> None:
+    assert sse_error_message('data: {"content":\r\ndata: {"parts":[]}}\r\n\r\n') is None
+    assert sse_error_message('data: {"error":\ndata: "failed"}\n\n') == "failed"
 
 
 def test_subscriber_disconnect_does_not_cancel_producer() -> None:
