@@ -2227,7 +2227,12 @@ body[data-theme="light"] .composer-icon-btn:hover {
   background: rgba(14, 116, 144, 0.08);
 }
 .text-input { flex: 1; width: 100%; background: transparent; border: none; color: var(--text); font-size: var(--font-size-body); resize: none; line-height: 1.5; }
-.input-container .text-input { min-height: calc(1.5em * 1); max-height: calc(1.5em * 3); overflow-y: auto; }
+.input-container .text-input {
+  min-height: 1.5em;
+  max-height: min(18em, 40vh);
+  max-height: min(18em, 40dvh);
+  overflow-y: auto;
+}
 .text-input:focus { outline: none; }
 .send-btn,
 .tool-btn {
