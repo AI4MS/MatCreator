@@ -1,3 +1,4 @@
+import { fetchAgentNodeDetail, graphNodeRevision, graphNodeSummary } from "./graphSummary.js";
 import { Network, DataSet } from "vis-network/standalone";
 import { createDisclosureController } from "../ui/disclosureState.js";
 import { installNetworkWheelZoom } from "./networkWheelZoom.js";
@@ -105,6 +106,8 @@ export class AgentGraphView {
     this._pendingFit = true;
     this._animationFrame = null;
     this._lastAnimationPaint = 0;
+    this._viewportVisible = true;
+    this._animationTimer = null;
     this._motionTime = 0;
     this._activeEdges = [];
     this._vineEdges = [];
@@ -156,6 +159,14 @@ export class AgentGraphView {
       },
     });
     this._init();
+    document.addEventListener("visibilitychange", () => this._syncAnimation());
+    if (typeof IntersectionObserver !== "undefined") {
+      this._visibilityObserver = new IntersectionObserver(([entry]) => {
+        this._viewportVisible = entry.isIntersecting;
+        this._syncAnimation();
+      });
+      this._visibilityObserver.observe(this._graphViewport || this._container);
+    }
   }
 
   _init() {
@@ -1172,7 +1183,7 @@ export class AgentGraphView {
         };
       };
 
-      const particleCount = this._reduceMotion ? 1 : 2;
+      const particleCount = this._reduceMotion || this._nodes.length >= 500 ? 1 : 2;
       for (let index = 0; index < particleCount; index++) {
         const progress = this._reduceMotion
           ? 0.6
@@ -1190,32 +1201,55 @@ export class AgentGraphView {
     ctx.restore();
   }
 
+  _animationInterval() {
+    return this._nodes.length >= 500 ? 200 : this._nodes.length >= 150 ? 100 : 32;
+  }
+
+  _animationVisible() {
+    return !document.hidden && this._viewportVisible;
+  }
+
+  _stopAnimation() {
+    if (this._animationFrame !== null) cancelAnimationFrame(this._animationFrame);
+    if (this._animationTimer !== null) clearTimeout(this._animationTimer);
+    this._animationFrame = null;
+    this._animationTimer = null;
+  }
+
   _syncAnimation() {
     if (this._reduceMotion) this._nodeTransitions.clear();
-    const needsAnimation = !this._reduceMotion && (this._hasRunningNodes || this._hasLiveTransitions());
+    const needsAnimation = !this._reduceMotion && this._animationVisible()
+      && (this._hasRunningNodes || this._hasLiveTransitions());
     if (!needsAnimation) {
-      if (this._animationFrame !== null) cancelAnimationFrame(this._animationFrame);
-      this._animationFrame = null;
+      this._stopAnimation();
+      // Commit terminal status even if a throttled frame has not fired yet.
       this._network?.redraw();
       return;
     }
-    if (this._animationFrame !== null) return;
+    if (this._animationFrame !== null || this._animationTimer !== null) return;
 
     const animate = (time) => {
+      this._animationFrame = null;
+      if (!this._animationVisible()) return;
       this._motionTime = time;
-      // 30fps is smooth for slow orbital/flow motion and avoids paying for a
-      // full vis-network canvas redraw on every display refresh.
-      if (time - this._lastAnimationPaint >= 32) {
-        this._network?.redraw();
+      const interval = this._animationInterval();
+      if (time - this._lastAnimationPaint >= interval) {
         this._lastAnimationPaint = time;
+        this._network?.redraw();
       }
       if (!this._reduceMotion && (this._hasRunningNodes || this._hasLiveTransitions())) {
-        this._animationFrame = requestAnimationFrame(animate);
+        if (interval === 32) {
+          // Preserve the existing small-graph 30fps cadence.
+          this._animationFrame = requestAnimationFrame(animate);
+        } else {
+          // Large graphs sleep between paints instead of waking every frame.
+          this._animationTimer = setTimeout(() => {
+            this._animationTimer = null;
+            this._animationFrame = requestAnimationFrame(animate);
+          }, interval);
+        }
       } else {
-        // The final redraw commits the static badge/orbit after a short
-        // transition has ended, even if the last throttled paint was early.
         this._network?.redraw();
-        this._animationFrame = null;
       }
     };
     this._animationFrame = requestAnimationFrame(animate);
@@ -1720,19 +1754,16 @@ export class AgentGraphView {
   }
 
   _nodeDetailKey(node) {
-    if (!node) return "";
-    return JSON.stringify([
-      this._nodeVisualKey(node),
-      node.input,
-      node.artifacts,
-      node.tool_calls,
-      node.type === "step" ? null : node.conversation,
-    ]);
+    return node ? graphNodeRevision(node) : "";
   }
 
   update(incomingGraphData) {
     if (!incomingGraphData || typeof incomingGraphData.nodes !== "object") return;
-    const patch = applyGraphUpdate(this._graphSnapshot, incomingGraphData);
+    const patch = applyGraphUpdate(this._graphSnapshot, {
+      ...incomingGraphData,
+      nodes: Object.fromEntries(Object.entries(incomingGraphData.nodes)
+        .map(([id, node]) => [id, graphNodeSummary(node)])),
+    });
     const graphData = patch.graph;
     this._graphSnapshot = graphData;
 
@@ -1948,6 +1979,7 @@ export class AgentGraphView {
 
   startPolling(sessionId) {
     this.stopPolling();
+    if (this._currentSessionId !== sessionId) this._hideDetail();
     this._currentSessionId = sessionId;
     void this._poll(sessionId);
     const eventStream = new EventSource(`/api/agent-graph/${encodeURIComponent(sessionId)}/events`);
@@ -1989,6 +2021,7 @@ export class AgentGraphView {
     this._runningNodeIds.clear();
     if (this._animationFrame !== null) cancelAnimationFrame(this._animationFrame);
     this._animationFrame = null;
+    this._stopAnimation();
     this._network?.redraw();
   }
 
@@ -2032,11 +2065,40 @@ export class AgentGraphView {
     this.stopPolling();
   }
 
-  _showDetail(nodeId, options = {}) {
-    const raw = this._nodeData[nodeId];
-    if (!raw) return;
+  async _showDetail(nodeId, options = {}) {
+    const summary = this._nodeData[nodeId];
+    if (!summary) return;
+    const key = this._nodeDetailKey(summary);
+    if (this._activeDetailNodeId === nodeId && this._detailRequest) return;
+    this._detailRequest?.abort();
     this._activeDetailNodeId = nodeId;
-    this._detailRenderKey = this._nodeDetailKey(raw);
+    this._detailRenderKey = key;
+    const sessionId = this._currentSessionId;
+    const controller = new AbortController();
+    this._detailRequest = controller;
+    // Render cheap metadata immediately and discard the previous node's DOM.
+    this._renderDetail(nodeId, summary, options);
+    this._detailSummary.textContent = "Loading task details…";
+    try {
+      const detail = await fetchAgentNodeDetail(sessionId, nodeId, controller.signal);
+      if (controller.signal.aborted || this._currentSessionId !== sessionId || this._activeDetailNodeId !== nodeId) return;
+      this._renderDetail(nodeId, detail, { ...options, scrollToStep: false });
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        this._detailSummary.textContent = "Could not load task details. Select the node to retry.";
+      }
+    } finally {
+      if (this._detailRequest === controller) {
+        this._detailRequest = null;
+        if (!controller.signal.aborted && this._activeDetailNodeId === nodeId
+          && key !== this._nodeDetailKey(this._nodeData[nodeId])) {
+          void this._showDetail(nodeId, { preserveScroll: true, scrollToStep: false });
+        }
+      }
+    }
+  }
+
+  _renderDetail(nodeId, raw, options = {}) {
     const preserveScroll = Boolean(options.preserveScroll);
     const prevScrollTop = preserveScroll ? this._detailEl.scrollTop : 0;
     this._detailLabel.textContent = raw.label;
@@ -2072,6 +2134,7 @@ export class AgentGraphView {
       };
       actionsRow.style.display = "";
     } else {
+      stopStepBtn.onclick = null;
       actionsRow.style.display = "none";
     }
     this._detailArtifacts.innerHTML = "";
@@ -2091,6 +2154,7 @@ export class AgentGraphView {
       this._detailInput.textContent = JSON.stringify(raw.input, null, 2);
       document.getElementById("detail-input-row").style.display = "";
     } else {
+      this._detailInput.textContent = "";
       document.getElementById("detail-input-row").style.display = "none";
     }
 
@@ -2136,6 +2200,14 @@ export class AgentGraphView {
   }
 
   _hideDetail() {
+    this._detailRequest?.abort();
+    this._detailRequest = null;
+    for (const element of [this._detailArtifacts, this._detailInput, this._detailToolcalls, this._detailConversation, this._detailSummary]) {
+      element?.replaceChildren();
+    }
+    this._detailDisclosures.clear();
+    const stopButton = document.getElementById("detail-stop-step-btn");
+    if (stopButton) stopButton.onclick = null;
     this._activeDetailNodeId = null;
     this._detailRenderKey = null;
     this._detailEl.classList.add("hidden");
@@ -2143,6 +2215,7 @@ export class AgentGraphView {
   }
 
   notifyLayoutChanged() {
+    this._syncAnimation();
     if (!this._network) return;
     const size = this._resizeSurface();
     if (size) {
