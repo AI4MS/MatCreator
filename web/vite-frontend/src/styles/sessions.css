@@ -386,6 +386,18 @@ body[data-theme="light"] .custom-select-options li[aria-selected="true"] {
   line-height: 1;
   text-transform: uppercase;
 }
+.remote-job-group {
+  display: block;
+  max-width: 100%;
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--accent);
+  font-size: var(--font-size-micro);
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .remote-job-id {
   display: block;
   min-width: 0;

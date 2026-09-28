@@ -2,6 +2,22 @@
 
 <!-- version list -->
 
+## v2.24.0 (2026-09-10)
+
+### Bug Fixes
+
+- Restore plot previews and Rack Lab inline code contrast
+  ([`d43e265`](https://github.com/AI4MS/MatCreator/commit/d43e265c2849b6ee9847666a470decff5641a70c))
+
+- Stream harness wakeup runs live with folded trigger notice
+  ([`d7ff932`](https://github.com/AI4MS/MatCreator/commit/d7ff9327bd84bdf327f792795ac5bc81418d85ac))
+
+### Features
+
+- Support folder uploads and resilient file listing
+  ([`ada6dc0`](https://github.com/AI4MS/MatCreator/commit/ada6dc09e39f18396df1bf8efd1bede76f4eb5b0))
+
+
 ## v2.23.0 (2026-09-08)
 
 ### Bug Fixes

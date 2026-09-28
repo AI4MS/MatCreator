@@ -78,6 +78,42 @@ def test_idle_session_receives_one_managed_agent_turn(harness, monkeypatch):
     asyncio.run(exercise())
 
 
+def test_group_notification_contains_aggregate_outcomes(harness, monkeypatch):
+    harness.store.suppress_notification(harness.notification["notification_id"])
+    group = harness.store.create_job_group(
+        owner_id="alice", session_id="session-1", name="sweep", expected_jobs=1,
+    )
+    job = harness.store.create_job(
+        owner_id="alice", session_id="session-1", node_id="screen",
+        provider="bohr_batchjob", idempotency_key="grouped-job",
+        specification={}, group_id=group["group_id"],
+    )
+    harness.store.transition_job(job["job_id"], "submitting")
+    harness.store.transition_job(job["job_id"], "succeeded", external_id="batch-grouped")
+    notification, = harness.store.list_pending_notifications()
+
+    async def exercise():
+        captured = []
+        monkeypatch.setattr(harness.web, "_target_url_for_user", _target)
+
+        async def produce(run, payload, target_url, *, started):
+            captured.append(payload)
+            await harness.web._run_registry.publish(run, 'data: {"author":"agent"}\n\n')
+            started.set()
+
+        monkeypatch.setattr(harness.web, "_produce_managed_run", produce)
+        run_id = await harness.web._resume_remote_job_session(notification)
+        assert run_id
+        text = captured[0]["new_message"]["parts"][0]["text"]
+        assert f"Remote job group: sweep ({group['group_id']})" in text
+        assert "Wakeup reason: all_terminal" in text
+        assert f"- {job['job_id']}: succeeded (bohr_batchjob)" in text
+        assert "Call list_remote_jobs" in text
+        await harness.web._run_registry.shutdown()
+
+    asyncio.run(exercise())
+
+
 async def _target(owner_id):
     assert owner_id == "alice"
     return "http://worker.example"

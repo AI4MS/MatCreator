@@ -60,6 +60,7 @@ def _submit(
     spec: dict[str, Any],
     discriminator: str,
     persisted_specification: dict[str, Any] | None = None,
+    group_id: str | None = None,
 ) -> dict[str, Any]:
     """Shared submission plumbing used by every provider-specific submit tool."""
     session_id = str(tool_context.state.get("session_id") or "")
@@ -77,6 +78,7 @@ def _submit(
             idempotency_key=idempotency_key,
             spec=spec,
             persisted_specification=persisted_specification,
+            group_id=group_id,
         )
     except Exception as exc:
         return {"status": "error", "message": f"{provider} submission failed: {exc}"}
@@ -302,8 +304,13 @@ def submit_bohr_batchjob(
     out_files: list[str] | None = None,
     max_run_time: str = "24h",
     max_wait_time: str = "30m",
+    group_id: str | None = None,
 ) -> dict[str, Any]:
     """Submit or reuse a tracked sandbox-based job through `bohr batchjob submit`.
+
+    When this step will submit two or more similar or simultaneous Batch Jobs,
+    first call create_remote_job_group once and pass its returned group_id to
+    every related submission.
 
     Supply exactly one of machine_type or sku_id, discovered with
     `bohr batchjob machine list -o json`. project_id falls back to
@@ -390,6 +397,7 @@ def submit_bohr_batchjob(
         provider="bohr_batchjob",
         spec=spec,
         discriminator=f"bohr_batchjob:{name}",
+        group_id=group_id,
     )
     return _submission_response(
         result,
@@ -405,8 +413,12 @@ def attach_bohr_batchjob(
     tool_context: ToolContext,
     *,
     batchjob_id: str,
+    group_id: str | None = None,
 ) -> dict[str, Any]:
     """Attach an already-submitted Batch Job by its explicit string ID; never submit.
+
+    When attaching two or more related Batch Jobs together, first call
+    create_remote_job_group once and pass its group_id to every attachment.
 
     Uses the existing bohr account authentication to read the remote status.
     Repeated attachment reuses the current session's durable job record.
@@ -430,6 +442,7 @@ def attach_bohr_batchjob(
             external_id=batchjob_id,
             node_id=node_id,
             step_number=tool_context.state.get("step_number"),
+            group_id=group_id,
         )
     except Exception as exc:
         error = f"bohr batchjob attachment failed: {exc}"
@@ -452,10 +465,52 @@ def attach_bohr_batchjob(
     }
 
 
+def create_remote_job_group(
+    tool_context: ToolContext,
+    *,
+    name: str,
+    expected_jobs: int,
+    failure_ratio: float | None = None,
+    deadline_seconds: float = 172800,
+) -> dict[str, Any]:
+    """Create or reuse a durable group that emits one aggregate agent wakeup.
+
+    ALWAYS call this once before submitting or attaching two or more similar or
+    simultaneous Batch Jobs in one step. Set expected_jobs to the exact count.
+    Add the returned group_id to each submit_bohr_batchjob or
+    attach_bohr_batchjob call. The group wakes once when all expected jobs have
+    outcomes, the optional failed-job ratio is reached, or the optional
+    deadline elapses (48 hours by default). Grouped jobs do not create
+    individual lifecycle wakeups.
+    """
+    session_id = str(tool_context.state.get("session_id") or "")
+    if not session_id:
+        return {"status": "error", "message": "No session_id is available for remote-job grouping."}
+    try:
+        group = _service().create_job_group(
+            owner_id=_owner_id(tool_context),
+            session_id=session_id,
+            name=name,
+            expected_jobs=expected_jobs,
+            failure_ratio=failure_ratio,
+            deadline_seconds=deadline_seconds,
+        )
+    except Exception as exc:
+        return {"status": "error", "message": f"Remote job group creation failed: {exc}"}
+    return {
+        "status": "ready",
+        "group_id": group["group_id"],
+        "name": group["name"],
+        "expected_jobs": group["expected_jobs"],
+        "failure_ratio": group["failure_ratio"],
+        "deadline_at": group["deadline_at"],
+    }
+
+
 def list_remote_jobs(tool_context: ToolContext, active_only: bool = False) -> dict[str, Any]:
     """List remote jobs tracked for the current session, newest-updated first.
 
-    Returns a compact per-job projection (``job_id``, ``provider``, ``node_id``,
+    Returns a compact per-job projection (``job_id``, ``group_id``, ``provider``, ``node_id``,
     ``status``, ``external_id``, ``updated_at``, ``error``) instead of full
     snapshots/events, so it is cheap to call before answering questions about
     running jobs or after a restart, without resorting to ``read_session_log``
@@ -469,7 +524,13 @@ def list_remote_jobs(tool_context: ToolContext, active_only: bool = False) -> di
     if active_only:
         jobs = [job for job in jobs if job["status"] not in TERMINAL_REMOTE_JOB_STATUSES]
     summaries = [
-        {key: job.get(key) for key in ("job_id", "provider", "node_id", "status", "external_id", "updated_at", "error")}
+        {
+            key: job.get(key)
+            for key in (
+                "job_id", "group_id", "provider", "node_id", "status",
+                "external_id", "updated_at", "error",
+            )
+        }
         for job in jobs
     ]
     return {"status": "ok", "job_count": len(summaries), "jobs": summaries}
@@ -486,7 +547,11 @@ def get_remote_job_status(job_id: str, tool_context: ToolContext) -> dict[str, A
     ):
         return {"status": "error", "message": "Remote job was not found in this session."}
     result = {
-        key: job[key] for key in ("job_id", "provider", "status", "external_id", "snapshot", "error", "updated_at")
+        key: job.get(key)
+        for key in (
+            "job_id", "group_id", "provider", "status", "external_id",
+            "snapshot", "error", "updated_at",
+        )
     }
     controls = [
         event["payload"] for event in service.store.list_events(job_id) if event["event_type"] == "user_control"

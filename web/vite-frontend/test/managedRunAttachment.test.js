@@ -203,6 +203,55 @@ test("the wakeup trigger folds in from durable history while the run is still st
   assert.ok(counters.historyLoads >= 1);
 });
 
+test("snapshot recovery does not reapply durable events when the session revision changes", async (t) => {
+  const { runtime, counters } = createHarness(t);
+  const events = [
+    { ...snapshotEvents[0], timestamp: 2 },
+    {
+      id: "call-1", author: "MatCreator",
+      content: { parts: [{ functionCall: { id: "tool-1", name: "first_task", args: {} } }] },
+    },
+    snapshotEvents[1],
+    {
+      id: "call-2", author: "MatCreator",
+      content: { parts: [{ functionCall: { id: "tool-2", name: "second_task", args: {} } }] },
+    },
+  ];
+  globalThis.fetch = async (url) => {
+    if (url === "/events") {
+      counters.streams += 1;
+      return new Response(new ReadableStream({ start() {} }));
+    }
+    counters.historyLoads += 1;
+    return Response.json({
+      events, state: { agent_mode: "normal" }, userId: "alice",
+      event_meta: events.map((_, index) => ({ index, cursor: `c${index}`, turn_id: "turn-1" })),
+      pagination: { start_index: 0, total_count: events.length },
+      revision: `r${counters.historyLoads}`,
+    });
+  };
+
+  await runtime.loadSession("session-1", "alice");
+  const attached = runtime.startManagedRunReconnect(
+    {
+      run_id: "wakeup-run", status: "running", created_at: 1,
+      earliest_sequence: 2,
+    },
+    "session-1",
+    "alice",
+  );
+  assert.ok(attached);
+  t.after(() => attached.controller.abort());
+
+  await runtime.loadSession("session-1", "alice");
+
+  const renderedText = attached.message.items
+    .filter((item) => item.type === "text")
+    .map((item) => item.text)
+    .join("|");
+  assert.equal(renderedText, "Job finished.");
+});
+
 test("a wakeup mounts alongside a presenting turn owned by another key without clearing it", async (t) => {
   const { runtime, state, counters, settle } = createHarness(t);
   // Owner-key normalization can leave the presenting request under another

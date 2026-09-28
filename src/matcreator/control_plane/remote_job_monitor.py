@@ -56,6 +56,7 @@ class RemoteJobMonitor:
             while not self._stop.is_set():
                 try:
                     self._schedule_probes()
+                    self.store.evaluate_job_groups()
                     self._schedule_deliveries()
                 except Exception:
                     logger.exception("Remote job monitor scheduling failed; retrying next tick")
@@ -200,8 +201,10 @@ class RemoteJobMonitor:
     async def reconcile_once(self) -> list[dict[str, Any]]:
         """Wait for this bounded batch; the long-running loop never waits on a fleet."""
         tasks = self._schedule_probes()
+        self.store.evaluate_job_groups()
         self._schedule_deliveries()
         results = await asyncio.gather(*tasks)
+        self.store.evaluate_job_groups()
         self._schedule_deliveries()
         if self._deliveries:
             await asyncio.gather(*self._deliveries.values())

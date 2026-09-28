@@ -100,6 +100,7 @@ const state = {
   sessionSummaries: {},   // { sessionId: "summary text" }
   summaryGeneratedFor: new Set(),  // sessionIds that have triggered summary generation
   remoteJobs: [],
+  remoteJobGroups: [],
   appMode: "workspace",
   evaluationCatalog: [],
   evaluationCatalogTotal: null,
