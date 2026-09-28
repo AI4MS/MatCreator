@@ -36,7 +36,6 @@ from __future__ import annotations
 import json
 import threading
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import List, Literal, Optional
 
 from ..workspace import ADK_DIR
@@ -108,6 +107,7 @@ class AgentGraphLogger:
                 "tool_calls": [],
                 "state_delta": {},
                 "conversation": [],
+                "revision": (existing or {}).get("revision", 0),
             }
             graph["nodes"][node_id] = node
             incoming_ids = dependencies or ([parent_id] if parent_id else [])
@@ -116,6 +116,7 @@ class AgentGraphLogger:
                     edge = {"from": source_id, "to": node_id}
                     if edge not in graph["edges"]:
                         graph["edges"].append(edge)
+            node["revision"] = node.get("revision", 0) + 1
             self._write(graph)
 
     def find_step_node(self, node_id: str) -> Optional[str]:
@@ -152,12 +153,19 @@ class AgentGraphLogger:
             # an already-cancelled async task must not turn the graph green.
             if node.get("status") == "cancelled" and status != "cancelled":
                 return
+            if (
+                node.get("end_time") and node.get("status") == status
+                and (summary is None or node.get("summary") == summary)
+                and (artifacts is None or node.get("artifacts") == artifacts)
+            ):
+                return
             node["status"] = status
             node["end_time"] = _now()
             if summary is not None:
                 node["summary"] = summary
             if artifacts is not None:
                 node["artifacts"] = artifacts
+            node["revision"] = node.get("revision", 0) + 1
             self._write(graph)
 
     def count_nodes_of_type(self, node_type: NodeType) -> int:
@@ -177,6 +185,9 @@ class AgentGraphLogger:
             node = graph["nodes"].get(node_id)
             if node is None:
                 return
+            if node.get("input") == input_data:
+                return
+            node["revision"] = node.get("revision", 0) + 1
             node["input"] = input_data
             self._write(graph)
 
@@ -187,6 +198,7 @@ class AgentGraphLogger:
             node = graph["nodes"].get(node_id)
             if node is None:
                 return
+            node["revision"] = node.get("revision", 0) + 1
             node.setdefault("tool_calls", []).append(entry)
             self._write(graph)
 
@@ -197,6 +209,10 @@ class AgentGraphLogger:
             node = graph["nodes"].get(node_id)
             if node is None:
                 return
+            current = node.get("state_delta") or {}
+            if all(key in current and current[key] == value for key, value in delta.items()):
+                return
+            node["revision"] = node.get("revision", 0) + 1
             node.setdefault("state_delta", {}).update(delta)
             self._write(graph)
 
@@ -222,10 +238,14 @@ class AgentGraphLogger:
                 and isinstance(previous.get("content"), str)
                 and isinstance(entry.get("content"), str)
             ):
-                previous["content"] = _merge_streamed_text(previous["content"], entry["content"])
+                content = _merge_streamed_text(previous["content"], entry["content"])
+                if content == previous["content"]:
+                    return
+                previous["content"] = content
                 previous["timestamp"] = entry.get("timestamp", previous.get("timestamp"))
             else:
                 conversation.append(entry)
+            node["revision"] = node.get("revision", 0) + 1
             self._write(graph)
 
     def mark_running_nodes_cancelled(
@@ -241,6 +261,7 @@ class AgentGraphLogger:
         with self._lock:
             graph = self._read()
             now = _now()
+            changed = False
             for node in graph["nodes"].values():
                 if node.get("status") != "running":
                     continue
@@ -249,7 +270,10 @@ class AgentGraphLogger:
                 node["status"] = "cancelled"
                 node["end_time"] = now
                 node["summary"] = summary
-            self._write(graph)
+                node["revision"] = node.get("revision", 0) + 1
+                changed = True
+            if changed:
+                self._write(graph)
 
     def cancel_step_node_by_number(self, step_number: int, summary: str = "Cancelled by user") -> bool:
         """Find the running step node with input.step_number==step_number and mark it cancelled.
@@ -268,6 +292,7 @@ class AgentGraphLogger:
                     node["status"] = "cancelled"
                     node["end_time"] = now
                     node["summary"] = summary
+                    node["revision"] = node.get("revision", 0) + 1
                     self._write(graph)
                     return True
         return False
@@ -290,6 +315,7 @@ class AgentGraphLogger:
                     node["status"] = "cancelled"
                     node["end_time"] = now
                     node["summary"] = summary
+                    node["revision"] = node.get("revision", 0) + 1
                     self._write(graph)
                     return True
         return False
@@ -308,7 +334,7 @@ class AgentGraphLogger:
 
     def _write(self, graph: dict) -> None:
         graph["updated_at"] = _now()
-        self._path.write_text(json.dumps(graph, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._path.write_text(json.dumps(graph, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
 
 
 def _merge_streamed_text(current: str, incoming: str) -> str:

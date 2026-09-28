@@ -1,3 +1,7 @@
+import { graphNodeRevision, graphNodeSummary } from "./graphSummary.js";
+
+const COLLAPSE_MOTION_MS = 240;
+
 // Owns the inline executor cards rendered within an assistant timeline.
 // Rendering collaborators are injected so this feed remains independent of
 // the graph visualization and the chat presentation implementation.
@@ -43,6 +47,7 @@ export class StepExecutionFeed {
     this._renderStepToolCall = dependencies.renderStepToolCall;
     this._requestStepCancellation = dependencies.requestStepCancellation;
     this._createArtifactListItem = dependencies.createArtifactListItem;
+    this._loadNodeDetail = dependencies.loadNodeDetail;
     this._cards = new Map();
     this._disclosures = dependencies.disclosureController;
     this._highlightedId = null;
@@ -61,7 +66,10 @@ export class StepExecutionFeed {
     // `_cards` is the ownership registry, not merely a render cache. Never
     // forget a card while leaving its DOM node behind: a later graph replay
     // would otherwise create a second bubble for the same graph node.
-    for (const card of new Set(this._cards.values())) card.remove();
+    for (const card of new Set(this._cards.values())) {
+      this._disposeCard(card);
+      card.remove();
+    }
     this._cards.clear();
     if (!preserveDisclosures) this._disclosures.clear();
     this._highlightedId = null;
@@ -72,6 +80,132 @@ export class StepExecutionFeed {
     this._rootHostsByAction.clear();
     this._stepById = new Map();
     this._childNodes = new Map();
+  }
+
+  // Called before a virtual row or delegation host loses its DOM ownership.
+  releaseWithin(host) {
+    if (!host) return;
+    this._disclosures?.capture?.(host);
+    const cards = [...(host.querySelectorAll?.(".step-feed-message") || [])];
+    if (host.classList?.contains("step-feed-message")) cards.unshift(host);
+    // Unregister hosts before disposing bodies changes their ancestry.
+    for (const hosts of [this._rootHosts, this._rootHostsByAction]) {
+      for (const [key, element] of hosts || []) {
+        if (element === host || host.contains?.(element)) hosts.delete(key);
+      }
+    }
+    for (const card of cards) {
+      const id = card.dataset?.stepNodeId;
+      if (this._cards?.get(id) === card) this._cards.delete(id);
+      this._disposeCard(card);
+    }
+    if (this._cards?.size === 0) this._stopElapsedTimer();
+  }
+
+  _disposeCard(card) {
+    this._disclosures?.deletePrefix?.(`step:${card.dataset?.stepNodeId}:nested:`);
+    if (card._stepClearTimer != null) clearTimeout(card._stepClearTimer);
+    card._stepClearTimer = null;
+    card._stepDetailRequest?.abort();
+    card._stepDetailRequest = null;
+    card._stepDetail = null;
+    card._stepBodyKey = null;
+    card.querySelector?.(".step-feed-body")?.remove();
+    card._stepNode = null;
+  }
+
+  _unmountBody(outer) {
+    outer._stepDetailRequest?.abort();
+    outer._stepDetailRequest = null;
+    outer._stepDetail = null;
+    outer._stepBodyKey = null;
+    const body = outer.querySelector(".step-feed-body");
+    if (body) {
+      this.releaseWithin(body);
+      body.remove();
+    }
+    this._disclosures.deletePrefix(`step:${outer.dataset.stepNodeId}:nested:`);
+  }
+
+  _bodyVisible(outer) {
+    if (!outer.isConnected) return false;
+    let details = outer.querySelector(".step-feed-details");
+    if (!details?.open) return false;
+    details = outer.parentElement?.closest(".step-feed-details");
+    while (details) {
+      if (!details.open) return false;
+      details = details.parentElement?.closest(".step-feed-details");
+    }
+    return this._cards.get(outer.dataset.stepNodeId) === outer;
+  }
+
+  _toggleBody(outer) {
+    if (outer._stepClearTimer != null) clearTimeout(outer._stepClearTimer);
+    outer._stepClearTimer = null;
+    const details = outer.querySelector(".step-feed-details");
+    if (details.open) {
+      this._refreshBody(outer);
+    } else {
+      for (const card of [outer, ...outer.querySelectorAll(".step-feed-message")]) {
+        card._stepDetailRequest?.abort();
+        card._stepDetailRequest = null;
+      }
+      outer._stepClearTimer = setTimeout(() => {
+        outer._stepClearTimer = null;
+        if (!details.open) this._unmountBody(outer);
+      }, COLLAPSE_MOTION_MS);
+    }
+  }
+
+  async _refreshBody(outer) {
+    if (!this._bodyVisible(outer)) return;
+    const node = outer._stepNode;
+    const key = graphNodeRevision(node);
+    // At most one request per open card. If revisions arrive during a fetch,
+    // finish it then request the newest revision, avoiding starvation on streams.
+    if (outer._stepDetailRequest) return;
+    if (outer._stepDetail && outer._stepBodyKey === key) {
+      this._renderChildren(outer, node);
+      return;
+    }
+    const controller = new AbortController();
+    outer._stepDetailRequest = controller;
+    if (!outer.querySelector(".step-feed-body")) {
+      const body = document.createElement("div");
+      body.className = "step-feed-body";
+      body.textContent = "Loading task details…";
+      outer.querySelector(".step-feed-details").appendChild(body);
+    }
+    try {
+      const detail = this._loadNodeDetail ? await this._loadNodeDetail(node.id, controller.signal) : node;
+      if (controller.signal.aborted || !this._bodyVisible(outer)) return;
+      if (!detail || detail.id !== node.id) throw new Error("Invalid task detail");
+      outer._stepDetail = detail;
+      outer._stepBodyKey = key;
+      this._updatePreservingReadingPosition(() => this._renderBody(outer, detail));
+    } catch (error) {
+      if (controller.signal.aborted || !this._bodyVisible(outer)) return;
+      outer._stepDetail = null;
+      outer._stepBodyKey = null;
+      let body = outer.querySelector(".step-feed-body");
+      if (!body) {
+        body = document.createElement("div");
+        body.className = "step-feed-body";
+        outer.querySelector(".step-feed-details").appendChild(body);
+      }
+      this.releaseWithin(body);
+      body.replaceChildren();
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.textContent = "Could not load task details. Retry";
+      retry.addEventListener("click", () => this._refreshBody(outer));
+      body.appendChild(retry);
+    } finally {
+      if (outer._stepDetailRequest === controller) {
+        outer._stepDetailRequest = null;
+        if (!controller.signal.aborted && key !== graphNodeRevision(outer._stepNode)) void this._refreshBody(outer);
+      }
+    }
   }
 
   captureDisclosureState() {
@@ -129,12 +263,18 @@ export class StepExecutionFeed {
       (key && (this._nodeExecutionKey(candidate) === key || String(candidate.id || "").endsWith(`__node_${key}`)))
       || (!key && candidate?.input?.action === actionKey && this.isRootStep(candidate))
     ));
-    const card = node && this._cards.get(node.id);
-    if (node && card) this._insertIntoLiveContainer(hostEl, card, node);
+    if (node) {
+      const card = this._ensureCard(node);
+      this._insertIntoLiveContainer(hostEl, card, node);
+      this._renderCardIfChanged(card, node);
+      if (card.querySelector(".step-feed-details")?.open) void this._refreshBody(card);
+    }
     return true;
   }
 
   finishLiveTurn() {
+    this.releaseWithin(this._liveContainerEl);
+    this._liveContainerEl?.replaceChildren();
     this._liveAnchorEl = null;
     this._liveContainerEl = null;
     this._liveStartedAt = null;
@@ -151,7 +291,6 @@ export class StepExecutionFeed {
     // child rendered once as a root and again beneath its eventual parent.
     const steps = Object.values(graphData.nodes)
       .filter((node) => node.type === "step")
-      .filter((node) => !hasLiveDestination || this._isLiveStep(node))
       .sort((a, b) => {
         const ta = a.start_time ? new Date(a.start_time).getTime() : Infinity;
         const tb = b.start_time ? new Date(b.start_time).getTime() : Infinity;
@@ -161,13 +300,31 @@ export class StepExecutionFeed {
     const rootSteps = steps.filter((node) => this.isRootStep(node));
 
     this._updatePreservingReadingPosition(() => {
-      rootSteps.forEach((node) => this._upsert(node));
+      rootSteps.forEach((node) => {
+        if (this._cards.has(node.id) || (hasLiveDestination && this._isLiveStep(node))) this._upsert(node);
+      });
+      for (const [id, card] of [...this._cards]) {
+        const node = this._stepById.get(id);
+        if (!node) {
+          this.releaseWithin(card);
+          card.remove();
+          continue;
+        }
+        // A late parent changes a former root into a child. Closed parents own
+        // no descendant DOM; open parents will recreate the child in their body.
+        if (!this.isRootStep(node) && card.parentElement?.closest(".step-feed-message")?.dataset.stepNodeId !== node.parent_id) {
+          this.releaseWithin(card);
+          card.remove();
+          continue;
+        }
+        this._renderCardIfChanged(card, node);
+      }
     });
     this._syncElapsedTimer();
   }
 
   setHierarchy(stepNodes) {
-    const steps = Array.isArray(stepNodes) ? stepNodes : [];
+    const steps = Array.isArray(stepNodes) ? stepNodes.map(graphNodeSummary) : [];
     this._stepById = new Map(steps.map((node) => [node.id, node]));
     this._childNodes = new Map();
 
@@ -193,6 +350,7 @@ export class StepExecutionFeed {
   }
 
   _rootHostForNode(node) {
+    if (this._liveStartedAt && !this._isLiveStep(node)) return null;
     const directKey = this._nodeExecutionKey(node);
     let host = this._rootHosts.get(directKey);
     if (!host && node?.id) {
@@ -253,7 +411,7 @@ export class StepExecutionFeed {
       this._insertIntoLiveContainer(rootHost, outer, node);
       return;
     }
-    if (this._isSending() && this._liveContainerEl) {
+    if (this._isSending() && this._liveContainerEl && this._isLiveStep(node)) {
       // This holding element is deliberately detached. The function-call
       // event will bind the node to its permanent chronological slot.
       this._insertIntoLiveContainer(this._liveContainerEl, outer, node);
@@ -294,32 +452,17 @@ export class StepExecutionFeed {
     return outer;
   }
 
-  _renderKey(node, ancestors = new Set([node.id])) {
-    const children = (this._childNodes.get(node.id) || [])
-      .filter((child) => !ancestors.has(child.id))
-      .map((child) => {
-        const nextAncestors = new Set(ancestors);
-        nextAncestors.add(child.id);
-        return this._renderKey(child, nextAncestors);
-      });
-    return JSON.stringify({
-      status: node.status,
-      startTime: node.start_time,
-      endTime: node.end_time,
-      summary: node.summary,
-      input: node.input,
-      conversation: node.conversation,
-      toolCalls: node.tool_calls,
-      artifacts: node.artifacts,
-      children,
-    });
+  _renderKey(node) {
+    return [graphNodeRevision(node), node.summary, node.label,
+      ...(this._childNodes.get(node.id) || []).map(graphNodeRevision)].join("|");
   }
 
-  _renderCardIfChanged(outer, node, ancestors = new Set([node.id])) {
-    const renderKey = this._renderKey(node, ancestors);
+  _renderCardIfChanged(outer, node, ancestors = outer._stepAncestors || new Set([node.id])) {
+    const renderKey = this._renderKey(node);
     if (outer._stepRenderKey === renderKey) return;
     outer._stepRenderKey = renderKey;
-    this._renderCard(outer, node, ancestors);
+    outer._stepAncestors = ancestors;
+    this._renderCard(outer, graphNodeSummary(node));
   }
 
   _insertIntoLiveContainer(container, outer, node) {
@@ -368,13 +511,14 @@ export class StepExecutionFeed {
         : newest;
     }, null);
     if (newestExisting && compareStepAttempts(this._attemptNode(newestExisting), node) > 0) {
+      this.releaseWithin(outer);
       outer.remove();
       attempts.forEach((element) => {
-        if (element !== newestExisting) element.remove();
+        if (element !== newestExisting) { this.releaseWithin(element); element.remove(); }
       });
       return false;
     }
-    attempts.forEach((element) => element.remove());
+    attempts.forEach((element) => { this.releaseWithin(element); element.remove(); });
     return true;
   }
 
@@ -405,6 +549,9 @@ export class StepExecutionFeed {
     this._disclosures.wire(details, `step:${node.id}:card`, {
       defaultOpen: false,
     });
+    details.addEventListener("toggle", (event) => {
+      if (event.target === details) this._toggleBody(outer);
+    });
     bubble.appendChild(details);
     outer.appendChild(bubble);
     return outer;
@@ -417,23 +564,24 @@ export class StepExecutionFeed {
     return element;
   }
 
-  _renderCard(outer, node, ancestors = new Set([node.id])) {
+  _renderCard(outer, node) {
+    const previousStatus = outer._stepNode?.status;
     outer.dataset.stepNodeId = node.id;
     outer.dataset.stepStatus = node.status || "idle";
     outer._stepNode = node;
     outer.classList.toggle("step-feed-highlight", this._highlightedId === node.id);
 
-    const bubble = outer.querySelector(".step-feed-bubble");
-
     const details = outer.querySelector(".step-feed-details");
     const cardKey = `step:${node.id}:card`;
     const isRunning = node.status === "running";
-    if (!isRunning) this._disclosures.state.delete(cardKey);
-    const userChoice = this._disclosures.state.get(cardKey);
-    // Start compact even while work is live. A reader can explicitly open a
-    // card for its activity stream; completed cards always compact again.
-    details.open = isRunning && userChoice === true;
-    details.innerHTML = "";
+    // Completed tasks default closed. Preserve an explicit historical open
+    // choice, but compact once when a running task reaches its terminal state.
+    if (previousStatus === "running" && !isRunning) {
+      this._disclosures.state.delete(cardKey);
+      details.open = false;
+      this._toggleBody(outer);
+    }
+    details.querySelector(":scope > summary")?.remove();
 
     const summary = document.createElement("summary");
     summary.className = "step-feed-summary";
@@ -476,8 +624,16 @@ export class StepExecutionFeed {
       });
       summary.appendChild(stopBtn);
     }
-    details.appendChild(summary);
+    details.prepend(summary);
+    if (details.open) void this._refreshBody(outer);
+  }
 
+  _renderBody(outer, node) {
+    const details = outer.querySelector(".step-feed-details");
+    const previousBody = details.querySelector(":scope > .step-feed-body");
+    // Preserve nested cards while this node streams; each has its own revision.
+    const children = previousBody?.querySelector(":scope > .step-feed-child-section");
+    if (previousBody) this._disclosures.capture(previousBody);
     const body = document.createElement("div");
     body.className = "step-feed-body";
 
@@ -490,33 +646,6 @@ export class StepExecutionFeed {
 
     if (node.input && Object.keys(node.input).length) {
       body.appendChild(this._wireNested(node.id, "input", this._renderStepInput(node.input)));
-    }
-
-    const childNodes = (this._childNodes.get(node.id) || [])
-      .filter((child) => !ancestors.has(child.id));
-    if (childNodes.length) {
-      let section = bubble?.querySelector(":scope > .step-feed-child-section");
-      if (!section) {
-        section = document.createElement("div");
-        section.className = "step-feed-section step-feed-child-section";
-        const label = document.createElement("div");
-        label.className = "step-feed-section-title";
-        const childHost = document.createElement("div");
-        childHost.className = "step-feed-child-list";
-        section.append(label, childHost);
-        bubble?.appendChild(section);
-      }
-      const label = section.querySelector(":scope > .step-feed-section-title");
-      label.textContent = `Sub-executors (${childNodes.length})`;
-      const childHost = section.querySelector(":scope > .step-feed-child-list");
-
-      childNodes.forEach((child) => {
-        const nextAncestors = new Set(ancestors);
-        nextAncestors.add(child.id);
-        this._upsertNested(child, childHost, nextAncestors);
-      });
-    } else {
-      bubble?.querySelector(":scope > .step-feed-child-section")?.remove();
     }
 
     const activityItems = this._activityStream(node);
@@ -556,6 +685,7 @@ export class StepExecutionFeed {
       body.appendChild(section);
     }
 
+    if (children) body.appendChild(children);
     if (!body.childElementCount) {
       const empty = document.createElement("div");
       empty.className = "step-feed-empty";
@@ -563,7 +693,49 @@ export class StepExecutionFeed {
       body.appendChild(empty);
     }
 
+    previousBody?.remove();
     details.appendChild(body);
+    this._renderChildren(outer, node);
+  }
+
+  _renderChildren(outer, node) {
+    const ancestors = outer._stepAncestors || new Set([node.id]);
+    const body = outer.querySelector(".step-feed-body");
+    const childNodes = (this._childNodes.get(node.id) || [])
+      .filter((child) => !ancestors.has(child.id));
+    if (childNodes.length) {
+      let section = body?.querySelector(":scope > .step-feed-child-section");
+      if (!section) {
+        section = document.createElement("div");
+        section.className = "step-feed-section step-feed-child-section";
+        const label = document.createElement("div");
+        label.className = "step-feed-section-title";
+        const childHost = document.createElement("div");
+        childHost.className = "step-feed-child-list";
+        section.append(label, childHost);
+        body?.appendChild(section);
+      }
+      const label = section.querySelector(":scope > .step-feed-section-title");
+      label.textContent = `Sub-executors (${childNodes.length})`;
+      const childHost = section.querySelector(":scope > .step-feed-child-list");
+
+      for (const card of [...childHost.children]) {
+        if (!childNodes.some((child) => child.id === card.dataset.stepNodeId)) {
+          this.releaseWithin(card);
+          card.remove();
+        }
+      }
+      childNodes.forEach((child) => {
+        const nextAncestors = new Set(ancestors);
+        nextAncestors.add(child.id);
+        this._upsertNested(child, childHost, nextAncestors);
+      });
+    } else {
+      const section = body?.querySelector(":scope > .step-feed-child-section");
+      this.releaseWithin(section);
+      section?.remove();
+    }
+
   }
 
   _syncElapsedTimer() {

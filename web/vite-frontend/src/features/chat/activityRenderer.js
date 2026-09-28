@@ -220,6 +220,7 @@ export function createActivityRenderer({
 
     for (const [key, row] of rows) {
       if (liveKeys.has(key)) continue;
+      stepExecutionFeed.releaseWithin(row.task);
       row.task.remove();
       rows.delete(key);
     }

@@ -1,3 +1,4 @@
+import { graphNodeRevision, graphNodeSummary } from "../graphs/graphSummary.js";
 import {
   applyAssistantMessageEvent,
   completeAssistantMessage,
@@ -99,6 +100,7 @@ export function createSessionRuntime({
   const viewport = createViewport({
     chatArea,
     renderRow: (row, host) => renderPersistedRow(row, host),
+    releaseRow: (host) => stepExecutionFeed.releaseWithin(host),
     estimateRow: (row) => activeContext?.store.estimateRow(row) || 132,
     onNeedRange: ({ targetIndex }) => {
       if (!activeContext) return;
@@ -303,7 +305,7 @@ export function createSessionRuntime({
       const response = await fetch(`/api/agent-graph/${encodeURIComponent(sessionId)}?${query}`, { signal });
       if (!response.ok) return [];
       const graph = await response.json();
-      return Object.values(graph.nodes || {}).filter((node) => node.type === "step");
+      return Object.values(graph.nodes || {}).filter((node) => node.type === "step").map(graphNodeSummary);
     } catch (error) {
       if (error?.name !== "AbortError") console.error("Failed to load transcript steps:", error);
       return [];
@@ -312,11 +314,13 @@ export function createSessionRuntime({
 
   function mergeGraphNodes(context, nodes) {
     let changed = false;
-    nodes.forEach((node) => {
-      if (!node?.id) return;
+    nodes.forEach((raw) => {
+      if (!raw?.id) return;
+      const node = graphNodeSummary(raw);
       const requestedId = launcherNodeId(node.input) || node.id;
-      const revision = String(node.updated_at || node.end_time || node.status || "idle");
-      if (context.graphRevisions.get(requestedId) === revision) return;
+      const revision = graphNodeRevision(node);
+      const previous = context.graphNodes.get(node.id);
+      if (previous && graphNodeRevision(previous) === revision) return;
       context.graphNodes.set(node.id, node);
       context.graphRevisions.set(requestedId, revision);
       changed = true;

@@ -91,3 +91,55 @@ def test_explicit_step_dependencies_replace_execution_parent_edge(tmp_path, monk
     assert ("execution_0__node_1", "execution_0__node_4") not in edges
     assert ("execution_0", "execution_0__node_3") not in edges
     assert ("execution_0", "execution_0__node_4") not in edges
+
+
+def test_node_revisions_track_mutations_and_skip_noop_writes(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(graph_logger, "ADK_DIR", tmp_path)
+    logger = graph_logger.AgentGraphLogger("revisions")
+    logger.log_node_start("step", "step", "Step")
+    logger.log_node_start("other", "step", "Other")
+    path = tmp_path / "agent_graphs/revisions.json"
+
+    def revision():
+        return json.loads(path.read_text())["nodes"]["step"]["revision"]
+
+    assert revision() == 1
+    logger.log_node_input("step", {"step_number": 1})
+    assert revision() == 2
+    before = path.stat().st_mtime_ns
+    logger.log_node_input("step", {"step_number": 1})
+    assert path.stat().st_mtime_ns == before
+    logger.log_conversation_event("step", {"type": "text", "author": "agent", "content": "hello"})
+    assert revision() == 3
+    before = path.stat().st_mtime_ns
+    logger.log_conversation_event("step", {"type": "text", "author": "agent", "content": "hello"})
+    assert path.stat().st_mtime_ns == before
+    logger.log_tool_call("step", {"name": "calculate"})
+    assert revision() == 4
+    logger.log_state_delta("step", {"result": 1})
+    assert revision() == 5
+    logger.log_state_delta("step", {"result": 1})
+    assert revision() == 5
+    assert logger.cancel_step_node_by_number(1)
+    assert revision() == 6
+    logger.log_node_complete("step", "success")
+    assert revision() == 6
+    assert json.loads(path.read_text())["nodes"]["other"]["revision"] == 1
+    logger.mark_running_nodes_cancelled()
+    before = path.stat().st_mtime_ns
+    logger.mark_running_nodes_cancelled()
+    assert path.stat().st_mtime_ns == before
+    assert "\n" not in path.read_text(), "compact serialization remains valid JSON"
+
+
+def test_completion_and_restart_advance_revision(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(graph_logger, "ADK_DIR", tmp_path)
+    logger = graph_logger.AgentGraphLogger("restart")
+    logger.log_node_start("step", "step", "Step")
+    logger.log_node_complete("step", "success", summary="Done", artifacts=["file"])
+    assert logger.nodes_of_type("step")[0]["revision"] == 2
+    logger.log_node_start("step", "step", "Step")
+    assert logger.nodes_of_type("step")[0]["revision"] == 3
+    logger.log_node_input("step", {"node_id": "step"})
+    assert logger.cancel_step_node_by_id("step")
+    assert logger.nodes_of_type("step")[0]["revision"] == 5
