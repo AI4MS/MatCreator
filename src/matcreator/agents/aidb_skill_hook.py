@@ -1,7 +1,7 @@
 """Development-stage material preflight through the public aidb Skill adapter.
 
-Only candidate discovery is implemented here. A successful query is not proof
-of scientific compatibility, and never authorizes a new remote calculation.
+Candidate discovery and fixed Si/PBE reuse use public exports. Lookup never
+authorizes a new remote calculation.
 """
 from __future__ import annotations
 
@@ -18,6 +18,20 @@ import weakref
 
 from .session_log import append_session_log_entry
 
+AIDB_REUSE_INSTRUCTION = """
+For a silicon calculation request, consult the current `aidb_preflight` response
+before preparing or submitting work. On reuse.status="reused", return its
+verified results and record/source IDs; do not run preparation or computation.
+Report relaxation and linked static energies separately with eV/cell units,
+structure and actual conditions. Use the selection reason from the receipt.
+Archive recency and a denser k mesh do not establish greater accuracy: never
+claim a selected/static record is more accurate or highest precision. Current
+public readback is authoritative; old memory/logs are not this turn's lookup.
+On needs_clarification explain scientific differences or missing evidence;
+on failed pause new computation (development A). Explicit recalculation still
+requires lookup and stays within the user's existing authorization.
+"""
+
 logger = logging.getLogger(__name__)
 # Locks live only while callbacks are running; no Futures enter ADK state.
 _preflight_locks = weakref.WeakValueDictionary()
@@ -25,7 +39,7 @@ _CONTINUATION_RE = re.compile(r'继续|照旧|这个|该结构|改用|换成|切
 AIDB_PREFLIGHT_SKILLS = frozenset({'vasp-pymatgen', 'atomic-structure'})
 _PREPARATION_TOOLS = frozenset({'run_python', 'run_bash', 'run_skill_script',
     'submit_bohr_batchjob', 'submit_bohr_sandbox', 'upload_remote_job_input',
-    'start_remote_job_command', 'run_remote_job_command', 'run_sub_agent'})
+    'start_remote_job_command', 'run_remote_job_command', 'run_sub_agent', 'run_flash_step'})
 _REMOTE_TOOLS = frozenset({'submit_bohr_batchjob', 'submit_bohr_sandbox',
     'upload_remote_job_input', 'start_remote_job_command', 'run_remote_job_command'})
 
@@ -78,6 +92,22 @@ def _known_context(text, workspace):
     method = re.search(r'(?<![A-Za-z0-9])(pbe\+u|pbesol|hse06|scan|lda|pbe)(?![A-Za-z0-9])', lower)
     if method:
         known['functional'] = method.group(1).upper()
+    cutoff = re.search(r'ENCUT\s*[=:]?\s*(\d+(?:\.\d+)?)', text, re.I)
+    if cutoff:
+        known['encut'] = float(cutoff.group(1))
+    constraints = {}
+    for setting in re.finditer(r'\b([A-Z][A-Z0-9_]*)\s*=\s*([^\s,，;；]+)', text):
+        raw = setting.group(2)
+        try:
+            value = float(raw)
+        except ValueError:
+            value = {'T': True, 'TRUE': True, '.TRUE.': True, 'F': False, 'FALSE': False, '.FALSE.': False}.get(raw.upper(), raw)
+        constraints[setting.group(1)] = value
+    if constraints:
+        known['incar_constraints'] = constraints
+    mesh = re.search(r'(?:k网格|k点|kpoints?|k[- ]?mesh)\s*[=:]?\s*(\d+)\s*[x×]\s*(\d+)\s*[x×]\s*(\d+)', text, re.I)
+    if mesh:
+        known['kpoint_mesh'] = [int(v) for v in mesh.groups()]
     # Read explicitly supplied existing structures; never create one at lookup.
     for match in re.finditer(r'[A-Za-z0-9_./-]+\.(?:cif|xyz|extxyz)|(?<![A-Za-z0-9_])POSCAR(?![A-Za-z0-9_])', text, re.I):
         path = (workspace / match.group()).resolve()
@@ -120,8 +150,10 @@ def _task_context(text, workspace, previous=None):
     known = dict(previous.get('known') or {})
     known.update(_known_context(prior, workspace))
     current_known = _known_context(current, workspace)
+    if 'incar_constraints' in current_known:
+        current_known['incar_constraints'] = {**known.get('incar_constraints', {}), **current_known['incar_constraints']}
     known.update(current_known)
-    if re.search(r'改用|换成|切换材料', current) and 'formula' not in current_known and 'functional' not in current_known:
+    if re.search(r'改用|换成|切换材料', current) and 'formula' not in current_known and 'functional' not in current_known and 'encut' not in current_known and 'incar_constraints' not in current_known and 'kpoint_mesh' not in current_known:
         known.pop('formula', None)
     defaults = {key: value for key, value in {
         'functional': 'PBE', 'domain': 'bulk', 'structure_model': 'diamond',
@@ -136,7 +168,10 @@ def _task_context(text, workspace, previous=None):
         targets = list(previous.get('targets') or [])
     return {'known': known, 'retrieval_defaults': defaults,
         'unknown': [k for k in ('formula', 'structure_model', 'domain', 'functional') if k not in known],
-        'targets': targets, 'recalculate': bool(re.search(r'重算|重新计算|recalculat|recompute', lower)),
+        'targets': targets, 'require_static': bool(re.search(r'静态|单点|\bstatic\b|single.point', target_text))
+            or (continuation and not re.search(r'弛豫|优化|relax|总能|energy', lower) and previous.get('require_static', False)),
+        'recalculate': bool(re.search(r'重算|重新计算|recalculat|recompute',
+            re.sub(r'(?:不|不要|不用|无需|禁止)(?:再|重新)?(?:重算|重新计算|计算)|(?:do not|don.t|no need to)\s+(?:recalculate|recompute)', '', lower))),
         'prepare_only': _prepare_only(current) or (
             (_prepare_only(prior) or previous.get('prepare_only', False))
             and not re.search(r'提交|submit|执行计算|run calculation', lower)),
@@ -175,7 +210,8 @@ async def _query(task, task_id):
     try:
         process = await asyncio.create_subprocess_exec(sys.executable, str(_adapter_path()),
             '--workspace', str(workspace), 'preflight', '--task-json', str(task_path),
-            '--command-timeout', '20', stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            '--command-timeout', '20', '--export-dir', str(directory / 'export'),
+            '--export-format', 'jsonl', stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         diagnostic['query_attempted'] = True
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=50)
@@ -199,7 +235,13 @@ async def _query(task, task_id):
         ids = query['record_ids']
         if not isinstance(ids, list) or bool(ids) != (query['status'] == 'found'):
             raise ValueError('inconsistent candidate report')
-        return {'status': query['status'], 'candidate_ids': ids, 'report_path': str(report_path),
+        records = [json.loads(line) for export in report['exports']
+            for line in Path(export['output_path']).read_text(encoding='utf-8').splitlines() if line.strip()]
+        if sorted(r['record_id'] for r in records) != sorted(ids):
+            raise ValueError('export does not contain exactly the current candidate IDs')
+        from .silicon_reuse import select_reuse
+        reuse = select_reuse(records, task) if ids else None
+        return {'reuse': reuse, 'status': query['status'], 'candidate_ids': ids, 'report_path': str(report_path),
             'audit_path': receipt['audit_path'], 'report': report, 'diagnostic_path': str(diagnostic_path)}
     except Exception as exc:
         diagnostic['error'] = str(exc) or type(exc).__name__
@@ -242,6 +284,10 @@ async def before_aidb_skill_load(tool, args, tool_context):
         if task is None:
             return None
         if tool_context.state['temp:aidb_internal_step']:
+            parent_text = tool_context.state.get('aidb_user_request') or tool_context.state.get('goal') or ''
+            parent_task = _task_context(parent_text, workspace)
+            if parent_task:
+                task['recalculate'] = task['recalculate'] or parent_task['recalculate']
             task['prepare_only'] = task['prepare_only'] or tool_context.state.get('aidb_user_prepare_only', False) or _prepare_only(tool_context.state.get('aidb_user_request') or tool_context.state.get('goal') or '')
         else:
             tool_context.state['aidb_user_prepare_only'] = task['prepare_only']
@@ -265,7 +311,11 @@ async def before_aidb_skill_load(tool, args, tool_context):
                 feedback['task_context'] = task
                 feedback['query_executed'] = feedback['status'] in {'found', 'not_found'}
                 if feedback['status'] == 'found':
-                    feedback['message'] = '本地查库成功，有候选记录；候选尚未核验结构、结果和成功状态，不能直接认定可复用。'
+                    feedback['message'] = feedback['reuse']['reason']
+                    if feedback['reuse']['status'] == 'reused':
+                        feedback['message'] = '已复用本地成功结果，不启动新计算。' + feedback['message']
+                    elif feedback['reuse']['status'] == 'recalculate':
+                        feedback['message'] = '已核验已有结果；按显式重算请求继续原授权范围。'
                 elif feedback['status'] == 'not_found':
                     feedback['message'] = '本地查库成功，候选为空；仅继续原授权范围内的准备。'
                 elif feedback['status'] == 'failed':
@@ -294,6 +344,11 @@ async def before_aidb_skill_load(tool, args, tool_context):
         return None
     if feedback['status'] not in {'found', 'not_found'}:
         return {'status': 'blocked', 'aidb_preflight': _export_feedback(feedback)}
+    reuse = feedback.get('reuse') or {}
+    if reuse.get('status') == 'reused':
+        return {'status': 'reused', 'message': feedback['message'], 'aidb_preflight': _export_feedback(feedback)}
+    if reuse.get('status') == 'needs_clarification' and not task['recalculate']:
+        return {'status': 'blocked', 'message': reuse['reason'], 'aidb_preflight': _export_feedback(feedback)}
     if 'structure_model' in task['unknown'] and not task['known'].get('structure_path'):
         return {'status': 'blocked', 'message': '已查候选；计算准备前请明确结构模型，检索默认值不是计算授权。', 'aidb_preflight': _export_feedback(feedback)}
     if name in _REMOTE_TOOLS and task['prepare_only']:

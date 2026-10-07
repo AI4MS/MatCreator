@@ -12,7 +12,7 @@ from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.adk.agents.callback_context import CallbackContext
 
-from ..aidb_skill_hook import before_aidb_skill_load, after_aidb_skill_load
+from ..aidb_skill_hook import AIDB_REUSE_INSTRUCTION, before_aidb_skill_load, after_aidb_skill_load
 from ...constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from ...adk_compat import install_lenient_tool_argument_parsing
 from .planning import validate_plan, validate_graph
@@ -408,7 +408,7 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
     or `node_id="..."` for one executor of interest; do not request bulk detail by default.
 """
 
-_MATCREATOR_INSTRUCTION = "{instruction_body}"
+_MATCREATOR_INSTRUCTION = "{instruction_body}" + AIDB_REUSE_INSTRUCTION
 
 # ---------------------------------------------------------------------------
 # before_agent_callback: inject dynamic context into session state

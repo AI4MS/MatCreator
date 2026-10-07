@@ -54,3 +54,19 @@ PYTHONPATH=src .venv/bin/python -m pytest tests/test_aidb_skill_hook.py -q
 和相邻 Ai-ready_Database 的真实公开桥接及隔离本地库。命中样本仅用于测试，
 不是本任务提交的真实计算。没有相邻 aidb checkout/runtime 时集成用例跳过。
 不提交 Bohrium 作业、不归档未完成计算、不自动上传云端数据库。
+
+## T4 verified candidate reuse
+
+[T4 evidence and rules](silicon_vasp_t4.md) extend the original T1 discovery
+behavior. Public preflight now exports the exact candidate IDs and verifies
+scientific content before selecting. `found` remains lookup status;
+`reuse.status` separately reports `reused`, `recalculate`, `unavailable`, or
+`needs_clarification`. The response includes candidate diagnostics, selected
+structures and separate eV/cell energies, source metadata and choice reason.
+
+A compatible selection prevents preparation and new submission, including the
+Flash executor entry. Explicit recalculation still queries first and respects
+preparation-only authorization. Same-condition duplicates use persistent
+archive times; ambiguity or meaningful condition differences require
+clarification. Task changes trigger a new lookup. Development A and no cloud
+database upload remain in force. This does not implement T5's final B behavior.
