@@ -132,3 +132,42 @@ still fails due to the unresolved resource configuration.
 
 Follow-up Standards and Spec reviews found zero new issues. They preserve the
 same acceptance limitation: the real silicon calculation has not succeeded.
+
+## Follow-up after the user supplied the PBE source
+
+The preceding blocked state is historical. The supplied library contains a
+valid `PAW_PBE Si 05Jan2001` potential at
+`~/projects/9f9b5b-main/psudopotential/paw_pbe/Si/POTCAR.Z`. It uses UNIX
+compress; `gzip -cd` decodes it. The raw layout and compression differ from
+current pymatgen's lookup layout. MatCreator staged only the required Si
+potential under `pseudopotentials/POT_GGA_PAW_PBE/Si/POTCAR`, with a per-process
+`PMG_VASP_PSP_DIR`. This was a missing configuration and layout mismatch,
+not a missing potential resource. See [source research](pbe_bohrium_research.md).
+
+The account-private VASP image was selected explicitly in the resumed process.
+The authorized real relaxation proved its VASP/MPI startup and payment path:
+durable job `56072cf15fe94e639d7b71f563ed320a`, provider batchjob
+`5ed5945230884cf88f30475c1afed598`, terminal success, exit code zero.
+Scientific verification confirms electronic and ionic convergence, three ionic
+steps and total energy -10.84124445 eV for the Si2 cell. The session remains
+`silicon-t2-20261007-env2`; no relaxation resubmission was required.
+
+Three additional platform bugs were reproduced and repaired:
+
+- Broad `only`/`仅` authorization matching treated unrelated qualifiers as
+  input-only restrictions. Matching now ties restrictions to preparation/input
+  requests while retaining genuine input-only blocks at both agent entries.
+- VASP 6.3.0 emitted XML `GGA=--` when INCAR omitted GGA. Official VASP rules
+  select the functional from POTCAR LEXCH in this case. The validator now accepts
+  this only with submission-hash-bound PBE potentials, matching XML identities
+  and `LEXCH=PE`; explicit non-PBE GGA or XC overrides remain rejected. Original
+  XML parameters are retained. [VASP GGA](https://vasp.at/wiki/index.php/GGA).
+- Preflight feedback's nested `structure_path` caused the session artifact
+  collector to misclassify an existing input as a current step output. Exported
+  feedback now uses `input_structure_path`; internal task evidence and all
+  authorization/query checks remain intact. Output roots were not broadened.
+
+Each fix has red-to-green regression evidence in `debug-pbe/`. The real
+relaxation validator reproduction also passed without changing scientific
+inputs or outputs. Final related tests: **286 passed**; both review axes found
+zero new issues. MatCreator resumed the static step after the final fix.

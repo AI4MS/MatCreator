@@ -97,11 +97,21 @@ def _validate(directory: Path, calculation_type: str, input_directory: Path, inp
     if (run.parameters.get('LDAU', False) or run.parameters.get('LHFCALC', False)
         or run.incar.get('ML_LMLFF', False) or run.parameters.get('METAGGA', '') not in {'', 'None', 'NONE'}
         or run.parameters.get('IVDW', 0) or run.parameters.get('LUSE_VDW', False)
-        or incar.get('IVDW', 0) or incar.get('LUSE_VDW', False)):
+        or incar.get('IVDW', 0) or incar.get('LUSE_VDW', False)
+        or incar.get('XC') or run.incar.get('XC') or run.parameters.get('XC')):
         raise ValueError('Only ordinary PBE is supported; corrections/hybrid/meta-GGA detected.')
-    if str(run.parameters.get('GGA', 'PE')).upper() != 'PE' or not run.potcar_symbols or any(not s.startswith('PAW_PBE Si ') for s in run.potcar_symbols):
+    potcar_text = (input_directory / 'POTCAR').read_text(errors='replace')
+    gga = str(run.parameters.get('GGA', 'PE')).strip().upper()
+    lexch = re.findall(r'\bLEXCH\s*=\s*(\S+)', potcar_text)
+    # VASP emits '--' when GGA is not selected explicitly: the functional then
+    # comes from the immutable submitted POTCAR's LEXCH, not the placeholder.
+    default_pbe = (gga == '--' and len(lexch) == len(run.potcar_symbols)
+        and bool(lexch) and all(value.upper() == 'PE' for value in lexch))
+    if (gga != 'PE' and not default_pbe
+        or any(str(values.get('GGA', 'PE')).strip().upper() != 'PE' for values in (incar, run.incar))
+        or not run.potcar_symbols or any(not s.startswith('PAW_PBE Si ') for s in run.potcar_symbols)):
         raise ValueError('Ordinary PBE Si pseudopotential evidence missing or incompatible.')
-    titles = re.findall(r'^\s*TITEL\s*=\s*(.+?)\s*$', (input_directory / 'POTCAR').read_text(errors='replace'), re.M)
+    titles = re.findall(r'^\s*TITEL\s*=\s*(.+?)\s*$', potcar_text, re.M)
     if [' '.join(t.split()) for t in titles] != [' '.join(t.split()) for t in run.potcar_symbols]:
         raise ValueError('Submitted POTCAR identity disagrees with actual VASP output.')
     for structure in (run.initial_structure, run.final_structure):
@@ -120,6 +130,7 @@ def _validate(directory: Path, calculation_type: str, input_directory: Path, inp
     return {'structure': run.final_structure.as_dict(), 'initial_structure': run.initial_structure.as_dict(),
         'total_energy': {'value': energy, 'unit': 'eV'},
         'conditions': {'functional': 'PBE', 'domain': 'bulk', 'structure_model': 'diamond',
+            'functional_selection': 'POTCAR LEXCH' if default_pbe else 'GGA',
             'software': 'VASP', 'version': run.vasp_version, 'incar': dict(incar),
             'parameters': run.parameters, 'potcar_symbols': run.potcar_symbols,
             'potcar_sha256': input_hashes['POTCAR'], 'input_sha256': input_hashes,

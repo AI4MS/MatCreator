@@ -94,7 +94,17 @@ def _known_context(text, workspace):
 
 def _prepare_only(text):
     lower = text.lower()
-    return bool(re.search(r'不提交|不要提交|不要计算|先别计算|暂不.*(?:提交|计算)|do not submit|only.*input|(?:只|仅).*(?:输入|准备|生成)', lower)) or (
+    # Restrict the requested task, not unrelated qualifiers such as "only after"
+    # or "record hashes only". Those occur in authorized executor actions too.
+    limited_preparation = re.search(
+        r'(?:只|仅)(?:要|需|需要|要求|允许|授权)?(?:帮我|为我)?(?:准备|生成|制作|创建|提供|输入)'
+        r'|\bonly\s+(?:(?:please|to)\s+)?(?:prepare|generate|create|write|provide|inputs?\b)'
+        r'|\b(?:prepare|generate|create|write|provide)\s+only\s+(?:[\w-]+\s+)*inputs?\b'
+        r'|\binputs?(?:\s+(?:preparation|generation))?\s+only\b', lower)
+    input_only_request = re.search(
+        r'(?:^|[.!?;\n])\s*(?:please\s+)?only\s+(?:the|an?)\s+'
+        r'(?:[\w-]+\s+)*inputs?\b', lower)
+    return bool(re.search(r'不提交|不要提交|不要计算|先别计算|暂不[^。；\n]*(?:提交|计算)|do not submit', lower) or limited_preparation or input_only_request) or (
         bool(re.search(r'准备|prepare', lower)) and not re.search(r'提交|submit|执行计算|run calculation', lower))
 
 
@@ -102,7 +112,7 @@ def _task_context(text, workspace, previous=None):
     current, _, prior = text.partition('\n[AIDB_PRIOR_CONTEXT]\n')
     lower = current.lower()
     continuation = bool(_CONTINUATION_RE.search(current))
-    calculation = continuation or bool(re.search(r'弛豫|优化|总能|计算|准备|生成|执行|提交|relax|total energy|calculat|prepare|generate|submit|\brun\b', lower))
+    calculation = continuation or _prepare_only(current) or bool(re.search(r'弛豫|优化|总能|计算|准备|生成|执行|提交|relax|total energy|calculat|prepare|generate|submit|\brun\b', lower))
     conceptual = bool(re.search(r'解释|介绍|什么是|概念|explain|what is|概念说明', lower))
     if not calculation or (conceptual and not re.search(r'请.*(?:准备|生成|执行)|please.*(?:prepare|run|calculate)', lower)):
         return None
@@ -199,6 +209,16 @@ async def _query(task, task_id):
         diagnostic_path.write_text(json.dumps(diagnostic, ensure_ascii=False), encoding='utf-8')
 
 
+def _export_feedback(feedback):
+    """Keep input evidence visible without declaring it a generated artifact."""
+    task = feedback.get('task_context')
+    if not task or 'structure_path' not in task.get('known', {}):
+        return feedback
+    known = dict(task['known'])
+    known['input_structure_path'] = known.pop('structure_path')
+    return {**feedback, 'task_context': {**task, 'known': known}}
+
+
 async def before_aidb_skill_load(tool, args, tool_context):
     name = getattr(tool, 'name', '')
     skill_name = str(args.get('skill_name') or '').strip().lower()
@@ -252,7 +272,7 @@ async def before_aidb_skill_load(tool, args, tool_context):
                     feedback['message'] = '本地查库失败，开发期 A 暂停新增计算；这不是未命中。请检查诊断产物。'
                 tool_context.state['aidb_preflight'] = {'key': key, 'invocation_id': tool_context.invocation_id, 'feedback': feedback}
                 logger.info('[aidb preflight] %s', feedback)
-                append_session_log_entry(tool_context, {'kind': 'aidb_hook_feedback', **feedback})
+                append_session_log_entry(tool_context, {'kind': 'aidb_hook_feedback', **_export_feedback(feedback)})
     except Exception as exc:
         logger.warning('aidb preflight failed', exc_info=True)
         feedback = {'status': 'failed', 'query_executed': False, 'detail': str(exc),
@@ -269,15 +289,15 @@ async def before_aidb_skill_load(tool, args, tool_context):
             append_session_log_entry(tool_context, {'kind': 'aidb_hook_feedback', **feedback})
         except Exception:
             logger.warning('Could not persist aidb failure feedback', exc_info=True)
-    tool_context.state[feedback_key] = feedback
+    tool_context.state[feedback_key] = _export_feedback(feedback)
     if name == 'load_skill':
         return None
     if feedback['status'] not in {'found', 'not_found'}:
-        return {'status': 'blocked', 'aidb_preflight': feedback}
+        return {'status': 'blocked', 'aidb_preflight': _export_feedback(feedback)}
     if 'structure_model' in task['unknown'] and not task['known'].get('structure_path'):
-        return {'status': 'blocked', 'message': '已查候选；计算准备前请明确结构模型，检索默认值不是计算授权。', 'aidb_preflight': feedback}
+        return {'status': 'blocked', 'message': '已查候选；计算准备前请明确结构模型，检索默认值不是计算授权。', 'aidb_preflight': _export_feedback(feedback)}
     if name in _REMOTE_TOOLS and task['prepare_only']:
-        return {'status': 'blocked', 'message': '当前请求仅授权准备，未授权提交计算。', 'aidb_preflight': feedback}
+        return {'status': 'blocked', 'message': '当前请求仅授权准备，未授权提交计算。', 'aidb_preflight': _export_feedback(feedback)}
     return None
 
 

@@ -296,6 +296,25 @@ def test_given_structure_supplies_identity_without_manual_json(local_aidb, tmp_p
     assert prepared == ['prepare']
 
 
+def test_preflight_input_structure_is_not_a_step_output(local_aidb, tmp_path, monkeypatch):
+    from ase.build import bulk
+    from ase.io import write
+    from matcreator.agents.session_log import collect_artifact_paths
+    write(tmp_path / 'POSCAR', bulk('Si', 'diamond', a=5.43))
+    entries = []
+    original = hook.append_session_log_entry
+    def record(context, entry):
+        entries.append(entry)
+        return original(context, entry)
+    monkeypatch.setattr(hook, 'append_session_log_entry', record)
+    responses, prepared = run_task(tmp_path, '用现有POSCAR准备VASP弛豫和总能输入',
+        [('run_python', {'code': 'prepare'})], entry='step')
+    assert prepared == ['prepare']
+    assert str(tmp_path / 'POSCAR') not in collect_artifact_paths(responses[0])
+    assert all(str(tmp_path / 'POSCAR') not in collect_artifact_paths(entry) for entry in entries)
+    assert responses[0]['aidb_preflight']['task_context']['known']['input_structure_path'] == str(tmp_path / 'POSCAR')
+
+
 def test_structure_read_failure_keeps_diagnostic_and_blocks_tools(local_aidb, tmp_path):
     (tmp_path / 'broken.cif').write_text('not a CIF')
     responses, prepared = run_task(tmp_path, '用broken.cif准备VASP弛豫输入',
@@ -321,3 +340,63 @@ def test_explicit_new_submission_authorization_overrides_prior_prepare_only(loca
     assert responses[1]['status'] == 'submitted'
     assert responses[1]['aidb_preflight']['status'] == 'not_found'
     assert prepared == ['remote submission']
+
+
+@pytest.mark.parametrize('action', [
+    'ONLY after relaxation succeeds: prepare static VASP inputs and submit the job.',
+    'Record POTCAR path and hash only, no body. Submit VASP with input_path=vasp-Si.',
+    '环境设置仅本次运行有效。准备并提交金刚石硅 PBE VASP 输入。',
+])
+def test_authorized_step_only_qualifiers_do_not_forbid_submission(local_aidb, tmp_path, action):
+    step = json.dumps({'action': action, 'prior_context': 'diamond bulk Si PBE relaxation total energy'})
+    responses, prepared = run_task(tmp_path, step,
+        [('submit_bohr_batchjob', {'name': 'Si'})], entry='step',
+        state={'goal': '继续准备并提交金刚石硅体相 PBE 弛豫和总能重算',
+               'aidb_user_request': '继续准备并提交金刚石硅体相 PBE 弛豫和总能重算',
+               'aidb_user_prepare_only': False})
+    assert responses[0]['status'] == 'submitted'
+    assert prepared == ['remote submission']
+
+
+@pytest.mark.parametrize('action', [
+    'Only prepare diamond bulk Si PBE VASP inputs.',
+    'Generate only diamond bulk Si PBE VASP inputs.',
+    '只生成金刚石硅体相 PBE VASP 输入。',
+])
+def test_actual_prepare_only_step_still_blocks_submission(local_aidb, tmp_path, action):
+    step = json.dumps({'action': action, 'prior_context': 'diamond bulk Si PBE'})
+    responses, prepared = run_task(tmp_path, step,
+        [('submit_bohr_batchjob', {'name': 'Si'})], entry='step',
+        state={'goal': '计算金刚石硅体相 PBE 弛豫和总能'})
+    assert responses[0]['status'] == 'blocked'
+    assert prepared == []
+
+
+@pytest.mark.parametrize('user_text', [
+    '我只要生成金刚石硅体相普通 PBE VASP 输入文件。',
+    '只需生成金刚石硅体相 PBE VASP 输入文件。',
+    'Only the diamond bulk Si PBE VASP input files, please.',
+    'Only a VASP input set for diamond bulk Si PBE, please.',
+])
+def test_user_input_only_restriction_survives_executor_submit_action(local_aidb, tmp_path, user_text):
+    step = json.dumps({'action': 'Submit the VASP Batch Job for diamond bulk Si PBE relaxation.',
+                       'prior_context': user_text})
+    responses, prepared = run_task(tmp_path, step,
+        [('submit_bohr_batchjob', {'name': 'Si'})], entry='step',
+        state={'goal': user_text, 'aidb_user_request': user_text,
+               'aidb_user_prepare_only': False})
+    assert responses[0]['status'] == 'blocked'
+    assert responses[0]['aidb_preflight']['status'] == 'not_found'
+    assert prepared == []
+
+
+@pytest.mark.parametrize('user_text', [
+    'Only the diamond bulk Si PBE VASP input files, please.',
+    'Only a VASP input set for diamond bulk Si PBE, please.',
+])
+def test_input_only_noun_request_blocks_submission_at_main_entry(local_aidb, tmp_path, user_text):
+    responses, prepared = run_task(tmp_path, user_text,
+        [('submit_bohr_batchjob', {'name': 'Si'})])
+    assert responses[0]['status'] == 'blocked'
+    assert responses[0]['aidb_preflight']['status'] == 'not_found'
+    assert prepared == []

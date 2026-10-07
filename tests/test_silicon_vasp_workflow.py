@@ -33,7 +33,7 @@ class Provider(RemoteJobAdapter):
         return [{'destination': str(p)} for p in destination_dir.iterdir()] or [{'destination': str(destination_dir)}]
 
 
-def job_context(tmp_path, monkeypatch, outputs=None):
+def job_context(tmp_path, monkeypatch, outputs=None, lexch='PE'):
     service = RemoteJobService(RemoteJobStore(tmp_path / 'jobs.db'),
         adapter_overrides={'bohr_batchjob': Provider()})
     monkeypatch.setattr(remote_job_tools, '_service', lambda: service)
@@ -45,7 +45,8 @@ def job_context(tmp_path, monkeypatch, outputs=None):
         source.mkdir()
         for name in ('INCAR', 'POSCAR', 'KPOINTS'):
             (source / name).write_text(outputs[name])
-        (source / 'POTCAR').write_text('TITEL = PAW_PBE Si 05Jan2001\nsynthetic test potential, not for computation\n')
+        header = f'LEXCH = {lexch}\n' if lexch is not None else ''
+        (source / 'POTCAR').write_text('TITEL = PAW_PBE Si 05Jan2001\n' + header + 'synthetic test potential, not for computation\n')
         spec['vasp_input_sha256'] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in source.iterdir()}
     job = service.submit_job(owner_id='test', session_id='session', provider='bohr_batchjob',
         idempotency_key='silicon-relax', spec=spec)
@@ -95,11 +96,52 @@ def silicon_outputs(nelm=60, electronic_steps=2, ionic_marker=True, stage='relax
         'OSZICAR': ' 1 F= -.10100000E+02 E0= -.10100000E+02\n'}
 
 
-def completed_job(tmp_path, monkeypatch, outputs):
-    service, context, job_id = job_context(tmp_path, monkeypatch, outputs)
+def completed_job(tmp_path, monkeypatch, outputs, lexch='PE'):
+    service, context, job_id = job_context(tmp_path, monkeypatch, outputs, lexch)
     service.adapter_for('bohr_batchjob').outputs = outputs
     service.store.transition_job(job_id, 'succeeded')
     return service, context, job_id
+
+
+@pytest.mark.parametrize('gga,explicit,lexch,expected', [
+    ('--', None, 'PE', 'success'),
+    ('--', 'PE', 'PE', 'success'),
+    ('--', 'PS', 'PE', 'invalid'),
+    ('--', None, 'CA', 'invalid'),
+    ('--', None, None, 'invalid'),
+    ('PS', None, 'PE', 'invalid'),
+    ('XX', None, 'PE', 'invalid'),
+])
+def test_vasp_default_gga_requires_verified_pbe_potential_and_no_override(
+    tmp_path, monkeypatch, gga, explicit, lexch, expected
+):
+    outputs = silicon_outputs()
+    outputs['vasprun.xml'] = outputs['vasprun.xml'].replace('</parameters>',
+        f'<i name="GGA" type="string">{gga}</i></parameters>')
+    if explicit:
+        outputs['INCAR'] += f'GGA = {explicit}\n'
+    _, context, job_id = completed_job(tmp_path, monkeypatch, outputs, lexch)
+    result = collect_silicon_vasp_result(job_id, 'outputs', 'relaxation', context)
+    assert result['status'] == expected
+    if expected == 'success':
+        report = json.loads(Path(result['report_path']).read_text())
+        assert report['conditions']['parameters']['GGA'] == '--'
+        assert report['conditions']['functional_selection'] == 'POTCAR LEXCH'
+
+
+@pytest.mark.parametrize('location', ['INCAR', 'xml_incar', 'xml_parameters'])
+def test_exchange_correlation_override_is_not_inferred_from_pbe_potcar(tmp_path, monkeypatch, location):
+    outputs = silicon_outputs()
+    if location == 'INCAR':
+        outputs['INCAR'] += 'XC = PBE0\n'
+    else:
+        closing = '</incar>' if location == 'xml_incar' else '</parameters>'
+        outputs['vasprun.xml'] = outputs['vasprun.xml'].replace(closing,
+            '<i name="XC" type="string">PBE0</i>' + closing)
+    _, context, job_id = completed_job(tmp_path, monkeypatch, outputs)
+    result = collect_silicon_vasp_result(job_id, 'outputs', 'relaxation', context)
+    assert result['status'] == 'invalid'
+    assert 'ordinary PBE' in result['message']
 
 
 def test_verified_relaxation_has_energy_structure_provenance_and_replays(tmp_path, monkeypatch):
