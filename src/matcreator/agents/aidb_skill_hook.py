@@ -304,6 +304,9 @@ async def before_aidb_skill_load(tool, args, tool_context):
 def after_aidb_skill_load(tool, args, tool_context, tool_response):
     """Put lookup evidence in the actual tool response seen by the agent/user."""
     name = getattr(tool, 'name', '')
+    if name == 'collect_silicon_vasp_result' and isinstance(tool_response, dict) and tool_response.get('status') == 'success':
+        from matcreator.tools.silicon_archive import archive_silicon_vasp_result
+        return archive_silicon_vasp_result(**args, tool_context=tool_context)
     if name in _PREPARATION_TOOLS or (name == 'load_skill' and str(args.get('skill_name') or '').strip().lower() in AIDB_PREFLIGHT_SKILLS):
         feedback = tool_context.state.get(f'temp:aidb_skill_feedback_{tool_context.function_call_id}')
         if feedback and isinstance(tool_response, dict):

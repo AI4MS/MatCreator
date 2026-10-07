@@ -16,6 +16,7 @@ metadata:
     - run_bash
     - load_skill_resource
     - collect_silicon_vasp_result
+    - archive_silicon_vasp_result
   dependent_skills:
     - bohrium
     - remote-job
@@ -114,7 +115,7 @@ Run exactly **one property step at a time**. Do not chain relaxation + SCF in a 
 For diamond bulk Si / ordinary PBE relaxation and total energy, inspect the
 actual `aidb_preflight` tool response before creating a structure or inputs.
 Failed lookup pauses new computation. Missing identity/model must be clarified;
-retrieval defaults are not calculation authorization. Do not archive in T2.
+retrieval defaults are not calculation authorization.
 
 Use the existing ASE diamond structure recipe and `MPRelaxSet`, then tracked
 Batch Job submission. On completion call `collect_silicon_vasp_result(job_id,
@@ -133,6 +134,19 @@ Tracked submission saves input checksums; preserve the local input directory.
 Old jobs without that evidence remain unverified. Ordinary PBE excludes U,
 hybrid, meta-GGA and dispersion corrections. The report retains k-point inputs
 and the actual XML sampling when available.
+
+After successful collection, MatCreator automatically saves the verified result
+to local aidb using the public archive-and-requery adapter and compares the
+exported structure, cell energy/unit, actual conditions, completion and source.
+Inspect `local_archive`: only `status="verified"`, `archived=true`, the returned
+record ID and `content_compared=true` prove local storage. Scientific success
+alone and a write receipt do not prove this. Archive the relaxation first;
+the static record retains that parent ID and its own job/energy identity.
+On archive failure retain original outputs and diagnostics. Retry with
+`archive_silicon_vasp_result` for the same collected job; it revalidates outputs
+and queries before writing, including after timeout. Never resubmit a completed
+calculation to repair storage. Do not request confirmation for local saving.
+No cloud database upload is performed. Development A remains active.
 
 For **MLFF energy/force labeling**, use `prepare_label` as a standalone step — it replaces the relaxation → SCF chain with a single static calculation optimized for dataset generation (no charge density, no relaxation, KSPACING-based k-points).
 
