@@ -42,10 +42,15 @@ def local_aidb(tmp_path, monkeypatch):
             pass
 
 
-def run_task(tmp_path, request, calls, state=None, entry=None, followup=None):
+def run_task(tmp_path, request, calls, state=None, entry=None, followup=None, parallel=False):
     class Model(BaseLlm):
         _index: int = PrivateAttr(default=0)
         async def generate_content_async(self, llm_request, stream=False):
+            if parallel:
+                parts = [types.Part(function_call=types.FunctionCall(name=name, args=args)) for name, args in calls] if self._index == 0 else [types.Part(text='finished')]
+                self._index += 1
+                yield LlmResponse(content=types.Content(role='model', parts=parts))
+                return
             if self._index < len(calls):
                 name, args = calls[self._index]
                 part = types.Part(function_call=types.FunctionCall(name=name, args=args))
@@ -221,3 +226,98 @@ def test_found_returns_all_candidate_ids_and_report_without_claiming_reuse(local
     assert feedback['candidate_ids']
     assert feedback['report']['queries'][0]['record_ids'] == feedback['candidate_ids']
     assert '尚未核验' in feedback['message']
+
+
+def test_parallel_skill_entries_share_the_same_actual_query(local_aidb, tmp_path):
+    responses, _ = run_task(tmp_path, '准备金刚石硅体相 PBE VASP 弛豫输入',
+        [('load_skill', {'skill_name': 'vasp-pymatgen'}), ('load_skill', {'skill_name': 'atomic-structure'})],
+        parallel=True)
+    assert responses[0]['aidb_preflight']['report_path'] == responses[1]['aidb_preflight']['report_path']
+    assert len(list((tmp_path / '.aidb/runs').glob('*/*/audit.json'))) == 1
+
+
+def test_missing_identity_remains_blocked_without_literal_vasp(local_aidb, tmp_path):
+    responses, prepared = run_task(tmp_path, '请准备弛豫和总能输入',
+        [('load_skill', {'skill_name': 'vasp-pymatgen'}), ('run_python', {'code': 'prepare'})])
+    assert responses[0]['aidb_preflight']['status'] == 'needs_clarification'
+    assert responses[1]['status'] == 'blocked'
+    assert prepared == []
+
+
+@pytest.mark.parametrize('prompt', ['只生成金刚石硅晶体 PBE VASP 弛豫输入', '只准备金刚石硅晶体 PBE VASP 输入，先不要计算'])
+def test_generation_only_does_not_authorize_remote_submission(local_aidb, tmp_path, prompt):
+    responses, prepared = run_task(tmp_path, prompt, [('submit_bohr_batchjob', {'name': 'Si'})])
+    assert responses[0]['status'] == 'blocked'
+    assert prepared == []
+
+
+def test_internal_submission_cannot_expand_parent_preparation_authorization(local_aidb, tmp_path):
+    step = json.dumps({'action': 'Submit VASP job', 'prior_context': 'diamond bulk Si PBE'})
+    responses, prepared = run_task(tmp_path, step, [('submit_bohr_batchjob', {'name': 'Si'})],
+        state={'goal': '只准备金刚石硅体相 PBE 弛豫输入'})
+    assert responses[0]['status'] == 'blocked'
+    assert prepared == []
+
+
+def test_explicit_new_material_supersedes_prior_silicon(local_aidb, tmp_path):
+    responses, _ = run_task(tmp_path, '准备金刚石硅体相 PBE VASP 弛豫输入',
+        [('load_skill', {'skill_name': 'vasp-pymatgen'})], followup='改用金刚石碳体相 PBE 计算总能')
+    feedback = responses[1]['aidb_preflight']
+    assert feedback['status'] == 'needs_clarification'
+    assert feedback['task_context']['known']['formula'] == 'C'
+    assert len(list((tmp_path / '.aidb/runs').glob('*/*/audit.json'))) == 1
+
+
+def test_direct_preparation_returns_actual_query_evidence(local_aidb, tmp_path):
+    responses, prepared = run_task(tmp_path, '准备金刚石硅体相 PBE VASP 弛豫输入',
+        [('run_python', {'code': 'prepare'})])
+    assert responses[0]['status'] == 'prepared'
+    assert responses[0]['aidb_preflight']['status'] == 'not_found'
+    assert Path(responses[0]['aidb_preflight']['report_path']).is_file()
+    assert prepared == ['prepare']
+
+
+def test_chinese_adjacent_method_name_is_not_defaulted_to_pbe(local_aidb, tmp_path):
+    responses, prepared = run_task(tmp_path, '请用HSE06计算金刚石硅体相总能',
+        [('run_python', {'code': 'prepare'})])
+    assert responses[0]['status'] == 'blocked'
+    assert responses[0]['aidb_preflight']['task_context']['known']['functional'] == 'HSE06'
+    assert prepared == []
+
+
+def test_given_structure_supplies_identity_without_manual_json(local_aidb, tmp_path):
+    from ase.build import bulk
+    from ase.io import write
+    write(tmp_path / 'POSCAR', bulk('Si', 'diamond', a=5.43))
+    responses, prepared = run_task(tmp_path, '用现有POSCAR准备VASP弛豫和总能输入',
+        [('run_python', {'code': 'prepare'})])
+    assert responses[0]['aidb_preflight']['status'] == 'not_found'
+    assert responses[0]['aidb_preflight']['task_context']['known']['formula'] == 'Si'
+    assert prepared == ['prepare']
+
+
+def test_structure_read_failure_keeps_diagnostic_and_blocks_tools(local_aidb, tmp_path):
+    (tmp_path / 'broken.cif').write_text('not a CIF')
+    responses, prepared = run_task(tmp_path, '用broken.cif准备VASP弛豫输入',
+        [('load_skill', {'skill_name': 'vasp-pymatgen'}), ('run_python', {'code': 'prepare'})])
+    assert responses[0]['aidb_preflight']['status'] == 'failed'
+    assert Path(responses[0]['aidb_preflight']['diagnostic_path']).is_file()
+    assert prepared == []
+
+
+@pytest.mark.parametrize('followup', ['继续', '继续弛豫', 'continue', '重算', '照旧', 'recalculate'])
+def test_continuation_preserves_prior_prepare_only_authorization(local_aidb, tmp_path, followup):
+    responses, prepared = run_task(tmp_path, '只准备金刚石硅体相 PBE VASP 弛豫输入',
+        [('submit_bohr_batchjob', {'name': 'Si'})], followup=followup)
+    assert responses[0]['status'] == responses[1]['status'] == 'blocked'
+    assert responses[1]['aidb_preflight']['status'] == 'not_found'
+    assert prepared == []
+
+
+def test_explicit_new_submission_authorization_overrides_prior_prepare_only(local_aidb, tmp_path):
+    responses, prepared = run_task(tmp_path, '只准备金刚石硅体相 PBE VASP 弛豫输入',
+        [('submit_bohr_batchjob', {'name': 'Si'})], followup='继续并提交计算')
+    assert responses[0]['status'] == 'blocked'
+    assert responses[1]['status'] == 'submitted'
+    assert responses[1]['aidb_preflight']['status'] == 'not_found'
+    assert prepared == ['remote submission']

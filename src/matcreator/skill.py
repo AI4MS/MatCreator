@@ -397,6 +397,9 @@ class MatCreatorLoadSkillTool(skill_toolset.LoadSkillTool):
     """Augment ADK skill loads with bundle-file and L3/L4 attachment metadata."""
 
     async def run_async(self, *, args, tool_context):
+        requested = (args.get('skill_name') or '').strip().lower()
+        loaded = self._toolset._get_skill(requested)
+        args = {**args, 'skill_name': loaded.name if loaded is not None else requested}
         result = await super().run_async(args=args, tool_context=tool_context)
         if not isinstance(result, dict) or result.get("error"):
             return result
@@ -444,7 +447,7 @@ class MatCreatorSkillToolset(skill_toolset.SkillToolset):
 
     def _get_skill(self, skill_name: str):
         normalized = (skill_name or '').strip().lower()
-        canonical = next((s.name for s in ALL_SKILLS if s.name.lower() == normalized), skill_name)
+        canonical = next((name for name in self._skills if name.lower() == normalized), normalized)
         skill = super()._get_skill(canonical)
         if skill is not None and is_skill_disabled(skill.name):
             return None
