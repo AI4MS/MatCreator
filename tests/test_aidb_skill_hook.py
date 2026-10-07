@@ -42,7 +42,7 @@ def local_aidb(tmp_path, monkeypatch):
             pass
 
 
-def run_task(tmp_path, request, calls, state=None, entry=None, followup=None, parallel=False, extra_tools=(), turns=(), final_state=None):
+def run_task(tmp_path, request, calls, state=None, entry=None, followup=None, parallel=False, extra_tools=(), turns=(), final_state=None, trace_path=None):
     class Model(BaseLlm):
         _index: int = PrivateAttr(default=0)
         async def generate_content_async(self, llm_request, stream=False):
@@ -95,12 +95,14 @@ def run_task(tmp_path, request, calls, state=None, entry=None, followup=None, pa
                     'instruction': '', 'input_schema': None, 'sub_agents': []})
         runner = Runner(agent=agent, app_name='preflight_test', session_service=service)
         responses = []
+        human_turns = [request]
         async for event in runner.run_async(user_id='test', session_id=session.id,
             new_message=types.Content(role='user', parts=[types.Part(text=request)])):
             for part in (event.content.parts if event.content else []):
                 if part.function_response:
                     responses.append(part.function_response.response)
         if followup:
+            human_turns.append(followup)
             async for event in runner.run_async(user_id='test', session_id=session.id,
                 new_message=types.Content(role='user', parts=[types.Part(text=followup)])):
                 for part in (event.content.parts if event.content else []):
@@ -111,6 +113,7 @@ def run_task(tmp_path, request, calls, state=None, entry=None, followup=None, pa
             agent.model._index = 0
             if callable(message):
                 message = message(responses)
+            human_turns.append(message)
             async for event in runner.run_async(user_id='test', session_id=session.id,
                 new_message=types.Content(role='user', parts=[types.Part(text=message)])):
                 for part in (event.content.parts if event.content else []):
@@ -119,6 +122,9 @@ def run_task(tmp_path, request, calls, state=None, entry=None, followup=None, pa
         if final_state is not None:
             current = await service.get_session(app_name='preflight_test', user_id='test', session_id=session.id)
             final_state.update(current.state)
+        if trace_path is not None:
+            Path(trace_path).write_text(json.dumps({'human_turns': human_turns,
+                'responses': responses, 'performed_tools': prepared}, ensure_ascii=False), encoding='utf-8')
         return responses
     return asyncio.run(run()), prepared
 

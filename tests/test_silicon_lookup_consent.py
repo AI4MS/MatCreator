@@ -20,7 +20,7 @@ def confirm(responses):
 def test_confirmation_continues_original_scope_without_claiming_lookup_success(local_aidb, tmp_path, monkeypatch):
     monkeypatch.setenv('AI_READY_DB_CONFIG', str(tmp_path / 'missing.json'))
     responses, performed = run_task(tmp_path, REQUEST, [LOAD, PREPARE, SUBMIT],
-        turns=[(confirm, [LOAD, PREPARE, SUBMIT])])
+        turns=[(confirm, [LOAD, PREPARE, SUBMIT])], trace_path=tmp_path / 'task-feedback.json')
     warning = responses[0]['aidb_preflight']
     assert '无法判断' in warning['message'] and '重复计算' in warning['message']
     assert performed == ['prepare', 'remote submission']
@@ -49,7 +49,8 @@ def test_confirmation_preserves_preparation_only(local_aidb, tmp_path, monkeypat
 
 
 @pytest.mark.parametrize('change', ['改用金刚石碳体相 PBE 总能', '改用 HSE06 计算硅总能',
-    '继续，ENCUT=600', '继续，KPOINTS=6x6x6', '继续，只计算静态总能'])
+    '继续，ENCUT=600', '继续，KPOINTS=6x6x6', '继续，只计算静态总能',
+    'ENCUT=600', 'KPOINTS=6x6x6', 'HSE06'])
 def test_changed_target_or_conditions_invalidates_failure_confirmation(local_aidb, tmp_path, monkeypatch, change):
     monkeypatch.setenv('AI_READY_DB_CONFIG', str(tmp_path / 'missing.json'))
     token = {}
@@ -60,6 +61,18 @@ def test_changed_target_or_conditions_invalidates_failure_confirmation(local_aid
         turns=[(remember, [LOAD, PREPARE]), (lambda _: token['old'], [PREPARE, SUBMIT])])
     assert performed == []
     assert responses[-1]['status'] == 'blocked'
+
+
+def test_condition_update_without_tools_still_invalidates_old_confirmation(local_aidb, tmp_path, monkeypatch):
+    monkeypatch.setenv('AI_READY_DB_CONFIG', str(tmp_path / 'missing.json'))
+    token = {}
+    def change(responses):
+        token['old'] = confirm(responses)
+        return 'ENCUT=600'
+    responses, performed = run_task(tmp_path, REQUEST, [LOAD],
+        turns=[(change, []), (lambda _: token['old'], [PREPARE, SUBMIT])])
+    assert performed == []
+    assert responses[-1]['aidb_preflight']['task_context']['known']['encut'] == 600
 
 
 def test_old_event_token_cannot_confirm_a_new_failure(local_aidb, tmp_path, monkeypatch):
@@ -89,6 +102,33 @@ def test_executor_text_cannot_supply_human_consent(local_aidb, tmp_path, monkeyp
     assert performed == []
 
 
+def test_changed_supplied_structure_invalidates_confirmation(local_aidb, tmp_path, monkeypatch):
+    from ase.build import bulk
+    from ase.io import write
+    write(tmp_path / 'POSCAR', bulk('Si', 'diamond', a=5.43))
+    monkeypatch.setenv('AI_READY_DB_CONFIG', str(tmp_path / 'missing.json'))
+    def reply(responses):
+        write(tmp_path / 'POSCAR', bulk('Si', 'diamond', a=5.6))
+        return confirm(responses)
+    responses, performed = run_task(tmp_path, REQUEST + ' 使用POSCAR', [LOAD],
+        turns=[(reply, [PREPARE, SUBMIT])])
+    assert performed == []
+    assert responses[-1]['aidb_preflight']['failure_id'] != responses[0]['aidb_preflight']['failure_id']
+
+
+def test_previously_confirmed_event_does_not_authorize_later_failure(local_aidb, tmp_path, monkeypatch):
+    monkeypatch.setenv('AI_READY_DB_CONFIG', str(tmp_path / 'missing.json'))
+    token = {}
+    def reply(responses):
+        token['old'] = confirm(responses)
+        return token['old']
+    responses, performed = run_task(tmp_path, REQUEST, [LOAD],
+        turns=[(reply, [PREPARE, SUBMIT]), (REQUEST, [LOAD, PREPARE]),
+            (lambda _: token['old'], [PREPARE, SUBMIT])])
+    assert performed == ['prepare', 'remote submission']
+    assert responses[-1]['status'] == 'blocked'
+
+
 @pytest.mark.parametrize('entry', ['thinking', 'step'])
 def test_final_b_is_registered_on_both_agent_entries(local_aidb, tmp_path, monkeypatch, entry):
     monkeypatch.setenv('AI_READY_DB_CONFIG', str(tmp_path / 'missing.json'))
@@ -111,7 +151,8 @@ def test_failed_lookup_bypass_still_attempts_local_archive(local_aidb, tmp_path,
             monkeypatch.setenv('AI_READY_DB_CONFIG', config)
         return confirm(responses)
     responses, performed = run_task(tmp_path, REQUEST, [LOAD], state={'session_id': 'session'},
-        turns=[(reply, [PREPARE, collect])], extra_tools=[collect_silicon_vasp_result])
+        turns=[(reply, [PREPARE, collect])], extra_tools=[collect_silicon_vasp_result],
+        trace_path=tmp_path / 'task-feedback.json')
     assert performed == ['prepare']
     assert responses[-1]['archived'] is recover
     assert responses[-1]['local_archive']['status'] == ('verified' if recover else 'failed')

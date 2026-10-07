@@ -58,6 +58,7 @@ def _failure_warning(feedback, tool_context, *, can_confirm):
     else:
         feedback['message'] += '任务信息提取失败，请先修复或澄清；不能绕过此错误。'
     feedback['failure_session_id'] = tool_context._invocation_context.session.id
+    feedback['failure_invocation_id'] = tool_context.invocation_id
 
 
 def _confirm_failure(text, task, saved, tool_context):
@@ -74,6 +75,10 @@ def _confirm_failure(text, task, saved, tool_context):
     # State alone, including copied state from another session, is not evidence
     # that this human has received the warning for this event.
     events = tool_context._invocation_context.session.events
+    previous_user = next((event for event in reversed(events) if event.content
+        and event.content.role == 'user' and event.invocation_id != tool_context.invocation_id), None)
+    if not previous_user or previous_user.invocation_id != feedback.get('failure_invocation_id'):
+        return None
     if not any(event.invocation_id != tool_context.invocation_id and event.content
             and any(part.function_response and
                 (part.function_response.response.get('aidb_preflight') or {}).get('failure_id') == match[1]
@@ -351,6 +356,12 @@ async def before_aidb_skill_load(tool, args, tool_context):
             if not active and not pending_failure and not (referential and saved_task) and not re.search(r'vasp|硅|\bsilicon\b|(?<![A-Za-z0-9])Si(?![A-Za-z0-9])', text, re.I):
                 return None
         task = _task_context(text, workspace, saved_task if referential else None)
+        if task is None and saved_task and _known_context(text, workspace) and not re.search(r'解释|介绍|什么是|概念|explain|what is', text, re.I):
+            # Standalone condition updates are still task changes. Retain the
+            # original scope while querying the newly requested conditions.
+            prior_request = (tool_context.state.get('aidb_preflight') or {}).get('request') or ''
+            text = '继续 ' + text + '\n[AIDB_PRIOR_CONTEXT]\n' + prior_request
+            task = _task_context(text, workspace, saved_task)
         if task is None:
             pending = (tool_context.state.get('aidb_preflight') or {}).get('feedback') or {}
             if name in _PREPARATION_TOOLS and pending.get('status') == 'failed':
@@ -376,7 +387,7 @@ async def before_aidb_skill_load(tool, args, tool_context):
                 task = confirmed['task_context']
                 original_request = tool_context.state['aidb_parent_bypass']['request']
             if _CONFIRM_RE.fullmatch(text.partition('\n[AIDB_PRIOR_CONTEXT]\n')[0].strip()) and saved.get('request'):
-                original_task = _task_context(saved['request'], workspace)
+                original_task = _task_context(saved['request'], workspace, saved.get('feedback', {}).get('task_context'))
                 confirmed = _confirm_failure(text, original_task, saved, tool_context)
                 if confirmed:
                     task = original_task
