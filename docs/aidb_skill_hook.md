@@ -79,3 +79,7 @@ archive times; ambiguity or meaningful condition differences require
 clarification. Task changes trigger a new lookup. T4's historical A evidence is
 retained; the current default is [T5 final B](silicon_vasp_t5.md). No cloud
 database upload is performed.
+
+## 重复验证入口
+
+隔离回归、全量失败基线和真实记录只读验收统一使用 [silicon local-loop checks](testing/silicon-local-loop.md)。科学结论由 [review 标准](../CODING_STANDARDS.md)核对；工具校验不代替科学判断。

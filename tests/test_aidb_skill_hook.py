@@ -19,11 +19,15 @@ from matcreator.agents import aidb_skill_hook as hook
 
 @pytest.fixture
 def local_aidb(tmp_path, monkeypatch):
-    root = Path(__file__).resolve().parents[2] / 'Ai-ready_Database'
-    if not (root / '.venv/bin/python').exists():
-        pytest.skip('adjacent aidb checkout and runtime required for public bridge integration')
+    root = Path(os.environ.get('AI_READY_DB_ROOT') or Path(__file__).resolve().parents[2] / 'Ai-ready_Database').expanduser().resolve()
+    python = Path(os.environ.get('AI_READY_DB_PYTHON') or root / '.venv/bin/python').expanduser().absolute()
+    if not python.is_file() or not (root / 'skills/ai-ready-db/scripts/aidb_loop_adapter.py').is_file():
+        message = 'aidb public bridge/runtime required; configure AI_READY_DB_ROOT and AI_READY_DB_PYTHON'
+        if os.environ.get('MATCREATOR_REQUIRE_AIDB') == '1':
+            pytest.fail(message)
+        pytest.skip(message)
     monkeypatch.setenv('AI_READY_DB_ROOT', str(root))
-    monkeypatch.setenv('AI_READY_DB_PYTHON', str(root / '.venv/bin/python'))
+    monkeypatch.setenv('AI_READY_DB_PYTHON', str(python))
     monkeypatch.setenv('AI_READY_DB_BRIDGE_SOCK', str(tmp_path / 'bridge.sock'))
     config = tmp_path / 'config.json'
     config.write_text(json.dumps({'ase_sqlite': {'path': str(tmp_path / 'local.db'),

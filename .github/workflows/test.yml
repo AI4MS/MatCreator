@@ -59,3 +59,45 @@ jobs:
 
       - name: Run frontend checks
         run: npm run check
+
+  silicon-local-loop:
+    name: Silicon local loop (public aidb bridge)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: MatCreator
+      - name: Checkout pinned aidb integration dependency
+        uses: actions/checkout@v4
+        with:
+          repository: Zikkying/Ai-ready_Database
+          # Prepared in MatCreator/.workspace/aidb-ci; publish this dependency
+          # commit before expecting this job to run on GitHub. Never use latest.
+          ref: 87148777fc9995a6d2e3bd85571ee8e20ff53181
+          path: Ai-ready_Database
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install both public packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m venv Ai-ready_Database/.venv
+          Ai-ready_Database/.venv/bin/python -m pip install -e ./Ai-ready_Database
+          python -m pip install -e ./MatCreator pytest
+      - name: Run isolated loop tests with zero skips
+        working-directory: MatCreator
+        env:
+          AI_READY_DB_ROOT: ${{ github.workspace }}/Ai-ready_Database
+          AI_READY_DB_PYTHON: ${{ github.workspace }}/Ai-ready_Database/.venv/bin/python
+        run: python script/check_silicon_loop.py tests --output .workspace/ci/silicon-check.json
+      - name: Retain failure and test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: silicon-local-loop-results
+          path: MatCreator/.workspace/ci/
+          if-no-files-found: warn
