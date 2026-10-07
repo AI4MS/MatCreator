@@ -97,6 +97,8 @@ def _known_context(text, workspace):
         known['encut'] = float(cutoff.group(1))
     constraints = {}
     for setting in re.finditer(r'\b([A-Z][A-Z0-9_]*)\s*=\s*([^\s,，;；]+)', text):
+        if setting.group(1) == 'KPOINTS':
+            continue  # Mesh is a separate VASP input, not an INCAR tag.
         raw = setting.group(2)
         try:
             value = float(raw)

@@ -1,8 +1,11 @@
 """Task-level reuse tests through ADK and the public isolated local database."""
+import copy
 import json
 import os
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from test_aidb_skill_hook import local_aidb, run_task
 from test_silicon_vasp_workflow import completed_job, silicon_outputs
@@ -27,6 +30,14 @@ def test_compatible_success_reused_before_preparation_or_submission(local_aidb, 
     assert feedback['reuse']['total_energy'] == {'value': -10.1, 'unit': 'eV', 'basis': 'cell'}
     assert feedback['reuse']['structure'] == saved['structure']
     assert prepared == []
+
+def derive_candidate(record, source_id):
+    candidate = copy.deepcopy(record)
+    candidate.pop('record_id')
+    candidate['source_id'] = source_id
+    candidate['source_metadata']['job_id'] = source_id
+    return candidate
+
 
 def public_archive(local_aidb, tmp_path, record):
     path = tmp_path / 'candidate.json'
@@ -54,12 +65,8 @@ def test_explicit_recalculation_queries_first_and_preserves_authorization(local_
 
 
 def test_recent_archive_selected_without_claiming_accuracy(local_aidb, tmp_path, monkeypatch):
-    import copy
     first = seed_relaxation(tmp_path, monkeypatch)
-    second = copy.deepcopy(first)
-    second.pop('record_id')
-    second['source_id'] = 'later-job'
-    second['source_metadata']['job_id'] = 'later-job'
+    second = derive_candidate(first, 'later-job')
     second['source_metadata']['archived_at'] = '2026-10-08T00:00:00+00:00'
     second['energy'] = -10.3
     public_archive(local_aidb, tmp_path, second)
@@ -72,12 +79,8 @@ def test_recent_archive_selected_without_claiming_accuracy(local_aidb, tmp_path,
 
 
 def test_missing_archive_order_requires_clarification(local_aidb, tmp_path, monkeypatch):
-    import copy
     first = seed_relaxation(tmp_path, monkeypatch)
-    second = copy.deepcopy(first)
-    second.pop('record_id')
-    second['source_id'] = 'undated-job'
-    second['source_metadata']['job_id'] = 'undated-job'
+    second = derive_candidate(first, 'undated-job')
     second['source_metadata'].pop('archived_at')
     public_archive(local_aidb, tmp_path, second)
     responses, prepared = query(tmp_path)
@@ -86,12 +89,8 @@ def test_missing_archive_order_requires_clarification(local_aidb, tmp_path, monk
 
 
 def test_different_conditions_require_scientific_choice(local_aidb, tmp_path, monkeypatch):
-    import copy
     first = seed_relaxation(tmp_path, monkeypatch)
-    second = copy.deepcopy(first)
-    second.pop('record_id')
-    second['source_id'] = 'other-cutoff'
-    second['source_metadata']['job_id'] = 'other-cutoff'
+    second = derive_candidate(first, 'other-cutoff')
     second['source_metadata']['conditions']['incar']['ENCUT'] = 600
     second['calculation_parameters']['ENCUT'] = 600
     public_archive(local_aidb, tmp_path, second)
@@ -104,15 +103,11 @@ def test_different_conditions_require_scientific_choice(local_aidb, tmp_path, mo
 
 
 def test_linked_static_and_relaxation_keep_distinct_energies(local_aidb, tmp_path, monkeypatch):
-    import copy
     parent = seed_relaxation(tmp_path, monkeypatch)
-    child = copy.deepcopy(parent)
-    child.pop('record_id')
-    child['source_id'] = 'static-job'
+    child = derive_candidate(parent, 'static-job')
     child['calculation_type'] = 'static'
     child['energy'] = -10.2
     meta = child['source_metadata']
-    meta['job_id'] = 'static-job'
     meta['parent_record_id'] = parent['record_id']
     meta['relaxation_source'] = {'job_id': parent['source_id']}
     meta['completion']['ionic_converged'] = None
@@ -147,8 +142,6 @@ def test_negative_recompute_intent_still_reuses(local_aidb, tmp_path, monkeypatc
     responses, prepared = query(tmp_path, '计算金刚石硅体相 PBE 弛豫和总能，不重新计算')
     assert responses[0]['aidb_preflight']['reuse']['status'] == 'reused'
     assert prepared == []
-import pytest
-
 @pytest.mark.parametrize('defect', ['electronic', 'ionic', 'unit', 'energy', 'hybrid', 'potential', 'kpoints', 'phase', 'failed'])
 def test_incomplete_or_incompatible_records_remain_candidates(local_aidb, tmp_path, monkeypatch, defect):
     saved = seed_relaxation(tmp_path, monkeypatch)
@@ -250,4 +243,11 @@ def test_requested_parameters_are_not_replaced_with_candidate_conditions(local_a
     seed_relaxation(tmp_path, monkeypatch)
     responses, prepared = query(tmp_path, f'只准备金刚石硅体相 PBE 弛豫总能 {setting} 输入，不提交')
     assert responses[0]['aidb_preflight']['reuse']['status'] == 'unavailable'
+    assert prepared == []
+
+def test_matching_uppercase_kpoints_condition_reuses(local_aidb, tmp_path, monkeypatch):
+    saved = seed_relaxation(tmp_path, monkeypatch)
+    responses, prepared = query(tmp_path, '计算金刚石硅体相 PBE 弛豫和总能 KPOINTS=4x4x4')
+    assert responses[0]['aidb_preflight']['reuse']['status'] == 'reused'
+    assert responses[0]['aidb_preflight']['reuse']['record_ids'] == [saved['record_id']]
     assert prepared == []
