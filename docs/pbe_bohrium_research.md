@@ -71,3 +71,14 @@ MatCreator 已在原会话 `silicon-t2-20261007-env2` 解压并核验所需 Si �
 
 配套教学：[互动首课](learning/vasp/lessons/0001-pbe-potcar-bohrium.html)与
 [输入速查卡片](learning/vasp/reference/vasp-inputs.html)。
+
+## 真实运行核验
+
+原会话中的 Si 松弛与静态总能均已完成科学验证：松弛 durable job
+`56072cf15fe94e639d7b71f563ed320a` / batchjob
+`5ed5945230884cf88f30475c1afed598`，能量 -10.84124445 eV；静态 durable job
+`c266a691a9874ab9ad097bfd09dca9b6` / batchjob
+`6ce96bb830764a01976fec7ef9d16a99`，能量 -10.84601452 eV（均为 Si2 晶胞总能）。
+实际输出证明该私有镜像可以运行 VASP 6.3.0，所暂存的 Si POTCAR 确实参与两步计算。
+静态结构来自成功松弛结构，势哈希相同。完整证据与测试见
+[T2 验收记录](silicon_vasp_t2.md)。本研究不宣称数据库归档或完整本地闭环已完成。

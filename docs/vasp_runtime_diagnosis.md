@@ -171,3 +171,15 @@ Each fix has red-to-green regression evidence in `debug-pbe/`. The real
 relaxation validator reproduction also passed without changing scientific
 inputs or outputs. Final related tests: **286 passed**; both review axes found
 zero new issues. MatCreator resumed the static step after the final fix.
+
+The static continuation also completed and passed scientific checks:
+durable job `c266a691a9874ab9ad097bfd09dca9b6`, provider batchjob
+`6ce96bb830764a01976fec7ef9d16a99`, total energy -10.84601452 eV per Si2
+cell, electronic convergence, one static step and completed OUTCAR. Static
+input matches the verified relaxed structure and uses the same POTCAR hash.
+Both output sets and the parent-child source link are retained. Final complete
+suite: 786 passed, 39 failures and two collection errors, with the exact same
+failure names as the starting baseline. No new job was needed for recovery.
+ADK session-version conflicts and a child replay workspace-path incident remain
+recorded separately; a public-tool replay in the original workspace succeeded.
+This is real T2 computation evidence, not proof of T3 archiving or final B behavior.

@@ -46,75 +46,67 @@ T2 never claims a record was saved or a local loop was completed.
 
 ## Validation and real-run evidence
 
-```bash
-PYTHONPATH=src .venv/bin/python -m pytest tests/test_silicon_vasp_workflow.py tests/test_aidb_skill_hook.py tests/test_remote_job_tools.py -q
-```
+Final related regression run: **286 passed**, covering ADK preflight callbacks,
+workspace subprocesses, scientific collection, tracked jobs and the Bohrium
+Batch Job adapter. Synthetic XML tests use the actual pymatgen parser; agent
+cases use a real isolated aidb bridge/database. They are not real calculations.
 
-The new tests use a controlled provider and explicitly synthetic VASP XML,
-parsed by the real pymatgen parser. Agent-runner cases use a real isolated aidb
-public bridge/database for query ordering and user-visible receipts. These
-tests prove orchestration and scientific failure handling, not real computation.
+The final full suite had **786 passed, 39 failed and 2 collection errors**.
+Failure names exactly match the initial baseline snapshot. Logs are retained in
+`.workspace/silicon-t2/debug-pbe/final-full-fixed.log` and
+`.workspace/silicon-t2/baseline-tests.log`. Unrelated legacy failures were not
+changed. Standards and Spec reviews found zero new implementation findings.
 
-On 2026-10-07 a real natural request was dispatched to MatCreator with session
-`silicon-t2-20261007`, using the existing user configuration and local aidb.
-The real preflight succeeded with no Si/PBE/bulk candidates (no records deleted).
-Private run evidence is retained under `.workspace/silicon-t2/`, including
-`events.jsonl`, `trajectories/`, `.aidb/runs/` reports and audits. Real Bohrium
-completion is still pending; no successful job ID or real T3 handoff is claimed.
+The real run remains in session `silicon-t2-20261007-env2`. A real preflight
+succeeded with empty Si/PBE/bulk candidates; no database records were deleted.
+The user-supplied potential and the account-private image resolved the original
+resource/configuration blockers. MatCreator owns input generation and submission;
+Codex only diagnosed the runtime, repaired platform validation and resumed the
+existing session. See [runtime diagnosis](vasp_runtime_diagnosis.md) and
+[PBE research](pbe_bohrium_research.md).
 
-The corrected launch session `silicon-t2-20261007-env2` also queried the real
-local database successfully (empty candidates) and generated diamond Si2 using
-the existing ASE skill. MatCreator stopped before submission after an actual
-MPRelaxSet POTCAR check raised `PmgVaspPspDirError`: no licensed PBE potential
-directory is configured. `compute.vasp_image` / `BOHRIUM_VASP_IMAGE` is also
-empty. Bohrium CLI authentication and machine discovery succeeded. The specific
-diagnostic is `.workspace/silicon-t2/preflight_env_report_step2.json`; no tracked
-job was submitted and no successful real calculation is claimed.
+Verified real relaxation:
 
-Automated validation: the final targeted run passed 252 tests, including the
-workflow in both production agent entry points. Final full-suite execution
-passed 760 tests, with 39 failures and two collection errors. A snapshot of
-the starting commit reproduced exactly the same failure names (no new failed
-tests). The baseline snapshot skipped aidb integration because it was outside
-the adjacent-checkout layout. Final review added regression coverage for mutable
-POTCAR inputs, dispersion corrections, and submission replay provenance.
-Follow-up [runtime diagnosis](vasp_runtime_diagnosis.md) found and fixed tool
-Python/PATH selection bugs and discovered the account-private VASP 6.3.0 image.
-Its executable/potential paths cannot be established from stored metadata.
-Real acceptance remains paused pending a verifiable PBE potential source and
-usable runtime; the existing calculation authorization remains valid. Issue #3
-is not marked complete.
+- Durable job ID: `56072cf15fe94e639d7b71f563ed320a`.
+- Provider batchjob ID: `5ed5945230884cf88f30475c1afed598`.
+- VASP image: `registry.dp.tech/dptech/prod-28882/vasp:6.3.0`.
+- POTCAR: `PAW_PBE Si 05Jan2001`, SHA256
+  `52dbe99da884e0191b2d348dfcc281aaba36e2eacd3019a49d93cf07d84da86b`.
+- Electronic and ionic convergence, three ionic steps, completed OUTCAR.
+- Total energy: **-10.84124445 eV per Si2 cell**.
+- Verified report: `silicon-t2-results/relax-collected/silicon-result.json`.
 
-The initial noninteractive launcher omitted the NVM bohr path; the installed
-CLI is `/home/shik-mechrevo-wsl/.nvm/versions/node/v24.14.1/bin/bohr` (2.6.100).
-Future launches should prepend both the repository `.venv/bin` and this Node
-directory to PATH. Python tools now pin the runtime interpreter and Bash tools
-retain that startup environment.
+All paths above are relative to `.workspace/silicon-t2/`. Actual source outputs,
+submission input hashes, query reports/audits, `events-pbe.jsonl` and trajectories
+are retained. The relaxation was never resubmitted. MatCreator completed the
+static continuation using the verified CONTCAR and the same potential.
+No archive or full local-loop completion is claimed. Issue #3 remains open;
+both steps now have real scientific completion evidence.
 
-## Standards review
+Verified real static continuation:
 
-Reviewed implementation commits `db7904a` and `3c742de` against starting commit
-`071cfab6202b704704a27376d7f136dec8e5b884` with
-`git diff 071cfab6202b704704a27376d7f136dec8e5b884...HEAD`.
+- Durable job ID: `c266a691a9874ab9ad097bfd09dca9b6`.
+- Provider batchjob ID: `6ce96bb830764a01976fec7ef9d16a99`.
+- Total energy: **-10.84601452 eV per Si2 cell**.
+- Electronic convergence, one static step and completed OUTCAR.
+- `NSW=0`; effective `IBRION=-1`; actual ENCUT 520 eV.
+- Static input matches the verified relaxed structure; unchanged POTCAR SHA256.
+- Verified report: `silicon-t2-results/static-collected/silicon-result.json`,
+  with the relaxation IDs and energy retained in `relaxation_source`.
 
-Final review: 0 documented-standard breaches and 0 remaining baseline smells.
-The duplicated structure comparisons and input-path checks now use shared
-helpers. The initial POTCAR provenance concern is resolved by submission-time
-hashes, collection checks and XML identity matching. Synthetic tests do not
-establish real scientific completion.
+Both authorized steps now have real scientific completion evidence. No third
+job, probe computation, archive or cloud database upload was performed. The
+first collection round produced the successful report but ended with ADK
+`StaleSessionError`; a subsequent child collection reported a workspace-path
+error. A public-tool replay in the original workspace returned success from
+both original VASP output sets without altering inputs or outputs. These
+runner incidents and recovery logs remain in `debug-pbe/`; this does not claim
+a general fix for ADK concurrent session updates.
 
-## Spec review
+T2's real-computation acceptance is evidenced. T3 archive/requery and the final
+A-to-B switch in the main specification remain separate work. Issue #3 was not
+closed by this session.
 
-The initial P1 (mutable POTCAR provenance) and P2 (dispersion-corrected PBE
-accepted as ordinary PBE) are resolved. Submission replay preserves the original
-input evidence; modified potentials are rejected. IVDW/LUSE_VDW are rejected,
-and k-point inputs plus available XML sampling are preserved. No additional
-code-correctness or scope issue was identified in the final review.
-
-One acceptance requirement remains unmet: one real successful Bohrium silicon
-task. Actual query, structure generation and environment discovery are evidenced,
-but unresolved PBE potentials and VASP runtime details prevent submission. No successful
-job, archive or completed local loop is claimed.
-
-Review totals: Standards 0 findings; Spec 1 outstanding environment-blocked
-acceptance requirement (real Bohrium completion).
+MatCreator's final report is
+`.workspace/silicon-t2/silicon-t2-results/silicon-t2-final-report.json`.
+Its listed output and scientific-report checksums match the retained files.
