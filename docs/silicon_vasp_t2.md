@@ -78,14 +78,18 @@ the starting commit reproduced exactly the same failure names (no new failed
 tests). The baseline snapshot skipped aidb integration because it was outside
 the adjacent-checkout layout. Final review added regression coverage for mutable
 POTCAR inputs, dispersion corrections, and submission replay provenance.
-The user will consult the host about Bohrium configuration. Real acceptance is
-paused pending the licensed PBE directory and authorized VASP image; the existing
-calculation authorization remains valid. Issue #3 is not marked complete.
+Follow-up [runtime diagnosis](vasp_runtime_diagnosis.md) found and fixed tool
+Python/PATH selection bugs and discovered the account-private VASP 6.3.0 image.
+Its executable/potential paths cannot be established from stored metadata.
+Real acceptance remains paused pending a verifiable PBE potential source and
+usable runtime; the existing calculation authorization remains valid. Issue #3
+is not marked complete.
 
 The initial noninteractive launcher omitted the NVM bohr path; the installed
 CLI is `/home/shik-mechrevo-wsl/.nvm/versions/node/v24.14.1/bin/bohr` (2.6.100).
 Future launches should prepend both the repository `.venv/bin` and this Node
-directory to PATH, so `run_python` and bohr use the intended environment.
+directory to PATH. Python tools now pin the runtime interpreter and Bash tools
+retain that startup environment.
 
 ## Standards review
 
@@ -109,7 +113,7 @@ code-correctness or scope issue was identified in the final review.
 
 One acceptance requirement remains unmet: one real successful Bohrium silicon
 task. Actual query, structure generation and environment discovery are evidenced,
-but missing PBE potentials and VASP image prevented submission. No successful
+but unresolved PBE potentials and VASP runtime details prevent submission. No successful
 job, archive or completed local loop is claimed.
 
 Review totals: Standards 0 findings; Spec 1 outstanding environment-blocked
