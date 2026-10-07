@@ -33,9 +33,12 @@ with the displayed `确认继续 <failure_id>` (English `confirm continue <failu
 also works). The ordinary-language reply contains no internal query JSON.
 The event ID makes consent unambiguous; plain “continue”, “yes”, negated replies
 and internal executor text do not grant it. The session must contain the actual
-warning response from an earlier invocation, and the saved task must still
-match, including known conditions and the digest of an explicitly supplied file.
-New targets, methods, cutoff, k mesh or failure events invalidate old consent.
+warning response from the immediately preceding human invocation, and the
+saved task must still match, including known conditions and the digest of an
+explicitly supplied file. New targets, methods, cutoff, k mesh or failure
+events invalidate old consent. Standalone updates such as `ENCUT=600` establish
+new conditions; intervening human turns invalidate the old event even when no
+tools were called during that turn.
 
 Confirmation resumes the original scope without querying again for the same
 failed event. Preparation-only remains preparation-only. Registered Flash/Plan
@@ -54,7 +57,7 @@ Material clarification and context extraction errors remain blocking.
 ## Verification
 
 The first red task test failed because A lacked a confirmation event. After
-the switch, 23 task cases passed using ADK, real isolated aidb configuration,
+the switch and review repair, 29 task cases passed using ADK, real isolated aidb configuration,
 SQLite and public bridge calls, and controlled calculation tools. They cover
 confirmation, refusal/absence, target/condition/event/session changes, original
 preparation-only scope, internal text, both agent entries, actual Flash-to-step
@@ -69,8 +72,47 @@ Commands:
 .venv/bin/python -m pytest tests/ -q --continue-on-collection-errors
 ```
 
-Logs are retained in `.workspace/silicon-t5-{red,current,related,full}.log`.
-The full-suite comparison and final independent review are recorded below
-after completion. There is no configured typechecking command; changed modules
-are checked with compileall. Diff checks cover only this change, preserving
-the user's unrelated AGENTS.md and untracked files.
+Final full suite: **852 passed, 39 failed, 2 collection errors**. All 41
+failure/error names exactly equal the T4 baseline; no new failures. The known
+step-executor retry-config failure also appears in the focused runner regression.
+There is no configured typechecking command; changed modules pass compileall.
+Diff checks cover only this change, preserving the user's unrelated AGENTS.md
+and untracked files.
+
+Final logs: `.workspace/silicon-t5-consent-final.log` and
+`.workspace/silicon-t5-full-final.log`. Original red and intermediate debugging
+logs remain separate. A retained-evidence run initially exceeded the Unix
+socket path limit; using a short isolated `/tmp/mct5-final-20261007` path passed
+all 29 cases. Its exact artifacts were copied into
+`.workspace/silicon-t5-final-evidence/`: `task-feedback.json` contains actual
+human requests, failure/confirmation receipts and controlled tool calls;
+the recovered archive case retains `local.db`, synthetic outputs, public
+query/export reports, archive receipt and audit. Paths in copied receipts
+continue to refer to the original short-path run; no receipt was rewritten.
+
+`.workspace/verify-silicon-t5.py` verifies the retained traces, failure binding,
+failed lookup/incomplete-loop status, archive failure and recovered content,
+actual nonempty isolated SQLite and exact full-suite baseline. Its checked
+summary, source/log hashes and copied export identity are committed in
+[silicon_vasp_t5_acceptance.json](silicon_vasp_t5_acceptance.json).
+
+## Standards
+
+Independent final review of `df6116d...4dc04d3`: zero documented-standard
+violations and zero actionable baseline smells. The initial optional dictionary
+grant suggestion was withdrawn after verifying JSON-serializable ADK state is
+the repository convention and construction is centralized. No production
+schema/type layer was added solely for that suggestion.
+
+## Spec
+
+Independent final review against #1/#6: zero unresolved findings. Initial P1:
+standalone `ENCUT=600` updates retained old consent. Reproduced at the ADK
+boundary, fixed in `4dc04d3`, and covered with standalone condition updates plus
+an update turn with no tool calls. The reviewer independently reran 14 related
+cases successfully. Earlier intermediate logs are not final acceptance.
+
+Review total: Standards 0 unresolved; Spec 0 unresolved. Final B is implemented
+and tested after verified T4 prerequisites, including the review repair; A-only
+acceptance is not used as proof of T5 completion. Implementation commits:
+`587becd` and `4dc04d3`. No issue comment or closure was performed.
