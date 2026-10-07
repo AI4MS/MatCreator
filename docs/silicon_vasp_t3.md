@@ -88,5 +88,21 @@ through public archive-local to `rejected_records`, `status=invalid`,
 `test_only=true`, `real_computation=false`. It was not counted as real evidence;
 no user records were deleted. Recovery payload: `t3-accidental-fixture.json`.
 
-Standards/Spec review results are recorded after implementation review. #4 and
-#3 have not been closed or commented on by this session.
+## Standards
+
+Zero findings in `c0169fef352cc8110e701faf0eca65b92ffbaac6...a1e7499`.
+Source layout, skill metadata and testing conventions conform to AGENTS.md.
+The archive/recovery/readback workflow is cohesive; no material baseline smell
+was found. Pre-existing uncommitted instructions were excluded from review.
+
+## Spec
+
+Pass, zero actionable findings for #4. The review verified automatic registered
+callbacks, raw scientific revalidation, public interfaces, content comparison,
+parent linkage, timestamps, duplicate/timeout recovery and retained errors.
+The real MatCreator report and independent public export support acceptance.
+Synthetic regression fixtures are clearly separated from real Bohrium evidence.
+T4 and B remain outside this task as explicitly requested.
+
+Review total: Standards 0, Spec 0; neither axis has an outstanding issue.
+#4 and #3 have not been closed or commented on by this session.
