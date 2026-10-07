@@ -245,9 +245,10 @@ def test_requested_parameters_are_not_replaced_with_candidate_conditions(local_a
     assert responses[0]['aidb_preflight']['reuse']['status'] == 'unavailable'
     assert prepared == []
 
-def test_matching_uppercase_kpoints_condition_reuses(local_aidb, tmp_path, monkeypatch):
+@pytest.mark.parametrize('mesh_input', ['KPOINTS=4x4x4', 'KMESH=4x4x4', 'K-MESH=4x4x4'])
+def test_matching_uppercase_kpoints_condition_reuses(local_aidb, tmp_path, monkeypatch, mesh_input):
     saved = seed_relaxation(tmp_path, monkeypatch)
-    responses, prepared = query(tmp_path, '计算金刚石硅体相 PBE 弛豫和总能 KPOINTS=4x4x4')
+    responses, prepared = query(tmp_path, f'计算金刚石硅体相 PBE 弛豫和总能 {mesh_input}')
     assert responses[0]['aidb_preflight']['reuse']['status'] == 'reused'
     assert responses[0]['aidb_preflight']['reuse']['record_ids'] == [saved['record_id']]
     assert prepared == []

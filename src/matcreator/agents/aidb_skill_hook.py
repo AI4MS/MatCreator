@@ -95,9 +95,10 @@ def _known_context(text, workspace):
     cutoff = re.search(r'ENCUT\s*[=:]?\s*(\d+(?:\.\d+)?)', text, re.I)
     if cutoff:
         known['encut'] = float(cutoff.group(1))
+    mesh = re.search(r'(?:k网格|k点|kpoints?|k[- ]?mesh)\s*[=:]?\s*(\d+)\s*[x×]\s*(\d+)\s*[x×]\s*(\d+)', text, re.I)
     constraints = {}
     for setting in re.finditer(r'\b([A-Z][A-Z0-9_]*)\s*=\s*([^\s,，;；]+)', text):
-        if setting.group(1) == 'KPOINTS':
+        if mesh and mesh.start() <= setting.start() < mesh.end():
             continue  # Mesh is a separate VASP input, not an INCAR tag.
         raw = setting.group(2)
         try:
@@ -107,7 +108,6 @@ def _known_context(text, workspace):
         constraints[setting.group(1)] = value
     if constraints:
         known['incar_constraints'] = constraints
-    mesh = re.search(r'(?:k网格|k点|kpoints?|k[- ]?mesh)\s*[=:]?\s*(\d+)\s*[x×]\s*(\d+)\s*[x×]\s*(\d+)', text, re.I)
     if mesh:
         known['kpoint_mesh'] = [int(v) for v in mesh.groups()]
     # Read explicitly supplied existing structures; never create one at lookup.
