@@ -47,6 +47,7 @@ from ...tools.util_tools import (
 )
 from .history_tools import read_session_log
 from ..execution_agent.remote_job_tools import list_remote_jobs
+from ...tools.silicon_vasp import collect_silicon_vasp_result
 
 
 logger = logging.getLogger(__name__)
@@ -500,6 +501,7 @@ thinking_agent = LlmAgent(
         FunctionTool(run_flash_step),
         FunctionTool(read_session_log),
         FunctionTool(list_remote_jobs),
+        FunctionTool(collect_silicon_vasp_result),
         FunctionTool(load_skill),
         show_artifact,
         show_plot,

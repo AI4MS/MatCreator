@@ -42,7 +42,7 @@ def local_aidb(tmp_path, monkeypatch):
             pass
 
 
-def run_task(tmp_path, request, calls, state=None, entry=None, followup=None, parallel=False):
+def run_task(tmp_path, request, calls, state=None, entry=None, followup=None, parallel=False, extra_tools=()):
     class Model(BaseLlm):
         _index: int = PrivateAttr(default=0)
         async def generate_content_async(self, llm_request, stream=False):
@@ -78,19 +78,19 @@ def run_task(tmp_path, request, calls, state=None, entry=None, followup=None, pa
         session = await service.create_session(app_name='preflight_test', user_id='test',
             state={'workspace_dir': str(tmp_path), **(state or {})})
         agent = LlmAgent(name='task_agent', model=Model(model='test'),
-            tools=[load_skill, run_python, submit_bohr_batchjob],
+            tools=[load_skill, run_python, submit_bohr_batchjob, *extra_tools],
             before_tool_callback=hook.before_aidb_skill_load,
             after_tool_callback=hook.after_aidb_skill_load)
         if entry == 'thinking':
             from matcreator.agents.thinking_agent.agent import thinking_agent
             agent = thinking_agent.model_copy(update={'name': 'thinking_test', 'model': Model(model='test'),
-                'tools': [load_skill, run_python, submit_bohr_batchjob], 'instruction': '',
+                'tools': [load_skill, run_python, submit_bohr_batchjob, *extra_tools], 'instruction': '',
                 'before_agent_callback': None, 'sub_agents': []})
         elif entry == 'step':
             from matcreator.agents.execution_agent.step_executor import build_step_executor_agent
             from matcreator.llm_cards import LLMCard
             agent = build_step_executor_agent(LLMCard(name='test', model='openai/test')).model_copy(
-                update={'model': Model(model='test'), 'tools': [load_skill, run_python, submit_bohr_batchjob],
+                update={'model': Model(model='test'), 'tools': [load_skill, run_python, submit_bohr_batchjob, *extra_tools],
                     'instruction': '', 'input_schema': None, 'sub_agents': []})
         runner = Runner(agent=agent, app_name='preflight_test', session_service=service)
         responses = []

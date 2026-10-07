@@ -17,6 +17,7 @@ from ...knowledge.query import get_related_skills, query_knowledge_graph, read_k
 from ...tools.remoteagent_tool import load_remote_a2a_agents
 from ...tools.util_tools import show_artifact, show_plot, show_structure
 from ...tools.workspace_tools import get_user_skills_root, run_bash, run_python
+from ...tools.silicon_vasp import collect_silicon_vasp_result
 from .remote_job_tools import (
     attach_bohr_batchjob,
     collect_remote_job_outputs,
@@ -320,6 +321,7 @@ def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
             FunctionTool(upload_remote_job_input),
             FunctionTool(download_remote_job_output),
             FunctionTool(collect_remote_job_outputs),
+            FunctionTool(collect_silicon_vasp_result),
             FunctionTool(pause_remote_job),
             FunctionTool(terminate_remote_job),
             ALL_SKILLS_TOOLSET,

@@ -15,6 +15,7 @@ metadata:
     - run_python
     - run_bash
     - load_skill_resource
+    - collect_silicon_vasp_result
   dependent_skills:
     - bohrium
     - remote-job
@@ -107,6 +108,27 @@ its own defaults — the agent never writes a raw INCAR.
    Verify VASP convergence; successful execution alone is not scientific success.
 
 Run exactly **one property step at a time**. Do not chain relaxation + SCF in a single step.
+
+### Fixed silicon local-loop task (development A)
+
+For diamond bulk Si / ordinary PBE relaxation and total energy, inspect the
+actual `aidb_preflight` tool response before creating a structure or inputs.
+Failed lookup pauses new computation. Missing identity/model must be clarified;
+retrieval defaults are not calculation authorization. Do not archive in T2.
+
+Use the existing ASE diamond structure recipe and `MPRelaxSet`, then tracked
+Batch Job submission. On completion call `collect_silicon_vasp_result(job_id,
+destination_path, calculation_type="relaxation")`. Proceed to `MPStaticSet`
+only after `status="success"`, using that exact relaxed CONTCAR. Submit the
+static step separately. Collect with `calculation_type="static"` and the
+verified `relaxation_job_id`. The tool rechecks the source outputs and their
+relationship, and writes `silicon-result.json` for T3 with structure, energy
+(eV), actual conditions, both job identities and checksums. Retain INCAR,
+POSCAR, KPOINTS, POTCAR in the local input directory and declare the standard
+outputs in the Batch Job reference. Neither a platform `succeeded` nor a
+partial XML is scientific completion. On `invalid` / `needs_replanning`,
+report the evidence and preserve the job and outputs; never auto-resubmit.
+On reconnect use the same job_id and existing collected artifacts.
 
 For **MLFF energy/force labeling**, use `prepare_label` as a standalone step — it replaces the relaxation → SCF chain with a single static calculation optimized for dataset generation (no charge density, no relaxation, KSPACING-based k-points).
 
