@@ -19,7 +19,13 @@ unsupported jobs return a needs-replanning receipt without submitting anything.
 Already-collected jobs reuse their durable artifact paths after reconnect.
 
 The parser requires complete XML, original and retained INCAR/POSCAR, CONTCAR,
-OUTCAR, OSZICAR and original POTCAR provenance. It checks electronic convergence,
+OUTCAR, OSZICAR and original POTCAR provenance. Tracked Batch Job submission
+captures SHA-256 checksums for materialized VASP inputs in its durable
+specification before invoking the provider. Collection verifies local/retained
+inputs against that snapshot, and matches submitted POTCAR TITEL metadata with
+the actual XML potential identity. Old jobs without submission evidence remain
+unverified. Replaying a submit does not overwrite existing provenance.
+It checks electronic convergence,
 ionic convergence and the OUTCAR accuracy/termination evidence for relaxation,
 separate static-step settings, PBE pseudopotential/method evidence, diamond Si
 symmetry, finite energy, and agreement between XML and structure files. These
@@ -55,6 +61,23 @@ The real preflight succeeded with no Si/PBE/bulk candidates (no records deleted)
 Private run evidence is retained under `.workspace/silicon-t2/`, including
 `events.jsonl`, `trajectories/`, `.aidb/runs/` reports and audits. Real Bohrium
 completion is still pending; no successful job ID or real T3 handoff is claimed.
+
+The corrected launch session `silicon-t2-20261007-env2` also queried the real
+local database successfully (empty candidates) and generated diamond Si2 using
+the existing ASE skill. MatCreator stopped before submission after an actual
+MPRelaxSet POTCAR check raised `PmgVaspPspDirError`: no licensed PBE potential
+directory is configured. `compute.vasp_image` / `BOHRIUM_VASP_IMAGE` is also
+empty. Bohrium CLI authentication and machine discovery succeeded. The specific
+diagnostic is `.workspace/silicon-t2/preflight_env_report_step2.json`; no tracked
+job was submitted and no successful real calculation is claimed.
+
+Automated validation: the initial targeted run passed 117 tests; new workflow
+tests also passed in both production agent entry points. Full-suite execution
+passed 756 tests, with 39 failures and two collection errors. A snapshot of
+the starting commit reproduced exactly the same failure names (no new failed
+tests). The baseline snapshot skipped aidb integration because it was outside
+the adjacent-checkout layout. Final review added regression coverage for mutable
+POTCAR inputs, dispersion corrections, and submission replay provenance.
 
 The initial noninteractive launcher omitted the NVM bohr path; the installed
 CLI is `/home/shik-mechrevo-wsl/.nvm/versions/node/v24.14.1/bin/bohr` (2.6.100).

@@ -129,6 +129,10 @@ outputs in the Batch Job reference. Neither a platform `succeeded` nor a
 partial XML is scientific completion. On `invalid` / `needs_replanning`,
 report the evidence and preserve the job and outputs; never auto-resubmit.
 On reconnect use the same job_id and existing collected artifacts.
+Tracked submission saves input checksums; preserve the local input directory.
+Old jobs without that evidence remain unverified. Ordinary PBE excludes U,
+hybrid, meta-GGA and dispersion corrections. The report retains k-point inputs
+and the actual XML sampling when available.
 
 For **MLFF energy/force labeling**, use `prepare_label` as a standalone step — it replaces the relaxation → SCF chain with a single static calculation optimized for dataset generation (no charge density, no relaxation, KSPACING-based k-points).
 

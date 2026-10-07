@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from pathlib import Path
 import json
+import hashlib
 
 import pytest
 
@@ -20,7 +21,7 @@ class Provider(RemoteJobAdapter):
         return 'test-batch'
 
     def status(self, external_id):
-        return RemoteJobStatus(normalized_status='running', snapshot={})
+        return RemoteJobStatus(normalized_status='succeeded' if getattr(self, 'finished', False) else 'running', snapshot={})
 
     def cancel(self, external_id):
         pass
@@ -32,14 +33,22 @@ class Provider(RemoteJobAdapter):
         return [{'destination': str(p)} for p in destination_dir.iterdir()] or [{'destination': str(destination_dir)}]
 
 
-def job_context(tmp_path, monkeypatch):
+def job_context(tmp_path, monkeypatch, outputs=None):
     service = RemoteJobService(RemoteJobStore(tmp_path / 'jobs.db'),
         adapter_overrides={'bohr_batchjob': Provider()})
     monkeypatch.setattr(remote_job_tools, '_service', lambda: service)
     context = SimpleNamespace(state={'workspace_dir': str(tmp_path), 'session_id': 'session'},
         _invocation_context=SimpleNamespace(user_id='test'))
+    spec = {'input_path': 'relax', 'input_root': str(tmp_path)}
+    if outputs is not None:
+        source = tmp_path / 'relax'
+        source.mkdir()
+        for name in ('INCAR', 'POSCAR', 'KPOINTS'):
+            (source / name).write_text(outputs[name])
+        (source / 'POTCAR').write_text('TITEL = PAW_PBE Si 05Jan2001\nsynthetic test potential, not for computation\n')
+        spec['vasp_input_sha256'] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in source.iterdir()}
     job = service.submit_job(owner_id='test', session_id='session', provider='bohr_batchjob',
-        idempotency_key='silicon-relax', spec={'input_path': 'relax', 'input_root': str(tmp_path)})
+        idempotency_key='silicon-relax', spec=spec)
     return service, context, job['job_id']
 
 
@@ -81,18 +90,14 @@ def silicon_outputs(nelm=60, electronic_steps=2, ionic_marker=True, stage='relax
     <structure name="finalpos">{cell}{positions}</structure></modeling>'''
     return {'vasprun.xml': xml, 'POSCAR': str(Poscar(structure)), 'CONTCAR': str(Poscar(structure)),
         'INCAR': f'NELM = {nelm}\nNSW = {nsw}\nIBRION = {ibrion}\nENCUT = 520\nEDIFFG = -0.02\n',
+        'KPOINTS': 'Synthetic 4x4x4\n0\nGamma\n4 4 4\n0 0 0\n',
         'OUTCAR': ('reached required accuracy - stopping structural energy minimisation\n' if ionic_marker else '') + 'General timing and accounting informations for this job:\n',
         'OSZICAR': ' 1 F= -.10100000E+02 E0= -.10100000E+02\n'}
 
 
 def completed_job(tmp_path, monkeypatch, outputs):
-    service, context, job_id = job_context(tmp_path, monkeypatch)
+    service, context, job_id = job_context(tmp_path, monkeypatch, outputs)
     service.adapter_for('bohr_batchjob').outputs = outputs
-    source = tmp_path / 'relax'
-    source.mkdir()
-    for name in ('INCAR', 'POSCAR'):
-        (source / name).write_text(outputs[name])
-    (source / 'POTCAR').write_text('synthetic licensed-potential boundary')
     service.store.transition_job(job_id, 'succeeded')
     return service, context, job_id
 
@@ -146,12 +151,13 @@ def test_static_total_energy_keeps_verified_relaxation_source(tmp_path, monkeypa
     outputs = silicon_outputs(stage='static')
     source = tmp_path / 'static'
     source.mkdir()
-    for name in ('INCAR', 'POSCAR'):
+    for name in ('INCAR', 'POSCAR', 'KPOINTS'):
         (source / name).write_text(outputs[name])
     (source / 'POTCAR').write_bytes((tmp_path / 'relax/POTCAR').read_bytes())
     service.adapter_for('bohr_batchjob').outputs = outputs
     job = service.submit_job(owner_id='test', session_id='session', provider='bohr_batchjob',
-        idempotency_key='silicon-static', spec={'input_path': 'static', 'input_root': str(tmp_path)})
+        idempotency_key='silicon-static', spec={'input_path': 'static', 'input_root': str(tmp_path),
+            'vasp_input_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in source.iterdir()}})
     service.store.transition_job(job['job_id'], 'succeeded')
     result = collect_silicon_vasp_result(job['job_id'], 'static-outputs', 'static', context, parent_id)
     assert result['status'] == 'success'
@@ -162,6 +168,53 @@ def test_static_total_energy_keeps_verified_relaxation_source(tmp_path, monkeypa
     (tmp_path / 'relax-outputs/OUTCAR').write_text('incomplete output')
     replay = collect_silicon_vasp_result(job['job_id'], 'ignored', 'static', context, parent_id)
     assert replay['status'] == 'invalid'
+
+
+def test_modified_potential_cannot_change_submitted_provenance(tmp_path, monkeypatch):
+    _, context, job_id = completed_job(tmp_path, monkeypatch, silicon_outputs())
+    (tmp_path / 'relax/POTCAR').write_text('TITEL = PAW_PBE Si 05Jan2001\nchanged potential\n')
+    result = collect_silicon_vasp_result(job_id, 'outputs', 'relaxation', context)
+    assert result['status'] == 'invalid'
+    assert 'POTCAR' in result['message']
+
+
+@pytest.mark.parametrize('correction', ['IVDW', 'LUSE_VDW'])
+def test_dispersion_corrected_pbe_is_outside_ordinary_pbe(tmp_path, monkeypatch, correction):
+    outputs = silicon_outputs()
+    tag = '<i name="IVDW" type="int">12</i>' if correction == 'IVDW' else '<i name="LUSE_VDW" type="logical">T</i>'
+    outputs['vasprun.xml'] = outputs['vasprun.xml'].replace('</parameters>', tag + '</parameters>')
+    _, context, job_id = completed_job(tmp_path, monkeypatch, outputs)
+    result = collect_silicon_vasp_result(job_id, 'outputs', 'relaxation', context)
+    assert result['status'] == 'invalid'
+    assert 'ordinary PBE' in result['message']
+
+
+def test_tracked_submit_binds_potential_before_transfer_and_replay(tmp_path, monkeypatch):
+    provider = Provider()
+    provider.outputs = silicon_outputs()
+    provider.finished = True
+    service = RemoteJobService(RemoteJobStore(tmp_path / 'jobs.db'), adapter_overrides={'bohr_batchjob': provider})
+    monkeypatch.setattr(remote_job_tools, '_service', lambda: service)
+    from matcreator.agents.execution_agent import recovery
+    monkeypatch.setattr(recovery, 'ADK_DIR', tmp_path)
+    context = SimpleNamespace(state={'workspace_dir': str(tmp_path), 'session_id': 'snapshot-test'},
+        _invocation_context=SimpleNamespace(user_id='test'))
+    source = tmp_path / 'relax'
+    source.mkdir()
+    for name in ('INCAR', 'POSCAR', 'KPOINTS'):
+        (source / name).write_text(provider.outputs[name])
+    (source / 'POTCAR').write_text('TITEL = PAW_PBE Si 05Jan2001\nsynthetic potential\n')
+    args = dict(name='test-si', image='test-image', machine_type='test-cpu', project_id=1,
+        command='test provider', input_path='relax')
+    submission = remote_job_tools.submit_bohr_batchjob(context, **args)
+    result = collect_silicon_vasp_result(submission['job_id'], 'outputs', 'relaxation', context)
+    assert result['status'] == 'success'
+    (source / 'POTCAR').write_text('TITEL = PAW_PBE Si 05Jan2001\nchanged potential\n')
+    repeated = remote_job_tools.submit_bohr_batchjob(context, **args)
+    assert repeated['job_id'] == submission['job_id']
+    checked = collect_silicon_vasp_result(repeated['job_id'], 'unused', 'relaxation', context)
+    assert checked['status'] == 'invalid' and 'POTCAR' in checked['message']
+    assert not (tmp_path / 'unused').exists()
 
 
 @pytest.mark.parametrize('entry', ['thinking', 'step'])

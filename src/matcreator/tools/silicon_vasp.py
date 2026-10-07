@@ -1,4 +1,4 @@
-"""Fixed silicon recipe and scientific handoff for tracked Bohrium jobs.
+"""Scientific silicon handoff for tracked Bohrium jobs.
 
 Submission, monitoring and collection remain owned by remote-job. This module
 does not archive results or upload to a cloud database.
@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -17,7 +18,32 @@ from google.adk.tools.tool_context import ToolContext
 
 
 def _digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def capture_vasp_input_hashes(source: Path) -> dict:
+    """Capture materialized VASP inputs before tracked submission, without contents."""
+    if not source.is_dir() or not all((source / name).is_file() for name in ('INCAR', 'POSCAR', 'POTCAR')):
+        return {}
+    files = [source / name for name in ('INCAR', 'POSCAR', 'POTCAR', 'KPOINTS') if (source / name).exists()]
+    if any(p.is_symlink() for p in files):
+        raise ValueError('VASP inputs must be regular files, not symbolic links.')
+    return {p.name: _digest(p) for p in files}
+
+
+def _input_directory(spec: dict, workspace: Path) -> Path:
+    path = (Path(spec['input_root']) / spec['input_path']).resolve()
+    if not path.is_relative_to(workspace):
+        raise ValueError('Original inputs are outside this workspace.')
+    return path
+
+
+def _same_structure(actual, expected) -> bool:
+    import numpy as np
+    return (actual.species == expected.species
+        and np.allclose(actual.lattice.matrix, expected.lattice.matrix, atol=1e-5, rtol=0)
+        and np.allclose(actual.frac_coords, expected.frac_coords, atol=1e-5, rtol=0))
 
 
 def _output_directory(artifacts: list, workspace: Path) -> Path:
@@ -33,21 +59,24 @@ def _output_directory(artifacts: list, workspace: Path) -> Path:
     raise ValueError('Cannot identify a unique VASP output directory.')
 
 
-def _validate(directory: Path, calculation_type: str, input_directory: Path) -> dict:
+def _validate(directory: Path, calculation_type: str, input_directory: Path, input_hashes: dict) -> dict:
     from pymatgen.io.vasp.inputs import Incar, Poscar
     from pymatgen.io.vasp.outputs import Vasprun
     from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
-    import numpy as np
 
     required = ['vasprun.xml', 'OUTCAR', 'OSZICAR', 'CONTCAR', 'INCAR', 'POSCAR']
     missing = [name for name in required if not (directory / name).is_file()]
     if missing:
         raise ValueError(f'Missing VASP outputs: {", ".join(missing)}; scientific completion unknown.')
-    for name in ('INCAR', 'POSCAR', 'POTCAR'):
-        if not (input_directory / name).is_file():
-            raise ValueError(f'Original {name} unavailable; input provenance unknown.')
-        if name != 'POTCAR' and _digest(directory / name) != _digest(input_directory / name):
-            raise ValueError(f'Retained {name} differs from original job input.')
+    if not all(input_hashes.get(name) for name in ('INCAR', 'POSCAR', 'POTCAR')):
+        raise ValueError('Submission-time VASP input hashes unavailable; provenance unknown.')
+    for name, digest in input_hashes.items():
+        if name not in {'INCAR', 'POSCAR', 'POTCAR', 'KPOINTS'}:
+            raise ValueError('Unrecognized VASP input provenance.')
+        if not (input_directory / name).is_file() or _digest(input_directory / name) != digest:
+            raise ValueError(f'Original {name} changed since tracked submission.')
+        if (name != 'POTCAR' or (directory / name).exists()) and (not (directory / name).is_file() or _digest(directory / name) != digest):
+            raise ValueError(f'Retained {name} differs from submitted job input.')
     run = Vasprun(directory / 'vasprun.xml', parse_dos=False, parse_eigen=False,
         parse_projected_eigen=False, parse_potcar_file=False, exception_on_bad_xml=True)
     incar = Incar.from_file(directory / 'INCAR')
@@ -65,19 +94,25 @@ def _validate(directory: Path, calculation_type: str, input_directory: Path) -> 
             raise ValueError('Ionic relaxation convergence not established.')
     elif nsw != 0 or ibrion != -1:
         raise ValueError('Expected a separate static total-energy step (NSW=0, IBRION=-1).')
-    if run.parameters.get('LDAU', False) or run.parameters.get('LHFCALC', False) or run.incar.get('ML_LMLFF', False) or run.parameters.get('METAGGA', '') not in {'', 'None', 'NONE'}:
+    if (run.parameters.get('LDAU', False) or run.parameters.get('LHFCALC', False)
+        or run.incar.get('ML_LMLFF', False) or run.parameters.get('METAGGA', '') not in {'', 'None', 'NONE'}
+        or run.parameters.get('IVDW', 0) or run.parameters.get('LUSE_VDW', False)
+        or incar.get('IVDW', 0) or incar.get('LUSE_VDW', False)):
         raise ValueError('Only ordinary PBE is supported; corrections/hybrid/meta-GGA detected.')
     if str(run.parameters.get('GGA', 'PE')).upper() != 'PE' or not run.potcar_symbols or any(not s.startswith('PAW_PBE Si ') for s in run.potcar_symbols):
         raise ValueError('Ordinary PBE Si pseudopotential evidence missing or incompatible.')
+    titles = re.findall(r'^\s*TITEL\s*=\s*(.+?)\s*$', (input_directory / 'POTCAR').read_text(errors='replace'), re.M)
+    if [' '.join(t.split()) for t in titles] != [' '.join(t.split()) for t in run.potcar_symbols]:
+        raise ValueError('Submitted POTCAR identity disagrees with actual VASP output.')
     for structure in (run.initial_structure, run.final_structure):
         if not structure.is_ordered or set(str(s) for s in structure.species) != {'Si'} or SpacegroupAnalyzer(structure, symprec=0.01).get_space_group_number() != 227:
             raise ValueError('Output is outside fixed diamond bulk silicon scope.')
     initial = Poscar.from_file(directory / 'POSCAR').structure
     final = Poscar.from_file(directory / 'CONTCAR').structure
     for actual, expected in ((initial, run.initial_structure), (final, run.final_structure)):
-        if actual.species != expected.species or not np.allclose(actual.lattice.matrix, expected.lattice.matrix, atol=1e-5) or not np.allclose(actual.frac_coords, expected.frac_coords, atol=1e-5):
+        if not _same_structure(actual, expected):
             raise ValueError('POSCAR/CONTCAR disagrees with vasprun.xml structure.')
-    if calculation_type == 'static' and (not np.allclose(initial.lattice.matrix, final.lattice.matrix, atol=1e-5) or not np.allclose(initial.frac_coords, final.frac_coords, atol=1e-5)):
+    if calculation_type == 'static' and not _same_structure(initial, final):
         raise ValueError('Static calculation changed its input structure.')
     energy = float(run.final_energy)
     if not math.isfinite(energy):
@@ -87,8 +122,10 @@ def _validate(directory: Path, calculation_type: str, input_directory: Path) -> 
         'conditions': {'functional': 'PBE', 'domain': 'bulk', 'structure_model': 'diamond',
             'software': 'VASP', 'version': run.vasp_version, 'incar': dict(incar),
             'parameters': run.parameters, 'potcar_symbols': run.potcar_symbols,
-            'potcar_sha256': _digest(input_directory / 'POTCAR'),
-            'kpoints': (directory / 'KPOINTS').read_text() if (directory / 'KPOINTS').is_file() else None},
+            'potcar_sha256': input_hashes['POTCAR'], 'input_sha256': input_hashes,
+            'kpoints': (directory / 'KPOINTS').read_text() if (directory / 'KPOINTS').is_file() else None,
+            'actual_kpoints': getattr(run, 'actual_kpoints', None),
+            'actual_kpoint_weights': getattr(run, 'actual_kpoints_weights', None)},
         'completion': {'electronic_converged': True,
             'ionic_converged': True if calculation_type == 'relaxation' else None,
             'ionic_steps': len(run.ionic_steps), 'outcar_termination': True},
@@ -126,10 +163,8 @@ def collect_silicon_vasp_result(job_id: str, destination_path: str,
         spec = _service().store.get_job(job_id)['specification']
         report['submission'] = {k: spec[k] for k in ('image', 'machine_type', 'sku_id', 'project_id',
             'command', 'input_path', 'out_files', 'max_run_time', 'max_wait_time') if k in spec}
-        input_directory = (Path(spec['input_root']) / spec['input_path']).resolve()
-        if not input_directory.is_relative_to(workspace):
-            raise ValueError('Original inputs are outside this workspace.')
-        report.update(_validate(directory, calculation_type, input_directory))
+        input_directory = _input_directory(spec, workspace)
+        report.update(_validate(directory, calculation_type, input_directory, spec.get('vasp_input_sha256', {})))
         if calculation_type == 'static':
             if not relaxation_job_id or relaxation_job_id == job_id:
                 raise ValueError('Provide the preceding verified relaxation_job_id.')
@@ -139,15 +174,12 @@ def collect_silicon_vasp_result(job_id: str, destination_path: str,
             parent_job = _service().store.get_job(relaxation_job_id)
             parent_dir = _output_directory(parent_job['artifacts'], workspace)
             parent_spec = parent_job['specification']
-            parent_input = (Path(parent_spec['input_root']) / parent_spec['input_path']).resolve()
-            if not parent_input.is_relative_to(workspace):
-                raise ValueError('Relaxation inputs are outside this workspace.')
-            parent_result = _validate(parent_dir, 'relaxation', parent_input)
-            import numpy as np
+            parent_input = _input_directory(parent_spec, workspace)
+            parent_result = _validate(parent_dir, 'relaxation', parent_input, parent_spec.get('vasp_input_sha256', {}))
             from pymatgen.core import Structure
             relaxed = Structure.from_dict(parent_result['structure'])
             static_input = Structure.from_dict(report['initial_structure'])
-            if relaxed.species != static_input.species or not np.allclose(relaxed.lattice.matrix, static_input.lattice.matrix, atol=1e-5) or not np.allclose(relaxed.frac_coords, static_input.frac_coords, atol=1e-5):
+            if not _same_structure(relaxed, static_input):
                 raise ValueError('Static input does not match the verified relaxed structure.')
             if report['conditions']['potcar_sha256'] != parent_result['conditions']['potcar_sha256']:
                 raise ValueError('Static and relaxation pseudopotentials differ.')
