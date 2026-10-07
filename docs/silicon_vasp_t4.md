@@ -79,7 +79,7 @@ fixtures below are separate evidence.
 
 ## Regression
 
-25 new task-level tests pass using ADK, both registered agents, controlled
+28 new task-level tests pass using ADK, both registered agents, controlled
 remote tools and real isolated aidb databases/public bridges. They cover reuse
 without preparation/submission, explicit/negated recalculation, parent intent,
 recent archive order, ambiguous order, different conditions, linked/unlinked
@@ -87,5 +87,40 @@ stages, explicit static targets, missing/invalid scientific evidence, query
 failure, parameter/target changes and Flash entry. The original archive suite
 retains failure, missing output, unconverged, duplicate and uncertain-write
 recovery coverage; archive errors preserve outputs rather than resubmitting.
-Related T1–T4 run: 102 passed before the last four additional regression cases.
+Related T1–T4 run: 102 passed before the last seven additional regression cases.
 Changed modules compile. Full-suite results and independent review follow.
+
+Full suite: **823 passed, 39 failed, 2 collection errors**. Failure/error names
+exactly match the T3 baseline; no new failures. Machine-readable verification:
+`.workspace/silicon-t4/acceptance.json` and `verify-acceptance.py` compare the
+current public query, tool feedback and final answer against the verified T3
+records, prove the request contains no IDs, and find zero jobs owned by the new
+session. Full log: `.workspace/silicon-t4/full-final-alias.log`. No typechecking command is
+configured in this repository; changed modules pass compileall and diff checks.
+
+
+Final related preflight/reuse regression: **73 passed**, including all 28 reuse
+cases. KPOINTS, KMESH and K-MESH matching syntax is covered by the same task
+regression. The uppercase parser collision was reproduced, then fixed by
+excluding the already recognized mesh span from INCAR constraints.
+
+## Standards
+
+Final review of `7ea0698...100b17a`: zero documented-standard violations and
+zero unresolved judgment-call suggestions. The initial duplicated candidate
+setup suggestion was resolved by `derive_candidate`; mesh aliases share one
+recognizer and no per-alias special cases. Source/test layout follows AGENTS.
+
+## Spec
+
+Final review against #1 and the live #5 body: zero remaining actionable
+findings. The initial P2 matching-KPOINTS rejection was fixed and checked for
+all three supported spellings. All eight #5 acceptance criteria are supported
+by the public-interface implementation, isolated regression and real independent
+session evidence. The extra acceptance guard denied no calls and did not
+manufacture reuse. Development A remains active; B has not been delivered here.
+
+Review total: Standards 0 unresolved, Spec 0 unresolved; neither axis has an
+outstanding issue. Current evidence summary is committed as
+[silicon_vasp_t4_acceptance.json](silicon_vasp_t4_acceptance.json).
+No issue comment or closure was performed in this implementation session.
