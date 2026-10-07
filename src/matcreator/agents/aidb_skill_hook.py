@@ -1,4 +1,4 @@
-"""Development-stage material preflight through the public aidb Skill adapter.
+"""Material preflight with final B consent through the public aidb Skill adapter.
 
 Candidate discovery and fixed Si/PBE reuse use public exports. Lookup never
 authorizes a new remote calculation.
@@ -28,8 +28,11 @@ Archive recency and a denser k mesh do not establish greater accuracy: never
 claim a selected/static record is more accurate or highest precision. Current
 public readback is authoritative; old memory/logs are not this turn's lookup.
 On needs_clarification explain scientific differences or missing evidence;
-on failed pause new computation (development A). Explicit recalculation still
-requires lookup and stays within the user's existing authorization.
+On failed explain that existing data is unknown and computation may duplicate
+existing work. Pause until the human replies with the exact confirmation shown
+in this failure's message. Never generate that confirmation as an executor
+action. Confirmation allows only the original scope and never marks lookup or
+the full loop successful. Explicit recalculation still requires lookup.
 """
 
 logger = logging.getLogger(__name__)
@@ -42,6 +45,70 @@ _PREPARATION_TOOLS = frozenset({'run_python', 'run_bash', 'run_skill_script',
     'start_remote_job_command', 'run_remote_job_command', 'run_sub_agent', 'run_flash_step'})
 _REMOTE_TOOLS = frozenset({'submit_bohr_batchjob', 'submit_bohr_sandbox',
     'upload_remote_job_input', 'start_remote_job_command', 'run_remote_job_command'})
+_CONFIRM_RE = re.compile(r'(?:确认继续|confirm continue)\s+([0-9a-f]{32})[。.!]?\s*', re.I)
+
+
+def _failure_warning(feedback, tool_context, *, can_confirm):
+    failure_id = uuid.uuid4().hex
+    feedback.update(failure_id=failure_id, loop_complete=False,
+        bypass={'status': 'pending', 'can_confirm': can_confirm},
+        message='本地查库失败，无法判断已有数据是否存在，继续可能重复计算；新增计算保持暂停。')
+    if can_confirm:
+        feedback['message'] += f'若明确接受风险并继续原授权范围，请回复「确认继续 {failure_id}」。拒绝或未确认保持暂停；仅准备授权不允许提交。'
+    else:
+        feedback['message'] += '任务信息提取失败，请先修复或澄清；不能绕过此错误。'
+    feedback['failure_session_id'] = tool_context._invocation_context.session.id
+
+
+def _confirm_failure(text, task, saved, tool_context):
+    """Consent comes only from a later human turn after the exact warning."""
+    feedback = saved.get('feedback') or {}
+    match = _CONFIRM_RE.fullmatch(text.partition('\n[AIDB_PRIOR_CONTEXT]\n')[0].strip())
+    if (not match or tool_context.state['temp:aidb_internal_step']
+            or feedback.get('status') != 'failed'
+            or not feedback.get('bypass', {}).get('can_confirm')
+            or match[1] != feedback.get('failure_id')
+            or feedback.get('failure_session_id') != tool_context._invocation_context.session.id
+            or task != feedback.get('task_context')):
+        return None
+    # State alone, including copied state from another session, is not evidence
+    # that this human has received the warning for this event.
+    events = tool_context._invocation_context.session.events
+    if not any(event.invocation_id != tool_context.invocation_id and event.content
+            and any(part.function_response and
+                (part.function_response.response.get('aidb_preflight') or {}).get('failure_id') == match[1]
+                for part in (event.content.parts or [])) for event in events):
+        return None
+    return {**feedback, 'bypass': {**feedback['bypass'], 'status': 'confirmed'},
+        'message': '已明确确认此次查询失败及重复计算风险；仅继续原授权范围。查询仍失败，不代表未命中、预检成功或完整闭环通过；计算后仍尝试本地归档并如实报告。'}
+
+
+def inherit_aidb_confirmation(state, tool_context, child_session_id):
+    """The executor runner delegates this turn's grant to one fresh child."""
+    saved = tool_context.state.get('aidb_preflight') or {}
+    feedback = saved.get('feedback') or {}
+    state.pop('aidb_parent_bypass', None)
+    if (saved.get('invocation_id') == tool_context.invocation_id
+            and feedback.get('bypass', {}).get('status') == 'confirmed'):
+        state['aidb_parent_bypass'] = {'child_session_id': child_session_id,
+            'feedback': feedback, 'request': saved['request']}
+
+
+def _delegated_failure(text, workspace, tool_context):
+    grant = tool_context.state.get('aidb_parent_bypass') or {}
+    if (not tool_context.state['temp:aidb_internal_step']
+            or grant.get('child_session_id') != tool_context._invocation_context.session.id):
+        return None
+    feedback = grant['feedback']
+    parent = feedback['task_context']
+    task = _task_context(text, workspace, parent)
+    if (not task or task['known'] != parent['known']
+            or not set(task['targets']).issubset(parent['targets'])
+            or (task['require_static'] and 'total_energy' not in parent['targets'])):
+        tool_context.state['aidb_parent_bypass'] = None
+        return None
+    task['prepare_only'] = task['prepare_only'] or parent['prepare_only']
+    return {**feedback, 'task_context': task}
 
 
 def _request(tool_context):
@@ -280,10 +347,15 @@ async def before_aidb_skill_load(tool, args, tool_context):
         referential = _CONTINUATION_RE.search(text.partition('\n[AIDB_PRIOR_CONTEXT]\n')[0])
         if name != 'load_skill' or skill_name == 'atomic-structure':
             active = (tool_context.state.get('aidb_preflight') or {}).get('invocation_id') == tool_context.invocation_id
-            if not active and not (referential and saved_task) and not re.search(r'vasp|硅|\bsilicon\b|(?<![A-Za-z0-9])Si(?![A-Za-z0-9])', text, re.I):
+            pending_failure = (tool_context.state.get('aidb_preflight') or {}).get('feedback', {}).get('status') == 'failed'
+            if not active and not pending_failure and not (referential and saved_task) and not re.search(r'vasp|硅|\bsilicon\b|(?<![A-Za-z0-9])Si(?![A-Za-z0-9])', text, re.I):
                 return None
         task = _task_context(text, workspace, saved_task if referential else None)
         if task is None:
+            pending = (tool_context.state.get('aidb_preflight') or {}).get('feedback') or {}
+            if name in _PREPARATION_TOOLS and pending.get('status') == 'failed':
+                return {'status': 'blocked', 'aidb_preflight': _export_feedback(pending),
+                    'message': '此次失败尚无当前有效确认；新增计算保持暂停。'}
             return None
         if tool_context.state['temp:aidb_internal_step']:
             parent_text = tool_context.state.get('aidb_user_request') or tool_context.state.get('goal') or ''
@@ -297,14 +369,29 @@ async def before_aidb_skill_load(tool, args, tool_context):
                     tool_context.invocation_id)
         lock = _preflight_locks.setdefault(lock_key, asyncio.Lock())
         async with lock:
+            saved = tool_context.state.get('aidb_preflight') or {}
+            confirmed = _delegated_failure(text, workspace, tool_context)
+            original_request = text
+            if confirmed:
+                task = confirmed['task_context']
+                original_request = tool_context.state['aidb_parent_bypass']['request']
+            if _CONFIRM_RE.fullmatch(text.partition('\n[AIDB_PRIOR_CONTEXT]\n')[0].strip()) and saved.get('request'):
+                original_task = _task_context(saved['request'], workspace)
+                confirmed = _confirm_failure(text, original_task, saved, tool_context)
+                if confirmed:
+                    task = original_task
+                    original_request = saved['request']
+                    tool_context.state['aidb_user_request'] = saved['request']
+                    tool_context.state['aidb_user_prepare_only'] = task['prepare_only']
             fingerprint = hashlib.sha256(json.dumps(task, sort_keys=True).encode()).hexdigest()
             key = f'{tool_context.invocation_id}:{fingerprint}'
-            saved = tool_context.state.get('aidb_preflight') or {}
             if saved.get('key') == key:
                 feedback = saved['feedback']
             else:
                 known = task['known']
-                if not known.get('formula'):
+                if confirmed:
+                    feedback = confirmed
+                elif not known.get('formula'):
                     feedback = {'status': 'needs_clarification', 'message': '请明确材料身份；尚未查询，新增计算暂停。'}
                 elif known['formula'] != 'Si' or known.get('domain') == 'outside_scope' or known.get('structure_model') == 'outside_scope' or known.get('functional', 'PBE') != 'PBE':
                     feedback = {'status': 'needs_clarification', 'message': '首期仅支持单质硅金刚石体相与普通 PBE；请明确当前目标，新增计算暂停。'}
@@ -320,15 +407,17 @@ async def before_aidb_skill_load(tool, args, tool_context):
                         feedback['message'] = '已核验已有结果；按显式重算请求继续原授权范围。'
                 elif feedback['status'] == 'not_found':
                     feedback['message'] = '本地查库成功，候选为空；仅继续原授权范围内的准备。'
-                elif feedback['status'] == 'failed':
-                    feedback['message'] = '本地查库失败，开发期 A 暂停新增计算；这不是未命中。请检查诊断产物。'
-                tool_context.state['aidb_preflight'] = {'key': key, 'invocation_id': tool_context.invocation_id, 'feedback': feedback}
+                elif feedback['status'] == 'failed' and not confirmed:
+                    _failure_warning(feedback, tool_context, can_confirm=True)
+                tool_context.state['aidb_preflight'] = {'key': key, 'invocation_id': tool_context.invocation_id,
+                    'request': original_request, 'feedback': feedback}
                 logger.info('[aidb preflight] %s', feedback)
                 append_session_log_entry(tool_context, {'kind': 'aidb_hook_feedback', **_export_feedback(feedback)})
     except Exception as exc:
         logger.warning('aidb preflight failed', exc_info=True)
         feedback = {'status': 'failed', 'query_executed': False, 'detail': str(exc),
-            'message': '本地预检失败，开发期 A 暂停新增计算；不代表无数据。'}
+            'message': '本地预检失败。'}
+        _failure_warning(feedback, tool_context, can_confirm=False)
         try:
             diagnostic = workspace / '.aidb' / 'requests' / 'errors' / f'{uuid.uuid4().hex}.json'
             diagnostic.parent.mkdir(parents=True, exist_ok=True)
@@ -344,7 +433,7 @@ async def before_aidb_skill_load(tool, args, tool_context):
     tool_context.state[feedback_key] = _export_feedback(feedback)
     if name == 'load_skill':
         return None
-    if feedback['status'] not in {'found', 'not_found'}:
+    if feedback['status'] not in {'found', 'not_found'} and feedback.get('bypass', {}).get('status') != 'confirmed':
         return {'status': 'blocked', 'aidb_preflight': _export_feedback(feedback)}
     reuse = feedback.get('reuse') or {}
     if reuse.get('status') == 'reused':
@@ -363,7 +452,11 @@ def after_aidb_skill_load(tool, args, tool_context, tool_response):
     name = getattr(tool, 'name', '')
     if name == 'collect_silicon_vasp_result' and isinstance(tool_response, dict) and tool_response.get('status') == 'success':
         from matcreator.tools.silicon_archive import archive_silicon_vasp_result
-        return archive_silicon_vasp_result(**args, tool_context=tool_context)
+        result = archive_silicon_vasp_result(**args, tool_context=tool_context)
+        feedback = (tool_context.state.get('aidb_preflight') or {}).get('feedback') or {}
+        if feedback.get('status') == 'failed':
+            result = {**result, 'aidb_preflight': _export_feedback(feedback), 'loop_complete': False}
+        return result
     if name in _PREPARATION_TOOLS or (name == 'load_skill' and str(args.get('skill_name') or '').strip().lower() in AIDB_PREFLIGHT_SKILLS):
         feedback = tool_context.state.get(f'temp:aidb_skill_feedback_{tool_context.function_call_id}')
         if feedback and isinstance(tool_response, dict):

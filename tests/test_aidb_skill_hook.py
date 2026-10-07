@@ -42,7 +42,7 @@ def local_aidb(tmp_path, monkeypatch):
             pass
 
 
-def run_task(tmp_path, request, calls, state=None, entry=None, followup=None, parallel=False, extra_tools=()):
+def run_task(tmp_path, request, calls, state=None, entry=None, followup=None, parallel=False, extra_tools=(), turns=(), final_state=None):
     class Model(BaseLlm):
         _index: int = PrivateAttr(default=0)
         async def generate_content_async(self, llm_request, stream=False):
@@ -74,6 +74,7 @@ def run_task(tmp_path, request, calls, state=None, entry=None, followup=None, pa
         return {'status': 'submitted'}
 
     async def run():
+        nonlocal calls
         service = InMemorySessionService()
         session = await service.create_session(app_name='preflight_test', user_id='test',
             state={'workspace_dir': str(tmp_path), **(state or {})})
@@ -105,6 +106,19 @@ def run_task(tmp_path, request, calls, state=None, entry=None, followup=None, pa
                 for part in (event.content.parts if event.content else []):
                     if part.function_response:
                         responses.append(part.function_response.response)
+        for message, turn_calls in turns:
+            calls = turn_calls
+            agent.model._index = 0
+            if callable(message):
+                message = message(responses)
+            async for event in runner.run_async(user_id='test', session_id=session.id,
+                new_message=types.Content(role='user', parts=[types.Part(text=message)])):
+                for part in (event.content.parts if event.content else []):
+                    if part.function_response:
+                        responses.append(part.function_response.response)
+        if final_state is not None:
+            current = await service.get_session(app_name='preflight_test', user_id='test', session_id=session.id)
+            final_state.update(current.state)
         return responses
     return asyncio.run(run()), prepared
 

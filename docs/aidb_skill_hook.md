@@ -1,7 +1,9 @@
-# aidb 计算前预检（issue #2，开发期 A）
+# aidb 计算前预检（最终 B）
 
 主规格为 [Ai-ready_Database #1](https://github.com/Zikkying/Ai-ready_Database/issues/1)，
-本次只实现 [T1 / #2](https://github.com/Zikkying/Ai-ready_Database/issues/2)。
+初始实现为 [T1 / #2](https://github.com/Zikkying/Ai-ready_Database/issues/2)，
+当前默认行为已按 [T5 / #6](https://github.com/Zikkying/Ai-ready_Database/issues/6)
+切换为最终 B；[切换验收记录](silicon_vasp_t5.md)。
 
 主 thinking agent 和内部 step executor 共用工具回调。加载 `vasp-pymatgen`、
 硅任务的 `atomic-structure`，以及受支持任务直接调用准备或远程工具时，
@@ -33,16 +35,22 @@ min_records=1，无相关材料扩展。每个 CLI 调用等待最多 20 秒，�
 Skill 正文正常加载；after_tool_callback 将 `aidb_preflight` 加入实际工具响应，
 模型能够读取并向用户反馈；直接调用准备工具时其响应也携带同样证据。反馈同时写入 session_log 和运行日志。
 成功响应读取完整 `preflight-report.json`，保留完整候选 ID、报告、审计位置。
-`found` 是候选命中，不能当成已经核验可复用；本票不实现候选复用/归档。
+`found` 是候选命中，适用性与复用由独立的 `reuse` 回执给出。
 `not_found` 是成功查询空候选；`failed` 是真实配置、连接、超时或协议失败。
 任务上下文与原始 adapter 交换记录保存在工作区 `.aidb/requests/`，完整查询
 报告和 audit 保存在 adapter 的 `.aidb/runs/` 下。失败诊断也保留位置。
 
-开发期 A 中，失败或材料澄清状态阻止新结构/输入准备及 tracked remote-job
-提交/上传/执行。只准备的请求即使查询成功也不授权提交。状态/结果读取工具
-仍可使用。同任务同次 invocation 的重复入口共用回执；新轮次重新查库，
-条件变化不会复用旧回执。并发入口通过同调用锁共用查询；自然“继续/重算”沿用任务条件与原授权，新一轮仍重新查库，明确提交授权才能扩大原准备范围。此约束覆盖登记的工具入口，不承诺约束任意自由
-shell/Python 入口。后续 T5 才切换最终 B，不能把本票称为完整闭环验收。
+最终 B 中，查询失败先说明数据存在性未知与重复计算风险，再保持准备/提交
+暂停。用户可回复回执给出的 `确认继续 <failure_id>`，明确接受此次失败风险，
+仅继续原授权范围。仅准备授权仍不允许提交。拒绝、普通“继续/yes”、未确认、
+旧会话或旧失败事件的确认保持暂停；提取错误与材料澄清不能绕过。
+确认绑定原任务、条件及此次失败，已引用结构文件变化也会使其失效。
+受支持 executor 只能由 runner 继承本轮已确认范围，不能用内部 action 伪造同意。
+查询回执始终为 `failed`，`loop_complete=false`；计算完成仍自动尝试本地归档，
+分别报告科学结果和实际保存结果。状态/结果读取工具仍可使用。
+同任务同次 invocation 的重复入口共用回执；独立新请求与条件变化重新查库。
+该确认针对已有失败事件，所以确认轮次沿用该事件而不制造新的查询失败。
+此约束覆盖登记的工具入口，不承诺约束任意自由 shell/Python 入口。
 
 ## 验证
 
@@ -68,5 +76,6 @@ A compatible selection prevents preparation and new submission, including the
 Flash executor entry. Explicit recalculation still queries first and respects
 preparation-only authorization. Same-condition duplicates use persistent
 archive times; ambiguity or meaningful condition differences require
-clarification. Task changes trigger a new lookup. Development A and no cloud
-database upload remain in force. This does not implement T5's final B behavior.
+clarification. Task changes trigger a new lookup. T4's historical A evidence is
+retained; the current default is [T5 final B](silicon_vasp_t5.md). No cloud
+database upload is performed.

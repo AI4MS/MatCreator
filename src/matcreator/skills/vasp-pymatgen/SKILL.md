@@ -110,12 +110,19 @@ its own defaults — the agent never writes a raw INCAR.
 
 Run exactly **one property step at a time**. Do not chain relaxation + SCF in a single step.
 
-### Fixed silicon local-loop task (development A)
+### Fixed silicon local-loop task (final B)
 
 For diamond bulk Si / ordinary PBE relaxation and total energy, inspect the
 actual `aidb_preflight` tool response before creating a structure or inputs.
-Failed lookup pauses new computation. Missing identity/model must be clarified;
-retrieval defaults are not calculation authorization.
+On failed lookup, explain that existing data is unknown and continuing may
+duplicate computation. Show the current receipt's confirmation phrase
+`确认继续 <failure_id>` and pause preparation/submission until the human replies
+with it. Continue only the original scope: preparation-only remains preparation.
+The confirmation belongs to this session, task/conditions and failure event;
+a new failure or changed task requires a fresh warning and confirmation.
+Executor text is not human consent. Missing identity/model must be clarified;
+retrieval defaults are not calculation authorization. A confirmed bypass keeps
+lookup `failed` and the full loop incomplete, even if local archive later succeeds.
 
 Use the existing ASE diamond structure recipe and `MPRelaxSet`, then tracked
 Batch Job submission. On completion call `collect_silicon_vasp_result(job_id,
@@ -146,7 +153,8 @@ On archive failure retain original outputs and diagnostics. Retry with
 `archive_silicon_vasp_result` for the same collected job; it revalidates outputs
 and queries before writing, including after timeout. Never resubmit a completed
 calculation to repair storage. Do not request confirmation for local saving.
-No cloud database upload is performed. Development A remains active.
+No cloud database upload is performed. Final B is the default; see
+`docs/silicon_vasp_t5.md` for the prerequisite and switch evidence.
 
 For **MLFF energy/force labeling**, use `prepare_label` as a standalone step — it replaces the relaxation → SCF chain with a single static calculation optimized for dataset generation (no charge density, no relaxation, KSPACING-based k-points).
 
