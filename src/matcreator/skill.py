@@ -443,7 +443,9 @@ class MatCreatorSkillToolset(skill_toolset.SkillToolset):
         ]
 
     def _get_skill(self, skill_name: str):
-        skill = super()._get_skill(skill_name)
+        normalized = (skill_name or '').strip().lower()
+        canonical = next((s.name for s in ALL_SKILLS if s.name.lower() == normalized), skill_name)
+        skill = super()._get_skill(canonical)
         if skill is not None and is_skill_disabled(skill.name):
             return None
         return skill

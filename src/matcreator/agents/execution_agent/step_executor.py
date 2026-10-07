@@ -10,6 +10,7 @@ from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from ..aidb_skill_hook import before_aidb_skill_load, after_aidb_skill_load
 from ...llm_cards import LLMCard
 from ...skill import ALL_SKILLS_TOOLSET
 from ...knowledge.query import get_related_skills, query_knowledge_graph, read_knowledge_node
@@ -297,6 +298,8 @@ def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
         ),
         instruction=_STEP_EXECUTOR_INSTRUCTION,
         input_schema=StepExecutorInput,
+        before_tool_callback=before_aidb_skill_load,
+        after_tool_callback=after_aidb_skill_load,
         tools=[
             FunctionTool(run_sub_agent),
             FunctionTool(submit_step_result),
