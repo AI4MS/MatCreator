@@ -18,7 +18,7 @@ From the Windows PowerShell checkout on WSL:
 
 Use a new output filename for every run. The command refuses an existing pytest report, writes JSON counts and exact failure identities, a log and JUnit XML, and fails on skipped tests or any failure. Missing aidb dependencies fail rather than quietly skipping. `AI_READY_DB_ROOT` and `AI_READY_DB_PYTHON` select the public bridge checkout and its Python; defaults use the adjacent `Ai-ready_Database` checkout and `.venv/bin/python`.
 
-The `silicon-local-loop` job in [the workflow](../../.github/workflows/test.yml) pins the aidb commit, installs both packages, runs this same command against isolated test databases and retains its artifacts. The dependency must be available on GitHub before Actions can fetch it. The prepared version is `87148777fc9995a6d2e3bd85571ee8e20ff53181`, retained locally in `.workspace/aidb-ci`; it contains the public bridge and bounded preflight contract. A checkout of GitHub's older aidb main alone lacks that bridge. Publication is tracked separately from local validation.
+The `silicon-local-loop` job in [the workflow](../../.github/workflows/test.yml) pins the aidb commit, installs both packages, runs this same command against isolated test databases and retains its artifacts. The published dependency version is `87148777fc9995a6d2e3bd85571ee8e20ff53181`, available on [codex/matcreator-ci-bridge](https://github.com/Zikkying/Ai-ready_Database/tree/codex/matcreator-ci-bridge) and retained locally in `.workspace/aidb-ci`; it contains the public bridge and bounded preflight contract. A checkout of GitHub's older aidb main alone lacks that bridge. Its remote branch SHA was verified on 2026-10-08; publication is separate from a successful Actions run.
 
 ## Full-suite failure baseline
 
@@ -57,4 +57,4 @@ Validated against a clean checkout of the pinned dependency, rather than its dev
 - Fresh readback of both retained real records passed (`reuse-final.json`), with zero tracked jobs in the independent session. A changed structure was rejected; a missing store was rejected without creating it.
 - PowerShell wrapper, workflow YAML loading, Python compilation and authored-file whitespace checks passed.
 
-Reports are local under `.workspace/retro-checks/`; original T3/T4 evidence is retained. GitHub Actions has not run this new job: the prepared dependency commit must first be published. Local validation does not establish remote CI success.
+Reports are local under `.workspace/retro-checks/`; original T3/T4 evidence is retained. The pinned dependency was published to `codex/matcreator-ci-bridge` on 2026-10-08 and its remote SHA verified. GitHub Actions has not run this new MatCreator job; local validation and dependency publication do not establish remote CI success.

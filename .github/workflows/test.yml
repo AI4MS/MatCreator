@@ -74,8 +74,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Zikkying/Ai-ready_Database
-          # Prepared in MatCreator/.workspace/aidb-ci; publish this dependency
-          # commit before expecting this job to run on GitHub. Never use latest.
+          # Public bridge contract verified at this immutable integration commit.
+          # Published on codex/matcreator-ci-bridge; never use latest.
           ref: 87148777fc9995a6d2e3bd85571ee8e20ff53181
           path: Ai-ready_Database
           persist-credentials: false
