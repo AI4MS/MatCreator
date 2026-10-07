@@ -71,15 +71,46 @@ empty. Bohrium CLI authentication and machine discovery succeeded. The specific
 diagnostic is `.workspace/silicon-t2/preflight_env_report_step2.json`; no tracked
 job was submitted and no successful real calculation is claimed.
 
-Automated validation: the initial targeted run passed 117 tests; new workflow
-tests also passed in both production agent entry points. Full-suite execution
-passed 756 tests, with 39 failures and two collection errors. A snapshot of
+Automated validation: the final targeted run passed 252 tests, including the
+workflow in both production agent entry points. Final full-suite execution
+passed 760 tests, with 39 failures and two collection errors. A snapshot of
 the starting commit reproduced exactly the same failure names (no new failed
 tests). The baseline snapshot skipped aidb integration because it was outside
 the adjacent-checkout layout. Final review added regression coverage for mutable
 POTCAR inputs, dispersion corrections, and submission replay provenance.
+The user will consult the host about Bohrium configuration. Real acceptance is
+paused pending the licensed PBE directory and authorized VASP image; the existing
+calculation authorization remains valid. Issue #3 is not marked complete.
 
 The initial noninteractive launcher omitted the NVM bohr path; the installed
 CLI is `/home/shik-mechrevo-wsl/.nvm/versions/node/v24.14.1/bin/bohr` (2.6.100).
 Future launches should prepend both the repository `.venv/bin` and this Node
 directory to PATH, so `run_python` and bohr use the intended environment.
+
+## Standards review
+
+Reviewed implementation commits `db7904a` and `3c742de` against starting commit
+`071cfab6202b704704a27376d7f136dec8e5b884` with
+`git diff 071cfab6202b704704a27376d7f136dec8e5b884...HEAD`.
+
+Final review: 0 documented-standard breaches and 0 remaining baseline smells.
+The duplicated structure comparisons and input-path checks now use shared
+helpers. The initial POTCAR provenance concern is resolved by submission-time
+hashes, collection checks and XML identity matching. Synthetic tests do not
+establish real scientific completion.
+
+## Spec review
+
+The initial P1 (mutable POTCAR provenance) and P2 (dispersion-corrected PBE
+accepted as ordinary PBE) are resolved. Submission replay preserves the original
+input evidence; modified potentials are rejected. IVDW/LUSE_VDW are rejected,
+and k-point inputs plus available XML sampling are preserved. No additional
+code-correctness or scope issue was identified in the final review.
+
+One acceptance requirement remains unmet: one real successful Bohrium silicon
+task. Actual query, structure generation and environment discovery are evidenced,
+but missing PBE potentials and VASP image prevented submission. No successful
+job, archive or completed local loop is claimed.
+
+Review totals: Standards 0 findings; Spec 1 outstanding environment-blocked
+acceptance requirement (real Bohrium completion).
