@@ -1,0 +1,47 @@
+{
+  "historical_hook_commit": "587becd",
+  "repair_commit": "4dc04d3",
+  "results": {
+    "historical": {
+      "exit_code": 1,
+      "counts": {
+        "passed": 2,
+        "failed": 4,
+        "error": 0,
+        "skipped": 0
+      },
+      "failures": [
+        {
+          "nodeid": "tests/test_silicon_lookup_consent.py::test_changed_target_or_conditions_invalidates_failure_confirmation[ENCUT=600]",
+          "outcome": "failed"
+        },
+        {
+          "nodeid": "tests/test_silicon_lookup_consent.py::test_changed_target_or_conditions_invalidates_failure_confirmation[KPOINTS=6x6x6]",
+          "outcome": "failed"
+        },
+        {
+          "nodeid": "tests/test_silicon_lookup_consent.py::test_changed_target_or_conditions_invalidates_failure_confirmation[HSE06]",
+          "outcome": "failed"
+        },
+        {
+          "nodeid": "tests/test_silicon_lookup_consent.py::test_condition_update_without_tools_still_invalidates_old_confirmation",
+          "outcome": "failed"
+        }
+      ]
+    },
+    "current": {
+      "exit_code": 0,
+      "counts": {
+        "passed": 6,
+        "failed": 0,
+        "error": 0,
+        "skipped": 0
+      },
+      "failures": []
+    }
+  },
+  "checkout_runtime_changed": false,
+  "shared_ci_or_git_changed": false,
+  "real_jobs_submitted": 0,
+  "cloud_database_upload": false
+}
