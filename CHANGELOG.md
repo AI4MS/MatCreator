@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v2.24.1 (2026-09-14)
+
+### Bug Fixes
+
+- Restore Rack Lab plan approval button contrast
+  ([`5f79b3a`](https://github.com/AI4MS/MatCreator/commit/5f79b3a9756d9a3ab83c97df56b95670bf0e2ac5))
+
+
 ## v2.24.0 (2026-09-10)
 
 ### Bug Fixes
