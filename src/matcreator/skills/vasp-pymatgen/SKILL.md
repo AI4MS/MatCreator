@@ -15,6 +15,8 @@ metadata:
     - run_python
     - run_bash
     - load_skill_resource
+    - collect_silicon_vasp_result
+    - archive_silicon_vasp_result
   dependent_skills:
     - bohrium
     - remote-job
@@ -107,6 +109,52 @@ its own defaults — the agent never writes a raw INCAR.
    Verify VASP convergence; successful execution alone is not scientific success.
 
 Run exactly **one property step at a time**. Do not chain relaxation + SCF in a single step.
+
+### Fixed silicon local-loop task (final B)
+
+For diamond bulk Si / ordinary PBE relaxation and total energy, inspect the
+actual `aidb_preflight` tool response before creating a structure or inputs.
+On failed lookup, explain that existing data is unknown and continuing may
+duplicate computation. Show the current receipt's confirmation phrase
+`确认继续 <failure_id>` and pause preparation/submission until the human replies
+with it. Continue only the original scope: preparation-only remains preparation.
+The confirmation belongs to this session, task/conditions and failure event;
+a new failure or changed task requires a fresh warning and confirmation.
+Executor text is not human consent. Missing identity/model must be clarified;
+retrieval defaults are not calculation authorization. A confirmed bypass keeps
+lookup `failed` and the full loop incomplete, even if local archive later succeeds.
+
+Use the existing ASE diamond structure recipe and `MPRelaxSet`, then tracked
+Batch Job submission. On completion call `collect_silicon_vasp_result(job_id,
+destination_path, calculation_type="relaxation")`. Proceed to `MPStaticSet`
+only after `status="success"`, using that exact relaxed CONTCAR. Submit the
+static step separately. Collect with `calculation_type="static"` and the
+verified `relaxation_job_id`. The tool rechecks the source outputs and their
+relationship, and writes `silicon-result.json` for T3 with structure, energy
+(eV), actual conditions, both job identities and checksums. Retain INCAR,
+POSCAR, KPOINTS, POTCAR in the local input directory and declare the standard
+outputs in the Batch Job reference. Neither a platform `succeeded` nor a
+partial XML is scientific completion. On `invalid` / `needs_replanning`,
+report the evidence and preserve the job and outputs; never auto-resubmit.
+On reconnect use the same job_id and existing collected artifacts.
+Tracked submission saves input checksums; preserve the local input directory.
+Old jobs without that evidence remain unverified. Ordinary PBE excludes U,
+hybrid, meta-GGA and dispersion corrections. The report retains k-point inputs
+and the actual XML sampling when available.
+
+After successful collection, MatCreator automatically saves the verified result
+to local aidb using the public archive-and-requery adapter and compares the
+exported structure, cell energy/unit, actual conditions, completion and source.
+Inspect `local_archive`: only `status="verified"`, `archived=true`, the returned
+record ID and `content_compared=true` prove local storage. Scientific success
+alone and a write receipt do not prove this. Archive the relaxation first;
+the static record retains that parent ID and its own job/energy identity.
+On archive failure retain original outputs and diagnostics. Retry with
+`archive_silicon_vasp_result` for the same collected job; it revalidates outputs
+and queries before writing, including after timeout. Never resubmit a completed
+calculation to repair storage. Do not request confirmation for local saving.
+No cloud database upload is performed. Final B is the default; see
+`docs/silicon_vasp_t5.md` for the prerequisite and switch evidence.
 
 For **MLFF energy/force labeling**, use `prepare_label` as a standalone step — it replaces the relaxation → SCF chain with a single static calculation optimized for dataset generation (no charge density, no relaxation, KSPACING-based k-points).
 

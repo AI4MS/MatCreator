@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import asyncio
+import os
+import shutil
+import sys
 from pathlib import Path
+
+import pytest
 
 from matcreator.tools import workspace_tools
 
@@ -9,6 +15,46 @@ from matcreator.tools import workspace_tools
 class _FakeToolContext:
     def __init__(self):
         self.state = {}
+
+
+@pytest.mark.parametrize("file_tool", [False, True])
+def test_python_tools_use_runtime_interpreter_not_path(tmp_path, monkeypatch, file_tool):
+    monkeypatch.setenv("MATCLAW_WORKSPACE", str(tmp_path))
+    # A stale shell Python must not replace the interpreter running MatCreator.
+    shadow = tmp_path / "python"
+    shadow.write_text("#!/bin/sh\nprintf 'wrong-python'\n", encoding="utf-8")
+    shadow.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    code = "import sys; print(sys.executable)"
+    if file_tool:
+        (tmp_path / "probe.py").write_text(code, encoding="utf-8")
+        output = asyncio.run(workspace_tools.run_python_file("probe.py"))
+    else:
+        context = _FakeToolContext()
+        context.state["workspace_dir"] = str(tmp_path)
+        output = asyncio.run(workspace_tools.run_python(code, context))
+    assert output.strip() == sys.executable
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
+def test_bash_tool_preserves_runtime_environment_and_python(tmp_path, monkeypatch):
+    shadow = tmp_path / "python"
+    shadow.write_text("#!/bin/sh\nprintf 'wrong-python'\n", encoding="utf-8")
+    shadow.chmod(0o755)
+    parent_path = str(tmp_path) + os.pathsep + os.environ["PATH"]
+    monkeypatch.setenv("PATH", parent_path)
+    monkeypatch.setenv("PMG_VASP_PSP_DIR", str(tmp_path / "configured-potentials"))
+    context = _FakeToolContext()
+    context.state["workspace_dir"] = str(tmp_path)
+    output = asyncio.run(workspace_tools.run_bash(
+        "shopt -q login_shell && echo unexpected-login; "
+        "printf '%s\\n' \"$PATH\" \"$PMG_VASP_PSP_DIR\" \"$PWD\"; "
+        "python -c 'import sys; print(sys.executable)'", context
+    ))
+    assert output.splitlines() == [
+        str(Path(sys.executable).parent) + os.pathsep + parent_path,
+        str(tmp_path / "configured-potentials"), str(tmp_path), sys.executable,
+    ]
 
 
 def test_execution_timeout_uses_valid_user_setting(monkeypatch):

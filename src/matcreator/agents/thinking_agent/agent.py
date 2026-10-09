@@ -12,6 +12,7 @@ from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.adk.agents.callback_context import CallbackContext
 
+from ..aidb_skill_hook import AIDB_REUSE_INSTRUCTION, before_aidb_skill_load, after_aidb_skill_load
 from ...constants import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from ...adk_compat import install_lenient_tool_argument_parsing
 from .planning import validate_plan, validate_graph
@@ -46,6 +47,8 @@ from ...tools.util_tools import (
 )
 from .history_tools import read_session_log
 from ..execution_agent.remote_job_tools import list_remote_jobs
+from ...tools.silicon_vasp import collect_silicon_vasp_result
+from ...tools.silicon_archive import archive_silicon_vasp_result
 
 
 logger = logging.getLogger(__name__)
@@ -405,7 +408,7 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
     or `node_id="..."` for one executor of interest; do not request bulk detail by default.
 """
 
-_MATCREATOR_INSTRUCTION = "{instruction_body}"
+_MATCREATOR_INSTRUCTION = "{instruction_body}" + AIDB_REUSE_INSTRUCTION
 
 # ---------------------------------------------------------------------------
 # before_agent_callback: inject dynamic context into session state
@@ -499,10 +502,14 @@ thinking_agent = LlmAgent(
         FunctionTool(run_flash_step),
         FunctionTool(read_session_log),
         FunctionTool(list_remote_jobs),
+        FunctionTool(collect_silicon_vasp_result),
+        FunctionTool(archive_silicon_vasp_result),
         FunctionTool(load_skill),
         show_artifact,
         show_plot,
         show_structure,
     ],
     before_agent_callback=before_agent_callback,
+    before_tool_callback=before_aidb_skill_load,
+    after_tool_callback=after_aidb_skill_load,
 )

@@ -1,0 +1,44 @@
+{
+  "phase": "B",
+  "previous_phase": "A",
+  "default_policy": "B",
+  "prerequisite_commit": "df6116dcb9886e85f287702812bf44be80bcfe10",
+  "implementation_commits": [
+    "587becd",
+    "4dc04d3"
+  ],
+  "t4_prerequisite": "verified",
+  "t4_acceptance_sha256": "134732e8f7b63dd28611962f4ad815a09222c73eb625a874be9d9ced4e0aad35",
+  "t3_raw_outputs_reparsed_and_fresh_public_readback": true,
+  "confirmed_failure_remains_failed": true,
+  "bypass_loop_complete": false,
+  "isolated_local_archive_failure_and_recovery_verified": true,
+  "retained_readback": [
+    {
+      "record_id": "b3b0a7f19f9b5274012346c89a30130c",
+      "export": ".workspace/silicon-t5-final-evidence/test_failed_lookup_bypass_stil1/.aidb/archives/6602c701f4e64b408c9f5d6722966105/2e7d27b8bf674acdaaa49e2844473e58/after/target-Si/records.jsonl",
+      "sha256": "3e95c97d441ddb2e46242932a584c969404145409bca867c11f9cdfe84cf6203",
+      "local_database": ".workspace/silicon-t5-final-evidence/test_failed_lookup_bypass_stil1/local.db"
+    }
+  ],
+  "task_tests_passed": 29,
+  "full_suite": {
+    "passed": 852,
+    "failed": 39,
+    "collection_errors": 2,
+    "new_failures": [],
+    "failure_names_equal_t4_baseline": true,
+    "log": ".workspace/silicon-t5-full-final.log",
+    "sha256": "cdaaa24d27be857d7f51bb1afd5bf43b343c83e0708d95b90a325fb2e5e116af"
+  },
+  "review": {
+    "reviewed_head": "4dc04d3",
+    "standards_unresolved": 0,
+    "spec_unresolved": 0,
+    "initial_spec_p1": "fixed: standalone conditions and intervening human turns invalidate old confirmation",
+    "independent_spec_tests_passed": 14
+  },
+  "new_real_calculation_submissions": 0,
+  "cloud_database_upload": false,
+  "controlled_results_are_real_calculation_acceptance": false
+}

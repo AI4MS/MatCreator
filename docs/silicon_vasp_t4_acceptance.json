@@ -1,0 +1,22 @@
+{
+  "phase": "A",
+  "t3_prerequisite": "verified",
+  "independent_session": "silicon-t4-natural-final-20261007",
+  "natural_request_has_no_record_ids": true,
+  "current_public_query": "/home/shik-mechrevo-wsl/projects/MatCreator/.workspace/silicon-t4-natural-final/.aidb/runs/5c62b6a6ec9d22b746615a1a/1791381714-0e5724e9/preflight-report.json",
+  "public_exported_reuse_ids": [
+    "694772dca0777de504b25ba70366fc3d",
+    "1a1e16e62710d4bec6721ad350ee1f05"
+  ],
+  "tool_feedback_and_final_response_verified": true,
+  "new_real_jobs_in_session": 0,
+  "cloud_database_upload": false,
+  "new_task_tests_passed": 28,
+  "full_suite": {
+    "passed": 823,
+    "failed": 39,
+    "collection_errors": 2,
+    "new_failures": [],
+    "failure_names_equal_t3_baseline": true
+  }
+}
