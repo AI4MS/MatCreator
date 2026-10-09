@@ -7,9 +7,10 @@ import {
 } from "@tanstack/virtual-core";
 
 export class VirtualTranscript {
-  constructor({ chatArea, renderRow, estimateRow, onNeedRange, overscan = 6 }) {
+  constructor({ chatArea, renderRow, estimateRow, onNeedRange, releaseRow, overscan = 6 }) {
     this.chatArea = chatArea;
     this.renderRow = renderRow;
+    this.releaseRow = releaseRow;
     this.estimateRow = estimateRow;
     this.onNeedRange = onNeedRange;
     this.overscan = overscan;
@@ -250,11 +251,16 @@ export class VirtualTranscript {
       element.style.transform = `translateY(${virtualItem.start}px)`;
       if (row.type === "gap") {
         element.style.height = `${virtualItem.size}px`;
-        if (entry.revision !== row.revision) element.replaceChildren();
+        if (entry.revision !== row.revision) {
+          this.releaseRow?.(element);
+          element.replaceChildren();
+          entry.revision = row.revision;
+        }
         if (this.allowGapRequests) this.requestGap(row, virtualItem);
       } else {
         element.style.height = "";
         if (entry.revision !== row.revision) {
+          this.releaseRow?.(element);
           element.replaceChildren();
           this.renderRow(row, element);
           entry.revision = row.revision;
@@ -264,6 +270,7 @@ export class VirtualTranscript {
     });
     [...this.rowElements.entries()].forEach(([key, entry]) => {
       if (mounted.has(key)) return;
+      this.releaseRow?.(entry.element);
       entry.element.remove();
       this.rowElements.delete(key);
     });
@@ -296,7 +303,10 @@ export class VirtualTranscript {
 
   reset() {
     this.rows = [];
-    this.rowElements.forEach((entry) => entry.element.remove());
+    this.rowElements.forEach((entry) => {
+      this.releaseRow?.(entry.element);
+      entry.element.remove();
+    });
     this.rowElements.clear();
     this.canvas.replaceChildren();
     this.canvas.style.height = "0px";
@@ -309,6 +319,7 @@ export class VirtualTranscript {
   }
 
   destroy() {
+    this.reset();
     if (this.renderFrame !== null) cancelAnimationFrame(this.renderFrame);
     this.liveResizeObserver.disconnect();
     this.cleanupVirtualizer?.();

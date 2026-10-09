@@ -8,7 +8,9 @@ Runs alongside the ADK backend.  Ports are resolved via
 Endpoints
 ---------
 GET /api/agent-graph/{session_id}
-    Returns the JSON graph file for the session, or an empty graph if not found.
+    Returns lightweight topology, status, counts and revision metadata.
+GET /api/agent-graph/{session_id}/nodes/{node_id}
+    Returns full execution detail for one node on demand.
 GET /api/agent-graph/{session_id}/events
     Streams graph snapshots whenever an agent node emits a new event.
 GET /api/execution-graph/{session_id}/events
@@ -75,6 +77,7 @@ if str(_WEB_DIR) not in sys.path:
     sys.path.insert(0, str(_WEB_DIR))
 
 import users_db  # noqa: E402
+from agent_graph_payload import graph_summary
 
 from structure_formats import is_vasp_structure_filename  # noqa: E402
 
@@ -1174,7 +1177,7 @@ async def _produce_managed_run(
         if upstream_error := sse_error_message(record):
             raise RuntimeError(upstream_error)
         if started is not None and not is_sse_done(record) and any(
-            line.startswith("data:") and line[5:].strip() for line in record.splitlines()
+            line.startswith("data:") and line[5:].strip() for line in record.split("\n")
         ):
             started.set()
 
@@ -2038,7 +2041,7 @@ def _ase_read_structure(path: Path):
     return ase_read(str(path))
 
 
-def _load_agent_graph_data(session_id: str) -> dict:
+def _agent_graph_paths(session_id: str) -> list[Path]:
     graph_paths: list[Path]
     if _MATCREATOR_MODE == "server":
         graph_paths = [
@@ -2048,7 +2051,21 @@ def _load_agent_graph_data(session_id: str) -> dict:
     else:
         graph_paths = [_ADK_DIR / "agent_graphs" / f"{session_id}.json"]
 
-    for graph_path in graph_paths:
+    return graph_paths
+
+
+def _agent_graph_file_state(session_id: str) -> tuple:
+    for path in _agent_graph_paths(session_id):
+        try:
+            stat = path.stat()
+            return (str(path), stat.st_mtime_ns, stat.st_size, stat.st_ino)
+        except FileNotFoundError:
+            continue
+    return ()
+
+
+def _load_agent_graph_data(session_id: str) -> dict:
+    for graph_path in _agent_graph_paths(session_id):
         if not graph_path.exists():
             continue
         try:
@@ -4063,35 +4080,52 @@ async def get_agent_graph(
     node_ids: list[str] = Query(default=[], alias="node_id"),
     actions: list[str] = Query(default=[], alias="action"),
 ) -> JSONResponse:
-    data = _load_agent_graph_data(session_id)
+    data = await asyncio.to_thread(_load_agent_graph_data, session_id)
     if not data:
         return JSONResponse({"session_id": session_id, "nodes": {}, "edges": [], "updated_at": None})
     if actions:
         data = _filter_agent_graph_nodes_by_actions(data, node_ids, actions)
     elif node_ids:
         data = _filter_agent_graph_nodes(data, node_ids)
-    return JSONResponse(data)
+    return JSONResponse(graph_summary(data))
+
+
+@app.get("/api/agent-graph/{session_id}/nodes/{node_id}")
+async def get_agent_graph_node(session_id: str, node_id: str) -> JSONResponse:
+    data = await asyncio.to_thread(_load_agent_graph_data, session_id)
+    node = (data.get("nodes") or {}).get(node_id)
+    if not isinstance(node, dict):
+        raise HTTPException(status_code=404, detail="Agent graph node not found")
+    return JSONResponse(
+        {**node, "revision": node.get("revision", data.get("updated_at"))},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/agent-graph/{session_id}/events")
 async def stream_agent_graph(session_id: str, request: Request) -> StreamingResponse:
     """Push graph updates so concurrent node output appears without polling."""
     async def stream():
-        last_updated_at = object()
+        last_file_state = object()
         last_data = None
         while not await request.is_disconnected():
-            data = _load_agent_graph_data(session_id)
-            if not data:
-                data = {"session_id": session_id, "nodes": {}, "edges": [], "updated_at": None}
-            updated_at = data.get("updated_at")
-            if updated_at != last_updated_at:
+            file_state = await asyncio.to_thread(_agent_graph_file_state, session_id)
+            if file_state != last_file_state:
+                raw = await asyncio.to_thread(_load_agent_graph_data, session_id)
+                # A partial/corrupt generation is not a deletion. Wait for its
+                # metadata to change rather than reparsing unchanged bad JSON.
+                if not raw and file_state:
+                    last_file_state = file_state
+                    await asyncio.sleep(0.2)
+                    continue
+                data = graph_summary(raw or {"session_id": session_id}, str(file_state))
+                del raw
                 payload = data if last_data is None else _graph_stream_delta(last_data, data)
                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                last_updated_at = updated_at
+                last_file_state = file_state
                 last_data = data
-            # The logger writes synchronously for every model/tool event. A
-            # short server-side wait keeps the browser connection quiet while
-            # making independently running nodes feel genuinely concurrent.
+            # Stat polling works across workers. Only summaries survive between
+            # iterations; unchanged histories are never read or parsed.
             await asyncio.sleep(0.2)
 
     return StreamingResponse(

@@ -1,3 +1,4 @@
+import { fetchAgentNodeDetail } from "./features/graphs/graphSummary.js";
 import { createChatRenderer } from "./features/chat/rendering.js";
 import { createMessageStreamController } from "./features/chat/messageStream.js";
 import { createSmoothTextReveal } from "./features/chat/textReveal.js";
@@ -376,6 +377,7 @@ const {
   addAgentTimelineMessage,
 } = createTimelineRenderer({
   activityRenderer,
+  releaseDelegatedTasks: (host) => stepExecutionFeed.releaseWithin(host),
   disclosureController: chatDisclosureController,
   setMarkdownContent,
   updatePreservingReadingPosition,
@@ -395,6 +397,7 @@ const addPlanApprovalActions = createPlanApprovalRenderer({
 // ---------------------------------------------------------------------------
 
 stepExecutionFeed = new StepExecutionFeed({
+  loadNodeDetail: (nodeId, signal) => fetchAgentNodeDetail(state.sessionId, nodeId, signal),
   chatArea,
   isSending: () => requestHasActiveRun(activeSessionRequest()),
   updatePreservingReadingPosition,

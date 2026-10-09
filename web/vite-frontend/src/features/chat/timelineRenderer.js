@@ -28,6 +28,7 @@ export function segmentArtifacts(segment, claimedPlotPaths) {
 
 export function createTimelineRenderer({
   activityRenderer,
+  releaseDelegatedTasks,
   disclosureController,
   setMarkdownContent,
   updatePreservingReadingPosition,
@@ -162,6 +163,7 @@ export function createTimelineRenderer({
           });
           if (previous?.element?.parentElement === container) {
             if (insertionPoint === previous.element) insertionPoint = element;
+            releaseDelegatedTasks?.(previous.element);
             previous.element.replaceWith(element);
           }
         } else {
@@ -175,7 +177,10 @@ export function createTimelineRenderer({
       }
 
       for (const [key, previous] of previousSegments) {
-        if (nextSegments.get(key)?.element !== previous.element) previous.element.remove();
+        if (nextSegments.get(key)?.element !== previous.element) {
+          releaseDelegatedTasks?.(previous.element);
+          previous.element.remove();
+        }
       }
       disclosureController.prunePrefix(disclosurePrefix, liveDisclosureKeys);
       container._plotPaths = visiblePlotPaths;

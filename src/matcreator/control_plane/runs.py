@@ -39,7 +39,7 @@ class SseRecordBuffer:
 
 
 def is_sse_done(record: str) -> bool:
-    return any(line.strip() == "data: [DONE]" for line in record.splitlines())
+    return any(line.strip() == "data: [DONE]" for line in re.split(r"\r\n|\r|\n", record))
 
 
 def sse_error_message(record: str) -> str | None:
@@ -51,18 +51,23 @@ def sse_error_message(record: str) -> str | None:
     or permanently pending assistant turn.
     """
 
-    for line in record.splitlines():
+    # SSE uses CR/LF delimiters. str.splitlines() also splits on Unicode
+    # separators (e.g. U+0085) that are legal inside a JSON string.
+    data_lines = []
+    for line in re.split(r"\r\n|\r|\n", record):
         if not line.startswith("data:"):
             continue
-        data = line[5:].strip()
+        data_lines.append(line[5:].removeprefix(" "))
+    if data_lines:
+        data = "\n".join(data_lines).strip()
         if not data or data == "[DONE]":
-            continue
+            return None
         try:
             payload = json.loads(data)
         except json.JSONDecodeError:
             return "The agent backend returned a malformed streaming event."
         if not isinstance(payload, dict) or not payload.get("error"):
-            continue
+            return None
         details = payload.get("error_details")
         if isinstance(details, dict):
             error_type = str(details.get("error_type") or "").strip()
