@@ -1,7 +1,6 @@
 {
   "source_repository": "https://github.com/theAfish/open-agent-world",
   "commit": "eb31455",
-  "source_checkout": "C:\\Users\\ADMK\\Documents\\Codex\\2026-09-17\\oaw-dev-xrd-oaw-xrd-oaw\\work\\oaw-pr-clean",
   "files": {
     "plugins/xrd/src/oaw_xrd/documents.py": "69521ad64c3802487df6e58119fbab48c39560e5e5e0a842aaf3f2a332531ef5",
     "plugins/xrd/src/oaw_xrd/engine.py": "9f9b86e5995a563aff1da6cfd338fe7338b5a77638d43d81ea13c66c49461969",

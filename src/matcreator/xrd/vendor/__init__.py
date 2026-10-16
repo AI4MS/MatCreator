@@ -95,4 +95,3 @@ class InputConfig(BaseModel):
 
 class CanvasConfig(BaseModel):
     source_node_id: str = ''
-

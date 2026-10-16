@@ -139,3 +139,14 @@ def test_review_reports_its_own_error_and_retains_controller_history(xrd,monkeyp
     assert xrd.multiphase(data['id'])['error']=='current review failure'
     state['pywpem_review']={'status':'pending'}
     assert xrd.multiphase(data['id'])['error']=='previous controller failure'
+
+
+def test_saved_budget_is_returned_for_frontend_reload(xrd):
+    async def run():
+        owner=xrd.create()['id']
+        await xrd.action(owner,'multiphase_options',{'budget':12,'max_phases':3,'evaluate_baseline':False,'agent_node_id':'jev'})
+        state=xrd.multiphase(owner)
+        assert state['next_options']['budget']==12
+        assert state['next_options']['agent_node_id']=='jev'
+        assert state['next_options']==state['saved_options']
+    asyncio.run(run())

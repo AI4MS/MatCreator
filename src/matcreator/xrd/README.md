@@ -6,9 +6,12 @@ The scientific engine license is retained in `vendor/OAW_XRDfit`.
 
 ## Entry points
 
-- MC tab bar **+ → XRD 工作台**. Workspaces and run history persist independently
-  of chat sessions. **参考输入** imports reference peak tables and CIF associations.
-- The spectrum and structure knobs open one draggable, resizable floating area.
+- MC tab bar **+ → XRD 工作台** creates an independent tab and workspace, including
+  when another XRD tab is open. Workspaces and history persist independently of
+  chat sessions. Import an experimental spectrum from the input card or canvas;
+  mount a local reference database from the input section.
+- A draggable edge button opens one movable, resizable floating area with the
+  spectrum above the crystal structure. Both follow the selected result.
   Structure views mount MC's existing `StructureViewer.svelte` in read-only XRD
   mode. The original OAW spectrum, frame cursor and workflow views are retained.
 - MC thinking and execution agents have `xrd_list_workspaces`, `xrd_get_results`
@@ -33,24 +36,32 @@ are reconciled on reconnect. Unknown live ownership blocks duplicate starts.
 Multiphase interruptions retain history and are reported as interrupted; they
 are not silently replayed. Local mode only; server mode rejects these routes.
 
-## Acceptance on 2026-09-30
+## Verification
 
-- Existing frontend suite: 193 passing; production Vite build passed.
-- XRD service / frames / refinement / decision tests: 43 passing.
-- Multiphase numerical tests: 7 passing.
-- Real local synthetic Si API workflow completed search, preoptimization and
-  full-profile fit. This used one iteration to exercise transport and engine
-  execution; fit convergence was false. This is software acceptance, not an
-  experimental phase assignment or a scientifically converged refinement.
-- Native Agent tool reads, source download and run ZIP download passed.
-- Browser checked shared crystal rendering, spectrum, floating-window zoom,
-  manual input list, and both MC skins with both light/dark variants.
-- Complete LLM-driven multiphase optimization was not run in this acceptance.
-  The harness and decision/numerical tests are retained; native tools expose it.
+Run `pytest tests/test_xrd_*.py` with MC's Python and
+`MC_TEST_XRD_PYTHON` pointing to the scientific interpreter. The tests cover
+immutable snapshots, numerical recovery on synthetic mixtures, bounded Jev
+decisions, cancellation, HTTP argument contracts and Windows atomic-save locks.
+Run `npm test` and `npm run build` from `web/vite-frontend` for UI checks.
 
-Reproducible synthetic smoke: `script/xrd_local_smoke.py` (creates a clearly
-labelled new test workspace; run with the scientific interpreter). Local
-receipts and screenshots are under `.local-review-logs/`.
+`script/xrd_local_smoke.py` creates a clearly labelled synthetic Si workspace
+and exercises search, preoptimization and profile fitting through the local
+API. It requires the scientific interpreter. Set `MC_XRD_API_URL` to the
+running API base URL; the default is `http://127.0.0.1:8001/api/xrd`.
+
+The local browser acceptance on 2026-10-15 completed a real Jev search over
+27 parseable COD candidates, with 24 distinct evaluated combinations, followed
+by joint refinement of the highest search-score combination. The review
+completed 20 iterations with `converged=false`. This validates the software
+path, not phase identity, purity, optimizer superiority or mass fractions.
+Experimental input, COD databases, API credentials and local audit logs are
+not distributed in this repository.
+
+QualX is optional and must be installed separately under `OAW_XRD_ROOT` for
+QualX database searches. The native peak matcher works with imported reference
+tables. The pinned scientific requirements are recorded in
+`vendor/OAW_XRDfit/requirements.txt`; use a separate compatible Python
+environment rather than replacing MC's runtime dependencies.
 
 ## MC TypeSafe / Jev controller
 

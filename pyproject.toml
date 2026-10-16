@@ -60,6 +60,8 @@ where = ["src"]
     "guides/*.md",
     "question_templates/*.json",
     "xrd/SOURCE.json",
+    "xrd/JEV_SOURCE.json",
+    "xrd/README.md",
     "xrd/vendor/OAW_XRDfit/**/*",
 ]
 

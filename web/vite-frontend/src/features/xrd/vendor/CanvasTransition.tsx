@@ -62,4 +62,3 @@ export function CanvasReady({ ready, children, disabled = false }: { ready(): vo
   useEffect(() => { if (disabled) return; let second = 0; const first = requestAnimationFrame(() => { second = requestAnimationFrame(ready); }); return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); }; }, [ready, disabled]);
   return <>{children}</>;
 }
-

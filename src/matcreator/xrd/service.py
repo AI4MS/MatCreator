@@ -241,7 +241,8 @@ class XrdService:
         state=value.get('state',{})
         review=state.get('pywpem_review',{})
         error=review.get('error') if review.get('status') in {'running','completed','failed','cancelled'} else data.get('jev_error') or state.get('error')
-        return {**state,'jev_error':data.get('jev_error',''), 'error':error, 'available_agents':[{'agent_node_id':'jev','name':'TypeSafe / Jev'},{'agent_node_id':'matcreator','name':'MatCreator Agent'}], 'saved_options':data['harness'].get('next_options',{})}
+        options=data['harness'].get('next_options',{})
+        return {**state,'jev_error':data.get('jev_error',''), 'error':error, 'available_agents':[{'agent_node_id':'jev','name':'TypeSafe / Jev'},{'agent_node_id':'matcreator','name':'MatCreator Agent'}], 'next_options':options, 'saved_options':options}
     def resource(self, owner, action, args):
         context=SimpleNamespace(node_id=owner,cancelled=asyncio.Event(),actor_id='matcreator')
         if action not in history.actions(): raise ValueError('未知历史操作')

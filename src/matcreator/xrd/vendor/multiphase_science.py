@@ -344,7 +344,8 @@ def evaluate(payload, combo_ids, outputdir):
     objective = (validation_metrics["rwp_percent"]/100)**2 + options["complexity_penalty"]*len(combo)
     phase_curves = full_fit["design"][:, :len(combo)] * full_fit["scales"][:len(combo)]
     background = full_fit["design"][:, len(combo):] @ full_fit["scales"][len(combo):]
-    integrals = np.array([np.trapz(phase_curves[:, k], points[:, 0]) for k in range(len(combo))])
+    from scipy.integrate import trapezoid
+    integrals = np.array([trapezoid(phase_curves[:, k], points[:, 0]) for k in range(len(combo))])
     total = float(np.sum(integrals))
     phase_results = []
     for k, identifier in enumerate(combo):
