@@ -1,0 +1,8 @@
+"""
+Sub-package for X-ray photoelectron spectroscopy (XPS) decomposition.
+
+Bin Cao, PhD of HKUST(Guangzhou), https://bin-cao.github.io
+URL : https://github.com/Bin-Cao/PyWPEM
+"""
+
+

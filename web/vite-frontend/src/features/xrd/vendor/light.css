@@ -1,0 +1,50 @@
+/* The default OAW theme is light; leave the established dark palette intact. */
+:root:not([data-theme=dark]){--xrd-observed:#256a80;--xrd-calculated:#b45f48}
+:root:not([data-theme=dark]) .xrd-match-ui{--xrd-base:var(--surface-solid);--xrd-surface:var(--card-surface);--xrd-head:var(--surface-soft);--xrd-title:var(--ink);--xrd-text:var(--ink-soft);--xrd-muted:#756b5c;--xrd-accent:var(--accent);--xrd-line:var(--line);color:var(--ink-soft);color-scheme:light}
+:root:not([data-theme=dark]) :is(.node-workspace-window,.legion-workspace-pane):has(.xrd-match-ui){background:var(--surface-solid);border-color:var(--line)}
+:root:not([data-theme=dark]) :is(.node-workspace-window,.legion-workspace-pane):has(.xrd-match-ui)>:is(.workspace-titlebar,.legion-pane-titlebar){background:var(--surface-soft);color:var(--ink)}
+:root:not([data-theme=dark]) .node-workspace-window:has(.xrd-match-ui)>.workspace-titlebar span{color:var(--ink-soft)}
+:root:not([data-theme=dark]) :is(.xrd-panel,.xrd-independent-canvas){color:var(--ink-soft)}
+:root:not([data-theme=dark]) :is(.xrd-zone,.xrd-candidate-selection,.xrd-multiphase-detail,.xrd-multiphase-settings,.xrd-frame-timeline,.xrd-review-selection,.xrd-workflow,.xrd-fit-plot,.xrd-plot,.xrd-unified-spectrum,.xrd-spectrum-dialog){background:var(--card-surface);color:var(--ink-soft);border-color:var(--line);box-shadow:0 2px 8px var(--shadow)}
+:root:not([data-theme=dark]) :is(.xrd-zone h3,.xrd-candidate-selection>header){background:var(--surface-soft);color:var(--ink);border-color:var(--line)}
+:root:not([data-theme=dark]) :is(.xrd-panel input:not([type=checkbox]),.xrd-panel select,.xrd-canvas-phase-picker select,.xrd-focus-panel input,.xrd-focus-panel select){background:var(--surface-raised);color:var(--ink);border-color:var(--line-strong);color-scheme:light}
+:root:not([data-theme=dark]) .xrd-panel select option{background:var(--surface-raised);color:var(--ink)}
+:root:not([data-theme=dark]) :is(.xrd-frame-controls>button,.xrd-workflow-actions button,.xrd-unified-spectrum button,.xrd-frame-timeline header button,.xrd-number-steppers button){background:linear-gradient(135deg,var(--surface-raised),var(--surface-soft));color:var(--accent-strong);border-color:var(--line-strong);box-shadow:inset 0 1px var(--highlight),0 2px 4px var(--shadow)}
+:root:not([data-theme=dark]) :is(.xrd-frame-controls>button,.xrd-workflow-actions button,.xrd-unified-spectrum button):hover:not(:disabled){background:var(--accent-soft);color:var(--accent-strong);border-color:var(--accent)}
+:root:not([data-theme=dark]) .xrd-multiphase-trigger>button[aria-pressed=true]{background:#e2ebe0!important;color:#385b43!important;border-color:#75927a!important}
+:root:not([data-theme=dark]) :is(.xrd-step-number,.xrd-match-ui .xrd-step-number){background:var(--surface-soft);color:var(--ink-soft)}
+:root:not([data-theme=dark]) .xrd-step-track{background:var(--line)}
+:root:not([data-theme=dark]) :is(.xrd-frame-timeline small,.xrd-independent-canvas header small,.xrd-score-phase,.xrd-canvas-phase-picker,.xrd-canvas-structure-origin){color:var(--ink-soft)}
+:root:not([data-theme=dark]) .xrd-multiphase-canvas-heading strong{color:#385b43}
+:root:not([data-theme=dark]) .xrd-score-scroll{background:transparent;scrollbar-color:#b4ad9f var(--surface-soft)}
+:root:not([data-theme=dark]) .xrd-frame-timeline button.xrd-score-hit{background:transparent;color:var(--ink-soft);box-shadow:none}
+:root:not([data-theme=dark]) .xrd-score-hit[aria-pressed=true] .xrd-score-number{background:var(--accent-soft);color:var(--accent-strong);border-color:var(--accent)}
+:root:not([data-theme=dark]) :is(.xrd-panel td,.xrd-panel th){border-color:var(--line)}
+:root:not([data-theme=dark]) .xrd-panel thead{background:var(--surface-soft);color:var(--ink)}
+:root:not([data-theme=dark]) :is(.xrd-focus-panel,.xrd-import-tooltip,.xrd-frame-help-bubble,.xrd-multiphase-trigger [role=tooltip]){background:var(--surface-raised);color:var(--ink);border-color:var(--line-strong);box-shadow:0 8px 28px var(--shadow-deep)}
+:root:not([data-theme=dark]) .xrd-spectrum-dialog::backdrop{background:#35332e66;backdrop-filter:blur(4px)}
+:root:not([data-theme=dark]) .xrd-history-dialog{--history-bg:var(--surface-raised);--history-text:var(--ink);--history-muted:#756b5c;--history-line:var(--line);--history-green:#416c50;color-scheme:light;border-color:var(--line-strong);box-shadow:0 20px 80px var(--shadow-deep)}
+:root:not([data-theme=dark]) .xrd-history-dialog::backdrop{background:#35332e66}
+:root:not([data-theme=dark]) :is(.xrd-history-dialog>header,.xrd-history-layout>aside){background:var(--surface-soft)}
+:root:not([data-theme=dark]) :is(.xrd-history-dialog button,.xrd-history-dialog select,.xrd-history-dialog .xrd-history-run,.xrd-history-stats>div,.xrd-history-panel){background:var(--card-surface);border-color:var(--line);color:var(--ink-soft)}
+:root:not([data-theme=dark]) .xrd-history-dialog button:hover:not(:disabled){background:var(--accent-soft);border-color:var(--accent)}
+:root:not([data-theme=dark]) .xrd-history-dialog .is-selected{background:#e5ede4;color:#31543c;border-color:#77957d}
+:root:not([data-theme=dark]) .xrd-history-dialog summary{color:var(--accent-strong)}
+:root:not([data-theme=dark]) :is(.xrd-history-fields>div,.xrd-history-files li){border-color:var(--line)}
+:root:not([data-theme=dark]) .xrd-history-layout pre{background:var(--surface-soft)}
+:root:not([data-theme=dark]) :is(.xrd-history-status[data-status=failed],.xrd-history-error,.xrd-panel [role=alert]){color:var(--danger)}
+:root:not([data-theme=dark]) .xrd-history-status[data-status=running]{color:#8a612a}
+:root:not([data-theme=dark]) :is(.xrd-review-selection .xrd-review-card,.xrd-combination-card){background:var(--card-surface);color:var(--ink-soft);border-color:var(--line)}
+:root:not([data-theme=dark]) .xrd-review-selection .xrd-review-card.is-selected{background:#e5ede4;border-color:#77957d}
+:root:not([data-theme=dark]) :is(.xrd-review-recommended,.xrd-review-card-score strong,.xrd-combination-reason,.xrd-multiphase-decision){color:#416c50}
+:root:not([data-theme=dark]) :is(.xrd-engine-trigger,.xrd-zone details,.xrd-input-dock,.xrd-input-dock button,.xrd-mode-list button,.xrd-element-trigger,.xrd-settings-save){background:var(--surface-raised);color:var(--ink-soft);border-color:var(--line-strong)}
+:root:not([data-theme=dark]) .xrd-focus-panel>header{background:var(--surface-soft);color:var(--ink)}
+:root:not([data-theme=dark]) .xrd-focus-shade{background:#35332e44}
+:root:not([data-theme=dark]) .xrd-element{background:color-mix(in srgb,var(--element-color,#b7a180) 14%,var(--card-surface));color:var(--ink);border-color:var(--line-strong)}
+:root:not([data-theme=dark]) .xrd-element[aria-pressed=true]{background:var(--accent-soft);border-color:var(--accent)}
+:root:not([data-theme=dark]) :is(.xrd-nas,.xrd-mount-form){background:var(--surface-soft);color:var(--ink-soft);border-color:var(--line)}
+:root:not([data-theme=dark]) .xrd-drive-bay{background:var(--surface-solid);border-color:var(--line);box-shadow:inset 0 2px 5px var(--shadow)}
+:root:not([data-theme=dark]) .xrd-drive{background:linear-gradient(120deg,var(--surface-raised),var(--surface-soft));border-color:var(--line-strong);box-shadow:0 2px 4px var(--shadow)}
+:root:not([data-theme=dark]) :is(.xrd-drive-display,.xrd-library-readout){background:#e5ede4;border-color:#9eafa0;color:#31543c;text-shadow:none;box-shadow:inset 0 1px 4px var(--shadow)}
+:root:not([data-theme=dark]) :is(.xrd-digital-count,.xrd-drive-display .xrd-drive-filename,.xrd-mount-status,.xrd-mount-actions button[type=submit]){color:#31543c;text-shadow:none}
+:root:not([data-theme=dark]) :is(.xrd-nas-header,.xrd-nas-footer,.xrd-drive-top,.xrd-drive-version,.xrd-slot-plus,.xrd-frame-summary>span,.xrd-frame-help){color:var(--ink-soft)}

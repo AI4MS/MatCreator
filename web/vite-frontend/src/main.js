@@ -1,4 +1,5 @@
 import { fetchAgentNodeDetail } from "./features/graphs/graphSummary.js";
+import { installWorkspaceLaunchpad } from "./features/workspace/WorkspaceLaunchpad.js";
 import { createChatRenderer } from "./features/chat/rendering.js";
 import { createMessageStreamController } from "./features/chat/messageStream.js";
 import { createSmoothTextReveal } from "./features/chat/textReveal.js";
@@ -322,7 +323,7 @@ const settingsController = createSettingsController({
 
 const skillGraphController = createSkillGraphController({
   state,
-  centerTabs,
+  centerTabs: centerTabsScroll,
   centerTabPanels,
   activateCenterTab,
   renderMarkdown,
@@ -790,6 +791,17 @@ workspaceViewerController = createWorkspaceViewerController({
   refreshSessionFiles,
 });
 workspaceViewerController.init();
+installWorkspaceLaunchpad({
+  controller: workspaceViewerController,
+  newTabButton: document.getElementById("workspace-new-tab"),
+  newSession: () => { activateCenterTab("chat"); return _doNewSession(state.defaultWorkdir || ""); },
+  openGraph: () => skillGraphController.open({ force: true }),
+  openSettings: () => document.getElementById("settings-btn").click(),
+  openJobs: () => {
+    const toggle = document.getElementById("remote-jobs-toggle");
+    if (toggle?.getAttribute("aria-expanded") !== "true") toggle?.click();
+  },
+});
 
 function activateCenterTab(tabId) {
   workspaceViewerController?.activate(tabId);

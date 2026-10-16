@@ -13,12 +13,13 @@
     session_id,
     background_color,
     performance_mode = "quality",
+    xrd_mode = false,
     on_modified,
     on_generated,
   } = $props();
   let structure = $state();
   let selectedSites = $state([]);
-  let viewerMode = $state("edit-atoms");
+  let viewerMode = $state(untrack(() => xrd_mode ? "inspect" : "edit-atoms"));
   let transformMode = $state("translate");
   let dirty = $state(false);
   let atomInspectorKey = $state("");
@@ -383,7 +384,7 @@
   });
 
   onMount(() => {
-    theme = background_color === "#f8fbff" ? "light" : "dark";
+    theme = xrd_mode ? (document.documentElement.dataset.theme === "light" ? "light" : "dark") : (background_color === "#f8fbff" ? "light" : "dark");
     const onThemeChange = (event) => {
       theme = event.detail === "light" ? "light" : "dark";
       structureRenderer?.setTheme?.(theme);
@@ -400,6 +401,7 @@
             : [id];
         },
         onMove: (movedAtoms) => {
+          if (xrd_mode) return;
           if (!structure?.sites || !movedAtoms?.some(({ id }) => structure.sites[id])) return;
           pushLocalHistory();
           structure = {
@@ -422,6 +424,7 @@
     }
 
     const suppressBuiltInAtomShortcuts = (event) => {
+      if (xrd_mode) return;
       const target = event.target;
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
       if (viewerMode === "edit-atoms" && (event.ctrlKey || event.metaKey)) {
@@ -457,7 +460,7 @@
   $effect(() => {
     void selectedSites;
     syncAtomInspector();
-    structureRenderer?.select(selectedSites);
+    structureRenderer?.select(xrd_mode ? [] : selectedSites);
   });
 
   $effect(() => {
@@ -600,6 +603,7 @@
   <div class="structure-renderer-host" bind:this={viewerHost} aria-label="Interactive structure viewer"></div>
   <div class="structure-interaction-hint">Orbit · Zoom · Shift-drag select · Axis widget align</div>
 
+  {#if !xrd_mode}
   <nav class="model-tools" aria-label="Structure modeling tools">
     <button disabled={!localUndoStack.length} title="Undo local atom edit (Ctrl+Z)" aria-label="Undo local atom edit" onclick={() => restoreLocalHistory("undo")}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5M4 12h10a6 6 0 0 1 0 12" /></svg>
@@ -644,6 +648,7 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 18h16M12 9v6m-3-3 3-3 3 3m-6 0 3 3 3-3" /></svg>
     </button>
   </nav>
+  {/if}
 
   {#if workbenchOpen}
     <aside

@@ -1,0 +1,52 @@
+/* Workspace launch tabs share the active skin's material and accent tokens. */
+.center-tabs-scroll { flex: 0 1 auto; }
+.workspace-new-tab.tool-btn {
+  flex: 0 0 28px; width: 28px; height: 28px; min-width: 28px;
+  margin: 0 0 5px 8px; padding: 0; border-radius: 8px;
+  font: 600 22px/1 var(--skin-label-font, monospace); color: var(--text-primary, var(--text));
+  align-self: center;
+}
+body[data-style-recipe="rack-lab"] .workspace-new-tab.tool-btn { margin-bottom: 2px; }
+.workspace-tool-panel.active { display: block; overflow: auto; }
+.workspace-launchpad {
+  --launch-surface: var(--skin-chat-surface, var(--panel));
+  width: 100%; max-width: 860px; margin: 0 auto; padding: clamp(24px, 5vw, 64px) clamp(18px, 4vw, 48px);
+  box-sizing: border-box; color: var(--text-primary, var(--text));
+}
+.launchpad-eyebrow, .launchpad-section-label, .launchpad-status, .xrd-stages {
+  font: 700 10px/1.5 var(--skin-label-font, monospace); letter-spacing: .1em;
+}
+.launchpad-eyebrow { opacity: .65; margin-bottom: 24px; }
+.workspace-launchpad h1 { font-size: clamp(26px, 3vw, 36px); line-height: 1.25; letter-spacing: -.035em; margin: 0 0 12px; }
+.launchpad-intro { font-size: 13px; line-height: 1.8; opacity: .7; margin: 0 0 36px; }
+.launchpad-section-label { display: flex; justify-content: space-between; gap: 8px; margin: 26px 0 12px; }
+.launchpad-section-label > span { opacity: .45; }
+.launchpad-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.launchpad-card, .launchpad-xrd {
+  position: relative; border: 1px solid var(--skin-control-border-color, var(--border));
+  border-radius: 12px; background: var(--skin-control-background, var(--panel));
+  box-shadow: var(--skin-control-shadow, 0 3px 0 rgba(0,0,0,.25));
+  color: inherit; text-align: left; cursor: pointer; transition: transform 120ms ease, border-color 120ms ease;
+}
+.launchpad-card { padding: 20px; display: flex; flex-direction: column; gap: 10px; }
+.launchpad-card strong, .launchpad-xrd strong { font-size: 15px; font-weight: 700; }
+.launchpad-icon { width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 34px; }
+.launchpad-icon svg { width: 27px; height: 27px; }
+.launchpad-card-description { font-size: 12px; line-height: 1.7; opacity: .65; }
+.launchpad-arrow { position: absolute; right: 18px; top: 18px; opacity: .45; }
+.launchpad-card:hover, .launchpad-xrd:hover { border-color: var(--accent); transform: translateY(-2px); }
+.launchpad-card:active, .launchpad-xrd:active { transform: translateY(2px); box-shadow: var(--skin-control-pressed-shadow, none); }
+.launchpad-card:focus-visible, .launchpad-xrd:focus-visible, .workspace-new-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.launchpad-xrd { display: flex; align-items: center; gap: 16px; padding: 22px 20px; width: 100%; background: color-mix(in srgb, var(--accent) 10%, var(--launch-surface)); }
+.launchpad-xrd-copy { display: flex; flex: 1; flex-direction: column; gap: 7px; }
+.launchpad-xrd-copy > span { font-size: 11px; opacity: .7; line-height: 1.6; }
+.launchpad-status { border: 1px solid currentColor; border-radius: 4px; padding: 3px 7px; white-space: nowrap; opacity: .65; font-size: 10px; }
+.launchpad-footnote { font-size: 11px; line-height: 1.8; opacity: .55; margin-top: 22px; }
+.launchpad-heading { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+.launchpad-heading h1 { margin: 0; }
+.xrd-preparation { border: 1px dashed var(--skin-control-border-color, var(--border)); border-radius: 12px; padding: 28px; background: color-mix(in srgb, var(--accent) 5%, var(--launch-surface)); }
+.xrd-preparation h2 { margin: 24px 0 12px; font-size: 19px; }
+.xrd-preparation p { font-size: 13px; opacity: .7; line-height: 1.9; }
+.xrd-stages { display: flex; flex-wrap: wrap; gap: 18px; border-top: 1px solid var(--border); margin-top: 28px; padding-top: 18px; opacity: .6; }
+@media (max-width: 850px) { .launchpad-grid { grid-template-columns: 1fr; } .launchpad-xrd { flex-wrap: wrap; } }
+@media (prefers-reduced-motion: reduce) { .launchpad-card, .launchpad-xrd { transition: none; } }

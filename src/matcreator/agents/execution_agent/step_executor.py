@@ -7,6 +7,7 @@ from typing import List, Literal, Optional
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.function_tool import FunctionTool
+from matcreator.tools.xrd_tools import xrd_list_workspaces, xrd_get_results, xrd_action
 from google.adk.tools.tool_context import ToolContext
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
@@ -306,6 +307,9 @@ def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
             FunctionTool(get_user_skills_root),
             FunctionTool(run_python),
             FunctionTool(run_bash),
+            FunctionTool(xrd_list_workspaces),
+            FunctionTool(xrd_get_results),
+            FunctionTool(xrd_action),
             FunctionTool(submit_bohr_sandbox),
             FunctionTool(create_remote_job_group),
             FunctionTool(submit_bohr_batchjob),

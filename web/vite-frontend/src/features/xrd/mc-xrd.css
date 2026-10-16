@@ -1,0 +1,99 @@
+/* All XRD surfaces derive their material, typography and controls from MC. */
+.mc-xrd-workbench, [class*="xrd-"] {
+  --ink: var(--text-primary,var(--text)); --ink-soft: var(--text-secondary,var(--muted));
+  --card-surface: var(--skin-chat-surface,var(--panel)); --surface-raised: var(--panel); --surface-soft: var(--skin-control-background,var(--panel));
+  --line: var(--border); --line-strong: var(--skin-control-border-color,var(--border)); --accent-strong: var(--accent);
+  --accent-soft: color-mix(in srgb,var(--accent) 15%,var(--panel)); --highlight: #ffffff22; --shadow:#00000022;
+  --xrd-observed: var(--text-primary,var(--text));
+}
+.mc-xrd-workbench {position:relative;min-height:100%;padding:18px;box-sizing:border-box;color:var(--text-primary,var(--text));background:var(--skin-chat-surface,var(--panel));isolation:isolate;}
+.mc-xrd-header {display:flex;gap:12px;align-items:center;border-bottom:1px solid var(--border);padding-bottom:14px;}
+.mc-xrd-header>div {display:flex;gap:12px;align-items:baseline;margin-right:auto;}
+.mc-xrd-header strong {font-family:var(--skin-label-font,monospace);letter-spacing:.15em;font-size:21px;}
+.mc-xrd-header small {font-size:11px;opacity:.6;}
+.mc-xrd-header select {max-width:180px;font-size:11px;}
+.mc-xrd-workbench button,.mc-xrd-workbench select {font:inherit;color:inherit;}
+.mc-xrd-header button,.mc-xrd-header select,.mc-xrd-floating header button {border:1px solid var(--skin-control-border-color,var(--border));background:var(--skin-control-background,var(--panel));border-radius:6px;padding:5px 8px;box-shadow:var(--skin-control-shadow,none);cursor:pointer;}
+.mc-xrd-dock {position:relative;display:flex;align-items:center;width:max-content;gap:10px;padding:12px 0;z-index:5;touch-action:none;}
+.mc-xrd-grip {cursor:grab;user-select:none;opacity:.55;touch-action:none;}
+.mc-xrd-dial {display:flex;align-items:center;justify-content:center;gap:7px;border:1px solid var(--skin-control-border-color,var(--border));border-radius:28px;background:var(--skin-control-background,var(--panel));box-shadow:var(--skin-control-shadow,0 3px 0 #0006);padding:7px 14px;cursor:pointer;transition:transform .16s,box-shadow .16s;}
+.mc-xrd-dial>span {display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#ffffff30,#00000020);box-shadow:inset 0 1px 2px #fff5,0 1px 3px #0004;font-size:25px;}
+.mc-xrd-dial.active {border-color:var(--accent);box-shadow:inset 0 -2px var(--accent),var(--skin-control-shadow,0 2px 4px #0004);}
+.mc-xrd-dial:active {transform:translateY(2px);}.mc-xrd-dock-hint {font-size:10px;opacity:.45;}
+.mc-xrd-main {padding:10px 0 28px;}.mc-xrd-error {color:var(--danger,#d55);font-size:12px;}
+.mc-xrd-floating {position:absolute;z-index:15;transform-origin:top left;width:min(600px,calc(100% - 26px));height:470px;min-width:300px;min-height:260px;max-width:calc(100% - 12px);resize:both;overflow:hidden;border:2px solid var(--skin-shell-border-color,var(--border));border-radius:12px;box-shadow:0 16px 40px #0005;background:var(--skin-chat-surface,var(--panel));display:flex;flex-direction:column;}
+.mc-xrd-floating>header {display:flex;gap:10px;align-items:center;padding:9px 12px;cursor:grab;touch-action:none;background:var(--skin-control-background,var(--panel));border-bottom:1px solid var(--border);font-family:var(--skin-label-font,inherit);font-size:12px;}
+.mc-xrd-floating>header>div {margin-left:auto;display:flex;gap:5px;}.mc-xrd-floating-body {flex:1;min-height:0;overflow:auto;padding:10px;}
+.mc-xrd-crystal,.mc-xrd-crystal>div {height:100%;min-height:260px;position:relative;}.mc-xrd-crystal>small {position:absolute;bottom:8px;left:8px;font-size:10px;pointer-events:none;background:var(--panel);}
+.mc-xrd-workbench :is(.xrd-zone,.xrd-candidate-selection,.xrd-multiphase-detail,.xrd-frame-timeline,.xrd-workflow,.xrd-fit-plot,.xrd-plot,.xrd-unified-spectrum,.xrd-independent-canvas,.xrd-mount-form),:is(.xrd-focus-panel,.xrd-new-workflow-dialog,.xrd-run-history-dialog,.xrd-history-dialog,.xrd-spectrum-dialog,.xrd-multiphase-settings,.xrd-combination-tooltip) {background:var(--card-surface)!important;color:var(--ink)!important;border-color:var(--line-strong)!important;}
+.mc-xrd-workbench :is(input,select,textarea),.xrd-focus-panel :is(input,select) {background:var(--surface-soft)!important;color:var(--ink)!important;border-color:var(--line-strong)!important;}
+.mc-xrd-workbench button:not(.mc-xrd-dial) {color:var(--ink);}
+.mc-xrd-workbench :is(.xrd-frame-controls,.xrd-workflow-actions,.xrd-zone,.xrd-input-dock) button {background:var(--skin-control-background,var(--panel));border-color:var(--line-strong);box-shadow:var(--skin-control-shadow,none);color:var(--ink);}
+.mc-xrd-workbench :is(.xrd-step-number,.xrd-zone h3,.xrd-candidate-selection>header) {background:var(--surface-soft)!important;color:var(--ink)!important;}
+.mc-xrd-workbench .xrd-panel {font-family:inherit;font-size:12px;}.mc-xrd-workbench .xrd-panel select option {background:var(--panel);color:var(--text);}
+.mc-xrd-workbench :is(.xrd-panel,.xrd-independent-canvas) {color:var(--ink);}
+@media(max-width:900px){.mc-xrd-header small,.mc-xrd-dock-hint{display:none}.mc-xrd-workbench{padding:10px}.mc-xrd-floating{min-width:260px;}}
+@media(prefers-reduced-motion:reduce){.mc-xrd-dial{transition:none}}
+/* Override the source palette at the component boundary, including portals. */
+.mc-xrd-workbench .xrd-match-ui, [class*="xrd-"] {
+ --xrd-base:var(--skin-chat-surface,var(--panel)); --xrd-surface:var(--skin-chat-surface,var(--panel));
+ --xrd-head:var(--skin-control-background,var(--panel)); --xrd-title:var(--text-primary,var(--text));
+ --xrd-text:var(--text-primary,var(--text)); --xrd-muted:var(--text-secondary,var(--muted));
+ --xrd-accent:var(--accent); --xrd-line:var(--border);
+ --surface-solid:var(--panel); --ink-faint:var(--muted); --shadow-deep:#0005; --canvas-deep:var(--panel);
+}
+.mc-xrd-workbench :is(.xrd-candidate-choice,.xrd-pipeline-detail,.xrd-table th,.xrd-table td,.xrd-number-field,.xrd-workflow-fork) {background:var(--surface-soft);color:var(--ink);border-color:var(--line);}
+.mc-xrd-workbench :is(.xrd-candidate-choice.is-selected,.xrd-pipeline .xrd-table tr[aria-selected=true]) {background:var(--accent-soft);border-color:var(--accent);}
+.mc-xrd-workbench .xrd-match-ui {font-size:13px;}
+.mc-xrd-workbench :is(.xrd-inputs,.xrd-input-list>button,.xrd-number-control,.xrd-zone-advanced details),.xrd-focus-panel>header {background:var(--surface-soft)!important;color:var(--ink)!important;border-color:var(--line-strong)!important;}
+.mc-xrd-workbench .xrd-workflow button:disabled {opacity:.55;}
+.mc-xrd-workbench .primary-button {background:var(--accent)!important;color:var(--accent-contrast,#171717)!important;border-color:var(--line-strong)!important;}
+.xrd-element {background:var(--surface-soft)!important;color:var(--ink)!important;border-color:var(--line-strong)!important;}
+.xrd-element[aria-pressed=true] {background:var(--accent-soft)!important;border-color:var(--accent)!important;}
+.mc-xrd-crystal {min-height:300px;}
+.mc-xrd-crystal .structure-viewer-embed {position:absolute!important;inset:0!important;height:auto!important;}
+.mc-xrd-input-manager {margin:12px 0;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface-soft);font-size:12px;}
+.mc-xrd-input-manager>header {display:flex;align-items:center;gap:8px;flex-wrap:wrap;}.mc-xrd-input-manager>header strong{margin-right:auto;}
+.mc-xrd-input-manager button,.mc-xrd-input-manager select {background:var(--skin-control-background,var(--panel));border:1px solid var(--border);border-radius:5px;padding:7px;color:var(--ink);}
+.mc-xrd-input-manager .xrd-panel {margin-top:12px;}
+/* Settings and spectrum controls use the active skin in both color variants. */
+.mc-xrd-workbench :is(.xrd-frame-timeline,.xrd-unified-spectrum) button:not(.xrd-score-hit) {background:var(--skin-control-background,var(--panel));color:var(--ink);border-color:var(--line-strong);box-shadow:var(--skin-control-shadow,none);}
+.mc-xrd-workbench :is(.xrd-frame-timeline,.xrd-independent-canvas) small {color:var(--ink-soft);}
+/* Unified edge launcher and synchronized vertical canvas. */
+.mc-xrd-header {flex-wrap:wrap;gap:10px;}
+.mc-xrd-header>div {flex:1 0 auto;}
+.mc-xrd-header select {flex:1 1 240px;max-width:360px;min-width:180px;width:100%;font-size:12px;padding:8px 28px 8px 10px;}
+.mc-xrd-header button {flex-shrink:0;white-space:nowrap;}
+.mc-xrd-header .mc-xrd-new {width:34px;height:34px;padding:0;font-size:22px;line-height:1;}
+.mc-xrd-edge {position:sticky;top:12px;height:0;z-index:16;float:right;}
+.mc-xrd-edge-button {position:absolute;right:-30px;top:14px;display:grid;place-items:center;width:46px;height:46px;border:1px solid var(--skin-control-border-color,var(--border));border-radius:50%;background:var(--skin-control-background,var(--panel));box-shadow:var(--skin-control-shadow,0 3px 8px #0004);cursor:pointer;transition:transform .18s;}
+.mc-xrd-edge-button svg {width:26px;height:26px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;}
+.mc-xrd-edge-button:hover,.mc-xrd-edge-button:focus-visible {transform:translateX(-8px) scale(1.1);}
+.mc-xrd-edge-button.active {border-color:var(--accent);color:var(--accent);}
+.mc-xrd-floating {position:fixed;width:min(650px,90vw);height:min(820px,88vh);max-width:94vw;max-height:94vh;transform-origin:center;z-index:100;}
+.mc-xrd-combined {display:grid;grid-template-rows:minmax(240px,1fr) minmax(300px,1fr);gap:10px;overflow:auto;}
+.mc-xrd-combined>div {min-height:0;border-bottom:1px solid var(--border);}
+.mc-xrd-combined .xrd-independent-canvas {box-sizing:border-box;padding:4px;gap:6px;}
+.mc-xrd-combined .xrd-independent-canvas header {font-size:11px;}
+.mc-xrd-combined .xrd-independent-canvas header strong {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.mc-xrd-combined .xrd-unified-spectrum {padding:6px;}
+.mc-xrd-combined .mc-xrd-crystal {min-height:220px;height:100%;}
+.mc-xrd-combined .mc-xrd-crystal>div {min-height:220px;}
+.mc-xrd-action-spacer {flex:1;min-width:12px;}
+.mc-xrd-workbench .xrd-workflow-actions {display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.mc-xrd-workbench .xrd-workflow-actions>button,.mc-xrd-workbench .xrd-workflow-actions .xrd-multiphase-trigger>button {display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;min-height:38px;flex-shrink:0;padding:8px;}
+.mc-xrd-workbench .xrd-workflow-actions .primary-button svg {color:var(--accent-contrast,#fff);}
+.mc-xrd-workbench .xrd-mode-hint {font-size:11px;color:var(--ink-soft);max-width:230px;}
+dialog[class*="xrd-"] {position:fixed;inset:0;margin:auto;max-height:90vh;max-width:94vw;box-sizing:border-box;}
+.mc-xrd-dialog-grip {height:22px;display:flex;align-items:center;justify-content:center;cursor:grab;touch-action:none;user-select:none;opacity:.6;border-bottom:1px solid var(--border);}
+.mc-xrd-dialog-grip:active {cursor:grabbing;}
+.xrd-focus-panel {max-height:90vh;overflow:auto;}
+@media(prefers-reduced-motion:reduce){.mc-xrd-edge-button{transition:none}}
+@media(max-width:900px){.mc-xrd-header select{max-width:none;}}
+
+.mc-xrd-dialog-grip {width:100%;padding:0;border:0;border-bottom:1px solid var(--border);border-radius:0;background:transparent;color:inherit;box-shadow:none;}
+
+.mc-xrd-header {justify-content:flex-end;}
+.mc-xrd-edge-button {touch-action:none;user-select:none;cursor:grab;}
+.mc-xrd-edge-button:active {cursor:grabbing;}
+.xrd-jev-dialog{width:min(460px,90vw);border:1px solid var(--border);border-radius:12px;background:var(--panel);color:var(--text);padding:18px;box-shadow:0 12px 40px #0005}.xrd-jev-dialog form{display:grid;gap:12px}.xrd-jev-dialog h3,.xrd-jev-dialog p{margin:0}.xrd-jev-dialog label{display:grid;gap:5px}.xrd-jev-dialog input{width:100%;box-sizing:border-box;padding:8px;color:inherit;background:var(--panel);border:1px solid var(--border);border-radius:5px}.xrd-jev-dialog footer{display:flex;justify-content:flex-end;gap:8px}.xrd-jev-dialog small{opacity:.7}.xrd-jev-dialog button{padding:7px 12px}
