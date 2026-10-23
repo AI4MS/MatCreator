@@ -248,7 +248,9 @@ export class VirtualTranscript {
       const { element } = entry;
       element.dataset.index = String(virtualItem.index);
       element.dataset.transcriptRowId = row.id;
-      element.style.transform = `translateY(${virtualItem.start}px)`;
+      // Transforms also shift sticky descendants after their scroll constraint
+      // is calculated, pushing disclosure headings below the chat viewport.
+      element.style.top = `${virtualItem.start}px`;
       if (row.type === "gap") {
         element.style.height = `${virtualItem.size}px`;
         if (entry.revision !== row.revision) {
