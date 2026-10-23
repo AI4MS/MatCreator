@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import textwrap
 from pathlib import Path
 
@@ -330,7 +331,7 @@ async def run_python(code: str, tool_context: ToolContext) -> str:
         if session_id:
             cwd = str(get_session_workdir(session_id))
     proc = await asyncio.create_subprocess_exec(
-        "python", "-c", code,
+        sys.executable, "-c", code,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
@@ -368,11 +369,15 @@ async def run_bash(script: str, tool_context: ToolContext) -> str:
         session_id = tool_context.state.get("session_id")
         if session_id:
             cwd = str(get_session_workdir(session_id))
+    # Keep the harness configuration; login profiles can replace its venv PATH.
+    env = os.environ.copy()
+    env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
     proc = await asyncio.create_subprocess_exec(
-        "bash", "-lc", script,
+        "bash", "-c", script,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
+        env=env,
     )
     try:
         timeout = _execution_timeout_seconds()
@@ -407,7 +412,7 @@ async def run_python_file(relative_path: str) -> str:
     if not target.exists():
         return f"File not found: {target}"
     proc = await asyncio.create_subprocess_exec(
-        "python", str(target),
+        sys.executable, str(target),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

@@ -1,0 +1,336 @@
+{
+  "recorded_on": "2026-10-08",
+  "source_commit": "5f88f95",
+  "source_log": ".workspace/silicon-t5-full-final.log",
+  "policy": "Exact identity comparison only; this is not a clean full-suite result or a resolved defect.",
+  "failures": [
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_benchmark_config.py::test_benchmark_client_registers_and_persists_missing_development_token",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_disabled_skills.py::test_set_disabled_skill_names_updates_graph_nodes",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_evaluation_routes.py::test_toggle_skill_graph_node_updates_and_reports_graph_state",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_kdg_extractor.py::test_extractor_skips_unchanged_session_and_processes_only_delta",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_kdg_extractor.py::test_extractor_advances_cursor_for_empty_valid_response",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_kdg_extractor.py::test_extractor_migrates_legacy_extracted_session",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_kdg_progressive_retrieval.py::test_graph_disabled_skills_are_hidden_from_discovery_and_reads",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_kdg_progressive_retrieval.py::test_graph_agent_tool_routes_through_protected_reviewer_policy",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_kdg_progressive_retrieval.py::test_graph_agent_tool_scopes_memory_review_to_current_session",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_skill_graph_seed.py::test_seed_reuses_disabled_skill_node_and_merges_legacy_duplicate",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_skill_graph_seed.py::test_seed_removes_stale_managed_skill_and_uses_virtual_dependency",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_step_executor_runner.py::test_step_executor_retries_only_malformed_streamed_tool_arguments",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_structure_modeling.py::test_supercell_supports_general_integer_matrix",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_structure_modeling.py::test_molecule_can_be_created_or_appended",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_structure_modeling.py::test_crystal_is_created_through_matcraft_bulk_builder",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_structure_modeling.py::test_smiles_molecule_can_be_appended_at_requested_center",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_structure_modeling.py::test_matcraft_perturbation_is_seeded_and_changes_positions",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_frontend_tracks_requests_per_session",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_session_creation_does_not_start_knowledge_review",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_sse_request_uses_captured_session_context",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_completed_request_handoffs_live_turn_before_durable_refresh",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_roadmap_fits_after_the_popup_has_a_stable_layout",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_running_session_switch_discovers_and_reconnects_managed_run",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_stop_and_plan_refreshes_preserve_open_node_dialogs",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_bottom_attachment_and_node_toggle_use_one_scroll_policy",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_all_chat_disclosures_share_the_reading_position_controller",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_image_and_all_timeline_updates_preserve_node_disclosures",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_plain_text_blocks_keep_history_order_and_stable_identity",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_chat_messages_use_one_model_scheduler_and_stable_regions",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_step_cancellation_identifies_the_active_session_owner",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_remote_job_polling_is_scoped_to_the_active_session",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_remote_jobs_are_collapsed_and_keep_lifecycle_status_visible",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_session_switch_loads_page_scoped_graph_after_the_transcript_page",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_session_switch_renders_cached_snapshot_immediately",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_reselecting_the_active_session_does_not_rebuild_the_view",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_new_session_ids_are_not_limited_to_one_second_resolution",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_active_session_transitions_recompute_composer_state",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_startup_restores_only_an_accessible_session_owner_tuple",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "failed",
+      "nodeid": "tests/test_web_concurrent_sessions.py::test_startup_keeps_session_api_ready_while_maintenance_runs_in_background",
+      "reason": "Existing failure recorded at T5; root cause still requires diagnosis.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "error",
+      "nodeid": "tests/test_execution_grouping.py",
+      "reason": "Legacy agents.MatCreator import no longer matches the current src package.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    },
+    {
+      "outcome": "error",
+      "nodeid": "tests/test_matcreator_phase_and_skills.py",
+      "reason": "Legacy agents.MatCreator import no longer matches the current src package.",
+      "owner": "unassigned",
+      "tracking_issue": null,
+      "status": "needs-triage"
+    }
+  ]
+}

@@ -5,6 +5,7 @@ import logging
 import mimetypes
 import os
 import re
+import uuid
 from contextlib import aclosing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,7 @@ from google.genai import types
 
 from ...llm_cards import LLMCard, select_executor_llm_card
 from ...workspace import get_session_workdir
+from ..aidb_skill_hook import inherit_aidb_confirmation
 from .step_executor import (
     STEP_EXECUTOR_AGENT_NAME,
     StepExecutorInput,
@@ -841,9 +843,12 @@ async def run_step_executor(
     state_dict["_graph_exec_node_id"] = step_id
     state_dict["_step_label_path"] = step_label_path
 
+    child_session_id = uuid.uuid4().hex
+    inherit_aidb_confirmation(state_dict, tool_context, child_session_id)
     session = await runner.session_service.create_session(
         app_name=child_app_name,
         user_id=invocation_context.user_id,
+        session_id=child_session_id,
         state=state_dict,
     )
 

@@ -349,6 +349,7 @@ def submit_bohr_batchjob(
     if out_files_error:
         return {"status": "error", "message": out_files_error}
     input_root: str | None = None
+    vasp_input_hashes: dict[str, str] = {}
     if input_path is not None:
         if not isinstance(input_path, str) or not input_path.strip():
             return {
@@ -379,6 +380,11 @@ def submit_bohr_batchjob(
             }
         input_path = str(source.relative_to(workspace))
         input_root = str(workspace)
+        from ...tools.silicon_vasp import capture_vasp_input_hashes
+        try:
+            vasp_input_hashes = capture_vasp_input_hashes(source)
+        except (OSError, ValueError) as exc:
+            return {'status': 'error', 'message': f'VASP input provenance failed: {exc}'}
     spec = {
         "project_id": resolved_project_id,
         "name": name,
@@ -392,6 +398,8 @@ def submit_bohr_batchjob(
         "max_run_time": max_run_time,
         "max_wait_time": max_wait_time,
     }
+    if vasp_input_hashes:
+        spec['vasp_input_sha256'] = vasp_input_hashes
     result = _submit(
         tool_context,
         provider="bohr_batchjob",

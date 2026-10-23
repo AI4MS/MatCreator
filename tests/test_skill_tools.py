@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+
+import pytest
 from types import SimpleNamespace
 
 from google.adk.skills import load_skill_from_dir
@@ -170,8 +172,9 @@ def test_skill_bundle_info_unknown_skill_returns_none():
     assert skill.format_skill_bundle_hint("missing-skill", None) is None
 
 
+@pytest.mark.parametrize("requested_name", ["demo-skill", " DEMO-SKILL "])
 def test_load_skill_tool_result_carries_bundled_files_and_graph_context(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, requested_name
 ):
     from know_do_graph import EdgeRelation, EntryType, KnowDoGraph
 
@@ -210,7 +213,7 @@ def test_load_skill_tool_result_carries_bundled_files_and_graph_context(
     )
 
     result = asyncio.run(
-        load_tool.run_async(args={"skill_name": "demo-skill"}, tool_context=tool_context)
+        load_tool.run_async(args={"skill_name": requested_name}, tool_context=tool_context)
     )
 
     assert result["skill_name"] == "demo-skill"
