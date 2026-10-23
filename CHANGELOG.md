@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v2.27.0 (2026-10-23)
+
+### Features
+
+- Enhance sticky behavior for agent activity and step feed summaries
+  ([`13e43d4`](https://github.com/AI4MS/MatCreator/commit/13e43d4c9fe1781b1e20e076c7d968f91b8f162f))
+
+
 ## v2.26.0 (2026-10-23)
 
 ### Bug Fixes
