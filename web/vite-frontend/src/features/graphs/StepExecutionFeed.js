@@ -591,6 +591,7 @@ export class StepExecutionFeed {
     const task = document.createElement("span");
     task.className = "step-feed-task";
     task.textContent = titleInfo.action;
+    task.title = titleInfo.action;
     title.appendChild(task);
     if (titleInfo.identifier) {
       const identity = document.createElement("span");

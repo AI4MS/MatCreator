@@ -961,7 +961,6 @@
   width: 100%;
   display: flow-root;
   contain: layout style;
-  will-change: transform;
 }
 
 .virtual-transcript-row.is-gap {
@@ -1099,7 +1098,9 @@
   --step-feed-header-bg: var(--step-feed-idle-bg);
   background: var(--agent-bg-1);
   border-color: var(--step-feed-idle-border);
-  overflow: hidden;
+  /* Clip rounded corners without creating a scroll container that traps
+     the expanded card's sticky summary. */
+  overflow: clip;
   padding: 0;
 }
 
@@ -1255,6 +1256,49 @@
 
 .step-feed-details[open] > .step-feed-summary {
   align-items: flex-start;
+}
+
+/* Keep collapse controls within reach while scrolling a long disclosure.
+   Sticky positioning naturally releases at the end of each details element. */
+.chat-area .agent-activity[open] > summary,
+.chat-area .step-feed-details[open] > .step-feed-summary {
+  position: sticky;
+  /* Cancel the chat area's 16px top padding so scrolling text cannot peek
+     through a strip above the pinned heading. */
+  top: -16px;
+  z-index: 2;
+  background-color: var(--agent-bg-1);
+  box-shadow: 0 1px 0 var(--border), 0 4px 10px rgb(0 0 0 / 8%);
+  border-radius: 7px 7px 0 0;
+  cursor: pointer;
+}
+
+.chat-area .step-feed-details[open] > .step-feed-summary {
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  /* A quiet status tint over an opaque surface keeps body text from showing
+     through while preserving the card's success/running/error color. */
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--step-feed-header-bg) 55%, transparent),
+    color-mix(in srgb, var(--step-feed-header-bg) 55%, transparent)
+  );
+}
+
+.chat-area .step-feed-details[open] > .step-feed-summary .step-feed-meta {
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--agent-bg-1);
+}
+
+.chat-area .step-feed-details[open] > .step-feed-summary .step-feed-meta:empty {
+  display: none;
+}
+
+.chat-area :is(.agent-activity, .step-feed-details)[open] > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 /* Keep the disclosure and status controls anchored to the header's visual
