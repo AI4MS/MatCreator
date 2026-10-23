@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v2.26.0 (2026-10-23)
+
+### Bug Fixes
+
+- Preserve XRD run settings and support current NumPy
+  ([`614a5e0`](https://github.com/AI4MS/MatCreator/commit/614a5e0398054ef0214073626de450fd129651d9))
+
+### Features
+
+- Integrate XRD workbenches and Jev multiphase analysis
+  ([`3dfc29b`](https://github.com/AI4MS/MatCreator/commit/3dfc29b4f3632e06cec0745f6593c1ca7dc08a41))
+
+
 ## v2.25.0 (2026-10-09)
 
 
