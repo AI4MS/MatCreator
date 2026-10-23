@@ -49,6 +49,7 @@ export function createWorkspaceViewerController({
     fileCloseButton,
   } = elements;
   const structureTabs = new Map();
+  const toolTabs = new Map();
   let initialized = false;
   let preloadHandle = null;
   let fileRequestController = null;
@@ -86,7 +87,55 @@ export function createWorkspaceViewerController({
     tab.destroyViewer = null;
   }
 
+  function openToolTab(tabId, label, render) {
+    if (toolTabs.has(tabId)) { activate(tabId); return; }
+    const button = document.createElement("button");
+    button.className = "center-tab";
+    button.type = "button";
+    button.role = "tab";
+    button.id = `tab-${tabId}`;
+    button.dataset.tabId = tabId;
+    button.setAttribute("aria-controls", `${tabId}-panel`);
+    const title = document.createElement("span");
+    title.className = "center-tab-title";
+    title.textContent = label;
+    const closeButton = document.createElement("span");
+    closeButton.className = "center-tab-close";
+    closeButton.dataset.closeTabId = tabId;
+    closeButton.textContent = "×";
+    closeButton.title = "关闭标签页（也可按 Delete）";
+    button.append(title, closeButton);
+    button.addEventListener("keydown", (event) => {
+      if (event.key === "Delete") { event.preventDefault(); close(tabId); }
+    });
+    const panel = document.createElement("div");
+    panel.className = "center-tab-panel workspace-tool-panel";
+    panel.id = `${tabId}-panel`;
+    panel.role = "tabpanel";
+    panel.dataset.tabId = tabId;
+    panel.setAttribute("aria-labelledby", button.id);
+    const dispose = render(panel);
+    tabsScroll.appendChild(button);
+    panels.appendChild(panel);
+    toolTabs.set(tabId, { button, panel, dispose });
+    activate(tabId);
+    button.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    button.focus();
+  }
+
   function close(tabId) {
+    const tool = toolTabs.get(tabId);
+    if (tool) {
+      tool.dispose?.();
+      tool.button.remove();
+      tool.panel.remove();
+      toolTabs.delete(tabId);
+      if (state.activeCenterTabId === tabId) {
+        activate("chat");
+        tabsScroll.querySelector('[data-tab-id="chat"]')?.focus();
+      }
+      return true;
+    }
     if (skillGraphController.close(tabId)) {
       if (state.activeCenterTabId === tabId) activate("chat");
       return true;
@@ -322,7 +371,9 @@ export function createWorkspaceViewerController({
     closeFile();
     structureTabs.forEach((tab) => void destroyStructureTab(tab));
     structureTabs.clear();
+    toolTabs.forEach(({ button, panel, dispose }) => { dispose?.(); button.remove(); panel.remove(); });
+    toolTabs.clear();
   }
 
-  return { init, destroy, activate, close, openStructure, openFile, closeFile };
+  return { init, destroy, activate, close, openStructure, openFile, closeFile, openToolTab };
 }

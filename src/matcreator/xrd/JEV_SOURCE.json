@@ -1,0 +1,5 @@
+{
+  "source": "https://github.com/theAfish/open-agent-world/blob/eb31455/backend/agents/typesafe.py",
+  "sha256": "350a93b0a9c8827c09cdface3273be86ced25662ae5d942022a33df080b713ef",
+  "adaptation": "MC event types and scoped service provider; original ADD/SUBMIT controller and response validation retained"
+}

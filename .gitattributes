@@ -1,1 +1,4 @@
 database/domain_datasets.tar.gz filter=lfs diff=lfs merge=lfs -text
+
+# Preserve imported scientific source formatting and provenance hashes.
+src/matcreator/xrd/vendor/OAW_XRDfit/** whitespace=-blank-at-eol,-blank-at-eof

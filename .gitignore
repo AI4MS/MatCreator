@@ -238,3 +238,7 @@ POT_GGA_PAW_PBE/
 # Front end
 web/vite-frontend/dist/
 web/vite-frontend/node_modules/
+
+# Local XRD runtime acceptance artifacts (may contain user inputs).
+.local-review-logs/
+.local-review-backup/

@@ -28,11 +28,9 @@ from __future__ import annotations
 
 import asyncio
 import codecs
-import fcntl
 import json
 import logging
 import os
-import pty
 import re
 import shutil
 import signal
@@ -41,9 +39,14 @@ import sqlite3
 import struct
 import subprocess
 import sys
-import termios
 import threading
 import time
+try:
+    import fcntl
+    import pty
+    import termios
+except ImportError:
+    fcntl = pty = termios = None
 from collections.abc import Awaitable, Callable
 from importlib.resources import files
 from pathlib import Path
@@ -197,7 +200,7 @@ _SERVER_HOST_DATA_ROOT = Path(
     os.environ.get("MATCREATOR_HOST_DATA_ROOT", str(_SERVER_DATA_ROOT))
 ).expanduser()
 _CONTROL_PLANE_HOME = _CONTROL_PLANE_HOME_ENV
-_LOCAL_MATCREATOR_HOME = Path("~/.matcreator").expanduser()
+_LOCAL_MATCREATOR_HOME = Path(os.environ.get("MATCREATOR_HOME", "~/.matcreator")).expanduser()
 _MATCREATOR_HOME = _CONTROL_PLANE_HOME if _MATCREATOR_MODE == "server" else _LOCAL_MATCREATOR_HOME
 SESSION_DB_PATH = _MATCREATOR_HOME / ".adk" / "session.db"
 _ADK_DIR = _MATCREATOR_HOME / ".adk"
@@ -2454,6 +2457,8 @@ def _complete_workspace_paths(workspace_root: Path, cwd: str, token: str) -> dic
 
 
 def _set_pty_size(fd: int, rows: int, cols: int) -> None:
+    if fcntl is None or termios is None:
+        return
     rows = max(1, min(int(rows or 24), 200))
     cols = max(1, min(int(cols or 80), 400))
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
@@ -2466,9 +2471,21 @@ async def _send_terminal_output(websocket: WebSocket, data: bytes) -> None:
     }))
 
 
+def _read_pipe_chunk(stream, size: int = 4096) -> bytes:
+    """Read currently available pipe bytes without waiting to fill *size*."""
+    read1 = getattr(stream, "read1", None)
+    if callable(read1):
+        return read1(size)
+    return os.read(stream.fileno(), size)
+
+
 async def _local_terminal_session(websocket: WebSocket) -> None:
     workspace = get_workspace_root().resolve()
     workspace.mkdir(parents=True, exist_ok=True)
+
+    if pty is None:
+        await _windows_local_terminal_session(websocket, workspace)
+        return
 
     master_fd, slave_fd = pty.openpty()
     _set_pty_size(master_fd, 24, 80)
@@ -2533,6 +2550,59 @@ async def _local_terminal_session(websocket: WebSocket) -> None:
                     os.killpg(proc.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+
+
+async def _windows_local_terminal_session(websocket: WebSocket, workspace: Path) -> None:
+    """Serve a basic persistent PowerShell terminal without POSIX PTY modules."""
+    shell = shutil.which("pwsh") or shutil.which("powershell")
+    if not shell:
+        raise RuntimeError("PowerShell is unavailable for the local terminal")
+    creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    proc = subprocess.Popen(
+        [shell, "-NoLogo"],
+        cwd=str(workspace),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        creationflags=creation_flags,
+        env={
+            **os.environ,
+            "MATCLAW_WORKSPACE": str(workspace),
+            "MATCLAW_SESSION_DIR": str(workspace),
+        },
+    )
+    loop = asyncio.get_running_loop()
+
+    async def read_loop() -> None:
+        assert proc.stdout is not None
+        while True:
+            data = await loop.run_in_executor(None, _read_pipe_chunk, proc.stdout, 4096)
+            if not data:
+                break
+            try:
+                await _send_terminal_output(websocket, data)
+            except Exception:
+                break
+
+    reader = asyncio.create_task(read_loop())
+    try:
+        while True:
+            message = json.loads(await websocket.receive_text())
+            if message.get("type") != "input" or proc.stdin is None:
+                continue
+            data = str(message.get("data", "")).replace("\r\n", "\n").replace("\r", "\n")
+            proc.stdin.write(data.encode())
+            proc.stdin.flush()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        reader.cancel()
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
 
 def _docker_exec_socket(user_id: str):
@@ -5715,6 +5785,10 @@ async def get_backend_status(user_id: str = Query(default="")) -> JSONResponse:
 
     return JSONResponse({"ready": _is_port_open(port=get_adk_port())})
 
+
+# XRD workbench: same execution service for browser and agent tools.
+from web.xrd_api import router as xrd_router
+app.include_router(xrd_router)
 
 # Serve built frontend in production
 _dist = Path(__file__).parent / "vite-frontend" / "dist"

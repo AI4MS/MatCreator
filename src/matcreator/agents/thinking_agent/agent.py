@@ -9,6 +9,7 @@ from typing import Optional
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.function_tool import FunctionTool
+from matcreator.tools.xrd_tools import xrd_list_workspaces, xrd_get_results, xrd_action
 from google.adk.tools.tool_context import ToolContext
 from google.adk.agents.callback_context import CallbackContext
 
@@ -496,6 +497,9 @@ thinking_agent = LlmAgent(
         FunctionTool(get_user_skills_root),
         FunctionTool(run_python),
         FunctionTool(run_bash),
+        FunctionTool(xrd_list_workspaces),
+        FunctionTool(xrd_get_results),
+        FunctionTool(xrd_action),
         FunctionTool(run_flash_step),
         FunctionTool(read_session_log),
         FunctionTool(list_remote_jobs),

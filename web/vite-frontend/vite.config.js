@@ -20,6 +20,7 @@ function stripOrigin(proxy) {
 
 export default defineConfig({
   plugins: [svelte()],
+  esbuild: { jsx: "automatic" },
   server: {
     port: frontendPort,
     strictPort: true,
