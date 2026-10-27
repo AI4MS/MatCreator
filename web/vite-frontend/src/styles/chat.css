@@ -1648,14 +1648,16 @@ details.step-feed-nested {
   transform: translate(-50%, -100%);
   padding: 3px 9px;
   border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
-  background: color-mix(in srgb, var(--accent) 16%, #1b2222);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  /* Tint the theme's own panel color so dark skins get a dark chip with
+     light text and light skins a light chip with dark text. */
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
   color: var(--text);
   font-size: 12px;
   line-height: 1.4;
   pointer-events: none;
   opacity: 0;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
 }
 .code-copy-chip.is-visible {
   animation: code-copy-chip-in 1.1s ease forwards;
