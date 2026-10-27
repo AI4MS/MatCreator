@@ -350,4 +350,20 @@
     opacity: 0;
   }
 
+  /* The copy chip and explorer flash are functional signals, not decor:
+     keep them visible, just without the motion. */
+  .code-copy-chip.is-visible,
+  .tree-file.is-flash {
+    animation: none;
+  }
+
+  .code-copy-chip.is-visible {
+    opacity: 1;
+  }
+
+  .tree-file.is-flash {
+    background: rgba(125, 211, 252, 0.22);
+    border-color: rgba(125, 211, 252, 0.5);
+  }
+
 }

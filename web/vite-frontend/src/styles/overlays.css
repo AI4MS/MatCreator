@@ -668,6 +668,24 @@ details[open] > .tree-dir-summary::before { transform: rotate(90deg); }
   background: rgba(125, 211, 252, 0.07);
   border-color: rgba(125, 211, 252, 0.12);
 }
+/* A path cited in chat flashes its row here (see fileTree.js reveal()). */
+.tree-file.is-flash {
+  animation: tree-file-flash 1.6s ease;
+}
+@keyframes tree-file-flash {
+  0%, 100% {
+    background: transparent;
+    border-color: transparent;
+  }
+  10%, 30%, 50% {
+    background: rgba(125, 211, 252, 0.3);
+    border-color: rgba(125, 211, 252, 0.65);
+  }
+  20%, 40% {
+    background: rgba(125, 211, 252, 0.08);
+    border-color: rgba(125, 211, 252, 0.2);
+  }
+}
 .tree-node-indent {
   width: 10px;
   flex: 0 0 10px;

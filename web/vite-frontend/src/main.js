@@ -61,6 +61,7 @@ import { createThemeRegistry } from "./theme/ThemeRegistry.js";
 import { BUILTIN_SKINS } from "./theme/builtinSkins.js";
 import { removeOverlayWithMotion } from "./shared/ui/overlayMotion.js";
 import { showConfirmDialog } from "./shared/ui/confirmDialog.js";
+import { attachInlineCodeCopy } from "./shared/rendering/inlineCodeCopy.js";
 import {
   getFunctionResponse,
 } from "./features/chat/timelinePresentation.js";
@@ -330,11 +331,23 @@ const skillGraphController = createSkillGraphController({
 });
 knowledgeReviewController.init();
 
-const { render: renderSessionFilesTree } = createSessionFileTree({
+const {
+  render: renderSessionFilesTree,
+  reveal: revealSessionFile,
+  canReveal: canRevealSessionFile,
+} = createSessionFileTree({
   getSessionId: () => state.sessionId,
   pathToApiUrl: (path) => pathToApiUrl(path),
   openStructure: (item) => openViewer(item),
   openFile: (file) => openFileViewer(file),
+});
+
+// Clicking an inline code span copies it when it cites a workspace path. A
+// citation that names a file of the active session also flashes its row in
+// the file explorer; other absolute paths still copy.
+attachInlineCodeCopy({
+  isCopyable: (text) => canRevealSessionFile(text) || /^(?:~\/|\/)\S+$/.test(text),
+  onCopyableClick: (text) => revealSessionFile(text),
 });
 
 // Graph and timeline views share these artifact renderers. Initialize them

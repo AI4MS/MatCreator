@@ -66,7 +66,59 @@ function createTreeIcon(type) {
   return icon;
 }
 
+const FLASH_CLASS_MS = 1600;
+
 export function createSessionFileTree({ pathToApiUrl, openStructure, openFile }) {
+  // Chat messages cite workspace files by path. Indexing the rendered rows by
+  // those paths lets one click on a cited path reveal the row in this tree.
+  const itemsByPath = new Map();
+  const itemsByRelativePath = new Map();
+
+  function registerFileItem(file, element) {
+    const entry = { file, element };
+    const path = String(file.path || "").trim();
+    if (path && !itemsByPath.has(path)) itemsByPath.set(path, entry);
+    const relativePath = String(file.relative_path || "").trim();
+    if (relativePath && !itemsByRelativePath.has(relativePath)) {
+      itemsByRelativePath.set(relativePath, entry);
+    }
+  }
+
+  function findFileItem(target) {
+    const key = String(target || "").trim();
+    if (!key) return null;
+    const direct = itemsByPath.get(key) || itemsByRelativePath.get(key);
+    if (direct) return direct;
+    // Chat paths may only share a suffix with the indexed path (worker-mapped
+    // roots, or a bare filename such as `fig_b_dz_z.png`).
+    for (const entry of itemsByPath.values()) {
+      if (String(entry.file.path).endsWith(`/${key}`)) return entry;
+    }
+    if (!key.includes("/")) return null;
+    for (const entry of itemsByPath.values()) {
+      if (key.endsWith(`/${entry.file.path}`)) return entry;
+    }
+    for (const entry of itemsByRelativePath.values()) {
+      if (key.endsWith(`/${entry.file.relative_path}`)) return entry;
+    }
+    return null;
+  }
+
+  function reveal(target) {
+    const entry = findFileItem(target);
+    if (!entry) return false;
+    document.getElementById("file-explorer-col")?.classList.add("is-open");
+    for (let node = entry.element.parentElement; node; node = node.parentElement) {
+      if (node.matches?.("details")) node.open = true;
+    }
+    entry.element.scrollIntoView({ block: "center", behavior: "smooth" });
+    entry.element.classList.remove("is-flash");
+    void entry.element.offsetWidth; // restart the animation on repeat clicks
+    entry.element.classList.add("is-flash");
+    window.setTimeout(() => entry.element.classList.remove("is-flash"), FLASH_CLASS_MS);
+    return true;
+  }
+
   function createFileItem(file) {
     const item = document.createElement("li");
     item.className = "tree-file";
@@ -130,6 +182,7 @@ export function createSessionFileTree({ pathToApiUrl, openStructure, openFile })
     view.addEventListener("click", open);
     actions.appendChild(view);
     item.appendChild(actions);
+    registerFileItem(file, item);
     return item;
   }
 
@@ -178,6 +231,8 @@ export function createSessionFileTree({ pathToApiUrl, openStructure, openFile })
 
   function render(files, errorMessage = "", skippedFiles = 0) {
     const rootElement = document.getElementById("session-files-tree");
+    itemsByPath.clear();
+    itemsByRelativePath.clear();
     rootElement.innerHTML = "";
     if (errorMessage) {
       const error = document.createElement("li");
@@ -205,5 +260,9 @@ export function createSessionFileTree({ pathToApiUrl, openStructure, openFile })
     renderNode(buildTree(files), rootElement);
   }
 
-  return { render };
+  return {
+    render,
+    reveal,
+    canReveal: (target) => Boolean(findFileItem(target)),
+  };
 }
