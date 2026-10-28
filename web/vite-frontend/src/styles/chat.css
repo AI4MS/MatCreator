@@ -1635,6 +1635,39 @@ details.step-feed-nested {
   line-height: 1.35;
   font-variant-ligatures: none;
 }
+.markdown-content code[data-copyable="true"] {
+  cursor: copy;
+}
+.markdown-content code[data-copyable="true"]:hover {
+  background: color-mix(in srgb, var(--inline-code-bg) 72%, var(--accent));
+}
+/* Confirmation chip for click-to-copy on inline code (see inlineCodeCopy.js). */
+.code-copy-chip {
+  position: fixed;
+  z-index: 90;
+  transform: translate(-50%, -100%);
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  /* Tint the theme's own panel color so dark skins get a dark chip with
+     light text and light skins a light chip with dark text. */
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  pointer-events: none;
+  opacity: 0;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+}
+.code-copy-chip.is-visible {
+  animation: code-copy-chip-in 1.1s ease forwards;
+}
+@keyframes code-copy-chip-in {
+  0% { opacity: 0; transform: translate(-50%, -100%) translateY(3px); }
+  12% { opacity: 1; transform: translate(-50%, -100%) translateY(0); }
+  70% { opacity: 1; }
+  100% { opacity: 0; }
+}
 .markdown-content .markdown-table-scroll {
   max-width: 100%;
   margin: 8px 0;
