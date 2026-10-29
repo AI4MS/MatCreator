@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { fileURLToPath } from "node:url";
 
 // Configurable port variables
 const webPort = process.env.MATCREATOR_WEB_PORT || "8001";
@@ -20,6 +21,17 @@ function stripOrigin(proxy) {
 
 export default defineConfig({
   plugins: [svelte()],
+  // Two pages: the main app (index.html) and the standalone control-panel
+  // dashboard (dashboard.html), which can be opened in its own window and
+  // dragged to a second monitor.
+  build: {
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL("./index.html", import.meta.url)),
+        dashboard: fileURLToPath(new URL("./dashboard.html", import.meta.url)),
+      },
+    },
+  },
   server: {
     port: frontendPort,
     strictPort: true,
