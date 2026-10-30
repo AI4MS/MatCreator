@@ -138,9 +138,9 @@ function servicesCardHtml(data) {
   </section>`;
 }
 
-function logsCardHtml() {
+function logsCardHtml(activeLog) {
   const tabs = LOG_NAMES.map((name) =>
-    `<button class="dash-tab${name === logName ? " active" : ""}" type="button" data-log="${name}">${name}</button>`).join("");
+    `<button class="dash-tab${name === activeLog ? " active" : ""}" type="button" data-log="${name}">${name}</button>`).join("");
   return `<section class="dash-card dash-card-logs">
     <h2>Logs
       <span class="dash-tabs">${tabs}</span>
@@ -157,6 +157,7 @@ export function createDashboardController({
   activateCenterTab,
 } = {}) {
   let tab = null;
+  let root = null; // current mount: the center-tab panel or the standalone body
   let statusTimer = null;
   let logTimer = null;
   let storedLog = localStorage.getItem(LOG_STORAGE_KEY);
@@ -167,14 +168,12 @@ export function createDashboardController({
   // ------------------------------------------------------------------
 
   async function refreshStatus() {
-    const stamp = tab?.panel?.querySelector('[data-ref="updated"]')
-      || document.querySelector(".dash-standalone [data-ref=\"updated\"]");
+    const stamp = root?.querySelector('[data-ref="updated"]');
     try {
       const res = await fetch("/api/system/status");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      const cards = tab?.panel?.querySelector('[data-ref="cards"]')
-        || document.querySelector('.dash-standalone [data-ref="cards"]');
+      const cards = root?.querySelector('[data-ref="cards"]');
       if (cards) {
         cards.innerHTML = servicesCardHtml(data) + cpuCardHtml(data) + gpuCardsHtml(data);
       }
@@ -185,7 +184,6 @@ export function createDashboardController({
   }
 
   async function refreshLog() {
-    const root = tab?.panel || document.querySelector(".dash-standalone");
     const view = root?.querySelector('[data-ref="logview"]');
     const stamp = root?.querySelector('[data-ref="log-updated"]');
     if (!view) return;
@@ -206,18 +204,14 @@ export function createDashboardController({
     if (!LOG_NAMES.includes(name)) return;
     logName = name;
     localStorage.setItem(LOG_STORAGE_KEY, name);
-    const root = tab?.panel || document.querySelector(".dash-standalone");
     root?.querySelectorAll("[data-log]").forEach((b) => b.classList.toggle("active", b.dataset.log === name));
-    if (view()) view().textContent = "Loading…";
+    const view = root?.querySelector('[data-ref="logview"]');
+    if (view) view.textContent = "Loading…";
     void refreshLog();
   }
 
-  function view() {
-    return (tab?.panel || document.querySelector(".dash-standalone"))?.querySelector('[data-ref="logview"]') || null;
-  }
-
-  function wireLogs(root) {
-    root?.addEventListener("click", (event) => {
+  function wireLogs(mount) {
+    mount?.addEventListener("click", (event) => {
       const target = event.target.closest("[data-log]");
       if (target) setLogName(target.dataset.log);
     });
@@ -283,12 +277,13 @@ export function createDashboardController({
       </div>
       <div class="dash-content">
         <div class="dash-row" data-ref="cards"><p class="dash-empty">Loading…</p></div>
-        ${logsCardHtml()}
+        ${logsCardHtml(logName)}
       </div>`;
 
     centerTabs?.appendChild(button);
     centerTabPanels?.appendChild(panel);
     tab = { button, panel };
+    root = panel;
     wireLogs(panel);
     panel.querySelector('[data-ref="popout"]')?.addEventListener("click", () => {
       window.open("dashboard.html", "_blank", "width=1440,height=900");
@@ -315,6 +310,7 @@ export function createDashboardController({
     tab.button.remove();
     tab.panel.remove();
     tab = null;
+    root = null;
     return true;
   }
 
@@ -323,6 +319,7 @@ export function createDashboardController({
   // ------------------------------------------------------------------
 
   function renderStandalone(container) {
+    root = container;
     container.classList.add("dash-standalone");
     container.innerHTML = `
       <div class="dash-header">
@@ -332,7 +329,7 @@ export function createDashboardController({
       </div>
       <div class="dash-content">
         <div class="dash-row" data-ref="cards"><p class="dash-empty">Loading…</p></div>
-        ${logsCardHtml()}
+        ${logsCardHtml(logName)}
       </div>`;
     wireLogs(container);
     container.querySelector('[data-ref="reload"]')?.addEventListener("click", () => {
