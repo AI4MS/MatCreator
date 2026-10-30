@@ -21,40 +21,49 @@ function esc(value) {
   ));
 }
 
-// Donut gauge with the numeric value in the center. Ring color follows load:
-// green below 60, amber below 85, red beyond.
+// Donut gauge: value in the ring center (one decimal below 10% so idle
+// machines do not read as flat 0%), label + sub below the ring so long text
+// never collides with the stroke. Ring color follows load: green below 60,
+// amber below 85, red beyond.
 function ringSvg(pct, label, sub) {
   const p = Math.max(0, Math.min(100, pct || 0));
   const level = p >= 85 ? "bad" : p >= 60 ? "warn" : "ok";
-  return `<svg class="dash-ring" viewBox="0 0 120 120" role="img" aria-label="${esc(label)} ${Math.round(p)}%">
-    <circle class="dash-ring-track" cx="60" cy="60" r="${RING_RADIUS}"></circle>
-    <circle class="dash-ring-value ${level}" cx="60" cy="60" r="${RING_RADIUS}"
-      stroke-dasharray="${RING_CIRCUMFERENCE.toFixed(1)}"
-      stroke-dashoffset="${(RING_CIRCUMFERENCE * (1 - p / 100)).toFixed(1)}"></circle>
-    <text class="dash-ring-number" x="60" y="50">${Math.round(p)}<tspan class="dash-ring-unit">%</tspan></text>
-    <text class="dash-ring-label" x="60" y="80">${esc(label)}</text>
-    <text class="dash-ring-sub" x="60" y="96">${esc(sub || "")}</text>
-  </svg>`;
+  const num = p >= 10 ? String(Math.round(p)) : p.toFixed(1);
+  return `<figure class="dash-gauge">
+    <svg class="dash-ring" viewBox="0 0 120 120" role="img" aria-label="${esc(label)} ${num}%">
+      <circle class="dash-ring-track" cx="60" cy="60" r="${RING_RADIUS}"></circle>
+      <circle class="dash-ring-value ${level}" cx="60" cy="60" r="${RING_RADIUS}"
+        stroke-dasharray="${RING_CIRCUMFERENCE.toFixed(1)}"
+        stroke-dashoffset="${(RING_CIRCUMFERENCE * (1 - p / 100)).toFixed(1)}"></circle>
+      <text class="dash-ring-number" x="60" y="60">${num}<tspan class="dash-ring-unit">%</tspan></text>
+    </svg>
+    <figcaption class="dash-gauge-label">${esc(label)}${sub ? `<span>${esc(sub)}</span>` : ""}</figcaption>
+  </figure>`;
 }
 
-function serviceRowHtml(service) {
-  const chip = service.running
-    ? '<span class="dash-chip ok">Running</span>'
-    : '<span class="dash-chip bad">Down</span>';
-  return `<div class="dash-service">
-    <span class="dash-dot ${service.running ? "ok" : "bad"}"></span>
-    <span class="dash-service-name">${esc(service.label)}</span>
-    ${chip}
-    <span class="dash-port">:${service.port}</span>
-  </div>`;
-}
-
-function processTableHtml(headers, rows) {
+// Fixed column widths keep rows on one line regardless of content; long
+// names truncate with an ellipsis (hover shows the full text via title).
+function processTableHtml(headers, widths, rows) {
   if (!rows.length) return "";
+  const cols = widths.map((w) => `<col style="width:${w}%">`).join("");
   return `<table class="dash-table">
+    <colgroup>${cols}</colgroup>
     <tr>${headers.map((h) => `<th>${esc(h)}</th>`).join("")}</tr>
-    ${rows.map((cells) => `<tr>${cells.map((c) => `<td${c.num ? ' class="num"' : ""}>${c.html}</td>`).join("")}</tr>`).join("")}
+    ${rows.map((cells) => `<tr>${cells.map((c) => `<td${c.num ? ' class="num"' : ""}${c.title ? ` title="${esc(c.title)}"` : ""}>${c.html}</td>`).join("")}</tr>`).join("")}
   </table>`;
+}
+
+// Per-core bars on a balanced grid (e.g. 32 cores -> 16 x 2) so there is no
+// ragged half-row; bar count per row adapts to any core count.
+function coresGridHtml(cpu) {
+  const n = cpu.cores.length;
+  const rows = n >= 64 ? 4 : n > 16 ? 2 : 1;
+  const cols = Math.max(1, Math.ceil(n / rows));
+  const bars = cpu.cores.map((core) => {
+    const height = core.usage > 0 ? Math.max(4, Math.min(100, core.usage)) : 0;
+    return `<div class="dash-core" title="${esc(core.name)} ${core.usage}%"><i style="height:${height}%"></i></div>`;
+  }).join("");
+  return `<div class="dash-cores" style="grid-template-columns:repeat(${cols}, 1fr)">${bars}</div>`;
 }
 
 function cpuCardHtml(data) {
@@ -64,8 +73,6 @@ function cpuCardHtml(data) {
       <p class="dash-empty">${esc(cpu.reason || "CPU statistics are not available on this machine.")}</p>
     </section>`;
   }
-  const cores = cpu.cores.map((core) =>
-    `<div class="dash-core" title="${esc(core.name)} ${core.usage}%"><i style="height:${Math.min(100, core.usage)}%"></i></div>`).join("");
   const load = Array.isArray(cpu.load)
     ? `<p class="dash-meta">Load ${cpu.load.join(" · ")} <span class="dash-dim">(1/5/15 min)</span></p>`
     : "";
@@ -74,11 +81,12 @@ function cpuCardHtml(data) {
     : `<p class="dash-empty">Memory statistics are not available on this machine.</p>`;
   const procs = processTableHtml(
     ["User", "PID", "CPU%", "Process"],
+    [26, 22, 15, 37],
     (data.top_processes || []).map((p) => [
-      { html: esc(p.user) },
+      { html: esc(p.user), title: p.user },
       { html: String(p.pid) },
       { html: String(p.cpu), num: true },
-      { html: esc(p.name) },
+      { html: esc(p.name), title: p.name },
     ]),
   ) || '<p class="dash-empty">No process above 0.5% CPU right now.</p>';
   return `<section class="dash-card">
@@ -88,7 +96,7 @@ function cpuCardHtml(data) {
       ${memory}
     </div>
     ${load}
-    <div class="dash-cores">${cores}</div>
+    ${coresGridHtml(cpu)}
     <h3>Busy processes</h3>
     ${procs}
   </section>`;
@@ -106,18 +114,22 @@ function gpuCardsHtml(data) {
     const memPct = gpu.mem_total_mib ? (100 * gpu.mem_used_mib) / gpu.mem_total_mib : 0;
     const procs = processTableHtml(
       ["User", "PID", "Process", "VRAM"],
+      [24, 20, 34, 22],
       gpu.processes.map((p) => [
-        { html: esc(p.user || "-") },
+        { html: esc(p.user || "-"), title: p.user },
         { html: String(p.pid) },
-        { html: esc(p.name) },
+        { html: esc(p.name), title: p.name },
         { html: `${p.mem_mib} MiB`, num: true },
       ]),
     ) || '<p class="dash-empty">Idle — no compute processes on this GPU.</p>';
     const badge = gpu.processes.length
       ? '<span class="dash-chip ok">Busy</span>'
       : '<span class="dash-chip">Idle</span>';
+    const power = gpu.power_w != null
+      ? ` · ${Math.round(gpu.power_w)}W${gpu.power_limit_w != null ? ` / ${Math.round(gpu.power_limit_w)}W` : ""}`
+      : "";
     return `<section class="dash-card">
-      <h2>GPU ${gpu.index} ${badge}<span class="dash-dim">${Math.round(gpu.temp)}°C</span></h2>
+      <h2>GPU ${gpu.index} ${badge}<span class="dash-dim">${Math.round(gpu.temp)}°C${power}</span></h2>
       <p class="dash-meta">${esc(gpu.name)}</p>
       <div class="dash-gauges">
         ${ringSvg(gpu.util, "Utilization", "")}
@@ -129,12 +141,22 @@ function gpuCardsHtml(data) {
   }).join("");
 }
 
-function servicesCardHtml(data) {
-  const rows = (data.services || []).map(serviceRowHtml).join("")
-    || '<p class="dash-empty">No services reported.</p>';
-  return `<section class="dash-card">
-    <h2>Services</h2>
-    <div class="dash-services">${rows}</div>
+// Single-line services strip at the top of the page; each cell keeps the
+// status chip and port right-aligned so they line up across services.
+function servicesStripHtml(data) {
+  const items = (data.services || []).map((service) => {
+    const chip = service.running
+      ? '<span class="dash-chip ok">Running</span>'
+      : '<span class="dash-chip bad">Down</span>';
+    return `<div class="dash-service">
+      <span class="dash-dot ${service.running ? "ok" : "bad"}"></span>
+      <span class="dash-service-name" title="${esc(service.label)}">${esc(service.label)}</span>
+      ${chip}
+      <span class="dash-port">:${service.port}</span>
+    </div>`;
+  }).join("") || '<p class="dash-empty">No services reported.</p>';
+  return `<section class="dash-card dash-card-services">
+    <div class="dash-services-row">${items}</div>
   </section>`;
 }
 
@@ -173,9 +195,23 @@ export function createDashboardController({
       const res = await fetch("/api/system/status");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      const services = root?.querySelector('[data-ref="services"]');
+      if (services) {
+        services.innerHTML = (data.services || []).map((service) => {
+          const chip = service.running
+            ? '<span class="dash-chip ok">Running</span>'
+            : '<span class="dash-chip bad">Down</span>';
+          return `<div class="dash-service">
+            <span class="dash-dot ${service.running ? "ok" : "bad"}"></span>
+            <span class="dash-service-name" title="${esc(service.label)}">${esc(service.label)}</span>
+            ${chip}
+            <span class="dash-port">:${service.port}</span>
+          </div>`;
+        }).join("");
+      }
       const cards = root?.querySelector('[data-ref="cards"]');
       if (cards) {
-        cards.innerHTML = servicesCardHtml(data) + cpuCardHtml(data) + gpuCardsHtml(data);
+        cards.innerHTML = cpuCardHtml(data) + gpuCardsHtml(data);
       }
       if (stamp) stamp.textContent = "Updated " + new Date().toLocaleTimeString();
     } catch {
@@ -276,6 +312,9 @@ export function createDashboardController({
         <button class="ghost dash-mini-btn" type="button" data-ref="popout" title="Open the standalone dashboard page (for a second monitor)">Pop out</button>
       </div>
       <div class="dash-content">
+        <section class="dash-card dash-card-services">
+          <div class="dash-services-row" data-ref="services"><p class="dash-empty">Loading…</p></div>
+        </section>
         <div class="dash-row" data-ref="cards"><p class="dash-empty">Loading…</p></div>
         ${logsCardHtml(logName)}
       </div>`;
@@ -328,6 +367,9 @@ export function createDashboardController({
         <button class="ghost dash-mini-btn" type="button" data-ref="reload">Reload</button>
       </div>
       <div class="dash-content">
+        <section class="dash-card dash-card-services">
+          <div class="dash-services-row" data-ref="services"><p class="dash-empty">Loading…</p></div>
+        </section>
         <div class="dash-row" data-ref="cards"><p class="dash-empty">Loading…</p></div>
         ${logsCardHtml(logName)}
       </div>`;

@@ -2618,6 +2618,7 @@ async def health_check():
 
 _SYSTEM_SAMPLE_LOCK = threading.Lock()
 _SYSTEM_CPU_PREV: dict[str, tuple[float, float]] = {}
+_SYSTEM_CPU_PREV_TIME = 0.0
 _SYSTEM_PROBE_CACHE: dict[str, tuple[float, bool]] = {}
 _NVIDIA_SMI = shutil.which("nvidia-smi")
 _SYSTEM_LOG_NAMES = ("api-server", "web-main", "vite")
@@ -2641,19 +2642,25 @@ def _read_proc_stat() -> dict[str, tuple[float, float]]:
 
 
 def _cpu_sample() -> dict[str, Any]:
+    global _SYSTEM_CPU_PREV_TIME
     with _SYSTEM_SAMPLE_LOCK:
-        prev = _SYSTEM_CPU_PREV or _read_proc_stat()
+        first = not _SYSTEM_CPU_PREV
+        # Snapshot, never a reference: the store is refreshed below before the
+        # deltas are computed, and aliasing it would make every delta zero.
+        prev = _read_proc_stat() if first else dict(_SYSTEM_CPU_PREV)
         if not prev:
             return {"available": False, "reason": "not supported on this platform"}
-        if not _SYSTEM_CPU_PREV:
-            # First call after startup: take a short delta so the first
-            # response already carries a real utilisation number.
-            time.sleep(0.25)
+        # Jiffies tick at 10 ms; a sub-second window quantises low utilisation
+        # to zero on many-core machines, so keep at least a 0.5 s window.
+        elapsed = 0.0 if first else time.monotonic() - _SYSTEM_CPU_PREV_TIME
+        if elapsed < 0.5:
+            time.sleep(0.5 - elapsed)
         cur = _read_proc_stat()
         if not cur:
             return {"available": False, "reason": "not supported on this platform"}
         _SYSTEM_CPU_PREV.clear()
         _SYSTEM_CPU_PREV.update(cur)
+        _SYSTEM_CPU_PREV_TIME = time.monotonic()
         total = 0.0
         cores: list[dict[str, Any]] = []
         for name, (idle1, total1) in cur.items():
@@ -2743,12 +2750,18 @@ def _gpu_sample() -> dict[str, Any]:
     try:
         out = subprocess.run(
             [_NVIDIA_SMI,
-             "--query-gpu=index,name,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu",
+             "--query-gpu=index,name,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=8,
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError) as exc:
         return {"available": False, "reason": f"nvidia-smi failed: {exc}"}
+
+    def _watts(value: str) -> float | None:
+        try:
+            return float(value)
+        except ValueError:
+            return None  # "[N/A]" / "[Not Supported]"
 
     gpus: dict[str, dict[str, Any]] = {}
     for line in out.splitlines():
@@ -2764,6 +2777,8 @@ def _gpu_sample() -> dict[str, Any]:
                 "mem_used_mib": float(parts[4] or 0),
                 "mem_total_mib": float(parts[5] or 0),
                 "temp": float(parts[6] or 0),
+                "power_w": _watts(parts[7]) if len(parts) > 7 else None,
+                "power_limit_w": _watts(parts[8]) if len(parts) > 8 else None,
                 "processes": [],
             }
         except ValueError:
