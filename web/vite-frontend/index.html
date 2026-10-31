@@ -188,6 +188,13 @@
                   <path d="M12 3.5h0a1.35 1.35 0 0 1 1.35 1.19l.14 1.17a6.7 6.7 0 0 1 1.22.5l.92-.73a1.35 1.35 0 0 1 1.8.1h0a1.35 1.35 0 0 1 .1 1.8l-.73.92c.2.39.37.8.5 1.22l1.17.14A1.35 1.35 0 0 1 19.66 11h0v2h0a1.35 1.35 0 0 1-1.19 1.35l-1.17.14a6.7 6.7 0 0 1-.5 1.22l.73.92a1.35 1.35 0 0 1-.1 1.8h0a1.35 1.35 0 0 1-1.8.1l-.92-.73c-.39.2-.8.37-1.22.5l-.14 1.17A1.35 1.35 0 0 1 12 20.66h0a1.35 1.35 0 0 1-1.35-1.19l-.14-1.17a6.7 6.7 0 0 1-1.22-.5l-.92.73a1.35 1.35 0 0 1-1.8-.1h0a1.35 1.35 0 0 1-.1-1.8l.73-.92a6.7 6.7 0 0 1-.5-1.22l-1.17-.14A1.35 1.35 0 0 1 4.34 13h0v-2h0a1.35 1.35 0 0 1 1.19-1.35l1.17-.14c.13-.42.3-.83.5-1.22l-.73-.92a1.35 1.35 0 0 1 .1-1.8h0a1.35 1.35 0 0 1 1.8-.1l.92.73c.39-.2.8-.37 1.22-.5l.14-1.17A1.35 1.35 0 0 1 12 3.5Z"></path>
                 </svg>
               </button>
+              <button class="ghost icon-action-btn mat-bb-hidden" id="dashboard-open" type="button" title="Open control panel" aria-label="Open control panel">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M5.5 18.5a8.5 8.5 0 1 1 13 0"></path>
+                  <path d="m12 13 3.2-4"></path>
+                  <circle cx="12" cy="13" r="1.1"></circle>
+                </svg>
+              </button>
               </div>
             </div>
             <div class="left-user-auth-actions" id="left-user-auth-actions">
@@ -562,6 +569,10 @@
               <button class="ghost settings-font-scale-option" type="button" data-font-scale="125" aria-pressed="false">125%</button>
               <button class="ghost settings-font-scale-option" type="button" data-font-scale="150" aria-pressed="false">150%</button>
             </div>
+            <div class="settings-section-divider">Bottom bar</div>
+            <label class="settings-label">Quick Access Buttons</label>
+            <p class="settings-hint">Choose which buttons appear in the bottom-left action row (up to 5). The control panel button is hidden until you add it here. Applies immediately and is saved on this device.</p>
+            <div id="settings-bottom-bar-options" class="settings-bottom-bar-options" role="group" aria-label="Bottom bar buttons"></div>
           </div>
           <div class="settings-pane" id="tab-profile">
             <label class="settings-label">Username</label>

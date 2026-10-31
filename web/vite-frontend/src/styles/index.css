@@ -7,6 +7,7 @@
 @import "./overlays.css";
 @import "./skills.css";
 @import "./evaluation.css";
+@import "../features/dashboard/dashboard.css";
 @import "./motion.css";
 @import "./skins.css";
 @import "./rackLabLiquidGlass.css";

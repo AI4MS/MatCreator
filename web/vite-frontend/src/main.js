@@ -62,6 +62,8 @@ import { BUILTIN_SKINS } from "./theme/builtinSkins.js";
 import { removeOverlayWithMotion } from "./shared/ui/overlayMotion.js";
 import { showConfirmDialog } from "./shared/ui/confirmDialog.js";
 import { attachInlineCodeCopy } from "./shared/rendering/inlineCodeCopy.js";
+import { applyBottomBarLayout } from "./features/ui/bottomBarLayout.js";
+import { createDashboardController } from "./features/dashboard/DashboardController.js";
 import {
   getFunctionResponse,
 } from "./features/chat/timelinePresentation.js";
@@ -137,6 +139,7 @@ const sessionListEl = document.getElementById("session-list");
 const resetBtn = document.getElementById("reset-session");
 const workspaceCliToggle = document.getElementById("workspace-cli-toggle");
 const skillGraphOpenBtn = document.getElementById("skill-graph-open");
+const dashboardOpenBtn = document.getElementById("dashboard-open");
 const themeToggle = document.getElementById("theme-toggle");
 const refreshSessionsBtn = document.getElementById("refresh-sessions");
 const sessionStatusFilter = document.getElementById("session-status-filter");
@@ -330,6 +333,13 @@ const skillGraphController = createSkillGraphController({
   knowledgeReviewBanner,
 });
 knowledgeReviewController.init();
+
+const dashboardController = createDashboardController({
+  state,
+  centerTabs,
+  centerTabPanels,
+  activateCenterTab,
+});
 
 const {
   render: renderSessionFilesTree,
@@ -632,6 +642,12 @@ skillGraphOpenBtn?.addEventListener("click", () => {
   skillGraphController.open({ force: true });
 });
 
+dashboardOpenBtn?.addEventListener("click", () => {
+  dashboardController.open();
+});
+
+applyBottomBarLayout();
+
 function refreshSessionFiles(sessionId = state.sessionId, owner = state.activeSessionUserId || state.userId) {
   return sessionCoordinator?.refreshFiles(sessionId, owner);
 }
@@ -797,6 +813,7 @@ workspaceViewerController = createWorkspaceViewerController({
     fileCloseButton: document.getElementById("fv-close"),
   },
   skillGraphController,
+  dashboardController,
   lightbox,
   classifyPath,
   pathToApiUrl,

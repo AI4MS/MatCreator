@@ -32,6 +32,7 @@ export function createWorkspaceViewerController({
   state,
   elements,
   skillGraphController,
+  dashboardController,
   lightbox,
   classifyPath,
   pathToApiUrl,
@@ -76,6 +77,7 @@ export function createWorkspaceViewerController({
     });
     state.structure3dViewer = structureTabs.get(tabId)?.viewer || null;
     skillGraphController.activate(tabId);
+    dashboardController?.activate(tabId);
   }
 
   async function destroyStructureTab(tab) {
@@ -88,6 +90,10 @@ export function createWorkspaceViewerController({
 
   function close(tabId) {
     if (skillGraphController.close(tabId)) {
+      if (state.activeCenterTabId === tabId) activate("chat");
+      return true;
+    }
+    if (dashboardController?.close(tabId)) {
       if (state.activeCenterTabId === tabId) activate("chat");
       return true;
     }
