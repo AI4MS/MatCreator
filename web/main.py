@@ -2949,8 +2949,14 @@ def _venv_reinstall() -> tuple[bool, str]:
         "VIRTUAL_ENV": str(ROOT / ".venv"),
         "PATH": str(ROOT / ".venv" / "bin") + os.pathsep + os.environ.get("PATH", ""),
     }
-    venv_uv = ROOT / ".venv" / "bin" / "uv"
-    uv_bin = str(venv_uv) if venv_uv.exists() else shutil.which("uv")
+    # Known uv locations first: service processes ship a minimal PATH and uv
+    # usually lives in ~/.local/bin (pipx), outside it.
+    uv_candidates = [
+        ROOT / ".venv" / "bin" / "uv",
+        Path.home() / ".local" / "bin" / "uv",
+        Path.home() / ".cargo" / "bin" / "uv",
+    ]
+    uv_bin = next((str(c) for c in uv_candidates if c.exists()), None) or shutil.which("uv")
     if uv_bin:
         args = [uv_bin, "pip", "install", "-e", "."]
     else:
@@ -3005,7 +3011,9 @@ def _restart_dev_stack() -> None:
         "pkill -f 'uvicorn web.main:app' 2>/dev/null; "
         "pkill -f 'vite-frontend/node_modules/.bin/vite' 2>/dev/null; "
         "sleep 1; "
-        f"cd {ROOT} && nohup bash script/start_matcreator.sh "
+        f"cd {ROOT} && "
+        f'export PATH="{ROOT / ".venv" / "bin"}:$HOME/.local/bin:$PATH" && '
+        "nohup bash script/start_matcreator.sh "
         ">> /tmp/matcreator-restart.log 2>&1"
     )
     subprocess.Popen(["bash", "-c", script], start_new_session=True)
