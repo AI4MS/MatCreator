@@ -2892,6 +2892,158 @@ def system_logs(
         raise HTTPException(status_code=500, detail=f"failed to read log: {exc}")
 
 
+# --- git operations for the dashboard (branch switch / upstream update) ----
+# Dev convenience operating on the local checkout at ROOT. Long-running steps
+# (fetch/pull/uv/npm) can take minutes; these endpoints are sync (threadpool).
+
+_GIT_TIMEOUT = 120
+
+
+def _git_run(args: list, timeout: int = _GIT_TIMEOUT) -> tuple[bool, str]:
+    """Run git in the project checkout; return (ok, combined output)."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(ROOT)] + args,
+            capture_output=True, text=True, timeout=timeout,
+        )
+        out = (proc.stdout + "\n" + proc.stderr).strip()
+        return proc.returncode == 0, out or "(no output)"
+    except subprocess.TimeoutExpired:
+        return False, "git command timed out (network unreachable or slow remote?)"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"git failed: {exc}"
+
+
+def _git_branches() -> list[str]:
+    ok, out = _git_run(
+        ["for-each-ref", "--format=%(refname:short)", "refs/heads/", "refs/remotes/"],
+        timeout=15,
+    )
+    if not ok:
+        return []
+    return [b.strip() for b in out.splitlines() if b.strip()]
+
+
+def _venv_reinstall() -> tuple[bool, str]:
+    """Re-sync the project venv after code changed:
+    uv pip install -e . (falls back to plain pip when uv is unavailable).
+    ~/.local/bin is prepended because uv usually lives there (pipx) and
+    service processes ship a minimal PATH."""
+    env = {
+        **os.environ,
+        "VIRTUAL_ENV": str(ROOT / ".venv"),
+        "PATH": str(ROOT / ".venv" / "bin") + os.pathsep + os.environ.get("PATH", ""),
+    }
+    venv_uv = ROOT / ".venv" / "bin" / "uv"
+    uv_bin = str(venv_uv) if venv_uv.exists() else shutil.which("uv")
+    if uv_bin:
+        args = [uv_bin, "pip", "install", "-e", "."]
+    else:
+        args = [str(ROOT / ".venv" / "bin" / "python"), "-m", "pip", "install", "-e", "."]
+    try:
+        proc = subprocess.run(
+            args, cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=600,
+        )
+        out = (proc.stdout + "\n" + proc.stderr).strip()
+        return proc.returncode == 0, out or "(no output)"
+    except subprocess.TimeoutExpired:
+        return False, "dependency resync timed out"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"dependency resync failed: {exc}"
+
+
+def _npm_install() -> tuple[bool, str]:
+    """npm install in the frontend — pulled branches can add node deps."""
+    npm = shutil.which("npm") or "npm"
+    frontend = ROOT / "web" / "vite-frontend"
+    try:
+        proc = subprocess.run(
+            [npm, "install"], cwd=str(frontend), capture_output=True, text=True, timeout=900,
+        )
+        out = (proc.stdout + "\n" + proc.stderr).strip()
+        tail = "\n".join(out.splitlines()[-8:])
+        return proc.returncode == 0, tail or "(no output)"
+    except subprocess.TimeoutExpired:
+        return False, "npm install timed out"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"npm install failed: {exc}"
+
+
+def _git_info_payload() -> dict:
+    branches = _git_branches()
+    ok_c, current = _git_run(["rev-parse", "--abbrev-ref", "HEAD"], timeout=15)
+    current = current.strip() if ok_c else ""
+    if not branches or not current:
+        return {"ok": False, "current": current, "branches": [], "error": "git unavailable"}
+    return {"ok": True, "current": current,
+            "branches": [current] + sorted(b for b in branches if b != current)}
+
+
+def _git_checkout_payload(branch: str) -> dict:
+    if branch not in _git_branches():
+        return {"ok": False, "output": f"unknown branch: {branch}"}
+    ok, out = _git_run(["checkout", branch])
+    if not ok:
+        return {"ok": False, "output": out, "branch": branch}
+    # Switched code can move dependencies — resync python + node deps.
+    ok_i, out_i = _venv_reinstall()
+    ok_n, out_n = _npm_install()
+    installed = ok_i and ok_n
+    output = (out + "\n--- deps: uv pip install -e . ---\n" + out_i
+              + "\n--- deps: npm install ---\n" + out_n)
+    return {"ok": installed, "output": output, "branch": branch}
+
+
+def _git_update_payload() -> dict:
+    """fetch upstream, pull upstream <current branch>, then resync deps.
+
+    Feature branches usually do not exist on upstream; when the upstream pull
+    fails with a missing-ref error, retry against the branch's own tracking
+    remote (e.g. origin/feat/x). Network failures surface as ok:false with
+    git's own message for the dashboard to display.
+    """
+    ok_c, current = _git_run(["rev-parse", "--abbrev-ref", "HEAD"], timeout=15)
+    if not ok_c:
+        return {"ok": False, "output": current}
+    ok_f, out_f = _git_run(["fetch", "upstream", "--prune"])
+    if not ok_f:
+        return {"ok": False, "current": current, "stage": "fetch",
+                "output": "git fetch upstream failed (network?):\n" + out_f}
+    ok_p, out_p = _git_run(["pull", "upstream", current])
+    source = "upstream/" + current
+    if not ok_p and re.search(r"无法找到远程引用|couldn't? find remote ref|not found", out_p, re.I):
+        ok_t, tracking = _git_run(
+            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], timeout=15)
+        tracking = tracking.strip()
+        if ok_t and tracking and tracking != "@{upstream}":
+            remote, _, ref = tracking.partition("/")
+            ok_p, out_p = _git_run(["pull", remote, ref])
+            source = tracking
+    output = out_f + "\n" + out_p
+    if not ok_p:
+        return {"ok": False, "current": current, "stage": "pull", "source": source, "output": output}
+    ok_i, out_i = _venv_reinstall()
+    ok_n, out_n = _npm_install()
+    output += "\n--- deps: uv pip install -e . ---\n" + out_i + "\n--- deps: npm install ---\n" + out_n
+    return {"ok": ok_i and ok_n, "current": current, "stage": "install", "source": source, "output": output}
+
+
+@app.get("/api/system/git")
+def system_git(user_id: str = Query(default="")) -> dict:
+    return _git_info_payload()
+
+
+@app.post("/api/system/git/checkout")
+def system_git_checkout(body: dict = Body(default={}), user_id: str = Query(default="")) -> dict:
+    branch = str(body.get("branch") or "")
+    return _git_checkout_payload(branch)
+
+
+@app.post("/api/system/git/update")
+def system_git_update(user_id: str = Query(default="")) -> dict:
+    return _git_update_payload()
+
+
 @app.get("/api/evaluations/catalog")
 async def list_evaluation_catalog(
     q: str = Query(default=""),

@@ -26,6 +26,22 @@
   margin-left: auto;
 }
 
+.dash-git {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.dash-git-branch {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+  max-width: 220px;
+}
+
 .dash-mini-btn {
   padding: 3px 10px;
   font-size: 12px;

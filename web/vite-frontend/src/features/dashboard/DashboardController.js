@@ -180,6 +180,8 @@ export function createDashboardController({
 } = {}) {
   let tab = null;
   let root = null; // current mount: the center-tab panel or the standalone body
+  let gitBusy = false;
+  let note = null; // transient header note (git ops); suppresses the periodic stamp
   let statusTimer = null;
   let logTimer = null;
   let storedLog = localStorage.getItem(LOG_STORAGE_KEY);
@@ -213,7 +215,7 @@ export function createDashboardController({
       if (cards) {
         cards.innerHTML = cpuCardHtml(data) + gpuCardsHtml(data);
       }
-      if (stamp) stamp.textContent = "Updated " + new Date().toLocaleTimeString();
+      if (stamp && !note) stamp.textContent = "Updated " + new Date().toLocaleTimeString();
     } catch {
       if (stamp) stamp.textContent = "Refresh failed — is the backend running?";
     }
@@ -269,6 +271,102 @@ export function createDashboardController({
   }
 
   // ------------------------------------------------------------------
+  // Git: branch switch + upstream update (fetch/pull/deps resync)
+  // ------------------------------------------------------------------
+
+  function setStamp(text) {
+    note = text;
+    const stamp = root?.querySelector('[data-ref="updated"]');
+    if (stamp) stamp.textContent = text;
+  }
+
+  function clearNoteLater(ms = 8000) {
+    window.setTimeout(() => { note = null; }, ms);
+  }
+
+  async function loadGitBranches() {
+    const sel = root?.querySelector('[data-ref="git-branch"]');
+    if (!sel || gitBusy) return;
+    try {
+      const d = await fetch("/api/system/git").then((r) => r.json());
+      if (!d.ok) {
+        sel.innerHTML = '<option>git unavailable</option>';
+        sel.disabled = true;
+        sel.title = d.error || "";
+        return;
+      }
+      sel.innerHTML = d.branches.map((b) =>
+        `<option value="${esc(b)}"${b === d.current ? " selected" : ""}>${esc(b)}</option>`).join("");
+      sel.disabled = false;
+      sel.title = "Current branch: " + d.current;
+    } catch {
+      sel.innerHTML = '<option>connection failed</option>';
+      sel.disabled = true;
+    }
+  }
+
+  async function gitCheckout(branch) {
+    if (!branch || gitBusy) return;
+    gitBusy = true;
+    setStamp("Switching to " + branch + " — resyncing python/node deps…");
+    root?.querySelectorAll('[data-ref="git-update"], [data-ref="git-branch"], [data-ref="popout"], [data-ref="reload"]')
+      .forEach((el) => { el.disabled = true; });
+    try {
+      const d = await fetch("/api/system/git/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ branch }),
+      }).then((r) => r.json());
+      setStamp(d.ok
+        ? "Switched to " + branch + " — deps resynced"
+        : "Checkout failed: " + (d.output || "").slice(-160));
+    } catch (e) {
+      setStamp("Network error: " + e);
+    }
+    gitBusy = false;
+    root?.querySelectorAll('[data-ref="popout"], [data-ref="reload"]').forEach((el) => { el.disabled = false; });
+    await loadGitBranches();
+    clearNoteLater();
+    void refreshStatus();
+  }
+
+  async function gitUpdate() {
+    if (gitBusy) return;
+    gitBusy = true;
+    const btn = root?.querySelector('[data-ref="git-update"]');
+    const sel = root?.querySelector('[data-ref="git-branch"]');
+    const oldLabel = btn ? btn.textContent : "";
+    if (btn) btn.disabled = true;
+    if (sel) sel.disabled = true;
+    setStamp("Updating branch — fetch / pull / uv pip install -e . / npm install, this can take a few minutes…");
+    try {
+      const d = await fetch("/api/system/git/update", { method: "POST" }).then((r) => r.json());
+      if (d.ok) {
+        setStamp("Branch updated (" + (d.source || d.current || "") + ") — deps resynced");
+      } else {
+        setStamp("Update failed (" + (d.stage || "") + "): " + (d.output || "").slice(-160));
+      }
+    } catch (e) {
+      setStamp("Network error: " + e);
+    }
+    gitBusy = false;
+    if (btn) { btn.disabled = false; btn.textContent = oldLabel; }
+    if (sel) sel.disabled = false;
+    await loadGitBranches();
+    clearNoteLater();
+    void refreshStatus();
+  }
+
+  function wireGitControls(mount) {
+    mount?.querySelector('[data-ref="git-branch"]')?.addEventListener("change", (e) => {
+      void gitCheckout(e.target.value);
+    });
+    mount?.querySelector('[data-ref="git-update"]')?.addEventListener("click", () => {
+      void gitUpdate();
+    });
+  }
+
+  // ------------------------------------------------------------------
   // Center-tab mode (same pattern as the skill graph)
   // ------------------------------------------------------------------
 
@@ -308,6 +406,10 @@ export function createDashboardController({
     panel.innerHTML = `
       <div class="dash-header">
         <h1>Control Panel</h1>
+        <span class="dash-git">
+          <select class="dash-git-branch" data-ref="git-branch" title="Switch branch (git checkout)" disabled><option>…</option></select>
+          <button class="ghost dash-mini-btn" type="button" data-ref="git-update" title="git fetch upstream + pull + reinstall python/node deps">Update branch</button>
+        </span>
         <span class="dash-updated" data-ref="updated">Loading…</span>
         <button class="ghost dash-mini-btn" type="button" data-ref="popout" title="Open the standalone dashboard page (for a second monitor)">Pop out</button>
       </div>
@@ -324,6 +426,8 @@ export function createDashboardController({
     tab = { button, panel };
     root = panel;
     wireLogs(panel);
+    wireGitControls(panel);
+    loadGitBranches();
     panel.querySelector('[data-ref="popout"]')?.addEventListener("click", () => {
       window.open("dashboard.html", "_blank", "width=1440,height=900");
     });
@@ -363,6 +467,10 @@ export function createDashboardController({
     container.innerHTML = `
       <div class="dash-header">
         <h1>MatCreator · Control Panel</h1>
+        <span class="dash-git">
+          <select class="dash-git-branch" data-ref="git-branch" title="Switch branch (git checkout)" disabled><option>…</option></select>
+          <button class="ghost dash-mini-btn" type="button" data-ref="git-update" title="git fetch upstream + pull + reinstall python/node deps">Update branch</button>
+        </span>
         <span class="dash-updated" data-ref="updated">Loading…</span>
         <button class="ghost dash-mini-btn" type="button" data-ref="reload">Reload</button>
       </div>
@@ -374,9 +482,11 @@ export function createDashboardController({
         ${logsCardHtml(logName)}
       </div>`;
     wireLogs(container);
+    wireGitControls(container);
     container.querySelector('[data-ref="reload"]')?.addEventListener("click", () => {
       window.location.reload();
     });
+    loadGitBranches();
     startPolling();
   }
 
