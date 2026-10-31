@@ -2914,14 +2914,29 @@ def _git_run(args: list, timeout: int = _GIT_TIMEOUT) -> tuple[bool, str]:
         return False, f"git failed: {exc}"
 
 
+_PINNED_BRANCHES = ("main", "devel")
+
+
 def _git_branches() -> list[str]:
+    """All local/remote branch refs, newest commit first."""
     ok, out = _git_run(
-        ["for-each-ref", "--format=%(refname:short)", "refs/heads/", "refs/remotes/"],
+        ["for-each-ref", "--sort=-committerdate",
+         "--format=%(refname:short)", "refs/heads/", "refs/remotes/"],
         timeout=15,
     )
     if not ok:
         return []
     return [b.strip() for b in out.splitlines() if b.strip()]
+
+
+def _ordered_branches(raw_branches: list[str], current: str) -> list[str]:
+    """main/devel pinned first, everything else newest-first."""
+    ordered = [b for b in _PINNED_BRANCHES if b in raw_branches]
+    ordered += [b for b in raw_branches if b not in ordered]
+    if current and current in ordered:  # keep the active branch easy to find
+        ordered.remove(current)
+        ordered.insert(min(2, len(ordered)), current)
+    return ordered
 
 
 def _venv_reinstall() -> tuple[bool, str]:
@@ -2975,8 +2990,25 @@ def _git_info_payload() -> dict:
     current = current.strip() if ok_c else ""
     if not branches or not current:
         return {"ok": False, "current": current, "branches": [], "error": "git unavailable"}
-    return {"ok": True, "current": current,
-            "branches": [current] + sorted(b for b in branches if b != current)}
+    return {"ok": True, "current": current, "branches": _ordered_branches(branches, current)}
+
+
+def _restart_dev_stack() -> None:
+    """Restart the dev stack so pulled code takes effect.
+
+    Detached on purpose: it must survive uvicorn being killed by its own
+    pkill sequence, hence start_new_session + a sleep before the kill.
+    """
+    script = (
+        "sleep 1.5; "
+        "pkill -f 'matcreator api-server' 2>/dev/null; "
+        "pkill -f 'uvicorn web.main:app' 2>/dev/null; "
+        "pkill -f 'vite-frontend/node_modules/.bin/vite' 2>/dev/null; "
+        "sleep 1; "
+        f"cd {ROOT} && nohup bash script/start_matcreator.sh "
+        ">> /tmp/matcreator-restart.log 2>&1"
+    )
+    subprocess.Popen(["bash", "-c", script], start_new_session=True)
 
 
 def _git_checkout_payload(branch: str) -> dict:
@@ -2991,7 +3023,9 @@ def _git_checkout_payload(branch: str) -> dict:
     installed = ok_i and ok_n
     output = (out + "\n--- deps: uv pip install -e . ---\n" + out_i
               + "\n--- deps: npm install ---\n" + out_n)
-    return {"ok": installed, "output": output, "branch": branch}
+    _restart_dev_stack()
+    output += "\n--- dev stack restarting to load the new code ---"
+    return {"ok": installed, "output": output, "branch": branch, "restart": True}
 
 
 def _git_update_payload() -> dict:
@@ -3025,7 +3059,10 @@ def _git_update_payload() -> dict:
     ok_i, out_i = _venv_reinstall()
     ok_n, out_n = _npm_install()
     output += "\n--- deps: uv pip install -e . ---\n" + out_i + "\n--- deps: npm install ---\n" + out_n
-    return {"ok": ok_i and ok_n, "current": current, "stage": "install", "source": source, "output": output}
+    _restart_dev_stack()
+    output += "\n--- dev stack restarting to load the new code ---"
+    return {"ok": ok_i and ok_n, "current": current, "stage": "install",
+            "source": source, "output": output, "restart": True}
 
 
 @app.get("/api/system/git")

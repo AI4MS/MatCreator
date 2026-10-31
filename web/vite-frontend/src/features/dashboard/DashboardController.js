@@ -217,7 +217,7 @@ export function createDashboardController({
       }
       if (stamp && !note) stamp.textContent = "Updated " + new Date().toLocaleTimeString();
     } catch {
-      if (stamp) stamp.textContent = "Refresh failed — is the backend running?";
+      if (stamp && !note) stamp.textContent = "Refresh failed — is the backend running?";
     }
   }
 
@@ -305,6 +305,28 @@ export function createDashboardController({
     }
   }
 
+  // After an update/checkout the dev stack restarts; wait for the backend
+  // then reload so the page runs the fresh code too. Vite HMR may already
+  // have refreshed the page mid-pull — the operation itself completes
+  // server-side regardless.
+  async function waitForBackendThenReload() {
+    const deadline = Date.now() + 90000;
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch("/api/health");
+        if (res.ok) {
+          setStamp("Backend is back — reloading…");
+          window.setTimeout(() => window.location.reload(), 800);
+          return;
+        }
+      } catch {}
+      await new Promise((r) => window.setTimeout(r, 1500));
+    }
+    setStamp("Backend did not come back within 90s — check the dev-stack panel.");
+    gitBusy = false;
+    root?.querySelectorAll('[data-ref="popout"], [data-ref="reload"]').forEach((el) => { el.disabled = false; });
+  }
+
   async function gitCheckout(branch) {
     if (!branch || gitBusy) return;
     gitBusy = true;
@@ -317,6 +339,10 @@ export function createDashboardController({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ branch }),
       }).then((r) => r.json());
+      if (d.ok && d.restart) {
+        await waitForBackendThenReload(); // reloads the page
+        return;
+      }
       setStamp(d.ok
         ? "Switched to " + branch + " — deps resynced"
         : "Checkout failed: " + (d.output || "").slice(-160));
@@ -341,6 +367,10 @@ export function createDashboardController({
     setStamp("Updating branch — fetch / pull / uv pip install -e . / npm install, this can take a few minutes…");
     try {
       const d = await fetch("/api/system/git/update", { method: "POST" }).then((r) => r.json());
+      if (d.ok && d.restart) {
+        await waitForBackendThenReload(); // reloads the page
+        return;
+      }
       if (d.ok) {
         setStamp("Branch updated (" + (d.source || d.current || "") + ") — deps resynced");
       } else {
