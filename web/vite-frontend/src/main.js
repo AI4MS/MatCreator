@@ -32,7 +32,7 @@ import {
   createSessionRequestKey,
   managedRunEventsUrl,
   shouldRefreshPlanGraphForTool,
-  workspaceFileUrl,
+  workspaceFileUrl as buildWorkspaceFileUrl,
 } from "./features/session/sessionUtils.js";
 import {
   findConversationRequest,
@@ -53,7 +53,8 @@ import { createAppearanceController as createSkinAppearanceController } from "./
 import { createRackLabBrandMotion } from "./features/brand/RackLabBrandMotion.js";
 import { createEvaluationController } from "./features/evaluation/EvaluationController.js";
 import { createRemoteJobsController } from "./features/remoteJobs/RemoteJobsController.js";
-import { createAuthController } from "./features/auth/AuthController.js";
+import { createAuthController, takeLocalTokenFragment } from "./features/auth/AuthController.js";
+import { createLocalAccessFetch, localAccountUrl } from "./features/auth/localAccessFetch.js";
 import { mountOrbitalAgentIndicator } from "./components/mountOrbitalAgentIndicator.js";
 import { createDisclosureController } from "./features/ui/disclosureState.js";
 import { createAppearanceController as createBaseAppearanceController, THEME_KEY } from "./features/ui/appearance.js";
@@ -72,6 +73,10 @@ import "./styles/index.css";
 // ---------------------------------------------------------------------------
 
 const APP_NAME = "MatCreator";
+function accountUrl(url) {
+  return localAccountUrl(url, state.localAccountMode ? state.userId : "", window.location.href);
+}
+let localBootstrapToken = takeLocalTokenFragment(window.location, window.history);
 const visualFixture = import.meta.env.DEV
   ? new URLSearchParams(window.location.search).get("visual-fixture")
   : null;
@@ -79,12 +84,16 @@ const visualFixture = import.meta.env.DEV
 const AGENT_MODE_KEY = "mat_agentMode";
 const SESSION_ID_KEY = "mat_sessionId";
 const SESSION_OWNER_KEY = "mat_sessionOwnerId";
+const sessionStorageKeys = { sessionId: SESSION_ID_KEY, owner: SESSION_OWNER_KEY };
 
 const state = {
-  sessionId: localStorage.getItem(SESSION_ID_KEY) || newSessionId(),
-  userId: localStorage.getItem("mat_userId") || "",
-  displayName: localStorage.getItem("mat_displayName") || localStorage.getItem("mat_userId") || "",
-  activeSessionUserId: localStorage.getItem("mat_userId") || "",
+  sessionId: newSessionId(),
+  userId: "",
+  displayName: "",
+  activeSessionUserId: "",
+  instanceId: "",
+  localAuthenticated: false,
+  localAccountMode: true,
   isAdmin: false,
   deploymentMode: localStorage.getItem("mat_deploymentMode") || "local",
   sessionReady: false,
@@ -116,6 +125,14 @@ const state = {
   selectedEvaluationQuestions: new Set(),
   activeEvaluationCampaign: null,
 };
+
+let notifyLocalAccessRequired = () => {};
+globalThis.fetch = createLocalAccessFetch(globalThis.fetch.bind(globalThis), {
+  baseUrl: window.location.href,
+  isAuthenticatedLocal: () => state.deploymentMode === "local" && state.localAuthenticated,
+  getLocalAccountId: () => state.localAccountMode ? state.userId : "",
+  onAccessRequired: () => notifyLocalAccessRequired(),
+});
 
 // ---------------------------------------------------------------------------
 // DOM refs
@@ -177,6 +194,7 @@ let sessionCoordinator = null;
 
 const knowledgeReviewController = createKnowledgeReviewController({
   getSessionId: () => state.sessionId,
+  canAccess: () => Boolean(state.userId) && (state.deploymentMode !== "local" || state.localAuthenticated),
 });
 const knowledgeReviewBanner = knowledgeReviewController.element;
 
@@ -191,8 +209,15 @@ const {
   scrollToBottom,
   setMarkdownContent,
   setUserAvatar,
+  resetAccountView,
   updatePreservingReadingPosition,
-} = createChatRenderer({ chatArea, bottomOverlay: inputArea });
+} = createChatRenderer({
+  chatArea, bottomOverlay: inputArea,
+  bindAccountUrl: accountUrl,
+  getAvatarStorageKey: () => state.localAccountMode
+    ? (state.userId ? `user-avatar-url:${state.instanceId}:${state.userId}` : null)
+    : "user-avatar-url",
+});
 
 const themeRegistry = createThemeRegistry(BUILTIN_SKINS);
 const themeManager = createThemeManager({
@@ -267,17 +292,46 @@ const authController = createAuthController({
     passwordSection: document.getElementById("settings-save-password-btn")?.parentElement,
     sessionIdElement: sessionIdEl,
     sessionListElement: sessionListEl,
+    localTokenView: document.getElementById("local-token-view"),
+    localTokenInput: document.getElementById("local-token-input"),
+    localTokenSubmit: document.getElementById("local-token-submit"),
+    localTokenError: document.getElementById("local-token-error"),
+    localInstanceLabel: document.getElementById("local-instance-label"),
+    loginHeading: document.getElementById("login-heading"),
+    registerHeading: document.getElementById("register-heading"),
+    localAccountNotice: document.getElementById("local-account-notice"),
+    registerPasswordHint: document.getElementById("reg-password-hint"),
+    legacyClaimRow: document.getElementById("legacy-claim-row"),
+    legacyClaimInput: document.getElementById("legacy-claim-input"),
+    legacyClaimHint: document.getElementById("legacy-claim-hint"),
+    registrationAccessHint: document.getElementById("local-registration-access-hint"),
+    createAccountButton: document.getElementById("settings-create-account-btn"),
+    cancelAccountCreationButton: document.getElementById("cancel-local-account-create"),
   },
-  sessionStorageKeys: {
-    sessionId: SESSION_ID_KEY,
-    owner: SESSION_OWNER_KEY,
-  },
+  sessionStorageKeys,
+  bootstrapToken: localBootstrapToken,
   createSessionId: newSessionId,
   clearSessionSelection: clearStoredSessionSelection,
   updateSendButtonState,
+  onAuthenticated: () => {
+    applyUserAvatarToEl(document.getElementById("avatar-upload-btn"));
+    void knowledgeReviewController.refresh();
+  },
+  onRegistrationRequested: () => settingsController.close(),
   loadSessions: (options) => loadSessions(options),
   switchSession: (...args) => switchSession(...args),
   onLoggedOut: () => {
+    workspaceTerminalController.setOpen(false);
+    textInput.value = "";
+    resetAccountView();
+    lightbox.close();
+    // Detach browser subscriptions only. Managed backend work keeps its durable
+    // state and can be reattached after unlocking; no cancel API is called.
+    for (const request of state.activeRequests.values()) {
+      request.controller?.abort();
+      finishRequestCleanup(request);
+    }
+    state.activeRequests.clear();
     sessionRuntime.resetTranscript();
     stepExecutionFeed.reset();
     chatDisclosureController.clear();
@@ -293,7 +347,10 @@ const authController = createAuthController({
     agentGraph.reset();
     planGraph.reset();
     hidePlanGraph();
-    settingsController.close();
+    settingsController.resetAccount();
+    workspaceViewerController?.resetAccount();
+    evaluationController.resetAccount();
+    knowledgeReviewController.render({});
   },
   onSessionApplied: () => {
     sessionRuntime.resetTranscript();
@@ -308,6 +365,8 @@ const authController = createAuthController({
     void loadSessions();
   },
 });
+localBootstrapToken = "";
+notifyLocalAccessRequired = authController.requireLocalAccess;
 const showLoginModal = authController.showLogin;
 const applyLogin = authController.login;
 const canWriteActiveSession = authController.canWriteActiveSession;
@@ -414,6 +473,7 @@ stepExecutionFeed = new StepExecutionFeed({
   disclosureController: chatDisclosureController,
 });
 const agentGraph = new AgentGraphView("agent-graph", {
+  getAccountId: () => state.localAccountMode ? state.userId : "",
   stepExecutionFeed,
   graphViewport,
   requestStepCancellation,
@@ -423,6 +483,7 @@ const agentGraph = new AgentGraphView("agent-graph", {
   syncPanelResizerVisibility: () => layoutController.syncPanelResizerVisibility(),
 });
 const planGraph = new ExecutionPlanView("plan-graph-canvas", {
+  getAccountId: () => state.localAccountMode ? state.userId : "",
   toggleButton: document.getElementById("plan-graph-toggle"),
   thumbnailElement: document.getElementById("plan-graph-thumbnail"),
 });
@@ -520,13 +581,13 @@ function updateSendButtonState() {
 }
 
 function storeSessionSelection(sessionId, owner) {
-  localStorage.setItem(SESSION_ID_KEY, sessionId);
-  localStorage.setItem(SESSION_OWNER_KEY, owner);
+  localStorage.setItem(sessionStorageKeys.sessionId, sessionId);
+  localStorage.setItem(sessionStorageKeys.owner, owner);
 }
 
 function clearStoredSessionSelection() {
-  localStorage.removeItem(SESSION_ID_KEY);
-  localStorage.removeItem(SESSION_OWNER_KEY);
+  localStorage.removeItem(sessionStorageKeys.sessionId);
+  localStorage.removeItem(sessionStorageKeys.owner);
 }
 
 // Authentication and startup restoration are owned by AuthController.
@@ -600,7 +661,7 @@ document.getElementById("refresh-files")?.addEventListener("click", (event) => {
 // ---------------------------------------------------------------------------
 
 function pathToApiUrl(path) {
-  return workspaceFileUrl(path, state.sessionId);
+  return buildWorkspaceFileUrl(path, state.sessionId, state.localAccountMode ? state.userId : "");
 }
 
 // Chat presentation is composed above from focused activity, timeline,
@@ -794,6 +855,10 @@ workspaceViewerController.init();
 installWorkspaceLaunchpad({
   controller: workspaceViewerController,
   newTabButton: document.getElementById("workspace-new-tab"),
+  getAccountUrl: () => {
+    const accountId = state.localAccountMode ? state.userId : "";
+    return (url) => localAccountUrl(url, accountId, window.location.href);
+  },
   newSession: () => { activateCenterTab("chat"); return _doNewSession(state.defaultWorkdir || ""); },
   openGraph: () => skillGraphController.open({ force: true }),
   openSettings: () => document.getElementById("settings-btn").click(),
@@ -852,8 +917,10 @@ if (avatarUploadBtn && avatarUploadInput) {
   avatarUploadInput.addEventListener("change", (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    const uploadingAccount = state.localAccountMode ? state.userId : null;
     const reader = new FileReader();
     reader.onload = (ev) => {
+      if (state.localAccountMode && (!state.userId || uploadingAccount !== state.userId)) return;
       setUserAvatar(ev.target.result);
       applyUserAvatarToEl(avatarUploadBtn);
     };

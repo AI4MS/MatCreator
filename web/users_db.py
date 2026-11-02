@@ -20,13 +20,10 @@ from pathlib import Path
 
 import bcrypt
 
-if os.environ.get("MATCREATOR_MODE") == "server":
-    matcreator_home = Path(os.environ.get("MATCREATOR_HOME", str(Path.home() / ".matcreator"))).expanduser()
-    USERS_DB_PATH = Path(
-        os.environ.get("MATCREATOR_USERS_DB", str(matcreator_home / "users.db"))
-    ).expanduser()
-else:
-    USERS_DB_PATH = Path(__file__).parent / "users.db"
+matcreator_home = Path(os.environ.get("MATCREATOR_HOME", str(Path.home() / ".matcreator"))).expanduser()
+USERS_DB_PATH = Path(
+    os.environ.get("MATCREATOR_USERS_DB", str(matcreator_home / "users.db"))
+).expanduser()
 
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",

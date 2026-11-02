@@ -97,3 +97,27 @@ test("application mode owns evaluation polling and workspace visibility", async 
   assert.deepEqual(clearedIntervals, [1]);
   assert.equal(workspacePanes.every((element) => !element.classes.has("hidden")), true);
 });
+
+test("account reset clears private evaluation data and detaches polling without canceling jobs", () => {
+  const state = {
+    userId: "account-a", appMode: "workspace", evaluationCatalog: [{ private: "a" }], evaluationCatalogTotal: 1,
+    evaluationQuestionSets: [{ id: "private-set" }], evaluationGeneratedQuestions: [{ id: "private-draft" }],
+    evaluationQuestionTemplates: [{ id: "private-template" }], evaluationQuestionGenerators: [{ id: "private-generator" }],
+    selectedEvaluationQuestions: new Set(["private-question"]), activeEvaluationCampaign: { campaign_id: "private-job" },
+  };
+  const requests = [];
+  const controller = createEvaluationController({
+    state, activateCenterTab() {}, switchSession() {}, removeOverlayWithMotion() {},
+    document: { getElementById: () => null, querySelectorAll: () => [] },
+    fetch: async (url) => { requests.push(url); return { ok: true, json: async () => ({}) }; },
+    setInterval: () => 1, clearInterval() {}, FormData, URLSearchParams,
+  });
+  controller.resetAccount();
+  assert.equal(state.appMode, "workspace");
+  assert.equal(state.activeEvaluationCampaign, null);
+  assert.equal(state.selectedEvaluationQuestions.size, 0);
+  assert.deepEqual(state.evaluationCatalog, []);
+  assert.deepEqual(state.evaluationQuestionSets, []);
+  assert.deepEqual(state.evaluationGeneratedQuestions, []);
+  assert.deepEqual(requests, []);
+});

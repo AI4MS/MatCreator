@@ -88,6 +88,7 @@ const STATUS_ALIASES = {
 
 export class AgentGraphView {
   constructor(containerId, dependencies) {
+    this._getAccountId = dependencies.getAccountId || (() => "");
     this._stepExecutionFeed = dependencies.stepExecutionFeed;
     this._graphViewport = dependencies.graphViewport;
     this._requestStepCancellation = dependencies.requestStepCancellation;
@@ -1982,7 +1983,9 @@ export class AgentGraphView {
     if (this._currentSessionId !== sessionId) this._hideDetail();
     this._currentSessionId = sessionId;
     void this._poll(sessionId);
-    const eventStream = new EventSource(`/api/agent-graph/${encodeURIComponent(sessionId)}/events`);
+    const accountId = this._getAccountId();
+    const query = accountId ? `?expected_account_id=${encodeURIComponent(accountId)}` : "";
+    const eventStream = new EventSource(`/api/agent-graph/${encodeURIComponent(sessionId)}/events${query}`);
     this._eventStream = eventStream;
     eventStream.onmessage = (event) => {
       try {

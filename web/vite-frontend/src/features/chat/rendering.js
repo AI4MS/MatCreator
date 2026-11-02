@@ -3,6 +3,7 @@ import markedKatex from "marked-katex-extension";
 import "katex/dist/katex.min.css";
 import { sanitizeRenderedHtml } from "../../shared/rendering/sanitizeHtml.js";
 import { harnessWakeupSummary, isHarnessWakeupMessage } from "./harnessMessages.js";
+import { bindNativeAccountUrls } from "../auth/localAccessFetch.js";
 
 const BOX_RE = /[┌┐└┘├┤┬┴┼│━─]/;
 const AGENT_AVATAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="rgba(148,163,184,0.9)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -32,7 +33,7 @@ marked.use(markedKatex({
   nonStandard: true,
 }));
 
-export function createChatRenderer({ chatArea, bottomOverlay = null }) {
+export function createChatRenderer({ chatArea, bottomOverlay = null, getAvatarStorageKey = () => "user-avatar-url", bindAccountUrl = null }) {
   const markdownCache = new Map();
   const markdownCacheMaxWeight = 3_000_000;
   let markdownCacheWeight = 0;
@@ -60,13 +61,17 @@ export function createChatRenderer({ chatArea, bottomOverlay = null }) {
     syncBottomReserve();
   }
 
+  function bindMarkdownUrls(html) {
+    return bindNativeAccountUrls(html, bindAccountUrl);
+  }
+
   function renderMarkdown(text, { cache = true } = {}) {
     if (!text) return "";
     const cached = cache ? markdownCache.get(text) : null;
     if (cached !== undefined && cached !== null) {
       markdownCache.delete(text);
       markdownCache.set(text, cached);
-      return cached.html;
+      return bindMarkdownUrls(cached.html);
     }
     let html = marked.parse(text);
     const wrapAsciiArt = (match, inner) => {
@@ -94,7 +99,7 @@ export function createChatRenderer({ chatArea, bottomOverlay = null }) {
         markdownCacheWeight -= oldest?.weight || 0;
       }
     }
-    return html;
+    return bindMarkdownUrls(html);
   }
 
   function markdownElementCount(html) {
@@ -182,7 +187,10 @@ export function createChatRenderer({ chatArea, bottomOverlay = null }) {
     });
   }
 
-  function getUserAvatar() { return localStorage.getItem("user-avatar-url") || null; }
+  function getUserAvatar() {
+    const key = getAvatarStorageKey();
+    return key ? localStorage.getItem(key) || null : null;
+  }
   function applyUserAvatarToEl(element) {
     const url = getUserAvatar();
     element.replaceChildren();
@@ -196,8 +204,18 @@ export function createChatRenderer({ chatArea, bottomOverlay = null }) {
     }
   }
   function setUserAvatar(dataUrl) {
-    localStorage.setItem("user-avatar-url", dataUrl);
+    const key = getAvatarStorageKey();
+    if (!key) return;
+    localStorage.setItem(key, dataUrl);
     document.querySelectorAll(".user-avatar").forEach(applyUserAvatarToEl);
+  }
+  function resetAccountView() {
+    markdownCache.clear();
+    markdownCacheWeight = 0;
+    document.querySelectorAll(".user-avatar, #avatar-upload-btn").forEach((element) => {
+      element.replaceChildren();
+      element.innerHTML = USER_AVATAR_SVG;
+    });
   }
   function createAgentAvatarEl() {
     const element = document.createElement("div");
@@ -310,5 +328,5 @@ export function createChatRenderer({ chatArea, bottomOverlay = null }) {
     return message;
   }
 
-  return { addMessage, appendLiveTurnChild, applyUserAvatarToEl, createAgentAvatarEl, isChatBottomPinned, markReadingAnchors, protectAsyncContentLayout, renderMarkdown, scrollToBottom, setMarkdownContent, setUserAvatar, updatePreservingReadingPosition };
+  return { addMessage, appendLiveTurnChild, applyUserAvatarToEl, createAgentAvatarEl, isChatBottomPinned, markReadingAnchors, protectAsyncContentLayout, renderMarkdown, scrollToBottom, setMarkdownContent, setUserAvatar, resetAccountView, updatePreservingReadingPosition };
 }

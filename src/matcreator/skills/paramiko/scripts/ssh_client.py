@@ -17,12 +17,52 @@ import argparse
 import io
 import json
 import os
+import socket
 import stat
 import sys
 from pathlib import Path
 from typing import Optional
+from urllib.parse import unquote, urlsplit
 
 import paramiko
+
+
+def _srt_proxy_socket(host: str, port: int, timeout: int):
+    """Connect through SRT's SOCKS endpoint with proxy-side DNS resolution.
+
+    SRT 0.0.81 advertises its SOCKS5 endpoint via FTP_PROXY. SOCKS_SERVER is
+    accepted for explicitly configured compatible deployments. NO_PROXY does
+    not authorize bypassing the sandbox's network policy for SSH.
+    """
+    raw = os.environ.get("SOCKS_SERVER") or os.environ.get("FTP_PROXY") or os.environ.get("ftp_proxy")
+    if not raw:
+        raise ConnectionError("SRT SSH requires its SOCKS proxy; direct connections are disabled")
+    try:
+        parsed = urlsplit(raw if "://" in raw else "socks5h://" + raw)
+        if (parsed.scheme not in {"socks5", "socks5h"} or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}
+                or parsed.port is None or not 1 <= parsed.port <= 65535 or parsed.path not in {"", "/"}
+                or parsed.query or parsed.fragment):
+            raise ValueError
+        proxy_host, proxy_port = parsed.hostname, parsed.port
+        username = unquote(parsed.username) if parsed.username is not None else None
+        password = unquote(parsed.password) if parsed.password is not None else None
+    except ValueError:
+        raise ConnectionError("SRT SSH proxy configuration is invalid; direct connections are disabled") from None
+    try:
+        import socks
+    except ImportError:
+        raise ConnectionError("SRT SSH requires the PySocks dependency; direct connections are disabled") from None
+    proxy = socks.socksocket(socket.AF_INET6 if proxy_host == "::1" else socket.AF_INET)
+    try:
+        proxy.set_proxy(socks.SOCKS5, proxy_host, proxy_port, rdns=True, username=username, password=password)
+        proxy.settimeout(timeout)
+        proxy.connect((host, port))
+        return proxy
+    except Exception:
+        proxy.close()
+        # Proxy errors can include its credential-bearing URL. Preserve the
+        # policy failure without exposing credentials or retrying directly.
+        raise ConnectionError("SRT SSH proxy connection was denied or unavailable; direct connections are disabled") from None
 
 
 class SSHRemote:
@@ -51,6 +91,7 @@ class SSHRemote:
         self.ssh: Optional[paramiko.SSHClient] = None
         self.sftp: Optional[paramiko.SFTPClient] = None
         self._connected = False
+        self._proxy_socket = None
 
         if not self.host:
             raise ValueError("SSH_HOST environment variable or --host is required")
@@ -99,11 +140,20 @@ class SSHRemote:
             connect_kwargs["password"] = self.password
 
         try:
+            if os.environ.get("MATCREATOR_LOCAL_SRT_WORKER") == "1":
+                self._proxy_socket = _srt_proxy_socket(self.host, self.port, self.timeout)
+                connect_kwargs["sock"] = self._proxy_socket
             self.ssh.connect(**connect_kwargs)
             self._connected = True
         except paramiko.AuthenticationException as exc:
+            if self._proxy_socket is not None:
+                self._proxy_socket.close()
+                self._proxy_socket = None
             raise ConnectionError(f"Authentication failed: {exc}") from exc
         except Exception as exc:  # noqa: BLE001 - surface as ConnectionError for the CLI
+            if self._proxy_socket is not None:
+                self._proxy_socket.close()
+                self._proxy_socket = None
             raise ConnectionError(f"SSH connection failed: {exc}") from exc
 
     def disconnect(self) -> None:
@@ -119,6 +169,9 @@ class SSHRemote:
             except Exception:
                 pass
             self.ssh = None
+        if self._proxy_socket is not None:
+            self._proxy_socket.close()
+            self._proxy_socket = None
         self._connected = False
 
     def __enter__(self) -> "SSHRemote":

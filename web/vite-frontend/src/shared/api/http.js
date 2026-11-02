@@ -112,7 +112,7 @@ async function readResponseBody(response) {
 }
 
 /** Create a JSON client. Pass fetchImpl to make callers deterministic in tests. */
-export function createHttpClient({ fetchImpl = globalThis.fetch } = {}) {
+export function createHttpClient({ fetchImpl = (...args) => globalThis.fetch(...args) } = {}) {
   if (typeof fetchImpl !== "function") {
     throw new TypeError("createHttpClient requires a fetch implementation");
   }

@@ -34,3 +34,11 @@ test("plan refresh is limited to graph validation tools", () => {
   assert.equal(shouldRefreshPlanGraphForTool("validate_plan"), true);
   assert.equal(shouldRefreshPlanGraphForTool("read_file"), false);
 });
+
+test("native workspace image and download URLs are bound to the account that rendered them", () => {
+  const url = workspaceFileUrl("workspace/output.png", "session-a", "account-a");
+  const parsed = new URL(url, "http://localhost/");
+  assert.equal(parsed.searchParams.get("expected_account_id"), "account-a");
+  assert.equal(parsed.searchParams.get("session_id"), "session-a");
+  assert.equal(parsed.searchParams.get("path"), "workspace/output.png");
+});
