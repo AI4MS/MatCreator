@@ -375,5 +375,12 @@ export function createWorkspaceViewerController({
     toolTabs.clear();
   }
 
-  return { init, destroy, activate, close, openStructure, openFile, closeFile, openToolTab };
+  function resetAccount() {
+    closeFile();
+    for (const tabId of [...structureTabs.keys(), ...toolTabs.keys()]) close(tabId);
+    skillGraphController.close("skill-graph");
+    activate("chat");
+  }
+
+  return { init, destroy, activate, close, openStructure, openFile, closeFile, openToolTab, resetAccount };
 }

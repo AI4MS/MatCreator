@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import hashlib
 import shutil
 from pathlib import Path
@@ -72,12 +71,11 @@ def show_structure(structure_path: str) -> dict:
         dict with ``structure_path`` (resolved absolute path) on success, or an
         ``error`` key if the file cannot be found.
     """
+    from matcreator.workspace import get_workspace_root
+
     p = Path(structure_path)
     if not p.is_absolute():
-        ws_root = os.environ.get("MATCLAW_WORKSPACE") or str(
-            Path(__file__).parent / ".workspace"
-        )
-        p = Path(ws_root) / p
+        p = get_workspace_root() / p
 
     p = p.resolve()
 
@@ -106,12 +104,11 @@ def show_artifact(artifact_path: str) -> dict:
         dict with ``artifact_path`` (resolved absolute path) on success, or an
         ``error`` key if the file cannot be found.
     """
+    from matcreator.workspace import get_workspace_root
+
     p = Path(artifact_path)
     if not p.is_absolute():
-        ws_root = os.environ.get("MATCLAW_WORKSPACE") or str(
-            Path(__file__).parent / ".workspace"
-        )
-        p = Path(ws_root) / p
+        p = get_workspace_root() / p
 
     p = p.resolve()
 

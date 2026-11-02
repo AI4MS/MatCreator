@@ -13,7 +13,7 @@ export async function api(path='',body) {
   const response=await fetch('/api/xrd'+path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const data=await response.json(); if(!response.ok)throw Error(typeof data.detail==='string'?data.detail:JSON.stringify(data.detail||data)); return data;
 }
-function Workbench({openChat,createNew=false}) {
+function Workbench({openChat,createNew=false,bindAccountUrl=(url)=>url}) {
   const [owner,setOwner]=useState(''),[workspaces,setWorkspaces]=useState([]),[snapshot,setSnapshot]=useState(null),[error,setError]=useState('');
   const [canvas,setCanvas]=useState(''),[zoom,setZoom]=useState(1),[position,setPosition]=useState({x:0,y:0});
   const [candidateStructure,setCandidateStructure]=useState(null);
@@ -29,6 +29,7 @@ function Workbench({openChat,createNew=false}) {
     const path=`/workspaces/${owner}`;
     const command=(action,arguments_={})=>api(path+'/command',{action,arguments:arguments_});
     const h={
+      accountUrl:bindAccountUrl,
       getAgentInfo:()=>api(path),getInputs:()=>api(path+'/inputs'),
       readDocument:(target)=>api(path+'/document'+(target?'?target='+encodeURIComponent(target):'')),
       documentAction:async(action,args,revision,target)=>{const d=await command('document',{action,arguments:args,revision,target});if(action==='import')resetWorkflowCanvas(owner);return d;},
@@ -47,7 +48,7 @@ function Workbench({openChat,createNew=false}) {
     };
     function openAgentDiscussion(text){openChat();const input=document.getElementById('text-input');input.value=`${text}\nXRD workspace_id: ${owner}`;input.dispatchEvent(new Event('input',{bubbles:true}));input.focus();return {conversation_id:owner};}
     return h;
-  },[owner,openChat]);
+  },[owner,openChat,bindAccountUrl]);
   hostRef.current=host;
   useLayoutEffect(()=>{
     if(!canvas)return;

@@ -8,6 +8,10 @@ PROJ_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export PYTHONPATH="$PROJ_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 MATCREATOR_HOME="${MATCREATOR_HOME:-$HOME/.matcreator}"
 MATCREATOR_HOME="${MATCREATOR_HOME/#\~/$HOME}"
+MATCREATOR_HOME="$(python -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).expanduser().resolve())' "$MATCREATOR_HOME")"
+export MATCREATOR_HOME
+# New instance state, credentials and logs must not be world-readable.
+umask 077
 LOG_DIR="${MATCREATOR_LOG_DIR:-$MATCREATOR_HOME/logs}"
 LOG_DIR="${LOG_DIR/#\~/$HOME}"
 mkdir -p "$LOG_DIR"
@@ -54,6 +58,56 @@ export MATCREATOR_ADK_PORT
 export ADK_LOCAL_PORT="$MATCREATOR_ADK_PORT"
 export MATCREATOR_WEB_PORT
 export MATCREATOR_FRONTEND_PORT
+export MATCREATOR_WEB_TARGET="http://${MATCREATOR_WEB_HOST}:${MATCREATOR_WEB_PORT}"
+if [[ "$MATCREATOR_WEB_HOST" == "0.0.0.0" || "$MATCREATOR_WEB_HOST" == "::" ]]; then
+    export MATCREATOR_WEB_TARGET="http://127.0.0.1:${MATCREATOR_WEB_PORT}"
+fi
+MATCREATOR_BROWSER_HOST="$(python -c 'import os; from pathlib import Path; from matcreator.local_access import ensure_local_access; print(ensure_local_access(Path(os.environ["MATCREATOR_HOME"])).browser_host)')"
+MATCREATOR_LOCAL_PROFILE_WORKER="${MATCREATOR_LOCAL_PROFILE_WORKER:-0}"
+export MATCREATOR_LOCAL_PROFILE_WORKER
+if [[ "$MATCREATOR_LOCAL_PROFILE_WORKER" == "1" ]]; then
+    export MATCREATOR_LOCAL_ACCOUNT_ROOT="${MATCREATOR_LOCAL_ACCOUNT_ROOT:-$MATCREATOR_HOME}"
+    if [[ -z "${MATCREATOR_LOCAL_ACCOUNT_ID:-}" ]]; then
+        MATCREATOR_LOCAL_ACCOUNT_ID="$(python -c 'import os,uuid; from pathlib import Path; from matcreator.local_access import ensure_local_access; print(uuid.UUID(hex=ensure_local_access(Path(os.environ["MATCREATOR_HOME"])).instance_id))')"
+        export MATCREATOR_LOCAL_ACCOUNT_ID
+    fi
+else
+    unset MATCREATOR_LOCAL_ACCOUNT_ROOT MATCREATOR_LOCAL_ACCOUNT_ID
+    unset MATCREATOR_LOCAL_SRT_WORKER
+fi
+
+# Explicit isolation backends fail closed. SRT does not require a Docker
+# installation, and missing isolation never falls back to shared OS privileges.
+export MATCREATOR_LOCAL_RUNTIME="${MATCREATOR_LOCAL_RUNTIME:-process}"
+if [[ "$MATCREATOR_LOCAL_PROFILE_WORKER" != "1" ]]; then
+    python - <<'PY'
+import os
+from pathlib import Path
+from matcreator.local_account_backends import create_local_runtime_manager
+manager = create_local_runtime_manager(Path(os.environ["MATCREATOR_HOME"]), Path.cwd())
+if hasattr(manager, "preflight"):
+    manager.preflight()
+PY
+fi
+
+# Refuse an occupied endpoint before spawning anything. In particular, do not
+# leave a new frontend pointing at somebody else's pre-existing API server.
+python - <<'PY'
+import os, socket
+names = ('ADK', 'WEB', 'FRONTEND') if os.environ.get('MATCREATOR_LOCAL_PROFILE_WORKER') == '1' else ('WEB', 'FRONTEND')
+ports = [int(os.environ[f'MATCREATOR_{name}_PORT']) for name in names]
+if len(set(ports)) != len(ports):
+    raise SystemExit('ERROR: Active services need distinct ports.')
+for name in names:
+    host = os.environ[f'MATCREATOR_{name}_HOST']
+    port = int(os.environ[f'MATCREATOR_{name}_PORT'])
+    address = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0]
+    with socket.socket(address[0], address[1], address[2]) as listener:
+        try:
+            listener.bind(address[4])
+        except OSError as exc:
+            raise SystemExit(f'ERROR: {name} endpoint {host}:{port} is unavailable: {exc}. No existing service was reused.')
+PY
 
 cleanup() {
     echo ""
@@ -64,15 +118,19 @@ cleanup() {
     wait 2>/dev/null || true
     echo "All services stopped."
 }
-trap cleanup SIGINT SIGTERM
+trap cleanup EXIT
+trap 'exit 130' SIGINT
+trap 'exit 143' SIGTERM
 
 cd "$PROJ_ROOT"
 
-echo "Starting ADK API server (port $MATCREATOR_ADK_PORT)..."
-MATCREATOR_API_LOG_LEVEL="${MATCREATOR_API_LOG_LEVEL:-info}"
-matcreator api-server --host "$MATCREATOR_ADK_HOST" --port "$MATCREATOR_ADK_PORT" --log-level "$MATCREATOR_API_LOG_LEVEL" >"$LOG_DIR/api-server.log" 2>&1 &
-PID_API=$!
-sleep 1
+if [[ "$MATCREATOR_LOCAL_PROFILE_WORKER" == "1" ]]; then
+    echo "Starting internal ADK API server (port $MATCREATOR_ADK_PORT)..."
+    MATCREATOR_API_LOG_LEVEL="${MATCREATOR_API_LOG_LEVEL:-info}"
+    python -m matcreator.scripts.start_agent api-server --host "$MATCREATOR_ADK_HOST" --port "$MATCREATOR_ADK_PORT" --log-level "$MATCREATOR_API_LOG_LEVEL" >"$LOG_DIR/api-server.log" 2>&1 &
+    PID_API=$!
+    sleep 1
+fi
 
 echo "Starting FastAPI middle layer (port $MATCREATOR_WEB_PORT)..."
 MATCREATOR_WEB_LOG_LEVEL="${MATCREATOR_WEB_LOG_LEVEL:-info}"
@@ -82,16 +140,27 @@ sleep 1
 
 echo "Starting Vite frontend (port $MATCREATOR_FRONTEND_PORT)..."
 cd "$PROJ_ROOT/web/vite-frontend"
-npm run dev >"$LOG_DIR/vite.log" 2>&1 &
+node node_modules/vite/bin/vite.js --host "$MATCREATOR_FRONTEND_HOST" --port "$MATCREATOR_FRONTEND_PORT" --strictPort >"$LOG_DIR/vite.log" 2>&1 &
 PID_VITE=$!
 
 echo ""
 echo "All services running:"
-echo "  ADK API server : http://$MATCREATOR_ADK_HOST:$MATCREATOR_ADK_PORT"
+if [[ -n "${PID_API:-}" ]]; then
+    echo "  Internal ADK   : http://$MATCREATOR_ADK_HOST:$MATCREATOR_ADK_PORT"
+else
+    echo "  Local accounts : each account starts its own private backend"
+fi
 echo "  FastAPI layer  : http://$MATCREATOR_WEB_HOST:$MATCREATOR_WEB_PORT"
-echo "  Frontend       : http://$MATCREATOR_FRONTEND_HOST:$MATCREATOR_FRONTEND_PORT"
+echo "  Frontend       : http://$MATCREATOR_BROWSER_HOST:$MATCREATOR_FRONTEND_PORT"
 echo ""
 echo "Logs: $LOG_DIR/{api-server,web-main,vite}.log"
+echo "Data directory: $MATCREATOR_HOME"
+echo 'Open the frontend to register or sign in to a local account.'
+echo 'For a private setup link to claim existing installation data, run `matcreator access` in the same environment.'
 echo "Press Ctrl+C to stop all services."
 
-wait
+# If any component exits (including a late bind failure), terminate the exact
+# children started here rather than silently retaining a partial stack.
+WAIT_PIDS=("$PID_WEB" "$PID_VITE")
+[[ -n "${PID_API:-}" ]] && WAIT_PIDS+=("$PID_API")
+wait -n "${WAIT_PIDS[@]}"

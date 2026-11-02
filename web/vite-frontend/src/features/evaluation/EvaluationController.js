@@ -1344,8 +1344,23 @@ export function createEvaluationController({
     void showSavedQuestionDrafts();
   });
 
+  function resetAccount() {
+    setApplicationMode("workspace");
+    for (const key of ["evaluationCatalog", "evaluationQuestionSets", "evaluationGeneratedQuestions", "evaluationQuestionTemplates", "evaluationQuestionGenerators"]) state[key] = [];
+    state.evaluationCatalogTotal = null;
+    state.activeEvaluationCampaign = null;
+    state.activeEvaluationQuestionSetId = "";
+    state.activeEvaluationQuestionTemplateId = "";
+    state.activeEvaluationQuestionGeneratorId = "";
+    state.selectedEvaluationQuestions?.clear();
+    for (const element of [evaluationQuestionList, evaluationCampaignSummary, evaluationCampaignList, evaluationLiveFeed]) element?.replaceChildren();
+    documentRef.querySelectorAll(".evaluation-draft-overlay").forEach((element) => element.remove());
+    setEvaluationStatus("");
+  }
+
   return {
     setApplicationMode,
     showSessionQuestionGeneratorPicker,
+    resetAccount,
   };
 }

@@ -272,6 +272,8 @@ export function createSettingsController({ state, applyLogin, getFontScale, appl
   function openSettingsModal() {
     if (!settingsDialog.open()) return;
     settingsUsername.value = state.displayName || "";
+    settingsUsername.readOnly = Boolean(state.localAccountMode);
+    settingsUsername.title = state.localAccountMode ? "Local account username" : "";
     settingsUuid.value = state.userId || "";
     loadSettingsData();
     updateFontScaleOptions();
@@ -289,6 +291,18 @@ export function createSettingsController({ state, applyLogin, getFontScale, appl
 
   function closeSettingsModal() {
     settingsDialog.close();
+  }
+
+  function resetAccount() {
+    settingsDialog.close();
+    cleanupSettingsOperations();
+    settingsModal.querySelectorAll("input, textarea").forEach((input) => {
+      if (input.type === "checkbox" || input.type === "radio") input.checked = false;
+      else input.value = "";
+    });
+    settingsEnvPairs?.replaceChildren();
+    settingsLlmCards?.replaceChildren();
+    skillsChecklist?.replaceChildren();
   }
 
   function cleanupSettingsOperations() {
@@ -871,5 +885,5 @@ export function createSettingsController({ state, applyLogin, getFontScale, appl
   // re-enter values. Closing remains an explicit action (close button or
   // Escape), and saving is handled by the Save button.
 
-  return { open: openSettingsModal, close: closeSettingsModal, reload: loadSettingsData };
+  return { open: openSettingsModal, close: closeSettingsModal, reload: loadSettingsData, resetAccount };
 }

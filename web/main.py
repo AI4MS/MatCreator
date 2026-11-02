@@ -35,6 +35,7 @@ import re
 import shutil
 import signal
 import socket
+import secrets
 import sqlite3
 import struct
 import subprocess
@@ -150,6 +151,7 @@ from matcreator.knowledge.kdg_memory import (  # noqa: E402
 )
 from matcreator.knowledge.review import run_review_pipeline  # noqa: E402
 from matcreator.ports import get_adk_port, get_local_adk_command, get_web_port, get_worker_base_port  # noqa: E402
+from matcreator.local_access import install_local_access, ensure_local_access  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +219,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SUMMARIES_PATH = ROOT / "agents" / "MatCreator" / ".adk" / "session_summaries.json"
+_frontend_dist = _WEB_DIR / "vite-frontend" / "dist"
+_public_ui_paths = {"/", "/index.html", "/favicon.ico"}
+if _frontend_dist.exists():
+    _public_ui_paths.update("/" + path.relative_to(_frontend_dist).as_posix()
+                            for path in _frontend_dist.rglob("*") if path.is_file())
+_is_local_account_broker = (_MATCREATOR_MODE == "local" and os.environ.get("MATCREATOR_LOCAL_PROFILE_WORKER") != "1")
+_is_local_srt_worker = (_MATCREATOR_MODE == "local"
+                        and os.environ.get("MATCREATOR_LOCAL_PROFILE_WORKER") == "1"
+                        and os.environ.get("MATCREATOR_LOCAL_SRT_WORKER") == "1")
+if _is_local_srt_worker:
+    # The broker reaches ADK through the account's anonymous-pipe ingress.
+    # Only nonce-bound identity proofs are public; this is not an ADK proxy.
+    _public_ui_paths.add("/api/local-auth/adk-status")
+_local_accounts = None
+if _is_local_account_broker:
+    from matcreator.local_accounts import install_local_accounts
+    _local_accounts = install_local_accounts(app, home=_MATCREATOR_HOME, source_root=ROOT, public_paths=_public_ui_paths)
+    _local_access = _local_accounts.access
+else:
+    _local_access = install_local_access(app, home=_MATCREATOR_HOME, audience="web", public_paths=_public_ui_paths)
+
+SUMMARIES_PATH = _ADK_DIR / "session_summaries.json"
 _SENSITIVE_FIELDS = frozenset({"LLM_API_KEY", "BOHRIUM_PASSWORD", "BOHRIUM_ACCESS_KEY"})
 _ENV_FIELDS = [
     "LLM_MODEL", "LLM_API_KEY", "LLM_BASE_URL", "EMBEDDING_MODEL",
@@ -240,6 +263,44 @@ _PROTECTED_USER_ENV_KEYS = frozenset({
     "MATCREATOR_MODULE_SKILLS_ROOT",
     "MATCREATOR_MODE",
     "MATCREATOR_USER_ID",
+    "MATCREATOR_LOCAL_PROFILE_WORKER",
+    "MATCREATOR_LOCAL_RUNTIME",
+    "MATCREATOR_LOCAL_SRT_WORKER",
+    "MATCREATOR_LOCAL_SRT_COMMAND",
+    "MATCREATOR_LOCAL_SRT_RUNTIME_ROOT",
+    "MATCREATOR_LOCAL_SRT_STATE_ROOT",
+    "MATCREATOR_LOCAL_SRT_MEMORY_MB",
+    "MATCREATOR_LOCAL_SRT_CPUS",
+    "MATCREATOR_LOCAL_SRT_CPUSETS",
+    "MATCREATOR_LOCAL_SRT_PIDS",
+    "MATCREATOR_LOCAL_SRT_ALLOWED_DOMAINS",
+    "MATCREATOR_LOCAL_SRT_DENIED_DOMAINS",
+    "MATCREATOR_LOCAL_SRT_PARENT_PROXY",
+    "MATCREATOR_SRT_BOOT_ACCOUNT_ID",
+    "MATCREATOR_SRT_BOOT_INSTANCE_ID",
+    "MATCREATOR_SRT_BOOT_ACCESS_TOKEN",
+    "MATCREATOR_LOCAL_CONTAINER_COMMAND",
+    "MATCREATOR_LOCAL_CONTAINER_IMAGE",
+    "MATCREATOR_LOCAL_CONTAINER_MEMORY_MB",
+    "MATCREATOR_LOCAL_CONTAINER_CPUS",
+    "MATCREATOR_LOCAL_CONTAINER_CPUSETS",
+    "MATCREATOR_LOCAL_CONTAINER_PIDS",
+    "MATCREATOR_CONTAINER_BOOT_ACCOUNT_ID",
+    "MATCREATOR_CONTAINER_BOOT_INSTANCE_ID",
+    "MATCREATOR_CONTAINER_BOOT_ACCESS_TOKEN",
+    "MATCREATOR_LOCAL_ACCOUNT_ROOT",
+    "MATCREATOR_LOCAL_ACCOUNT_ID",
+    "MATCREATOR_CONFIG_PATH",
+    "MATCREATOR_USERS_DB",
+    "MATCREATOR_CONTROL_PLANE_HOME",
+    "MATCREATOR_DATA_ROOT",
+    "MATCREATOR_HOST_DATA_ROOT",
+    "KDG_DB_PATH",
+    "OAW_XRD_RUN_ROOT",
+    "MATCREATOR_XRD_HOME",
+    "MATCREATOR_LOCAL_ALLOWED_HOSTS",
+    "MATCLAW_WORKSPACE",
+    "MATCLAW_SESSION_DIR",
 })
 
 _adk_process: subprocess.Popen | None = None
@@ -247,6 +308,7 @@ _knowledge_review_lock = threading.Lock()
 _knowledge_review_task: asyncio.Task | None = None
 _skill_graph_sync_task: asyncio.Task | None = None
 _evaluation_recovery_task: asyncio.Task | None = None
+_web_instance_lock = None
 _knowledge_review_state = {
     "status": "idle",
     "trigger_session_id": None,
@@ -699,7 +761,45 @@ def _config_env_values(config: dict[str, Any]) -> dict[str, str]:
 def _local_adk_env() -> dict[str, str]:
     env = dict(os.environ)
     env.update(_config_env_values(load_config()))
+    env["MATCREATOR_HOME"] = str(_MATCREATOR_HOME.resolve())
     return env
+
+
+def _local_adk_headers() -> dict[str, str]:
+    return _local_access.headers() if _local_access is not None and _MATCREATOR_MODE != "server" else {}
+
+
+async def _verify_local_adk(client, target_url: str, *, nonce: str | None = None) -> dict:
+    """Prove the listener owns this home's secret before sending credentials."""
+    if _MATCREATOR_MODE == "server" or _local_access is None:
+        return {}
+    nonce = nonce or secrets.token_hex(16)
+    try:
+        response = await client.get(f"{target_url.rstrip('/')}/api/local-auth/status", params={"nonce": nonce}, timeout=3.0)
+        identity = response.json()
+        pid = identity.get("pid")
+        proof = identity.get("proof", "")
+        if (response.status_code != 200 or identity.get("instance_id") != _local_access.instance_id
+                or identity.get("audience") != "adk" or not isinstance(pid, int) or pid <= 0
+                or not isinstance(proof, str)
+                or not secrets.compare_digest(proof, _local_access.server_proof(nonce, "adk", pid))):
+            raise ValueError("Instance proof mismatch")
+        return identity
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
+        raise HTTPException(status_code=409, detail="Configured ADK port does not belong to this local instance; no request was forwarded") from exc
+
+
+@app.get("/api/local-auth/adk-status")
+async def local_srt_adk_status(nonce: str = ""):
+    """Relay only a verified, nonce-bound ADK proof across SRT's fixed ingress."""
+    if not _is_local_srt_worker:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not re.fullmatch(r"[a-f0-9]{32}", nonce):
+        raise HTTPException(status_code=422, detail="A 32-character hexadecimal nonce is required")
+    async with httpx.AsyncClient(trust_env=False) as client:
+        identity = await _verify_local_adk(client, f"http://127.0.0.1:{get_adk_port()}", nonce=nonce)
+    return JSONResponse({key: identity[key] for key in ("instance_id", "audience", "pid", "proof")},
+                        headers={"Cache-Control": "no-store"})
 
 
 def _user_adk_dir(user_id: str) -> Path:
@@ -1091,9 +1191,11 @@ async def _proxy_request(request: Request, target_url: str, path: str) -> Respon
     url = f"{target_url.rstrip('/')}/{path.lstrip('/')}"
     params = dict(request.query_params)
     headers = {k: v for k, v in request.headers.items()
-               if k.lower() not in ("host", "content-length", "origin")}
+               if k.lower() not in ("host", "content-length", "origin", "cookie", "authorization")}
+    headers.update(_local_adk_headers())
     body = await request.body()
     async with httpx.AsyncClient(timeout=None) as client:
+        await _verify_local_adk(client, target_url)
         resp = await client.request(
             method=request.method,
             url=url,
@@ -1113,11 +1215,13 @@ async def _proxy_sse(request: Request, target_url: str, path: str):
     url = f"{target_url.rstrip('/')}/{path.lstrip('/')}"
     params = dict(request.query_params)
     headers = {k: v for k, v in request.headers.items()
-               if k.lower() not in ("host", "content-length", "origin")}
+               if k.lower() not in ("host", "content-length", "origin", "cookie", "authorization")}
+    headers.update(_local_adk_headers())
     body = await request.body()
 
     async def stream():
         async with httpx.AsyncClient(timeout=None) as client:
+            await _verify_local_adk(client, target_url)
             async with client.stream(
                 method=request.method,
                 url=url,
@@ -1172,6 +1276,7 @@ async def _produce_managed_run(
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
     }
+    headers.update(_local_adk_headers())
     records = SseRecordBuffer()
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
@@ -1185,6 +1290,7 @@ async def _produce_managed_run(
             started.set()
 
     async with httpx.AsyncClient(timeout=None) as client:
+        await _verify_local_adk(client, target_url)
         async with client.stream(
             method="POST",
             url=url,
@@ -1424,7 +1530,8 @@ async def _prepare_evaluation_adk_session(
         "custom_workdir": str(workspace),
     }
     async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(f"{target_url}{path}", json=payload)
+        await _verify_local_adk(client, target_url)
+        response = await client.post(f"{target_url}{path}", json=payload, headers=_local_adk_headers())
         if response.status_code == 409:
             return
         if response.is_success:
@@ -2213,7 +2320,11 @@ def _get_workdir_for_session(session_id: str) -> Path:
             if candidate and candidate.is_relative_to(ws_root):
                 return candidate
         elif _MATCREATOR_MODE != "server":
-            return Path(path_str).expanduser().resolve()
+            try:
+                from matcreator.local_account_paths import assert_local_account_path
+                return assert_local_account_path(path_str)
+            except PermissionError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     if _MATCREATOR_MODE == "server" and owner_id:
         return _user_workspace_root(owner_id)
@@ -2228,7 +2339,11 @@ def _get_workdir_for_session(session_id: str) -> Path:
             if candidate.is_relative_to(get_workspace_root().resolve()):
                 return candidate
         else:
-            return candidate
+            try:
+                from matcreator.local_account_paths import assert_local_account_path
+                return assert_local_account_path(candidate)
+            except PermissionError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
     return get_session_workdir(session_id)
 
 
@@ -2288,6 +2403,11 @@ def _resolve_readable_file_path(path: str, session_id: str = "") -> Path:
     ws_root = get_workspace_root().resolve()
     p = Path(path)
     resolved = p.resolve() if p.is_absolute() else (ws_root / p).resolve()
+    try:
+        from matcreator.local_account_paths import assert_local_account_path
+        resolved = assert_local_account_path(resolved)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     allowed = ws_root
     if session_id:
         allowed = _get_workdir_for_session(session_id).resolve()
@@ -2876,6 +2996,16 @@ async def get_skill_graph_data(
 @app.on_event("startup")
 async def _on_startup() -> None:
     global _remote_job_monitor_task, _skill_graph_sync_task, _evaluation_recovery_task
+    global _web_instance_lock
+    if _MATCREATOR_MODE != "server":
+        # A home has one control plane/monitor owner even if another port is free.
+        from matcreator.local_access import InstanceLease
+        _web_instance_lock = InstanceLease(_MATCREATOR_HOME, "broker" if _is_local_account_broker else "web")
+        _web_instance_lock.acquire()
+    if _is_local_account_broker:
+        # Personal workers own data, credentials and durable job monitors.
+        # The login broker must never run a second monitor on legacy data.
+        return
     users_db.init_db()
     if _MATCREATOR_MODE != "server":
         users_db.migrate_legacy_adk_sessions(SESSION_DB_PATH, APP_NAME)
@@ -2895,6 +3025,13 @@ async def _on_startup() -> None:
 
 @app.on_event("shutdown")
 async def _on_shutdown() -> None:
+    global _web_instance_lock
+    if _is_local_account_broker:
+        await _local_accounts.runtime_manager.shutdown_broker()
+        if _web_instance_lock is not None:
+            _web_instance_lock.close()
+            _web_instance_lock = None
+        return
     _remote_job_monitor.stop()
     _remote_job_monitor_stop.set()
     if _remote_job_monitor_task is not None:
@@ -2907,6 +3044,9 @@ async def _on_shutdown() -> None:
         return_exceptions=True,
     )
     await _run_registry.shutdown()
+    if _web_instance_lock is not None:
+        _web_instance_lock.close()
+        _web_instance_lock = None
 
 
 class LoginBody(BaseModel):
@@ -4800,7 +4940,7 @@ async def cancel_individual_step(
 
 
 def _skill_bundle_roots() -> list[Path]:
-    return [_MODULE_SKILLS_ROOT, official_skills_dir(), workspace_skills_dir(), Path.home() / ".matcreator" / "skills"]
+    return [_MODULE_SKILLS_ROOT, official_skills_dir(), workspace_skills_dir(), _MATCREATOR_HOME / "skills"]
 
 
 def _resolve_skill_dir(skill_name: str) -> Path:
@@ -5594,6 +5734,12 @@ async def update_settings(body: SettingsBody, user_id: str = Query(default="")) 
         # state now owns availability, so retire any legacy copy on save.
         config.setdefault("skills", {}).pop("disabled", None)
     if body.workspace is not None:
+        if body.workspace.get("default_workdir"):
+            from matcreator.local_account_paths import assert_local_account_path
+            try:
+                assert_local_account_path(body.workspace["default_workdir"])
+            except PermissionError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
         config.setdefault("workspace", {}).update(body.workspace)
     if body.llm is not None:
         config.setdefault("llm", {}).update(body.llm)
@@ -5746,8 +5892,24 @@ async def restart_backend(user_id: str = Query(default="")) -> JSONResponse:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 
-    _kill_port(get_adk_port())
-    await asyncio.sleep(1.5)
+    if _run_registry.active_runs():
+        raise HTTPException(status_code=409, detail="Stop active local runs before restarting this instance")
+    if _is_port_open(port=get_adk_port()):
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            identity = await _verify_local_adk(client, f"http://127.0.0.1:{get_adk_port()}")
+        # Never terminate an arbitrary process merely because it owns a port.
+        if not identity:
+            raise HTTPException(status_code=409, detail="Cannot verify the local backend process")
+        try:
+            os.kill(identity["pid"], signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        for _ in range(40):
+            if not _is_port_open(port=get_adk_port()):
+                break
+            await asyncio.sleep(0.1)
+        else:
+            raise HTTPException(status_code=409, detail="Verified backend is still stopping; retry later")
 
     try:
         _adk_process = subprocess.Popen(
@@ -5783,7 +5945,12 @@ async def get_backend_status(user_id: str = Query(default="")) -> JSONResponse:
         except httpx.HTTPError:
             return JSONResponse({"ready": False})
 
-    return JSONResponse({"ready": _is_port_open(port=get_adk_port())})
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            identity = await _verify_local_adk(client, f"http://127.0.0.1:{get_adk_port()}")
+        return JSONResponse({"ready": bool(identity), "instance_id": identity.get("instance_id")})
+    except HTTPException:
+        return JSONResponse({"ready": False, "reason": "Local backend instance identity not verified"})
 
 
 # XRD workbench: same execution service for browser and agent tools.

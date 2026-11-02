@@ -18,8 +18,9 @@ export function shouldRefreshPlanGraphForTool(toolName) {
   return toolName === "validate_graph" || toolName === "validate_plan";
 }
 
-export function workspaceFileUrl(path, sessionId = "") {
+export function workspaceFileUrl(path, sessionId = "", expectedAccountId = "") {
   const query = new URLSearchParams({ path: String(path || "") });
   if (sessionId) query.set("session_id", sessionId);
+  if (expectedAccountId) query.set("expected_account_id", expectedAccountId);
   return `/api/workspace/files?${query}`;
 }

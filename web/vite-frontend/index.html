@@ -498,9 +498,20 @@
     <div id="login-modal" class="login-overlay hidden">
       <div class="login-card">
         <div class="brand-title" style="font-size:1.4rem">MatCreator</div>
+        <p id="local-account-notice" class="hidden" style="color:var(--muted);font-size:0.8rem;line-height:1.5"></p>
+        <p id="local-registration-access-hint" class="hidden" role="status" style="color:var(--muted);font-size:0.85rem;line-height:1.5"></p>
+        <div id="local-token-view" class="hidden">
+          <p style="margin:0 0 8px">Unlock your local instance</p>
+          <p style="color:var(--muted);font-size:0.875rem">Use the access token from the MC launcher. Your conversations and files stay in this instance; no account registration is needed.</p>
+          <p id="local-instance-label" style="color:var(--muted);font-size:0.75rem;font-family:var(--mono);word-break:break-all"></p>
+          <label for="local-token-input" style="font-size:0.875rem">Instance access token</label>
+          <input id="local-token-input" type="password" class="text-input" placeholder="Paste this instance's access token" style="width:100%;box-sizing:border-box;margin-top:6px" autocomplete="off" spellcheck="false" autocapitalize="off" />
+          <p id="local-token-error" role="alert" style="color:var(--danger);font-size:0.8rem;margin:4px 0 0;min-height:1.2em"></p>
+          <button id="local-token-submit" class="send-btn" type="button" style="width:100%;justify-content:center;margin-top:4px">Unlock instance →</button>
+        </div>
         <!-- Login view -->
         <div id="login-view">
-          <p style="color:var(--muted);margin:0 0 8px;font-size:0.875rem">Sign in to continue</p>
+          <p id="login-heading" style="color:var(--muted);margin:0 0 8px;font-size:0.875rem">Sign in to continue</p>
           <input id="login-input" class="text-input" placeholder="Username" style="width:100%;box-sizing:border-box" autocomplete="username" />
           <input id="login-password" type="password" class="text-input" placeholder="Password" style="width:100%;box-sizing:border-box;margin-top:8px" autocomplete="current-password" />
           <p id="login-error" style="color:var(--danger);font-size:0.8rem;margin:4px 0 0;min-height:1.2em"></p>
@@ -512,12 +523,16 @@
         </div>
         <!-- Register view -->
         <div id="register-view" class="hidden">
-          <p style="color:var(--muted);margin:0 0 8px;font-size:0.875rem">Create a new account</p>
+          <p id="register-heading" style="color:var(--muted);margin:0 0 8px;font-size:0.875rem">Create a new account</p>
           <input id="reg-input" class="text-input" placeholder="Username" style="width:100%;box-sizing:border-box" autocomplete="username" />
           <input id="reg-password" type="password" class="text-input" placeholder="Password" style="width:100%;box-sizing:border-box;margin-top:8px" autocomplete="new-password" />
           <input id="reg-confirm" type="password" class="text-input" placeholder="Confirm password" style="width:100%;box-sizing:border-box;margin-top:8px" autocomplete="new-password" />
+          <p id="reg-password-hint" class="hidden" style="color:var(--muted);font-size:0.8rem;margin:6px 0">Use at least 10 characters. This password signs in to this local installation.</p>
+          <label id="legacy-claim-row" class="hidden" style="display:flex;gap:8px;align-items:flex-start;font-size:0.85rem;margin-top:12px;line-height:1.5"><input id="legacy-claim-input" type="checkbox" style="margin-top:4px" /> Use the existing conversations and settings for this account</label>
+          <p id="legacy-claim-hint" class="hidden" style="color:var(--muted);font-size:0.8rem;line-height:1.5"></p>
           <p id="reg-error" style="color:var(--danger);font-size:0.8rem;margin:4px 0 0;min-height:1.2em"></p>
           <button id="reg-submit" class="send-btn" type="button" style="width:100%;justify-content:center;margin-top:4px">Register →</button>
+          <button id="cancel-local-account-create" class="ghost hidden" type="button" style="width:100%;justify-content:center;margin-top:8px">Back to my account</button>
           <p style="text-align:center;margin:10px 0 0;font-size:0.8rem;color:var(--muted)">
             Have an account? <button id="switch-to-login" class="ghost" type="button" style="padding:0;font-size:0.8rem;color:var(--accent)">Sign in</button>
           </p>
@@ -578,6 +593,7 @@
               <span id="settings-password-msg" role="status" style="display:block;margin-top:6px;font-size:0.8rem;min-height:1.2em"></span>
             </div>
             <button id="settings-logout-btn" class="ghost" type="button" style="margin-top:16px;width:100%;justify-content:center;color:var(--danger);border-color:var(--danger)">Log out</button>
+            <button id="settings-create-account-btn" class="ghost hidden" type="button" style="margin-top:8px;width:100%;justify-content:center">Create another local account</button>
             <div style="margin-top:20px;border-top:1px solid var(--border);padding-top:16px">
               <label class="settings-label">Default Workdir</label>
               <p class="settings-hint">Used as the working directory for every new session. Leave empty to use the global workspace default.</p>

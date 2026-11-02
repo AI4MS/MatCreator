@@ -130,6 +130,7 @@ def test_api_server_startup_applies_config_env_to_harness(monkeypatch, tmp_path:
 def test_matcreator_home_overrides_user_storage_paths(monkeypatch, tmp_path: Path) -> None:
     matcreator_home = tmp_path / "server-home"
     monkeypatch.setenv("MATCREATOR_HOME", str(matcreator_home))
+    monkeypatch.delenv("MATCLAW_WORKSPACE", raising=False)
     monkeypatch.delenv("KDG_DB_PATH", raising=False)
     sys.modules.pop("src.matcreator.constants", None)
     sys.modules.pop("src.matcreator.config", None)
