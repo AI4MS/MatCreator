@@ -1,5 +1,15 @@
 import { createDialogController } from "../../shared/ui/dialog.js";
 import { buildSettingsSavePlan } from "./settingsChanges.js";
+import {
+  BOTTOM_BAR_BUTTONS,
+  BOTTOM_BAR_MAX,
+  applyBottomBarLayout,
+  getBottomBarLayout,
+  saveBottomBarLayout,
+} from "../ui/bottomBarLayout.js";
+
+// The settings entry point must stay reachable, so it is pinned to the bar.
+const ALWAYS_VISIBLE_BUTTON_ID = "settings-btn";
 
 export function createSettingsController({ state, applyLogin, getFontScale, applyFontScale, appearanceController }) {
 
@@ -19,6 +29,7 @@ export function createSettingsController({ state, applyLogin, getFontScale, appl
   const settingsLlmCards = document.getElementById("settings-llm-cards");
   const settingsLlmCardAdd = document.getElementById("settings-llm-card-add");
   const fontScaleOptions = document.getElementById("settings-font-scale-options");
+  const bottomBarOptions = document.getElementById("settings-bottom-bar-options");
   const CUSTOM_ENV_CONFIG_KEY = "CUSTOM_ENV";
   const REQUEST_TIMEOUT_MS = 15_000;
   let loadedSettings = null;
@@ -269,12 +280,45 @@ export function createSettingsController({ state, applyLogin, getFontScale, appl
     updateFontScaleOptions();
   });
 
+  function renderBottomBarOptions() {
+    if (!bottomBarOptions) return;
+    const ids = getBottomBarLayout();
+    const full = ids.length >= BOTTOM_BAR_MAX;
+    bottomBarOptions.innerHTML = "";
+    BOTTOM_BAR_BUTTONS.forEach(({ id, label }) => {
+      const active = ids.includes(id);
+      const pinned = id === ALWAYS_VISIBLE_BUTTON_ID;
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "ghost settings-bottom-bar-option";
+      chip.dataset.buttonId = id;
+      chip.textContent = label;
+      chip.setAttribute("aria-pressed", String(active));
+      chip.disabled = pinned || (!active && full);
+      chip.title = pinned
+        ? "Settings stays in the bar so it is always reachable"
+        : (!active && full ? `The bottom bar holds at most ${BOTTOM_BAR_MAX} buttons` : "");
+      chip.addEventListener("click", () => {
+        const current = getBottomBarLayout();
+        const next = current.includes(id)
+          ? current.filter((existing) => existing !== id)
+          : [...current, id];
+        if (next.length > BOTTOM_BAR_MAX) return;
+        saveBottomBarLayout(next);
+        applyBottomBarLayout();
+        renderBottomBarOptions();
+      });
+      bottomBarOptions.appendChild(chip);
+    });
+  }
+
   function openSettingsModal() {
     if (!settingsDialog.open()) return;
     settingsUsername.value = state.displayName || "";
     settingsUuid.value = state.userId || "";
     loadSettingsData();
     updateFontScaleOptions();
+    renderBottomBarOptions();
     appearanceController?.sync();
   }
 

@@ -1477,6 +1477,17 @@ body[data-theme="light"] .panel-resizer.resizing::before {
   gap: 8px;
 }
 
+.settings-bottom-bar-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-bottom-bar-option[aria-pressed="true"] {
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
 .settings-choice-fieldset {
   min-width: 0;
   border: 0;

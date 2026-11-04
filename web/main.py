@@ -44,6 +44,7 @@ import sys
 import termios
 import threading
 import time
+import urllib.request
 from collections.abc import Awaitable, Callable
 from importlib.resources import files
 from pathlib import Path
@@ -146,7 +147,7 @@ from matcreator.knowledge.kdg_memory import (  # noqa: E402
     set_entry_disabled,
 )
 from matcreator.knowledge.review import run_review_pipeline  # noqa: E402
-from matcreator.ports import get_adk_port, get_local_adk_command, get_web_port, get_worker_base_port  # noqa: E402
+from matcreator.ports import get_adk_port, get_frontend_port, get_local_adk_command, get_web_port, get_worker_base_port  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -2605,6 +2606,487 @@ async def _worker_terminal_session(websocket: WebSocket, user_id: str) -> None:
 async def health_check():
     mode = os.environ.get("MATCREATOR_MODE", "local")
     return {"status": "ok", "mode": mode}
+
+
+# ---------------------------------------------------------------------------
+# System status (dashboard)
+# ---------------------------------------------------------------------------
+
+# Stdlib-only machine statistics for the control-panel dashboard.  Everything
+# degrades gracefully: /proc is Linux-only (macOS/Windows report cpu/mem as
+# unavailable), nvidia-smi is optional, and `ps` output is parsed best-effort.
+
+_SYSTEM_SAMPLE_LOCK = threading.Lock()
+_SYSTEM_CPU_PREV: dict[str, tuple[float, float]] = {}
+_SYSTEM_CPU_PREV_TIME = 0.0
+_SYSTEM_PROBE_CACHE: dict[str, tuple[float, bool]] = {}
+_NVIDIA_SMI = shutil.which("nvidia-smi")
+_SYSTEM_LOG_NAMES = ("api-server", "web-main", "vite")
+
+
+def _read_proc_stat() -> dict[str, tuple[float, float]]:
+    """Per-CPU (idle, total) jiffies from /proc/stat; empty off Linux."""
+    stats: dict[str, tuple[float, float]] = {}
+    try:
+        with open("/proc/stat", encoding="ascii") as fh:
+            for line in fh:
+                parts = line.split()
+                name = parts[0] if parts else ""
+                if name != "cpu" and not (name.startswith("cpu") and name[3:].isdigit()):
+                    continue
+                values = [float(v) for v in parts[1:8]]
+                stats[name] = (values[3] + values[4], sum(values))
+    except (OSError, ValueError, IndexError):
+        return {}
+    return stats
+
+
+def _cpu_sample() -> dict[str, Any]:
+    global _SYSTEM_CPU_PREV_TIME
+    with _SYSTEM_SAMPLE_LOCK:
+        first = not _SYSTEM_CPU_PREV
+        # Snapshot, never a reference: the store is refreshed below before the
+        # deltas are computed, and aliasing it would make every delta zero.
+        prev = _read_proc_stat() if first else dict(_SYSTEM_CPU_PREV)
+        if not prev:
+            return {"available": False, "reason": "not supported on this platform"}
+        # Jiffies tick at 10 ms; a sub-second window quantises low utilisation
+        # to zero on many-core machines, so keep at least a 0.5 s window.
+        elapsed = 0.0 if first else time.monotonic() - _SYSTEM_CPU_PREV_TIME
+        if elapsed < 0.5:
+            time.sleep(0.5 - elapsed)
+        cur = _read_proc_stat()
+        if not cur:
+            return {"available": False, "reason": "not supported on this platform"}
+        _SYSTEM_CPU_PREV.clear()
+        _SYSTEM_CPU_PREV.update(cur)
+        _SYSTEM_CPU_PREV_TIME = time.monotonic()
+        total = 0.0
+        cores: list[dict[str, Any]] = []
+        for name, (idle1, total1) in cur.items():
+            idle0, total0 = prev.get(name, (idle1, total1))
+            dt = total1 - total0
+            pct = round(100.0 * (1.0 - (idle1 - idle0) / dt), 1) if dt > 0 else 0.0
+            if name == "cpu":
+                total = pct
+            else:
+                cores.append({"name": f"CPU{name[3:]}", "usage": pct})
+        cores.sort(key=lambda c: int(c["name"][3:]))
+        load = None
+        try:
+            load = [round(v, 2) for v in os.getloadavg()]
+        except (AttributeError, OSError):
+            pass
+        return {"available": True, "total": total, "count": len(cores), "cores": cores, "load": load}
+
+
+def _memory_sample() -> dict[str, float] | None:
+    try:
+        info: dict[str, int] = {}
+        with open("/proc/meminfo", encoding="ascii") as fh:
+            for line in fh:
+                key, _, rest = line.partition(":")
+                info[key.strip()] = int(rest.strip().split()[0])  # kB
+        total_kib = info.get("MemTotal", 0)
+        avail_kib = info.get("MemAvailable", info.get("MemFree", 0))
+        if total_kib <= 0:
+            return None
+        used_kib = max(0, total_kib - avail_kib)
+        return {
+            "total_gib": round(total_kib / 1048576, 1),
+            "used_gib": round(used_kib / 1048576, 1),
+            "percent": round(100.0 * used_kib / total_kib, 1),
+        }
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _proc_user(pid: str) -> str:
+    try:
+        import pwd
+
+        return pwd.getpwuid(os.stat(f"/proc/{pid}/").st_uid).pw_name
+    except Exception:
+        return ""
+
+
+def _top_processes(limit: int = 8, min_cpu: float = 0.5) -> list[dict[str, Any]]:
+    """Highest-CPU processes (the ones `top` highlights), best-effort."""
+    try:
+        out = subprocess.run(
+            ["ps", "-eo", "pid,user:20,pcpu,pmem,stat,comm", "--sort=-pcpu"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in out.splitlines()[1:]:
+        parts = line.split(None, 5)
+        if len(parts) < 6:
+            continue
+        pid, user, cpu, mem, stat, name = parts
+        try:
+            cpu_f = float(cpu)
+        except ValueError:
+            continue
+        if cpu_f < min_cpu:
+            break  # sorted descending — everything below is idle
+        rows.append({
+            "pid": int(pid) if pid.isdigit() else 0,
+            "user": user,
+            "cpu": cpu_f,
+            "mem": float(mem) if mem.replace(".", "", 1).isdigit() else 0.0,
+            "stat": stat,
+            "name": name,
+        })
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def _gpu_sample() -> dict[str, Any]:
+    if not _NVIDIA_SMI:
+        return {"available": False, "reason": "nvidia-smi not found"}
+    try:
+        out = subprocess.run(
+            [_NVIDIA_SMI,
+             "--query-gpu=index,name,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=8,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"available": False, "reason": f"nvidia-smi failed: {exc}"}
+
+    def _watts(value: str) -> float | None:
+        try:
+            return float(value)
+        except ValueError:
+            return None  # "[N/A]" / "[Not Supported]"
+
+    gpus: dict[str, dict[str, Any]] = {}
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 7:
+            continue
+        index, name, uuid = parts[0], parts[1], parts[2]
+        try:
+            gpus[uuid] = {
+                "index": int(index),
+                "name": name,
+                "util": float(parts[3] or 0),
+                "mem_used_mib": float(parts[4] or 0),
+                "mem_total_mib": float(parts[5] or 0),
+                "temp": float(parts[6] or 0),
+                "power_w": _watts(parts[7]) if len(parts) > 7 else None,
+                "power_limit_w": _watts(parts[8]) if len(parts) > 8 else None,
+                "processes": [],
+            }
+        except ValueError:
+            continue
+
+    # Join compute processes via uuid: some drivers reject pci.bus_id as a
+    # --query-compute-apps field, uuid works on both sides.
+    try:
+        out = subprocess.run(
+            [_NVIDIA_SMI,
+             "--query-compute-apps=gpu_uuid,pid,process_name,used_memory",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=8,
+        ).stdout
+        for line in out.splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 4:
+                continue
+            uuid, pid, name, mem = parts
+            gpu = gpus.get(uuid)
+            if gpu is None:
+                continue
+            try:
+                mem_mib = float(mem)
+            except ValueError:
+                mem_mib = 0.0  # "[Not Supported]" / "N/A" rows
+            gpu["processes"].append({
+                "pid": int(pid) if pid.isdigit() else 0,
+                "name": os.path.basename(name) if name else "?",
+                "user": _proc_user(pid),
+                "mem_mib": mem_mib,
+            })
+    except (OSError, subprocess.SubprocessError):
+        pass  # process listing is best-effort
+
+    listed = sorted(gpus.values(), key=lambda g: g["index"])
+    for gpu in listed:
+        gpu["mem_used_gib"] = round(gpu["mem_used_mib"] / 1024, 1)
+        gpu["mem_total_gib"] = round(gpu["mem_total_mib"] / 1024, 1)
+    return {"available": True, "gpus": listed}
+
+
+def _probe(url: str, timeout: float = 1.0) -> bool:
+    cached = _SYSTEM_PROBE_CACHE.get(url)
+    now = time.monotonic()
+    if cached and now - cached[0] < 1.0:
+        return cached[1]
+    ok = False
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            ok = resp.status < 500
+    except Exception:
+        ok = False
+    _SYSTEM_PROBE_CACHE[url] = (now, ok)
+    return ok
+
+
+def _services_sample() -> list[dict[str, Any]]:
+    adk_port = get_adk_port()
+    web_port = get_web_port()
+    frontend_port = get_frontend_port()
+    return [
+        {"key": "web", "label": "FastAPI middle layer", "running": True, "port": web_port},
+        {"key": "adk", "label": "ADK API",
+         "running": _probe(f"http://127.0.0.1:{adk_port}/health"), "port": adk_port},
+        {"key": "frontend", "label": "Vite frontend",
+         "running": _probe(f"http://127.0.0.1:{frontend_port}/"), "port": frontend_port},
+    ]
+
+
+@app.get("/api/system/status")
+def system_status(user_id: str = Query(default="")) -> dict:
+    """Machine statistics for the dashboard: CPU/memory/GPU + busy processes.
+
+    Sync (non-async) on purpose: the first call sleeps briefly to produce a
+    real CPU delta, which would block the event loop.
+    """
+    return {
+        "cpu": _cpu_sample(),
+        "memory": _memory_sample(),
+        "gpus": _gpu_sample(),
+        "top_processes": _top_processes(),
+        "services": _services_sample(),
+    }
+
+
+@app.get("/api/system/logs")
+def system_logs(
+    name: str = Query(default="api-server"),
+    tail: int = Query(default=200, ge=1, le=1000),
+    user_id: str = Query(default=""),
+) -> dict:
+    """Tail one of the known dev-stack logs (whitelisted, size-capped)."""
+    if name not in _SYSTEM_LOG_NAMES:
+        raise HTTPException(status_code=400, detail=f"unknown log name, expected one of {_SYSTEM_LOG_NAMES}")
+    log_dir = _MATCREATOR_HOME / "logs"
+    path = log_dir / f"{name}.log"
+    max_bytes = 262144
+    try:
+        size = path.stat().st_size
+        with open(path, "rb") as fh:
+            if size > max_bytes:
+                fh.seek(-max_bytes, os.SEEK_END)
+                fh.readline()  # drop the partial line at the chunk edge
+            data = fh.read()
+        lines = data.decode("utf-8", "replace").splitlines()[-tail:]
+        return {"name": name, "exists": True, "size": size, "lines": lines}
+    except FileNotFoundError:
+        return {"name": name, "exists": False, "size": 0, "lines": []}
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"failed to read log: {exc}")
+
+
+# --- git operations for the dashboard (branch switch / upstream update) ----
+# Dev convenience operating on the local checkout at ROOT. Long-running steps
+# (fetch/pull/uv/npm) can take minutes; these endpoints are sync (threadpool).
+
+_GIT_TIMEOUT = 120
+
+
+def _git_run(args: list, timeout: int = _GIT_TIMEOUT) -> tuple[bool, str]:
+    """Run git in the project checkout; return (ok, combined output)."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(ROOT)] + args,
+            capture_output=True, text=True, timeout=timeout,
+        )
+        out = (proc.stdout + "\n" + proc.stderr).strip()
+        return proc.returncode == 0, out or "(no output)"
+    except subprocess.TimeoutExpired:
+        return False, "git command timed out (network unreachable or slow remote?)"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"git failed: {exc}"
+
+
+_PINNED_BRANCHES = ("main", "devel")
+
+
+def _git_branches() -> list[str]:
+    """All local/remote branch refs, newest commit first."""
+    ok, out = _git_run(
+        ["for-each-ref", "--sort=-committerdate",
+         "--format=%(refname:short)", "refs/heads/", "refs/remotes/"],
+        timeout=15,
+    )
+    if not ok:
+        return []
+    return [b.strip() for b in out.splitlines() if b.strip()]
+
+
+def _ordered_branches(raw_branches: list[str], current: str) -> list[str]:
+    """main/devel pinned first, everything else newest-first."""
+    ordered = [b for b in _PINNED_BRANCHES if b in raw_branches]
+    ordered += [b for b in raw_branches if b not in ordered]
+    if current and current in ordered:  # keep the active branch easy to find
+        ordered.remove(current)
+        ordered.insert(min(2, len(ordered)), current)
+    return ordered
+
+
+def _venv_reinstall() -> tuple[bool, str]:
+    """Re-sync the project venv after code changed:
+    uv pip install -e . (falls back to plain pip when uv is unavailable).
+    ~/.local/bin is prepended because uv usually lives there (pipx) and
+    service processes ship a minimal PATH."""
+    env = {
+        **os.environ,
+        "VIRTUAL_ENV": str(ROOT / ".venv"),
+        "PATH": str(ROOT / ".venv" / "bin") + os.pathsep + os.environ.get("PATH", ""),
+    }
+    # Known uv locations first: service processes ship a minimal PATH and uv
+    # usually lives in ~/.local/bin (pipx), outside it.
+    uv_candidates = [
+        ROOT / ".venv" / "bin" / "uv",
+        Path.home() / ".local" / "bin" / "uv",
+        Path.home() / ".cargo" / "bin" / "uv",
+    ]
+    uv_bin = next((str(c) for c in uv_candidates if c.exists()), None) or shutil.which("uv")
+    if uv_bin:
+        args = [uv_bin, "pip", "install", "-e", "."]
+    else:
+        args = [str(ROOT / ".venv" / "bin" / "python"), "-m", "pip", "install", "-e", "."]
+    try:
+        proc = subprocess.run(
+            args, cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=600,
+        )
+        out = (proc.stdout + "\n" + proc.stderr).strip()
+        return proc.returncode == 0, out or "(no output)"
+    except subprocess.TimeoutExpired:
+        return False, "dependency resync timed out"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"dependency resync failed: {exc}"
+
+
+def _npm_install() -> tuple[bool, str]:
+    """npm install in the frontend — pulled branches can add node deps."""
+    npm = shutil.which("npm") or "npm"
+    frontend = ROOT / "web" / "vite-frontend"
+    try:
+        proc = subprocess.run(
+            [npm, "install"], cwd=str(frontend), capture_output=True, text=True, timeout=900,
+        )
+        out = (proc.stdout + "\n" + proc.stderr).strip()
+        tail = "\n".join(out.splitlines()[-8:])
+        return proc.returncode == 0, tail or "(no output)"
+    except subprocess.TimeoutExpired:
+        return False, "npm install timed out"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"npm install failed: {exc}"
+
+
+def _git_info_payload() -> dict:
+    branches = _git_branches()
+    ok_c, current = _git_run(["rev-parse", "--abbrev-ref", "HEAD"], timeout=15)
+    current = current.strip() if ok_c else ""
+    if not branches or not current:
+        return {"ok": False, "current": current, "branches": [], "error": "git unavailable"}
+    return {"ok": True, "current": current, "branches": _ordered_branches(branches, current)}
+
+
+def _restart_dev_stack() -> None:
+    """Restart the dev stack so pulled code takes effect.
+
+    Detached on purpose: it must survive uvicorn being killed by its own
+    pkill sequence, hence start_new_session + a sleep before the kill.
+    """
+    script = (
+        "sleep 1.5; "
+        "pkill -f 'matcreator api-server' 2>/dev/null; "
+        "pkill -f 'uvicorn web.main:app' 2>/dev/null; "
+        "pkill -f 'vite-frontend/node_modules/.bin/vite' 2>/dev/null; "
+        "sleep 1; "
+        f"cd {ROOT} && "
+        f'export PATH="{ROOT / ".venv" / "bin"}:$HOME/.local/bin:$PATH" && '
+        "nohup bash script/start_matcreator.sh "
+        ">> /tmp/matcreator-restart.log 2>&1"
+    )
+    subprocess.Popen(["bash", "-c", script], start_new_session=True)
+
+
+def _git_checkout_payload(branch: str) -> dict:
+    if branch not in _git_branches():
+        return {"ok": False, "output": f"unknown branch: {branch}"}
+    ok, out = _git_run(["checkout", branch])
+    if not ok:
+        return {"ok": False, "output": out, "branch": branch}
+    # Switched code can move dependencies — resync python + node deps.
+    ok_i, out_i = _venv_reinstall()
+    ok_n, out_n = _npm_install()
+    installed = ok_i and ok_n
+    output = (out + "\n--- deps: uv pip install -e . ---\n" + out_i
+              + "\n--- deps: npm install ---\n" + out_n)
+    _restart_dev_stack()
+    output += "\n--- dev stack restarting to load the new code ---"
+    return {"ok": installed, "output": output, "branch": branch, "restart": True}
+
+
+def _git_update_payload() -> dict:
+    """fetch upstream, pull upstream <current branch>, then resync deps.
+
+    Feature branches usually do not exist on upstream; when the upstream pull
+    fails with a missing-ref error, retry against the branch's own tracking
+    remote (e.g. origin/feat/x). Network failures surface as ok:false with
+    git's own message for the dashboard to display.
+    """
+    ok_c, current = _git_run(["rev-parse", "--abbrev-ref", "HEAD"], timeout=15)
+    if not ok_c:
+        return {"ok": False, "output": current}
+    ok_f, out_f = _git_run(["fetch", "upstream", "--prune"])
+    if not ok_f:
+        return {"ok": False, "current": current, "stage": "fetch",
+                "output": "git fetch upstream failed (network?):\n" + out_f}
+    ok_p, out_p = _git_run(["pull", "upstream", current])
+    source = "upstream/" + current
+    if not ok_p and re.search(r"无法找到远程引用|couldn't? find remote ref|not found", out_p, re.I):
+        ok_t, tracking = _git_run(
+            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], timeout=15)
+        tracking = tracking.strip()
+        if ok_t and tracking and tracking != "@{upstream}":
+            remote, _, ref = tracking.partition("/")
+            ok_p, out_p = _git_run(["pull", remote, ref])
+            source = tracking
+    output = out_f + "\n" + out_p
+    if not ok_p:
+        return {"ok": False, "current": current, "stage": "pull", "source": source, "output": output}
+    ok_i, out_i = _venv_reinstall()
+    ok_n, out_n = _npm_install()
+    output += "\n--- deps: uv pip install -e . ---\n" + out_i + "\n--- deps: npm install ---\n" + out_n
+    _restart_dev_stack()
+    output += "\n--- dev stack restarting to load the new code ---"
+    return {"ok": ok_i and ok_n, "current": current, "stage": "install",
+            "source": source, "output": output, "restart": True}
+
+
+@app.get("/api/system/git")
+def system_git(user_id: str = Query(default="")) -> dict:
+    return _git_info_payload()
+
+
+@app.post("/api/system/git/checkout")
+def system_git_checkout(body: dict = Body(default={}), user_id: str = Query(default="")) -> dict:
+    branch = str(body.get("branch") or "")
+    return _git_checkout_payload(branch)
+
+
+@app.post("/api/system/git/update")
+def system_git_update(user_id: str = Query(default="")) -> dict:
+    return _git_update_payload()
 
 
 @app.get("/api/evaluations/catalog")
