@@ -327,6 +327,25 @@ select {
 .rack-lab-brand-logo {
   display: none;
 }
+
+.brand-icon-dark {
+  display: none;
+}
+
+body[data-theme="dark"] .brand-icon-dark {
+  display: block;
+}
+
+body[data-theme="dark"] :is(.brand-icon-original, .rack-lab-brand-base) {
+  display: none;
+}
+
+body[data-theme="dark"] .brand {
+  --brand-wordmark-ink: #e8f2ff;
+  --brand-wordmark-motion: #87ccff;
+  --brand-wordmark-motion-rgb: 135, 204, 255;
+}
+
 .brand-title { font-size: var(--font-size-title); font-weight: var(--font-weight-bold); letter-spacing: normal; }
 .brand-sub { font-size: var(--font-size-ui); color: var(--muted); }
 
