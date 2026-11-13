@@ -5869,16 +5869,8 @@ app.include_router(xrd_router)
 
 from web.aidb_api import create_aidb_router
 
-def _aidb_managed_completion(*, user_id: str, session_id: str, job_id: str):
-    from matcreator.aidb.managed_vasp import get_managed_vasp_completion
-
-    return get_managed_vasp_completion(
-        user_id=user_id, session_id=session_id, job_id=job_id, store=_remote_job_store_for_owner(user_id),
-    )
-
-
 app.include_router(create_aidb_router(
-    _remote_job_session_exists, _get_workdir_for_session, get_completion=_aidb_managed_completion,
+    _remote_job_session_exists, _get_workdir_for_session, get_job_store=_remote_job_store_for_owner,
 ))
 
 # Serve built frontend in production

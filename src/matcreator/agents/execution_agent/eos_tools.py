@@ -32,6 +32,7 @@ from ...tools.aidb_tools import session_service
 from . import remote_job_tools as jobs
 from .matpes_tools import (
     _BATCH_ERRORS,
+    _PENDING_MEMBER_STATUSES,
     _async_tool,
     _collect_member,
     _launch_member,
@@ -42,9 +43,8 @@ from .matpes_tools import (
     _workspace_child,
 )
 
-_PENDING = {"ready", "created", "queued", "running", "succeeded", "collecting"}
 _RECEIPT_FIELDS = ("member_id", "status", "reason", "revision", "record_id", "source_id",
-                   "job_id", "external_id", "archive_status", "candidates", "volume_factor",
+                   "job_id", "external_id", "archive_status", "compute_status", "candidates", "volume_factor",
                    "target_volume_angstrom3", "result", "delivery")
 
 
@@ -144,13 +144,13 @@ def _receipt(state):
     if not relaxation.get("result"):
         if relaxation["status"] == "waiting_choice":
             status = "awaiting_choice"
-        elif relaxation["status"] in _PENDING:
+        elif relaxation["status"] in _PENDING_MEMBER_STATUSES:
             status = "running"
         else:
             status = "blocked_relaxation"
     elif not state.get("points_prepared"):
         status = "ready_for_volume_points"
-    elif statuses & _PENDING:
+    elif statuses & _PENDING_MEMBER_STATUSES:
         status = "running"
     elif "waiting_choice" in statuses:
         status = "awaiting_choice"

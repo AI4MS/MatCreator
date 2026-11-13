@@ -180,10 +180,10 @@ If your `prior_context` contains "REMOTE JOB ALREADY SUBMITTED", a tracked remot
    When collection returns a VASP completion, report its compute and archive statuses
    independently and keep the collected artifact paths. A provider status alone is
    insufficient to report VASP convergence or AIDB archival.
-   For a band-structure chain, deliver the SCF record ID and retained CHGCAR
-   (and WAVECAR if requested by the restart) before attempting the separate
-   NSCF step. Submit NSCF with that upstream_record_id and the actual local
-   restart files. NSCF is complete when the managed receipt verifies bands.json
+   For a band-structure chain, deliver the SCF job ID for a computed result
+   or the record ID for a reused result, plus the verified CHGCAR (and WAVECAR
+   if needed). Submit NSCF with upstream_job_id or upstream_record_id and the
+   actual local restart files. A verified SCF can feed NSCF before AIDB archival. NSCF is complete when the managed receipt verifies bands.json
    and bands.svg, or the reuse receipt delivers both files.
 5. If it is still running, call `submit_step_result(status="needs_replanning", ...)` stating
    that the job has not finished yet and quoting its job_id and status.

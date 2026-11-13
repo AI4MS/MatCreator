@@ -12,17 +12,19 @@ import sqlite3
 
 from google.adk.tools.tool_context import ToolContext
 
-from ...aidb.exports import export_record
-from ...aidb.managed_vasp import _completion_lock, get_managed_vasp_completion
+from ...aidb.exports import export_record, verified_vasp_training_atoms
+from ...aidb.managed_vasp import _completion_lock, get_managed_vasp_completion, read_verified_managed_frame
 from ...aidb.relaxation import PASSIVE_QUERY_SECONDS, current_message, turn_id
 from ...aidb.relaxation_inputs import RelaxationInputs
 from ...aidb.service import AIDBError, _save, coverage
 from ...aidb.vasp_archive import file_digest
+from ...control_plane.remote_jobs import ACTIVE_REMOTE_JOB_STATUSES
 from ...tools.aidb_tools import session_service
 from . import remote_job_tools as jobs
 
 logger = logging.getLogger(__name__)
 _BATCH_ERRORS = (AIDBError, OSError, ValueError, TypeError, KeyError, sqlite3.Error)
+_PENDING_MEMBER_STATUSES = ACTIVE_REMOTE_JOB_STATUSES | {"ready"}
 
 
 def _workspace(context):
@@ -48,7 +50,7 @@ def _load(path):
 def _workspace_child(workspace, path):
     resolved = path.resolve(strict=True)
     if not resolved.is_relative_to(workspace) or resolved == workspace:
-        raise ValueError("MatPES 输入必须在会话工作区内")
+        raise ValueError("VASP 输入必须在会话工作区内")
     return resolved
 
 
@@ -215,30 +217,37 @@ def _collect_member(context, member, destination, store):
     member["status"] = status["status"]
     if status.get("error") or status.get("message"):
         member["reason"] = status.get("error") or status["message"]
-    if status["status"] not in {"succeeded", "collected"}:
+    if status["status"] not in {"succeeded", "collecting", "collected"}:
         return None, None
     collected = jobs.collect_remote_job_outputs(job_id, destination, context)
     completion = get_managed_vasp_completion(
         user_id=jobs._owner_id(context), session_id=context.state["session_id"], job_id=job_id, store=store,
     )
-    if not completion or completion["status"] != "verified":
-        member.update(status="archive_failed", archive_status=(completion or {}).get("status"),
-                      reason=(completion or {}).get("reason") or collected.get("message")
-                      or "未能核实并归档 VASP 结果")
-    else:
-        member.update(status="archived", archive_status="verified", record_id=completion["record_id"],
+    completion_status = (completion or {}).get("status")
+    compute_status = (completion or {}).get("compute_status", "unverified")
+    member.update(compute_status=compute_status, archive_status=completion_status)
+    if completion_status == "verified":
+        member.update(status="archived", record_id=completion["record_id"],
                       source_id=completion["verified_source"]["source_id"])
         member.pop("reason", None)
+    else:
+        member.pop("record_id", None)
+        member.pop("source_id", None)
+        member["reason"] = (completion or {}).get("reason") or collected.get("message") or "未能核实 VASP 结果"
+        if compute_status == "succeeded":
+            member.update(status="computed_archive_failed", source_id=completion["verified_source"]["source_id"])
+        else:
+            member["status"] = "compute_unverified"
     return completion, collected.get("aidb_result")
 
 
 def _receipt(batch):
     members = [{key: row[key] for key in (
         "frame_index", "status", "job_id", "external_id", "reason", "candidates",
-        "record_id", "archive_status", "source_id", "output_index",
+        "record_id", "archive_status", "compute_status", "source_id", "output_index",
     ) if key in row} for row in batch["members"]]
     statuses = {row["status"] for row in members}
-    if statuses & {"ready", "submitting", "created", "queued", "running", "succeeded", "collecting"}:
+    if statuses & _PENDING_MEMBER_STATUSES:
         status = "running"
     elif "waiting_choice" in statuses:
         status = "awaiting_frame_choices"
@@ -373,7 +382,7 @@ def resolve_matpes_frame(
         return {"status": getattr(exc, "status", "error"), "message": str(exc)}
 
 
-def _dataset(context, batch):
+def _dataset(context, batch, store):
     from io import StringIO
     from ase.io import read, write
 
@@ -391,18 +400,27 @@ def _dataset(context, batch):
     atoms_list = []
     service = None
     for member in snapshot["members"]:
-        if member["status"] not in {"archived", "reused"}:
+        if member["status"] not in {"archived", "reused", "computed_archive_failed"}:
             continue
         try:
-            if service is None:
-                service = session_service(context)
-            record = service.detail(member["record_id"], binding_id=batch["binding_id"])["record"]
-            if record["source_id"] != member["source_id"]:
-                raise ValueError("读回记录的来源已改变")
-            files, issues = export_record(record, ("extxyz",))
-            if issues:
-                raise ValueError(issues["extxyz"])
-            atoms = read(StringIO(files["extxyz"]["content"]), format="extxyz")
+            if member["status"] == "computed_archive_failed":
+                frame, _, _ = read_verified_managed_frame(
+                    store, jobs._owner_id(context), context.state["session_id"], member["job_id"],
+                    calculation_type="matpes",
+                )
+                if frame["source_id"] != member["source_id"]:
+                    raise ValueError("已核实计算帧的来源已改变")
+                atoms = verified_vasp_training_atoms(frame)
+            else:
+                if service is None:
+                    service = session_service(context)
+                record = service.detail(member["record_id"], binding_id=batch["binding_id"])["record"]
+                if record["source_id"] != member["source_id"]:
+                    raise ValueError("读回记录的来源已改变")
+                files, issues = export_record(record, ("extxyz",))
+                if issues:
+                    raise ValueError(issues["extxyz"])
+                atoms = read(StringIO(files["extxyz"]["content"]), format="extxyz")
             atoms.info.update(labeling_source_path=batch["source_path"], labeling_source_sha256=batch["source_sha256"],
                               labeling_source_frame_index=member["frame_index"])
             member["output_index"] = len(atoms_list)
@@ -473,7 +491,7 @@ def collect_matpes_batch(tool_context: ToolContext, batch_id: str) -> dict:
                 except _BATCH_ERRORS as exc:
                     member.update(status="unavailable", reason=str(exc))
             _save(path, batch)
-            return {**_dataset(tool_context, batch), "aidb_completions": completions}
+            return {**_dataset(tool_context, batch, store), "aidb_completions": completions}
     except _BATCH_ERRORS as exc:
         return {"status": getattr(exc, "status", "error"), "message": str(exc)}
 

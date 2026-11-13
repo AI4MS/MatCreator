@@ -134,7 +134,7 @@ def staged_relaxation(spec, revision, token, private_root, workspace):
             raise AIDBError("VASP 产物清单不能包含赝势或内部启动器", "invalid_input")
         for item in stage.iterdir():
             item.chmod(0o600 if item.name in required else 0o400)
-        launch_spec = {key: value for key, value in spec.items() if key != "upstream_record_id"}
+        launch_spec = {key: value for key, value in spec.items() if key not in {"upstream_record_id", "upstream_job_id", "requested_outputs"}}
         launch_spec.update({"input_root": temporary, "input_path": stage.name,
                        "command": f"bash {LAUNCHER}", "out_files": outputs})
         yield launch_spec, expected
@@ -194,31 +194,35 @@ def _collected_files(job, private_root):
         yield path
 
 
-def resolve_restart_artifacts(record, required, owner_id):
+def _retained_record_output(store, owner_id, job_id, record):
+    job = store.get_job(job_id)
+    if not job or job["owner_id"] != owner_id:
+        raise AIDBError("无法取得原作业的 VASP 产物", "not_ready")
+    completion = _read_completion(_completion_path(store.path.parent, job_id))
+    if (not completion or completion["status"] != "verified"
+            or completion.get("record_id") != record["record_id"]
+            or completion.get("verified_source", {}).get("source_id") != record["source_id"]):
+        raise AIDBError("原作业回执与此记录不一致", "not_ready")
+    retention = completion.get("retained_outputs") or {}
+    root = store.path.parent / "vasp-jobs" / job_id
+    folder = root / retention.get("directory", "")
+    if not retention.get("token") or not _plain_child(root, folder) or not folder.is_dir():
+        raise AIDBError("无法取得原作业的 VASP 文件目录", "not_ready")
+    return root, folder, retention["token"]
+
+
+def resolve_restart_artifacts(record, required, owner_id, *, store=None):
     """Resolve record claims against the tracked job, its receipt and retained bytes."""
     facts = record["source_metadata"]["vasp_facts"]["source"]
     reference = facts.get("restart_artifacts") or {}
     job_id = reference.get("job_id", "")
     if not re.fullmatch("[0-9a-f]{32}", job_id):
         raise AIDBError("此记录没有已核实的 VASP 重启文件", "not_ready")
-    store = RemoteJobStore(ADK_DIR / "remote-jobs.db")
-    job = store.get_job(job_id)
-    if not job or job["owner_id"] != owner_id:
-        raise AIDBError("无法取得原作业的 VASP 重启文件", "not_ready")
-    private = store.path.parent / "vasp-jobs"
-    completion = _read_completion(_completion_path(store.path.parent, job_id))
-    if (not completion or completion["status"] != "verified"
-            or completion.get("record_id") != record["record_id"]
-            or completion.get("verified_source", {}).get("source_id") != record["source_id"]):
-        raise AIDBError("原作业的回执与此记录不一致", "not_ready")
-    retention = completion.get("retained_outputs") or {}
-    root = private / job_id
-    folder = root / retention.get("directory", "")
-    if not _plain_child(root, folder) or not folder.is_dir():
-        raise AIDBError("无法取得原作业的 VASP 文件目录", "not_ready")
+    store = store or RemoteJobStore(ADK_DIR / "remote-jobs.db")
+    root, folder, token = _retained_record_output(store, owner_id, job_id, record)
     files = [folder / name for name in (*OUTPUTS, RECEIPT, *required)]
     verified = [path for path in files if _plain_child(root, path) and path.is_file()]
-    folder, hashes, artifacts = _verify_receipt(verified, retention["token"], required)
+    folder, hashes, artifacts = _verify_receipt(verified, token, required)
     if (hashes != facts.get("file_sha256")
             or not set(required) <= artifacts.keys()
             or any(artifacts[name] != reference.get("files", {}).get(name) for name in required)):
@@ -228,16 +232,30 @@ def resolve_restart_artifacts(record, required, owner_id):
     }
 
 
-def resolve_band_dependency(session, record_id, inputs, owner_id):
-    """Verify the actual staged restart bytes against the selected static SCF record."""
-    import numpy as np
-    from pymatgen.core import Structure
+def resolve_band_dependency(session_id, inputs, owner_id, *, job_id, store):
+    """Verify staged restart bytes against this session's computed SCF."""
+    record, _, artifacts = read_verified_managed_frame(
+        store, owner_id, session_id, job_id, calculation_type="static",
+    )
+    hashes = {name: item["sha256"] for name, item in artifacts.items()}
+    return _band_dependency(record, inputs, hashes, {"job_id": job_id})
 
-    if not record_id:
-        raise AIDBError("NSCF 需要上游 SCF 的记录 ID 和已核实的 CHGCAR", "invalid_input")
+
+def resolve_band_record_dependency(session, record_id, inputs, owner_id, *, store=None):
+    """Verify the staged restart files against a freshly read AIDB record."""
     record = session.detail(record_id)["record"]
     if record.get("calculation_type") != "static":
         raise AIDBError("NSCF 上游记录必须是静态 SCF", "invalid_input")
+    required = sorted(RESTART_OUTPUTS.intersection(inputs.file_hashes))
+    retained = resolve_restart_artifacts(record, required, owner_id, store=store)
+    hashes = {name: digest for name, (_, digest) in retained.items()}
+    return _band_dependency(record, inputs, hashes, {"record_id": record_id})
+
+
+def _band_dependency(record, inputs, retained_hashes, identity):
+    import numpy as np
+    from pymatgen.core import Structure
+
     facts = (record.get("source_metadata") or {}).get("vasp_facts") or {}
     source = facts.get("source") or {}
     if not source.get("restart_artifacts"):
@@ -254,44 +272,35 @@ def resolve_band_dependency(session, record_id, inputs, owner_id):
             or not np.allclose(displacement @ downstream.lattice.matrix, 0, rtol=0, atol=2e-5)
             or (submitted.get("sha256") or {}).get("POTCAR") != inputs.file_hashes["POTCAR"]):
         raise AIDBError("上游 SCF 与 NSCF 的晶胞、坐标或赝势不一致", "invalid_input")
-    retained = resolve_restart_artifacts(record, required, owner_id)
     hashes = {name: inputs.file_hashes[name] for name in required}
-    if any(retained[name][1] != digest for name, digest in hashes.items()):
-        raise AIDBError("NSCF 的 CHGCAR 或 WAVECAR 与选定的上游 SCF 不一致", "invalid_input")
-    return {"record_id": record["record_id"], "source_id": record["source_id"], "sha256": hashes}
+    if any(retained_hashes.get(name) != digest for name, digest in hashes.items()):
+        raise AIDBError("NSCF 的 CHGCAR 或 WAVECAR 与选定的上游 SCF 不一致或缺失", "invalid_input")
+    return {**identity, "source_id": record["source_id"], "sha256": hashes}
 
 
-def resolve_band_artifacts(record, dependency, owner_id):
+def resolve_band_artifacts(record, dependency, owner_id, *, store=None):
     """Read verified band deliverables and check the archived upstream artifact identity."""
     source = record["source_metadata"]["vasp_facts"]["source"]
     upstream = source.get("upstream_scf") or {}
-    if not upstream.get("source_id") or not upstream.get("record_id") or upstream.get("sha256") != dependency["sha256"]:
+    if (not upstream.get("source_id") or not (upstream.get("record_id") or upstream.get("job_id"))
+            or upstream.get("sha256") != dependency["sha256"]):
         raise AIDBError("归档 NSCF 的上游电荷密度或重启文件与本次输入不一致", "not_ready")
-    return retained_band_artifacts(record, owner_id)
+    return retained_band_artifacts(record, owner_id, store=store)
 
 
-def retained_band_artifacts(record, owner_id):
+def retained_band_artifacts(record, owner_id, *, store=None, job_id=None):
     source = record["source_metadata"]["vasp_facts"]["source"]
     reference = source.get("band_artifacts") or {}
-    job_id = reference.get("job_id", "")
-    if not re.fullmatch("[0-9a-f]{32}", job_id):
-        raise AIDBError("此记录没有已核实的 VASP 能带文件", "not_ready")
-    store = RemoteJobStore(ADK_DIR / "remote-jobs.db")
-    job = store.get_job(job_id)
-    completion = _read_completion(_completion_path(store.path.parent, job_id))
-    if (not job or job["owner_id"] != owner_id or not completion or completion["status"] != "verified"
-            or completion.get("record_id") != record["record_id"]
-            or completion.get("verified_source", {}).get("source_id") != record["source_id"]):
-        raise AIDBError("能带记录与原作业回执不一致", "not_ready")
-    retention = completion["retained_outputs"]
-    root = store.path.parent / "vasp-jobs" / job_id
-    folder = root / retention["directory"]
-    if not _plain_child(root, folder) or not folder.is_dir():
-        raise AIDBError("无法取得原作业的 VASP 能带目录", "not_ready")
+    source_job_id = reference.get("job_id", "")
+    if not re.fullmatch("[0-9a-f]{32}", source_job_id) or (job_id is not None and job_id != source_job_id):
+        raise AIDBError("此记录没有与作业匹配的已核实 VASP 能带文件", "not_ready")
+    job_id = source_job_id
+    store = store or RemoteJobStore(ADK_DIR / "remote-jobs.db")
+    root, folder, token = _retained_record_output(store, owner_id, job_id, record)
     files = [folder / name for name in (*OUTPUTS, RECEIPT)]
     if not all(_plain_child(root, path) and path.is_file() for path in files):
         raise AIDBError("原作业缺少已核实的 VASP 能带来源文件", "not_ready")
-    _, hashes, _ = _verify_receipt(files, retention["token"], ())
+    _, hashes, _ = _verify_receipt(files, token, ())
     if hashes != source.get("file_sha256"):
         raise AIDBError("已归档的 VASP 能带来源文件已改变", "not_ready")
     result = {name: (folder / name, digest) for name, digest in hashes.items()}
@@ -567,20 +576,10 @@ def workspace_managed_vasp_source(session, owner_id, folder):
     if not completion["binding_id"]:
         raise AIDBError("原作业提交时会话未绑定 AIDB", "stale_binding")
     session.binding(completion["binding_id"])
-    private = store.path.parent / "vasp-jobs"
-    if job["provider"] == "bohr_sandbox":
-        root = private / job["job_id"]
-        evidence = json.loads((root / "sandbox-run.json").read_text(encoding="utf-8"))["evidence"]
-        files = [path for path in (root / "sandbox-outputs").iterdir()
-                 if _plain_child(root, path) and path.is_file()]
-    else:
-        evidence = job["specification"]["managed_vasp"]
-        files = list(_collected_files(job, private))
-    raw, private_folder, _ = _verified_raw(job, evidence, files)
+    raw, private_folder, _ = _read_managed_frame(store, job, completion)
     source = raw["source_metadata"]["vasp_facts"]["source"]
-    if (completion["verified_source"] != _source_identity(raw)
-            or any(not _plain_child(session.workspace, folder / name)
-                   or file_digest(folder / name) != source["file_sha256"][name] for name in OUTPUTS)):
+    if any(not _plain_child(session.workspace, folder / name)
+           or file_digest(folder / name) != source["file_sha256"][name] for name in OUTPUTS):
         raise AIDBError("工作区产物与原跟踪作业的回执不一致", "source_conflict")
     if raw["calculation_type"] == "nscf":
         hashes = completion.get("band_artifacts", {}).get("sha256", {})
@@ -593,6 +592,32 @@ def workspace_managed_vasp_source(session, owner_id, folder):
             raise AIDBError("原跟踪作业缺少已核实的能带数据或图", "source_unverified")
         source["band_artifacts"] = completion["band_artifacts"]
     return raw
+
+
+def read_verified_managed_frame(store, owner_id, session_id, job_id, *, calculation_type):
+    """Read a verified calculation from retained bytes in the original owner and session."""
+    completion = get_managed_vasp_completion(user_id=owner_id, session_id=session_id, job_id=job_id, store=store)
+    if (not completion or completion.get("compute_status") != "succeeded"
+            or completion.get("calculation_type") != calculation_type or not completion.get("verified_source")):
+        raise AIDBError("原跟踪作业缺少已核实的计算结果", "not_ready")
+    job = store.get_job(job_id)
+    return _read_managed_frame(store, job, completion)
+
+
+def _read_managed_frame(store, job, completion):
+    private = store.path.parent / "vasp-jobs"
+    if job["provider"] == "bohr_sandbox":
+        root = private / job["job_id"]
+        evidence = json.loads((root / "sandbox-run.json").read_text(encoding="utf-8"))["evidence"]
+        files = [path for path in (root / "sandbox-outputs").iterdir()
+                 if _plain_child(root, path) and path.is_file()]
+    else:
+        evidence = job["specification"]["managed_vasp"]
+        files = list(_collected_files(job, private))
+    raw, folder, artifacts = _verified_raw(job, evidence, files)
+    if completion["verified_source"] != _source_identity(raw):
+        raise AIDBError("保留的产物与原跟踪作业的回执不一致", "source_conflict")
+    return raw, folder, artifacts
 
 
 def _source_identity(raw):
@@ -730,8 +755,9 @@ def receive_managed_vasp_result(job, adk_dir, *, failure=None, unavailable_outpu
                     "directory": folder.relative_to(adk_dir / "vasp-jobs" / job["job_id"]).as_posix(),
                     "token": evidence["token"],
                 }
-                state["summary"].update(calculation_type="nscf", upstream_record_id=source["upstream_scf"]["record_id"],
-                                        band_structure=facts["band_structure"])
+                upstream = source["upstream_scf"]
+                state["summary"].update(calculation_type="nscf", upstream_record_id=upstream.get("record_id"),
+                                        upstream_job_id=upstream.get("job_id"), band_structure=facts["band_structure"])
             verified_source = _source_identity(raw)
             if existing and existing.get("verified_source", verified_source) != verified_source:
                 raise AIDBError("重新收集的 VASP 产物与原已核实来源不同", "source_conflict")

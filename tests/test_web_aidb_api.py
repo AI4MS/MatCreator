@@ -78,3 +78,49 @@ def test_session_owner_can_read_results_with_shared_workspace_isolation(
         response = client.get(endpoint, params=query)
         assert response.status_code == 409
         assert response.json()["detail"]["status"] == "stale_binding"
+
+
+def test_server_band_export_uses_the_completion_owners_store(monkeypatch, tmp_path):
+    from matcreator.aidb import managed_vasp
+
+    web = _load_web_main_server(monkeypatch, tmp_path / "control", tmp_path / "data")
+    owner, session_id = "alice", "bands"
+    store = web._remote_job_store_for_owner(owner)
+    workspace = store.path.parent.parent / "workspace" / session_id
+    workspace.mkdir(parents=True)
+    with sqlite3.connect(store.path.parent / "session.db") as connection:
+        connection.execute("CREATE TABLE sessions (app_name TEXT, user_id TEXT, id TEXT, state TEXT)")
+        connection.execute("INSERT INTO sessions VALUES (?, ?, ?, ?)", (
+            web.APP_NAME, owner, session_id, json.dumps({"workdir": f"/root/.matcreator/workspace/{session_id}"}),
+        ))
+
+    job = store.create_job(owner_id=owner, session_id=session_id, provider="bohr_batchjob",
+                           idempotency_key="bands", specification={"managed_vasp": {"schema": 1}})
+    job_id = job["job_id"]
+    for status in ("submitting", "succeeded", "collecting", "collected"):
+        store.transition_job(job_id, status)
+    path = managed_vasp._completion_path(store.path.parent, job_id)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"status": "verified", "compute_status": "succeeded", "record_id": "band",
+                                "binding_id": "bound", "calculation_type": "nscf"}))
+
+    def verify(record, user_id, *, store, job_id):
+        assert record["record_id"] == "band"
+        assert user_id == owner
+        assert store.path == web._remote_job_store_for_owner(owner).path
+        assert store.get_job(job_id)["session_id"] == session_id
+        return {"bands.json": "verified"}
+
+    def export(self, record_id, formats, *, binding_id, verify):
+        assert self.workspace == workspace
+        assert binding_id == "bound"
+        return {"files": verify({"record_id": record_id})}
+
+    monkeypatch.setattr(managed_vasp, "retained_band_artifacts", verify)
+    monkeypatch.setattr(SessionAIDB, "export", export)
+    client = TestClient(web.app)
+    url = f"/api/users/{owner}/sessions/{session_id}/aidb/completions/{job_id}/records/band/export"
+    response = client.post(url, json={"binding_id": "bound"})
+    assert response.status_code == 200, response.text
+    assert response.json()["files"] == {"bands.json": "verified"}
+    assert client.post(url.replace("/alice/", "/bob/"), json={"binding_id": "bound"}).status_code == 404

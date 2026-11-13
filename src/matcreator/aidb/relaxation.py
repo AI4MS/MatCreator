@@ -22,11 +22,13 @@ from matcreator.workspace import get_session_workdir
 logger = logging.getLogger(__name__)
 PASSIVE_QUERY_SECONDS = 8
 FORMATS = ("extxyz", "poscar")
-_INTERNAL_SPEC_FIELDS = {"required_artifacts", "temperature_requested"}
-_STANDARD_OUTPUTS = {
-    "vasprun.xml", "OUTCAR", "OSZICAR", "CONTCAR", "log", "err", "stdout.log", "stderr.log",
-    "INCAR", "POSCAR", "KPOINTS", "run.sh",
-}
+_INTERNAL_SPEC_FIELDS = {"required_artifacts", "temperature_requested", "requested_outputs"}
+_OUTPUT_NAMES = re.compile(
+    r"(?<![A-Za-z0-9_.])(?:vasprun\.xml|OUTCAR|OSZICAR|CONTCAR|CHGCAR|WAVECAR|DOSCAR|"
+    r"EIGENVAL|PROCAR|XDATCAR|stdout\.log|stderr\.log)(?![A-Za-z0-9_.])", re.IGNORECASE,
+)
+_LOG_REQUEST = re.compile(r"计算日志|运行日志|标准输出|标准错误|(?:calculation|run|vasp) logs?|stdout|stderr",
+                          re.IGNORECASE)
 _CHOICE_MESSAGE = "有可直接复用的 VASP 结果。请按本轮序号选用、查看详情、继续计算、修改条件或取消。"
 
 
@@ -147,15 +149,24 @@ def read_spec_inputs(spec):
 
 def _prepared_revision(context, spec, inputs):
     if inputs.calculation_type != "nscf":
-        if "upstream_record_id" in spec:
+        if {"upstream_record_id", "upstream_job_id"} & spec.keys():
             raise AIDBError("上游 SCF 记录仅用于 NSCF 能带计算", "invalid_input")
         return inputs.revision
 
-    from matcreator.aidb.managed_vasp import resolve_band_dependency
+    from matcreator.aidb.managed_vasp import resolve_band_dependency, resolve_band_record_dependency
+    from matcreator.agents.execution_agent.remote_job_tools import _service
 
-    return {**inputs.revision, "upstream_scf": resolve_band_dependency(
-        session_service(context), spec.get("upstream_record_id"), inputs, user_id(context)
-    )}
+    job_id, record_id = spec.get("upstream_job_id"), spec.get("upstream_record_id")
+    if bool(job_id) == bool(record_id):
+        raise AIDBError("NSCF 需要上游 SCF 的记录 ID 或作业 ID，以及已核实的 CHGCAR", "invalid_input")
+    store = _service().store
+    if job_id:
+        dependency = resolve_band_dependency(context.state.get("session_id"), inputs, user_id(context),
+                                             job_id=job_id, store=store)
+    else:
+        dependency = resolve_band_record_dependency(session_service(context), record_id, inputs, user_id(context),
+                                                    store=store)
+    return {**inputs.revision, "upstream_scf": dependency}
 
 
 def choice_receipt(choice):
@@ -185,17 +196,27 @@ def _formats(spec):
 
 def _record_artifacts(inputs, revision, record, required, owner):
     from matcreator.aidb.managed_vasp import resolve_band_artifacts, resolve_restart_artifacts
+    from matcreator.agents.execution_agent.remote_job_tools import _service
 
     if inputs.calculation_type == "nscf":
-        return resolve_band_artifacts(record, revision["upstream_scf"], owner)
-    return resolve_restart_artifacts(record, required, owner) if required else {}
+        return resolve_band_artifacts(record, revision["upstream_scf"], owner, store=_service().store)
+    return resolve_restart_artifacts(record, required, owner, store=_service().store) if required else {}
+
+
+def _verify_requested_outputs(spec, artifacts):
+    # out_files names are case-sensitive. Natural-language mentions are not.
+    missing = set(spec.get("out_files") or ()) - (artifacts.keys() | {"POSCAR"})
+    missing |= set(spec.get("requested_outputs", ())) - ({name.upper() for name in artifacts} | {"POSCAR"})
+    if missing:
+        raise AIDBError("记录不能交付本次需要的 VASP 产物：" + "、".join(sorted(missing)), "not_ready")
 
 
 def _deliverable(inputs, revision, record, spec, owner):
     try:
         if not inputs.matches(record) or export_record(record, _formats(spec))[1]:
             return False
-        _record_artifacts(inputs, revision, record, spec.get("required_artifacts", ()), owner)
+        artifacts = _record_artifacts(inputs, revision, record, spec.get("required_artifacts", ()), owner)
+        _verify_requested_outputs(spec, artifacts)
         return True
     except (AIDBError, OSError, AttributeError, KeyError, IndexError, OverflowError, TypeError, ValueError):
         return False
@@ -256,7 +277,7 @@ def guard_relaxation_submission(context, spec, submit):
     except (OSError, ValueError, TypeError):
         inputs = None
     if inputs is None:
-        if "upstream_record_id" in spec:
+        if {"upstream_record_id", "upstream_job_id"} & spec.keys():
             return {"status": "error", "message": "无法核实 NSCF 输入或上游 SCF 的 CHGCAR。"}
         if has_vasp_inputs(spec):
             return {"status": "error", "message": "无法核实准备好的 VASP 输入或启动命令。请使用受托管的输入目录及启动方式。"}
@@ -273,8 +294,13 @@ def guard_relaxation_submission(context, spec, submit):
     required = _required_restart_outputs(context, spec, inputs)
     if required:
         spec["required_artifacts"] = required
+    request_text = context.state.get("_vasp_requested_output_text") or current_message(context)
+    requested_outputs = {name.upper() for name in _OUTPUT_NAMES.findall(request_text)}
+    if _LOG_REQUEST.search(request_text) and not requested_outputs & {"STDOUT.LOG", "STDERR.LOG"}:
+        requested_outputs.add("LOG")
+    if requested_outputs:
+        spec["requested_outputs"] = sorted(requested_outputs)
     if inputs.calculation_type == MD_TYPE:
-        request_text = context.state.get("_vasp_requested_output_text") or current_message(context)
         if re.search(r"温度\s*(?:曲线|图|随时间|变化|历程|数据|序列|记录)|"
                      r"(?:每步|逐步)(?:的)?温度|(?:temperature|thermal)[ -]+"
                      r"(?:plot|curve|profile|history|trace|series|trajectory|vs\.?\s*time|data)|"
@@ -302,22 +328,8 @@ def guard_relaxation_submission(context, spec, submit):
             result = service.query({"formula": inputs.formula, "calculation_type": inputs.calculation_type},
                                    deduplicate=False)
             service.binding(binding_id)
-            request_text = context.state.get("_vasp_requested_output_text", "")
-            explicit_raw = re.findall(r"\b(?:vasprun\.xml|OUTCAR|OSZICAR|CONTCAR|CHGCAR|WAVECAR|DOSCAR|"
-                                      r"EIGENVAL|PROCAR|XDATCAR)\b", request_text, re.IGNORECASE)
-            delivered_raw = {name.upper() for name in required}
-            if required or inputs.calculation_type == "nscf":
-                delivered_raw.update(("VASPRUN.XML", "OUTCAR"))
-            available_outputs = _STANDARD_OUTPUTS | set(required)
-            if inputs.calculation_type == "nscf":
-                from matcreator.aidb.band_structure import BAND_FILES
-
-                delivered_raw.update(revision["upstream_scf"]["sha256"])
-                available_outputs.update(BAND_FILES)
-            can_deliver = ({name.upper() for name in explicit_raw} <= delivered_raw
-                           and set(spec.get("out_files") or []) <= available_outputs)
             records = [record for record in result["records"]
-                       if can_deliver and _deliverable(inputs, revision, record, spec, user_id(context))]
+                       if _deliverable(inputs, revision, record, spec, user_id(context))]
             logger.info("VASP lookup session=%s scope=%s outcome=%s native_count=%s",
                         service.session_id, scope, "matches" if records else "no_match", result["report"]["match_count"])
             refreshed = read_spec_inputs(spec)
@@ -434,7 +446,9 @@ def resolve_choice(context, action, choice_id, ordinal=None, record_id=None):
                 if not staged.matches(record):
                     raise AIDBError("读回记录已无法核实为完全匹配", "not_ready")
                 energy = record["energy"]
-                return _record_artifacts(staged, choice["revision"], record, required, user_id(context))
+                artifacts = _record_artifacts(staged, choice["revision"], record, required, user_id(context))
+                _verify_requested_outputs(choice["spec"], artifacts)
+                return artifacts
 
             export = service.export(selected, _formats(choice["spec"]), result_id=reference["result_id"],
                                     binding_id=reference["binding_id"], verify=verify)
@@ -443,8 +457,8 @@ def resolve_choice(context, action, choice_id, ordinal=None, record_id=None):
             return {"status": "reused", "delivery": export, "energy_ev_per_cell": energy,
                     "artifact_paths": list(export.get("artifact_paths", {}).values()),
                     "calculation_type": inputs.calculation_type,
-                    **({"upstream_record_id": choice["revision"]["upstream_scf"]["record_id"]}
-                       if inputs.calculation_type == "nscf" else {})}
+                    **({f"upstream_{key}": value for key, value in choice["revision"]["upstream_scf"].items()
+                        if key in {"record_id", "job_id"}} if inputs.calculation_type == "nscf" else {})}
         except (AIDBError, OSError, AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
             status = getattr(exc, "status", "failed")
             if action != "detail" and status in {"stale_binding", "stale_input"}:

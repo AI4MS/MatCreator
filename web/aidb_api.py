@@ -12,13 +12,13 @@ class RowExport(BaseModel):
     binding_id: str
 
 
-def _get_completion(*, user_id, session_id, job_id):
+def _get_completion(*, user_id, session_id, job_id, store=None):
     from matcreator.aidb.managed_vasp import get_managed_vasp_completion
 
-    return get_managed_vasp_completion(user_id=user_id, session_id=session_id, job_id=job_id)
+    return get_managed_vasp_completion(user_id=user_id, session_id=session_id, job_id=job_id, store=store)
 
 
-def create_aidb_router(session_exists, get_workdir, *, get_completion=_get_completion):
+def create_aidb_router(session_exists, get_workdir, *, get_completion=_get_completion, get_job_store=None):
     router = APIRouter(prefix='/api/users/{user_id}/sessions/{session_id}/aidb')
 
     def service(user_id, session_id):
@@ -40,15 +40,22 @@ def create_aidb_router(session_exists, get_workdir, *, get_completion=_get_compl
         return await read(lambda: bound.result(result_id))
 
     async def completion_receipt(user_id, session_id, job_id):
-        receipt = await read(lambda: get_completion(user_id=user_id, session_id=session_id, job_id=job_id))
+        def lookup():
+            identity = {"user_id": user_id, "session_id": session_id, "job_id": job_id}
+            if get_job_store is None:
+                return get_completion(**identity), None
+            store = get_job_store(user_id)
+            return get_completion(**identity, store=store), store
+
+        receipt, store = await read(lookup)
         if receipt is None:
             raise HTTPException(status_code=404, detail='未找到该作业的完成回执')
-        return receipt
+        return receipt, store
 
     @router.get('/completions/{job_id}')
     async def completion(user_id: str, session_id: str, job_id: str):
         bound = service(user_id, session_id)
-        receipt = await completion_receipt(user_id, session_id, job_id)
+        receipt, _ = await completion_receipt(user_id, session_id, job_id)
         result = {
             'kind': 'aidb_completion',
             'result_id': job_id,
@@ -76,7 +83,7 @@ def create_aidb_router(session_exists, get_workdir, *, get_completion=_get_compl
     @router.post('/completions/{job_id}/records/{record_id}/export')
     async def export_completion(user_id: str, session_id: str, job_id: str, record_id: str, body: RowExport):
         bound = service(user_id, session_id)
-        receipt = await completion_receipt(user_id, session_id, job_id)
+        receipt, store = await completion_receipt(user_id, session_id, job_id)
         if (receipt['status'] != 'verified' or receipt.get('record_id') != record_id
                 or receipt.get('binding_id') != body.binding_id):
             raise HTTPException(status_code=409, detail={
@@ -89,14 +96,15 @@ def create_aidb_router(session_exists, get_workdir, *, get_completion=_get_compl
         if receipt.get('calculation_type') == 'nscf':
             from matcreator.aidb.managed_vasp import retained_band_artifacts
 
-            verify = lambda record: retained_band_artifacts(record, user_id)
+            def verify(record):
+                return retained_band_artifacts(record, user_id, store=store, job_id=job_id)
         return await read(lambda: bound.export(
             record_id, formats, binding_id=body.binding_id, verify=verify))
 
     @router.get('/completions/{job_id}/artifact')
     async def download_artifact(user_id: str, session_id: str, job_id: str, path: str):
         bound = service(user_id, session_id)
-        receipt = await completion_receipt(user_id, session_id, job_id)
+        receipt, _ = await completion_receipt(user_id, session_id, job_id)
         relative = Path(path)
         file = bound.workspace / relative
         if (path not in receipt.get('artifact_paths', []) or relative.is_absolute()

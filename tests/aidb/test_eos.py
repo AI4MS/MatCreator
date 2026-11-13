@@ -11,6 +11,16 @@ from matcreator.agents.execution_agent import remote_job_tools
 from matcreator.control_plane.providers.base import RemoteJobCapability, RemoteJobStatus
 
 
+def test_eos_receipt_keeps_submitting_relaxation_and_points_running():
+    from matcreator.agents.execution_agent.eos_tools import _receipt
+
+    state = {"eos_id": "eos", "group_id": "group", "relaxation": {"status": "submitting"}, "points": []}
+    assert _receipt(state)["status"] == "running"
+    state.update(relaxation={"status": "archived", "result": {"energy_ev_per_cell": -1}},
+                 points_prepared=True, points=[{"member_id": "1", "status": "submitting"}])
+    assert _receipt(state)["status"] == "running"
+
+
 def test_eos_waits_for_verified_relaxation_before_submitting_volume_points(tmp_path, monkeypatch):
     from matcreator.agents.execution_agent.eos_tools import collect_eos, submit_eos
 
@@ -310,7 +320,7 @@ def test_eos_chat_replays_relaxation_and_reports_verified_mixed_volume_results(t
     assert delivery["binding_id"] == binding
     assert (delivery["user_id"], delivery["session_id"]) == ("owner", "test")
     assert "extxyz" in delivery["files"]
-    assert eos["points"][8]["status"] == "archive_failed"
+    assert eos["points"][8]["status"] == "compute_unverified"
     assert "mixed-point-6" not in submissions
     assert len(submissions) == 12
     assert len(set(downloads)) == 11

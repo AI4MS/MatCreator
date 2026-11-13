@@ -139,7 +139,7 @@ load_skill_resource(skill_name="vasp-pymatgen", path="references/label.md")
 ### prepare_nscf_kpath
 Band-structure NSCF uses a separate tracked VASP step after SCF. Use
 `MPNonSCFSet(mode="line")` with the requested k path, and stage the verified SCF
-`CHGCAR` with `ICHARG=11`. Pass the upstream SCF AIDB record ID to the tracked
+`CHGCAR` with `ICHARG=11`. Pass the upstream SCF job ID or the reused AIDB record ID to the tracked
 submission tool. Collection or reuse delivers `bands.json` and `bands.svg`.
 ```
 load_skill_resource(skill_name="vasp-pymatgen", path="references/nscf-kpath.md")

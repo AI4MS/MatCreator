@@ -67,9 +67,10 @@ an unconditional successful command that masks it.
 
 Declare retained outputs explicitly in `out_files`:
 
-- Always: `vasprun.xml`, `OUTCAR`, `OSZICAR`, `CONTCAR`, `log`, `err`,
-  `stdout.log`, `stderr.log`.
-- Retain provenance inputs `INCAR`, `POSCAR`, `KPOINTS` (when used), and `run.sh`.
+- Managed VASP automatically retains `vasprun.xml` and `OUTCAR` when it computes.
+  List any original outputs the task must deliver even if a record matches.
+- Request exact log, raw output or provenance files when the task needs them.
+  An archived candidate must deliver each requested file before it can be offered.
 - SCF → NSCF requires `CHGCAR`; retain it when `LCHARG=True`.
 - Retain `WAVECAR` only when generated and needed for restart, and `EIGENVAL`,
   `DOSCAR`, `PROCAR`, or other property outputs when needed.
@@ -91,9 +92,7 @@ submit_bohr_batchjob(
     project_id=SELECTED_PROJECT_ID,
     input_path="./vasp-scf-Al",
     out_files=[
-        "vasprun.xml", "OUTCAR", "OSZICAR", "CONTCAR", "CHGCAR",
-        "INCAR", "POSCAR", "KPOINTS", "run.sh",
-        "log", "err", "stdout.log", "stderr.log",
+        "CHGCAR",
     ],
     max_run_time="24h",
     max_wait_time="30m",

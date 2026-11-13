@@ -90,7 +90,7 @@ def test_band_chain_submits_and_reuses_each_stage_independently(tmp_path, monkey
     from pymatgen.io.vasp import Chgcar, Poscar, Vasprun
 
     from matcreator.aidb import managed_vasp
-    from matcreator.aidb.service import SessionAIDB
+    from matcreator.aidb.service import AIDBError, SessionAIDB
     from matcreator.agents.execution_agent import remote_job_tools
     from matcreator.control_plane.providers.base import RemoteJobCapability, RemoteJobStatus
     from matcreator.tools.relaxation_tools import vasp_relaxation_choice
@@ -215,11 +215,17 @@ def test_band_chain_submits_and_reuses_each_stage_independently(tmp_path, monkey
     assert submissions == ["scf", "band"]
 
     app = FastAPI()
-    app.include_router(create_aidb_router(lambda owner, chat: (owner, chat) == ("owner", "test-chat"),
-                                          lambda session_id, user_id: workspace))
-    with TestClient(app) as client:
+    store = remote_job_tools._service().store
+    app.include_router(create_aidb_router(
+        lambda owner, chat: (owner, chat) == ("owner", "test-chat"),
+        lambda session_id, user_id: workspace,
+        get_job_store=lambda owner: store,
+    ))
+    with monkeypatch.context() as isolated, TestClient(app) as client:
+        isolated.setattr(managed_vasp, "ADK_DIR", tmp_path / "empty-global-store")
         base = "/api/users/owner/sessions/test-chat/aidb"
         completion = f"{base}/completions/{band_job['job_id']}"
+        assert client.get(completion).json()["archive_status"] == "verified"
         exported = client.post(f"{completion}/records/{band_id}/export",
                                json={"binding_id": binding["binding_id"]})
         assert exported.status_code == 200, exported.text
@@ -303,6 +309,42 @@ def test_band_chain_submits_and_reuses_each_stage_independently(tmp_path, monkey
     # Run dialogue against the remaining complete records.
     events = _band_chain_chat(workspace, second_scf, second_band, second_band_job["job_id"], monkeypatch)
     assert events
+    with monkeypatch.context() as outage:
+        def unavailable(*args, **kwargs):
+            raise AIDBError("injected database outage")
+
+        def archive_unavailable(*args, **kwargs):
+            return {"archive_receipt": "injected", "readback_verified": False, "message": "injected archive outage"}
+
+        outage.setattr(SessionAIDB, "query", unavailable)
+        outage.setattr(managed_vasp, "archive_verified_vasp_result", archive_unavailable)
+        turn(18)
+        scf_job = submit("scf")
+        upstream = remote_job_tools.collect_remote_job_outputs(scf_job["job_id"], "outage-scf-results", context)
+        assert (upstream["compute_status"], upstream["archive_status"]) == ("succeeded", "failed")
+        shutil.copyfile(workspace / "outage-scf-results/CHGCAR", band_input / "CHGCAR")
+
+        turn(19)
+        original_session = context.state["session_id"]
+        context.state["session_id"] = "other-chat"
+        wrong_session = submit("band", upstream_job_id=scf_job["job_id"])
+        assert wrong_session["status"] == "error", wrong_session
+        context.state["session_id"] = original_session
+        charge = band_input / "CHGCAR"
+        original_charge = charge.read_bytes()
+        charge.write_bytes(original_charge + b"\n")
+        changed = submit("band", upstream_job_id=scf_job["job_id"])
+        assert changed["status"] == "error", changed
+        charge.write_bytes(original_charge)
+
+        band_job = submit("band", upstream_job_id=scf_job["job_id"])
+        assert band_job["status"] == "succeeded", band_job
+        band = remote_job_tools.collect_remote_job_outputs(band_job["job_id"], "outage-band-results", context)
+        assert (band["compute_status"], band["archive_status"]) == ("succeeded", "failed")
+        assert band["summary"]["upstream_job_id"] == scf_job["job_id"]
+        assert {Path(path).name for path in band["artifact_paths"]} >= {"bands.json", "bands.svg"}
+        assert submissions[-2:] == ["scf", "band"]
+
     if evidence_file := os.environ.get("MATCREATOR_BAND_BROWSER_EVIDENCE"):
         # Preserve the original fixture bytes after the fault checks so
         # browser acceptance runs against the intact archive and receipts.

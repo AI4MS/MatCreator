@@ -311,6 +311,7 @@ def submit_bohr_batchjob(
     max_wait_time: str = "30m",
     group_id: str | None = None,
     upstream_record_id: str | None = None,
+    upstream_job_id: str | None = None,
 ) -> dict[str, Any]:
     """Submit or reuse a tracked sandbox-based job through `bohr batchjob submit`.
 
@@ -330,9 +331,9 @@ def submit_bohr_batchjob(
     outputs AND logs, never a single comma-joined string. Durations use units,
     e.g. '2h' or '90s', and must be at least one second. Express the entire
     computation in command: interactive execution and incremental transfers
-    are not supported. For NSCF pass the exact upstream SCF AIDB record ID
-    as upstream_record_id and include its CHGCAR (plus WAVECAR if ISTART uses it)
-    in the prepared input directory. After status succeeds, collect outputs into a new,
+    are not supported. For NSCF pass upstream_job_id for a computed SCF in this
+    session or upstream_record_id for an archived SCF. Include the verified
+    CHGCAR (plus WAVECAR if ISTART uses it) in the prepared input directory. After status succeeds, collect outputs into a new,
     nonexistent workspace directory.
     """
     resolved_project_id = project_id if project_id is not None else os.environ.get("BOHRIUM_PROJECT_ID", "")
@@ -402,6 +403,8 @@ def submit_bohr_batchjob(
     }
     if upstream_record_id is not None:
         spec["upstream_record_id"] = upstream_record_id
+    if upstream_job_id is not None:
+        spec["upstream_job_id"] = upstream_job_id
     from ...aidb.relaxation import guard_relaxation_submission
 
     def submit(revision, prepared_inputs=None, binding_id=None):
@@ -749,6 +752,7 @@ def start_managed_vasp_sandbox(
     timeout: int | None = None,
     image: str | None = None,
     upstream_record_id: str | None = None,
+    upstream_job_id: str | None = None,
 ) -> dict[str, Any]:
     """Check prepared VASP inputs and start a tracked Bohrium sandbox run.
 
@@ -757,8 +761,9 @@ def start_managed_vasp_sandbox(
     already tracked sandbox in this session, provide its job_id instead.
     After launch, poll the returned job_id with poll_remote_job_command and
     call collect_remote_job_outputs after the command finishes. For NSCF,
-    provide upstream_record_id and stage the retained SCF CHGCAR (and WAVECAR
-    when ISTART requires it) in input_path.
+    provide upstream_job_id for a computed SCF in this session or
+    upstream_record_id for an archived SCF. Stage the retained CHGCAR (and
+    WAVECAR when ISTART requires it) in input_path.
     """
     if bool(job_id) == bool(template):
         return {"status": "error", "message": "Provide a template or an existing sandbox job_id."}
@@ -795,6 +800,8 @@ def start_managed_vasp_sandbox(
             "command": command, "out_files": outputs, "sandbox_options": sandbox_options}
     if upstream_record_id is not None:
         spec["upstream_record_id"] = upstream_record_id
+    if upstream_job_id is not None:
+        spec["upstream_job_id"] = upstream_job_id
 
     def start(revision_id, revision=None, binding_id=None):
         if revision is None:
@@ -829,9 +836,10 @@ async def start_managed_vasp_sandbox_async(
     timeout: int | None = None,
     image: str | None = None,
     upstream_record_id: str | None = None,
+    upstream_job_id: str | None = None,
 ) -> dict[str, Any]:
     return await asyncio.to_thread(start_managed_vasp_sandbox, input_path, command, tool_context, out_files,
-                                   job_id, project_id, template, timeout, image, upstream_record_id)
+                                   job_id, project_id, template, timeout, image, upstream_record_id, upstream_job_id)
 
 
 start_managed_vasp_sandbox_async.__name__ = start_managed_vasp_sandbox.__name__

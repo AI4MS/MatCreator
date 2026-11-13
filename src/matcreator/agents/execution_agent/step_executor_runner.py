@@ -365,6 +365,22 @@ def _verify_step_result_artifacts(
     return result, missing_artifacts
 
 
+def _apply_nscf_completion(result, completion, allowed_roots):
+    if result.status != "success":
+        return
+    from matcreator.aidb.band_structure import BAND_FILES
+
+    verified, _ = _split_verified_artifacts(completion.get("artifact_paths", ()), allowed_roots=allowed_roots)
+    delivered = {Path(path).name for path in verified if Path(path).is_file()}
+    if completion.get("compute_status") != "succeeded" or not set(BAND_FILES) <= delivered:
+        message = "NSCF 能带数据和图尚未核实交付。"
+        result.status = "needs_replanning"
+        result.replan_reason = result.key_results = result.concise_summary = message
+    elif completion.get("archive_status") != "verified":
+        reason = completion.get("archive_reason") or "尚未读回核实"
+        result.concise_summary = f"{result.concise_summary} AIDB 归档：{reason}。"
+
+
 async def _watch_for_cancellation(
     target: asyncio.Task,
     session_id: str,
@@ -1172,15 +1188,8 @@ async def run_step_executor(
             additional_artifacts=[*artifact_paths, *plot_paths],
         )
         nscf = step_state_delta.get("_nscf_completion")
-        if result.status == "success" and nscf is not None:
-            from matcreator.aidb.band_structure import BAND_FILES
-
-            delivered = {Path(path).name for path in nscf.get("artifact_paths", ()) if Path(path).is_file()}
-            if (nscf.get("archive_status") != "verified" or nscf.get("compute_status") != "succeeded"
-                    or not set(BAND_FILES) <= delivered):
-                message = nscf.get("archive_reason") or "NSCF 能带数据和图尚未交付。"
-                result.status = "needs_replanning"
-                result.replan_reason = result.key_results = result.concise_summary = message
+        if nscf is not None:
+            _apply_nscf_completion(result, nscf, allowed_artifact_roots)
         skill_refresh = None
         if result.status == "success":
             skill_refresh = _refresh_skill_registry_after_creation(suggested_skills)

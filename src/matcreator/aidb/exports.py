@@ -55,16 +55,38 @@ def _training(record, structure):
         raise ValueError('无法导出微调 EXTXYZ，缺少' + '、'.join(missing) + '。')
 
     atoms = AseAtomsAdaptor.get_atoms(structure)
-    atoms.info = {'record_id': record['record_id'], 'energy_definition': definition,
-                  'energy_unit': 'eV', 'energy_basis': 'cell_total', 'force_unit': 'eV/Angstrom'}
-    for key in ('frame_index', 'source_dataset', 'source_id', 'functional'):
+    atoms.info = {'energy_definition': definition, 'energy_unit': 'eV',
+                  'energy_basis': 'cell_total', 'force_unit': 'eV/Angstrom'}
+    for key in ('record_id', 'frame_index', 'source_dataset', 'source_id', 'functional'):
         if record.get(key) is not None:
             atoms.info[key] = record[key]
     results = {'energy': float(energy), 'forces': forces}
     _tensor_labels(record, atoms, results)
     atoms.calc = SinglePointCalculator(atoms, **results)
+    return atoms
+
+
+def verified_vasp_training_atoms(frame):
+    """Convert verified VASP labels to EXTXYZ atoms without claiming an AIDB row."""
+    from ase.units import GPa
+
+    structure = _structure(frame)
+    record = dict(frame)
+    if record.get('stress') is not None:
+        if record.get('stress_unit') != 'kbar' or record.get('stress_convention') != 'tensile_positive':
+            raise ValueError('无法核实 VASP 应力单位或约定')
+        stress = _numeric_array(record['stress'], (3, 3))
+        if stress is None:
+            raise ValueError('无法核实 VASP 应力张量')
+        stress *= GPa / 10
+        record.update(stress=stress, stress_unit='eV/Angstrom^3',
+                      virial=-structure.volume * stress, virial_unit='eV')
+    return _training(record, structure)
+
+
+def _training_xyz(record):
     stream = StringIO()
-    write(stream, atoms, format='extxyz')
+    write(stream, _training(record, _structure(record)), format='extxyz')
     return stream.getvalue()
 
 
@@ -181,7 +203,7 @@ def export_record(record, formats):
     for fmt in formats:
         try:
             if fmt == 'extxyz':
-                filename, content = 'aidb-' + record_id + '.extxyz', _training(record, _structure(record))
+                filename, content = 'aidb-' + record_id + '.extxyz', _training_xyz(record)
             elif fmt == 'poscar':
                 filename, content = 'POSCAR-' + record_id, str(Poscar(_structure(record), sort_structure=False))
             elif fmt == 'temperature':

@@ -3,9 +3,9 @@
 Generate VASP non-self-consistent (band structure) input files using `MPNonSCFSet`.
 Run SCF and NSCF as separate dependent steps through the tracked VASP tools. For
 SCF, retain `CHGCAR` and any actually needed `WAVECAR` in `out_files`. Use the
-new SCF completion or the selected SCF reuse delivery to obtain the exact AIDB
-record ID and local artifact paths. Stop if the upstream stage cannot deliver
-the files. Use the user's requested k path when supplied.
+new SCF completion or the selected SCF reuse delivery to obtain the verified
+local artifacts. A computed SCF can supply restart files even when AIDB archival
+fails. Stop if the upstream stage cannot deliver the required files. Use the user's requested k path when supplied.
 
 ## Steps
 
@@ -48,9 +48,11 @@ shutil.copy2("scf_job/WAVECAR", "nscf_job/WAVECAR")
 - Stage the delivered `CHGCAR` inside the NSCF input directory. For restart settings
   that read `WAVECAR`, stage the upstream `WAVECAR` too.
 - Submit using `submit_bohr_batchjob` or `start_managed_vasp_sandbox` with
-  `upstream_record_id` set to the exact SCF AIDB record ID. Use reciprocal coordinates
+  `upstream_job_id` for a computed SCF in the current session or
+  `upstream_record_id` for an archived SCF. Use reciprocal coordinates
   in `KPOINTS`; explicit paths and VASP line-mode paths are supported.
 - For a new NSCF run, collect outputs through `collect_remote_job_outputs`. Its
   successful verification delivers `bands.json` and `bands.svg`; a selected NSCF
   result delivers them via the reuse receipt. Give the user both files and the
-  two stages' record IDs. If NSCF has not delivered the files, keep the chain open.
+  job IDs or verified record IDs. Report archive failures separately. If NSCF
+  has not delivered the files, keep the chain open.

@@ -92,6 +92,7 @@ def test_historical_static_replay_labels_mixed_batch_and_reuses_each_job(tmp_pat
         collect_matpes_batch,
         submit_matpes_batch,
     )
+    from matcreator.aidb import managed_vasp
     from matcreator.aidb.service import SessionAIDB
 
     if not (Path.home() / ".matcreator/skills/ai-ready-db/scripts/aidb_ops.py").is_file():
@@ -215,6 +216,31 @@ def test_historical_static_replay_labels_mixed_batch_and_reuses_each_job(tmp_pat
     _assert_batch_result_rows(workspace, submitted, completed)
     assert submits == ["seed-frame-0", "mixed-frame-1", "mixed-frame-2"]
     assert downloads == ["1", "3"]
+    with connect(database) as db:
+        assert db.count() == 2
+
+    outage = prepare("outage", [original, original], ["unarchived", "corrupt"])
+    submitted = submit_matpes_batch(context, manifest_path=outage, name="outage", **settings)
+    assert [row["status"] for row in submitted["members"]] == ["succeeded", "succeeded"]
+    # Keep the provider status successful, but corrupt the second member's bytes.
+    (tmp_path / "provider-5" / "OUTCAR").write_text("corrupt VASP output")
+    with monkeypatch.context() as unavailable:
+        unavailable.setattr(managed_vasp, "archive_verified_vasp_result", lambda *args, **kwargs: {
+            "archive_receipt": "injected", "readback_verified": False, "message": "injected archive outage",
+        })
+        result = collect_matpes_batch(context, submitted["batch_id"])
+    first, second = result["members"]
+    assert (first["status"], first["compute_status"], first["archive_status"]) == (
+        "computed_archive_failed", "succeeded", "failed",
+    )
+    assert (second["status"], second["compute_status"]) == ("compute_unverified", "unverified")
+    assert first["output_index"] == 0 and "output_index" not in second
+    atoms = read(result["artifact_paths"][1])
+    assert atoms.info["source_id"] == first["source_id"]
+    assert "record_id" not in atoms.info
+    assert atoms.get_potential_energy() == parsed.final_energy
+    assert len(atoms.get_forces()) == len(original)
+    assert atoms.get_stress().shape == (6,)
     with connect(database) as db:
         assert db.count() == 2
 

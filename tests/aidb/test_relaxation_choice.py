@@ -58,7 +58,7 @@ def relaxation(tmp_path, monkeypatch):
 
     def submit(): return remote_job_tools.submit_bohr_batchjob(
         context, project_id=123, name="relax", image="test-vasp", command="mpirun -np 4 vasp_std",
-        machine_type="test-cpu", input_path="si", out_files=["vasprun.xml", "CONTCAR"],
+        machine_type="test-cpu", input_path="si", out_files=None,
     )
 
     return workspace, inputs, context, operations, records, submit
@@ -98,6 +98,23 @@ def matching_record(inputs):
                                             "executable": "vasp_std", "sha256": hashes}},
         }},
     }
+
+
+@pytest.mark.parametrize(("message", "out_files"), [
+    ("Use prepared VASP inputs.", ["stdout.log"]),
+    ("Give me the calculation log.", None),
+    ("请给我原始 CONTCAR。", None),
+])
+def test_reuse_requires_the_requested_original_artifacts(relaxation, message, out_files):
+    _, inputs, context, operations, records, _ = relaxation
+    records.append(matching_record(inputs))
+    context.user_content.parts[0].text = message
+    receipt = remote_job_tools.submit_bohr_batchjob(
+        context, project_id=123, name="relax", image="test-vasp", command="mpirun -np 4 vasp_std",
+        machine_type="test-cpu", input_path="si", out_files=out_files,
+    )
+    assert receipt["status"] == "queued", receipt
+    assert operations[-1] == ("submit", "si")
 
 
 def test_complete_matches_pause_real_submit_and_publish_in_record_order(relaxation):
@@ -298,7 +315,7 @@ def test_same_turn_provider_retry_cannot_create_a_job_under_a_new_name(relaxatio
 
     retry = remote_job_tools.submit_bohr_batchjob(
         context, project_id=123, name="renamed", image="test-vasp", command="mpirun -np 4 vasp_std",
-        machine_type="test-cpu", input_path="si", out_files=["vasprun.xml", "CONTCAR"],
+        machine_type="test-cpu", input_path="si", out_files=None,
     )
 
     assert retry["job_id"] == expected["job_id"]
@@ -392,7 +409,7 @@ def test_managed_adk_turn_cancels_proven_choice_and_rejects_later_ordinal(relaxa
         }),
         types.Part.from_function_call(name="submit_bohr_batchjob", args={
             "name": "relax", "project_id": 123, "image": "test-vasp", "command": "mpirun -np 4 vasp_std",
-            "machine_type": "test-cpu", "input_path": "si", "out_files": ["vasprun.xml", "CONTCAR"],
+            "machine_type": "test-cpu", "input_path": "si", "out_files": None,
         }),
         types.Part.from_text(text="上一次的弛豫候选已关闭。"),
         types.Part.from_text(text="配色方案一是深蓝色，方案二是灰色。"),
@@ -402,7 +419,7 @@ def test_managed_adk_turn_cancels_proven_choice_and_rejects_later_ordinal(relaxa
         }),
         types.Part.from_function_call(name="submit_bohr_batchjob", args={
             "name": "relax", "project_id": 123, "image": "test-vasp", "command": "mpirun -np 4 vasp_std",
-            "machine_type": "test-cpu", "input_path": "si", "out_files": ["vasprun.xml", "CONTCAR"],
+            "machine_type": "test-cpu", "input_path": "si", "out_files": None,
         }),
         types.Part.from_text(text="已打开新的弛豫候选。"),
     ])
