@@ -18,7 +18,9 @@ This is noninteractive Batch Job execution, not the
   unpacked at the root of the remote working directory, which is why
   `command` is `bash run.sh`, not a prefixed path. No root/nested symlinks,
   empty directories, or special files: materialize inputs as regular files.
-  Keep unrelated data and credentials out of the uploaded tree.
+  Keep unrelated data and credentials out of the uploaded tree. Use the
+  licensed POTCAR directly from disk without printing or returning its contents
+  in chat or tool output. For inspection, report only its file hash or title.
 - Resolve `project_id` explicitly or from `BOHRIUM_PROJECT_ID`. Stop if missing;
   never silently choose a billing project.
 - Choose an explicit, authorized VASP image, for example the user's
@@ -108,6 +110,13 @@ The adapter runs matching `bohr batchjob submit ... --input <directory>
 --dry-run` preflight before the real local-input submission. Fix preflight
 errors first. Never also run a manual CLI submit after using the tool.
 
+For a structural relaxation or static SCF, pass the actual prepared calculation directory.
+Use the tracked tool with the launcher above. A response with status
+waiting_choice hands the step back to chat. Leave the inputs in place and wait
+for the user's decision. On continue, reuse the original tool arguments and
+files after the usual authorization. A changed input must be prepared and
+submitted for a new check. Input-only requests end after preparing the files.
+
 Save returned durable `job_id` and provider `batchjob_id`. All tracked tools use
 `job_id`; raw `bohr batchjob describe <batchjob_id>` takes the string provider
 ID positionally. Never substitute a legacy numeric job ID.
@@ -138,8 +147,16 @@ ID positionally. Never substitute a legacy numeric job ID.
    The destination must be new and nonexistent; do not `mkdir` it, use the input
    directory, or merge into existing results. The CLI's `--dest` download
    safely extracts and atomically installs results; no manual unzip is needed.
-   Already-collected replay is a durable no-op: reuse the recorded artifact paths.
-6. Only then parse local `vasprun.xml` with
+   For managed VASP calculations, collection also returns `compute_status`,
+   `archive_status`, and the completion result reference. Report the two statuses
+   separately with the collected artifacts. Repeating collection after successful
+   verification is a no-op for submission, verified transfer and archival.
+   If a cached transfer is damaged, collection repairs it from the original job.
+   If AIDB verification failed, collecting
+   the same job again checks the original outputs and retries archival in the original
+   binding without another provider submission. Keep the original result
+   and its archive failure reason if verification still fails.
+6. For workflows without a managed completion receipt, parse local `vasprun.xml` with
    [read-results.md](read-results.md). Check the expected outputs and
    electronic convergence, plus ionic convergence for relaxation; inspect
    `OUTCAR`, `OSZICAR`, and retained logs when incomplete. Remote `succeeded`

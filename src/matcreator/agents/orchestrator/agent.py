@@ -312,8 +312,18 @@ class PlanningExecutionOrchestrator(BaseAgent):
                 )
                 state["_graph_exec_node_id"] = exec_id
 
-                async for event in _stream_execution_with_recovery(self.execution_agent, ctx):
-                    yield event
+                state["_vasp_waiting_for_choice"] = False
+                async with aclosing(_stream_execution_with_recovery(self.execution_agent, ctx)) as execution_events:
+                    async for event in execution_events:
+                        yield event
+                        if state.get("_vasp_waiting_for_choice"):
+                            break
+                if state.pop("_vasp_waiting_for_choice", False):
+                    graph.log_node_complete(exec_id, "waiting", summary="Waiting for VASP relaxation choice.")
+                    state["execution_approved"] = False
+                    state["current_step"] = None
+                    loop_idx += 1
+                    continue
 
                 interrupted = state.get("return_to_planner", False)
                 if interrupted:

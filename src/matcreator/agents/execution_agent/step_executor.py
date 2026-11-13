@@ -7,6 +7,9 @@ from typing import List, Literal, Optional
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.function_tool import FunctionTool
+from matcreator.tools.aidb_archive_tools import aidb_archive_vasp
+from matcreator.tools.aidb_tools import aidb_query, aidb_detail, aidb_bind
+from matcreator.tools.aidb_tools import aidb_export
 from matcreator.tools.xrd_tools import xrd_list_workspaces, xrd_get_results, xrd_action
 from google.adk.tools.tool_context import ToolContext
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
@@ -17,15 +20,18 @@ from ...knowledge.query import get_related_skills, query_knowledge_graph, read_k
 from ...tools.remoteagent_tool import load_remote_a2a_agents
 from ...tools.util_tools import show_artifact, show_plot, show_structure
 from ...tools.workspace_tools import get_user_skills_root, run_bash, run_python
+from .eos_tools import collect_eos_async, resolve_eos_member_async, submit_eos_async
+from .matpes_tools import collect_matpes_batch_async, resolve_matpes_frame_async, submit_matpes_batch_async
 from .remote_job_tools import (
     attach_bohr_batchjob,
-    collect_remote_job_outputs,
+    collect_remote_job_outputs_async,
     create_remote_job_group,
     download_remote_job_output,
     get_remote_job_status,
     pause_remote_job,
     poll_remote_job_command,
     run_remote_job_command,
+    start_managed_vasp_sandbox_async,
     start_remote_job_command,
     submit_bohr_batchjob,
     submit_bohr_sandbox,
@@ -106,7 +112,18 @@ class StepExecutorResult(BaseModel):
 
 
 _STEP_EXECUTOR_INSTRUCTION = """
+A managed VASP submit may return waiting_choice. The runtime then returns to chat for a user decision. Do not submit again or choose a candidate.
+For a VASP EOS, use the eos skill's tracked route. Prepare a cell relaxation and one SCF template, then use submit_eos after the existing submission authorization for the whole EOS. Use collect_eos with the same EOS ID after relaxation and during recovery. On an authorized human turn, use advance=true to prepare and submit unmatched static points. Job status updates use advance=false. Use resolve_eos_member only for the explicit human decision for the named relaxation or volume point. Report missing points and distinguish calculation from archive status.
+
+For VASP MatPES labeling, use prepare_matpes.py --batch then submit_matpes_batch once. Report the batch ID and each frame waiting for a decision. Use resolve_matpes_frame only for an explicit decision for that frame. Use collect_matpes_batch with the original batch ID for a status update, wakeup, or to assemble available labels. MatPES group names carry the batch ID after "matpes:". Do not recreate inputs or submit replacement jobs during collection.
+
+AIDB requests: discover/load the installed ai-ready-db skill, then use aidb_query/aidb_detail for session-bound records and clickable chat presentation. Use explicit user conditions; clarify ambiguity. Record editing/deletion is unavailable.
+For a natural-language AIDB export, call aidb_export directly after skill discovery. Use the actual record ID and, for a prior result row, its result ID. Return only the download formats confirmed in the receipt and explain any missing labels.
+aidb_detail directly fresh-reads the referenced ID and opens its full presenter. Answer from its returned facts; do not plan raw JSONL inspection or request extra approval for this supported read. Omitted arrays remain in the UI snapshot. Preserve unknown, false, not-applicable and truncation states. Label presence does not establish alignment, convergence, compatibility or training admission. Never infer that records differ only in functional from the bounded summary; distinguish native match counts, visible rows and verified frames.
+
 You are a focused step executor. Execute the single plan step provided in your input.
+If the step explicitly saves existing VASP relaxation, static SCF or MD outputs, call aidb_archive_vasp with the workspace directories. Report its per-directory receipts and do not submit VASP for this operation.
+For all AIDB reads, omission from model facts is not evidence that a field is missing or not applicable. Never claim fields were not saved/extracted just because they are unlisted. Use optional_results availability and evidence; not_provided refers to the returned record, not raw-output capability. PAW projected electron populations are not oxidation states. Null magnetic moments or spin settings do not establish material magnetism; preserve not_assessed.
 
 ## Your task
 1. Review `suggested_skills` from your input. Call `load_skill` for each skill you deem
@@ -155,8 +172,19 @@ If your `prior_context` contains "REMOTE JOB ALREADY SUBMITTED", a tracked remot
    call `start_remote_job_command`/`run_remote_job_command` again for the same computation
    just because you lost track of it; re-running a non-idempotent command (e.g. a training
    run) can corrupt output or double-charge compute.
-4. If the job finished (`status: succeeded`), collect its outputs — `download_remote_job_output`
-   for an interactive sandbox, or `collect_remote_job_outputs` for a batch job — and report success.
+4. For a managed VASP sandbox, poll the tracked command and call
+   collect_remote_job_outputs after it ends, even when its exit code is nonzero.
+   For a Batch Job, call collect_remote_job_outputs when status is succeeded, collecting,
+   or collected. Use the original job ID for an interrupted collection or failed archive.
+   For other interactive work, use download_remote_job_output for individual files.
+   When collection returns a VASP completion, report its compute and archive statuses
+   independently and keep the collected artifact paths. A provider status alone is
+   insufficient to report VASP convergence or AIDB archival.
+   For a band-structure chain, deliver the SCF record ID and retained CHGCAR
+   (and WAVECAR if requested by the restart) before attempting the separate
+   NSCF step. Submit NSCF with that upstream_record_id and the actual local
+   restart files. NSCF is complete when the managed receipt verifies bands.json
+   and bands.svg, or the reuse receipt delivers both files.
 5. If it is still running, call `submit_step_result(status="needs_replanning", ...)` stating
    that the job has not finished yet and quoting its job_id and status.
 6. Legacy `bohr_job` records are unsupported. Report needs_replanning with the recorded
@@ -173,6 +201,9 @@ If your `prior_context` contains "REMOTE JOB ALREADY SUBMITTED", a tracked remot
 - `submit_bohr_sandbox`: interactive sandbox via the `bohr` CLI — the default for any work
   that needs command execution or file transfer after submission. Requires an explicit
   `template`.
+- For VASP inside a Bohrium sandbox, use start_managed_vasp_sandbox with the
+  prepared workspace directory. It checks for reusable records and stages files
+  before starting the tracked command. Poll and collect with the same job_id.
 - `submit_bohr_batchjob`: sandbox-based batch job via `bohr batchjob submit`. Requires
   `name`, `image`, `command`, and exactly one of `machine_type` or `sku_id`. Discover
   machines with `bohr batchjob machine list -o json`. Use `input_path` (a path relative
@@ -307,20 +338,32 @@ def build_step_executor_agent(llm_card: LLMCard) -> LlmAgent:
             FunctionTool(get_user_skills_root),
             FunctionTool(run_python),
             FunctionTool(run_bash),
+            FunctionTool(aidb_query),
+            FunctionTool(aidb_detail),
+            FunctionTool(aidb_export),
+            FunctionTool(aidb_bind),
+            FunctionTool(aidb_archive_vasp),
             FunctionTool(xrd_list_workspaces),
             FunctionTool(xrd_get_results),
             FunctionTool(xrd_action),
             FunctionTool(submit_bohr_sandbox),
             FunctionTool(create_remote_job_group),
+            FunctionTool(submit_eos_async),
+            FunctionTool(collect_eos_async),
+            FunctionTool(resolve_eos_member_async),
+            FunctionTool(submit_matpes_batch_async),
+            FunctionTool(resolve_matpes_frame_async),
+            FunctionTool(collect_matpes_batch_async),
             FunctionTool(submit_bohr_batchjob),
             FunctionTool(attach_bohr_batchjob),
             FunctionTool(get_remote_job_status),
             FunctionTool(run_remote_job_command),
+            FunctionTool(start_managed_vasp_sandbox_async),
             FunctionTool(start_remote_job_command),
             FunctionTool(poll_remote_job_command),
             FunctionTool(upload_remote_job_input),
             FunctionTool(download_remote_job_output),
-            FunctionTool(collect_remote_job_outputs),
+            FunctionTool(collect_remote_job_outputs_async),
             FunctionTool(pause_remote_job),
             FunctionTool(terminate_remote_job),
             ALL_SKILLS_TOOLSET,

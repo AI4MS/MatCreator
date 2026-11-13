@@ -4,17 +4,20 @@ version: 1.0.0
 description: >
   Generate VASP inputs (INCAR/POSCAR/POTCAR/KPOINTS) via pymatgen.io.vasp.sets
   for DFT calculations: MPRelaxSet (geometry relaxation), MPStaticSet (SCF),
-  MPNonSCFSet (band structure), MatPESStaticSet (MLFF energy/force labeling).
+  MPNonSCFSet (band structure), MatPESStaticSet (MLFF energy/force labeling),
+  and MPMDSet (ab initio molecular dynamics).
   INCAR is driven by pymatgen defaults; the agent only supplies user_incar_settings
   overrides. Use when the user asks to prepare VASP calculations, run DFT, or
-  generate MLFF training data from structures. Do NOT use for VASP result
-  post-processing / analysis, non-VASP DFT codes, or molecular dynamics — this
-  skill only generates input files and submits jobs.
+  generate MLFF training data from structures. For VASP AIMD, use the AIMD
+  reference and the tracked VASP tools to prepare, run and collect the calculation.
+  This skill covers VASP input generation and managed calculations.
 metadata:
   tools:
     - run_python
     - run_bash
     - load_skill_resource
+    - start_managed_vasp_sandbox
+    - collect_remote_job_outputs
   dependent_skills:
     - bohrium
     - remote-job
@@ -24,6 +27,7 @@ metadata:
     - relaxation
     - scf
     - band-structure
+    - aimd
     - pymatgen
     - label
     - mlff
@@ -32,11 +36,11 @@ metadata:
 # VASP DFT Skill (pymatgen sets)
 
 This skill generates VASP input files for common DFT calculation types:
-relaxation, SCF, band structure, and MLFF energy/force labeling.
+relaxation, SCF, band structure, AIMD, and MLFF energy/force labeling.
 Workflow: obtain a structure → prepare inputs → submit to Bohrium → read results.
 
 All input generation uses `pymatgen.io.vasp.sets` (`MPRelaxSet`, `MPStaticSet`,
-`MPNonSCFSet`, `MatPESStaticSet`). These classes own the INCAR defaults — the
+`MPNonSCFSet`, `MatPESStaticSet`, `MPMDSet`). These classes own the INCAR defaults — the
 agent only passes `user_incar_settings` to override individual keys. Never write
 a full INCAR dict from scratch.
 
@@ -133,7 +137,10 @@ load_skill_resource(skill_name="vasp-pymatgen", path="references/label.md")
 ```
 
 ### prepare_nscf_kpath
-Band-structure NSCF with `MPNonSCFSet(mode="line")`. Uses `from_prev_calc(scf_dir)` — auto-copies `CHGCAR` and sets ICHARG=11. Key params: `SCF_DIRS`, `SOC`, `USER_INCAR`.
+Band-structure NSCF uses a separate tracked VASP step after SCF. Use
+`MPNonSCFSet(mode="line")` with the requested k path, and stage the verified SCF
+`CHGCAR` with `ICHARG=11`. Pass the upstream SCF AIDB record ID to the tracked
+submission tool. Collection or reuse delivers `bands.json` and `bands.svg`.
 ```
 load_skill_resource(skill_name="vasp-pymatgen", path="references/nscf-kpath.md")
 ```
@@ -142,6 +149,12 @@ load_skill_resource(skill_name="vasp-pymatgen", path="references/nscf-kpath.md")
 Parse `vasprun.xml` via `Vasprun`. Returns energy, forces, band gap, efermi, and (for nscf) band structure summary, etc.
 ```
 load_skill_resource(skill_name="vasp-pymatgen", path="references/read-results.md")
+```
+
+### prepare_aimd
+Prepare a fixed-cell NVT AIMD run with the requested temperature, time step and step count.
+```
+load_skill_resource(skill_name="vasp-pymatgen", path="references/aimd.md")
 ```
 
 ---
@@ -160,7 +173,7 @@ load_skill_resource(skill_name="vasp-pymatgen", path="references/read-results.md
 Use `bohrium` for access and Batch Job SKU discovery, then `remote-job`'s
 `submit_bohr_batchjob` for durable submission, monitoring, and collection.
 
-The INCAR/POSCAR/POTCAR generation is platform-agnostic. The submission layer is pluggable — replace `bohrium` with a Slurm or local queue system as needed.
+Input generation is platform-agnostic. Managed VASP execution is available through the tracked Bohrium Batch Job and sandbox routes.
 
 For the VASP image, oneAPI/MPI environment, retained outputs, and tracked
 submission template, see:
@@ -178,7 +191,7 @@ legacy `forward_files` parameter.
 
 ### Remote sandbox execution
 
-Run VASP inside a Bohrium cloud sandbox via the `remote-job` skill: environment setup (oneAPI), `mpirun`, completion verification, and file I/O.
+For a Bohrium sandbox use `start_managed_vasp_sandbox` with the prepared inputs, followed by `poll_remote_job_command` and `collect_remote_job_outputs`. Load the reference for the launcher and transfer requirements.
 
 ```
 load_skill_resource(skill_name="vasp-pymatgen", path="references/remote-sandbox-execution.md")

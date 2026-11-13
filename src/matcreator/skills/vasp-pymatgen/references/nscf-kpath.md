@@ -1,7 +1,11 @@
 # NSCF Band Structure Input Generation
 
 Generate VASP non-self-consistent (band structure) input files using `MPNonSCFSet`.
-Requires a completed SCF calculation with `CHGCAR`.
+Run SCF and NSCF as separate dependent steps through the tracked VASP tools. For
+SCF, retain `CHGCAR` and any actually needed `WAVECAR` in `out_files`. Use the
+new SCF completion or the selected SCF reuse delivery to obtain the exact AIDB
+record ID and local artifact paths. Stop if the upstream stage cannot deliver
+the files. Use the user's requested k path when supplied.
 
 ## Steps
 
@@ -41,6 +45,12 @@ shutil.copy2("scf_job/WAVECAR", "nscf_job/WAVECAR")
 
 ## Notes
 
-- `CHGCAR` must be in `forward_files` when submitting the NSCF job to Bohrium
-- For SOC, also include `WAVECAR` in `forward_files`
-- Include `vasprun.xml` in `backward_files` for band structure post-processing
+- Stage the delivered `CHGCAR` inside the NSCF input directory. For restart settings
+  that read `WAVECAR`, stage the upstream `WAVECAR` too.
+- Submit using `submit_bohr_batchjob` or `start_managed_vasp_sandbox` with
+  `upstream_record_id` set to the exact SCF AIDB record ID. Use reciprocal coordinates
+  in `KPOINTS`; explicit paths and VASP line-mode paths are supported.
+- For a new NSCF run, collect outputs through `collect_remote_job_outputs`. Its
+  successful verification delivers `bands.json` and `bands.svg`; a selected NSCF
+  result delivers them via the reuse receipt. Give the user both files and the
+  two stages' record IDs. If NSCF has not delivered the files, keep the chain open.

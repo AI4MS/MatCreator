@@ -14,11 +14,15 @@ submissions go through ``submit_bohr_sandbox``/``submit_bohr_batchjob`` instead.
 from __future__ import annotations
 
 import ast
+import asyncio
 import hashlib
 import json
 import os
+import re
+import sqlite3
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from google.adk.tools.tool_context import ToolContext
 
@@ -61,12 +65,13 @@ def _submit(
     discriminator: str,
     persisted_specification: dict[str, Any] | None = None,
     group_id: str | None = None,
+    origin_node_id: str | None = None,
 ) -> dict[str, Any]:
     """Shared submission plumbing used by every provider-specific submit tool."""
     session_id = str(tool_context.state.get("session_id") or "")
     if not session_id:
         return {"status": "error", "message": "No session_id is available for remote-job submission."}
-    node_id = _node_id(tool_context)
+    node_id = origin_node_id or _node_id(tool_context)
     idempotency_key = _idempotency_key(session_id, node_id, discriminator)
     try:
         job = _service().submit_job(
@@ -305,6 +310,7 @@ def submit_bohr_batchjob(
     max_run_time: str = "24h",
     max_wait_time: str = "30m",
     group_id: str | None = None,
+    upstream_record_id: str | None = None,
 ) -> dict[str, Any]:
     """Submit or reuse a tracked sandbox-based job through `bohr batchjob submit`.
 
@@ -324,7 +330,9 @@ def submit_bohr_batchjob(
     outputs AND logs, never a single comma-joined string. Durations use units,
     e.g. '2h' or '90s', and must be at least one second. Express the entire
     computation in command: interactive execution and incremental transfers
-    are not supported. After status succeeds, collect outputs into a new,
+    are not supported. For NSCF pass the exact upstream SCF AIDB record ID
+    as upstream_record_id and include its CHGCAR (plus WAVECAR if ISTART uses it)
+    in the prepared input directory. After status succeeds, collect outputs into a new,
     nonexistent workspace directory.
     """
     resolved_project_id = project_id if project_id is not None else os.environ.get("BOHRIUM_PROJECT_ID", "")
@@ -392,13 +400,20 @@ def submit_bohr_batchjob(
         "max_run_time": max_run_time,
         "max_wait_time": max_wait_time,
     }
-    result = _submit(
-        tool_context,
-        provider="bohr_batchjob",
-        spec=spec,
-        discriminator=f"bohr_batchjob:{name}",
-        group_id=group_id,
-    )
+    if upstream_record_id is not None:
+        spec["upstream_record_id"] = upstream_record_id
+    from ...aidb.relaxation import guard_relaxation_submission
+
+    def submit(revision, prepared_inputs=None, binding_id=None):
+        if not prepared_inputs:
+            return _submit(tool_context, provider="bohr_batchjob", spec=spec,
+                           discriminator=f"bohr_batchjob:{name}", group_id=group_id)
+
+        return _submit_managed_vasp(tool_context, spec, revision, prepared_inputs, binding_id, group_id)
+
+    result = guard_relaxation_submission(tool_context, spec, submit)
+    if result["status"] in {"waiting_choice", "closed"}:
+        return result
     return _submission_response(
         result,
         id_field="batchjob_id",
@@ -407,6 +422,51 @@ def submit_bohr_batchjob(
             "reports succeeded, then call collect_remote_job_outputs."
         ),
     )
+
+
+def _submit_managed_vasp(tool_context, spec, revision, prepared_inputs, binding_id, group_id, *, member=None,
+                         origin_node_id=None, eos_member=None):
+    """Use the same tracked identity and input staging for one managed VASP calculation."""
+
+    from ...aidb.managed_vasp import staged_relaxation
+    from ...aidb.service import AIDBError
+
+    owner_id = _owner_id(tool_context)
+    session_id = str(tool_context.state.get("session_id") or "")
+    discriminator = f"bohr_batchjob:vasp:{owner_id}:{spec['name']}:{revision}"
+    service = _service()
+    node_id = origin_node_id or _node_id(tool_context)
+    key = _idempotency_key(session_id, node_id, discriminator)
+    existing = service.store.find_job_by_idempotency_key(key)
+    if existing and (existing["owner_id"], existing["session_id"], existing["provider"], existing.get("group_id")) != (
+        owner_id, session_id, "bohr_batchjob", group_id
+    ):
+        return {"status": "error", "message": "提交标识对应其他作业。"}
+    previous = existing["specification"] if existing else None
+    if previous and (previous["requested_spec"] != spec or previous["managed_vasp"]["revision"] != prepared_inputs):
+        return {"status": "error", "message": "已跟踪的 VASP 作业与本次提交配置不同。"}
+    if existing and (existing["external_id"] or existing["status"] not in {"created", "failed"}):
+        record_remote_job_reference(session_id=session_id, node_id=node_id,
+                                    job_id=existing["job_id"], provider=existing["provider"],
+                                    external_id=existing["external_id"])
+        return existing
+    if previous and previous["managed_vasp"]["binding_id"] != binding_id:
+        return {"status": "error", "message": "VASP 作业的 AIDB 绑定已改变，请重新核对。"}
+    token = previous["managed_vasp"]["token"] if previous else uuid4().hex
+    try:
+        with staged_relaxation(spec, prepared_inputs, token, ADK_DIR / "vasp-stage", Path(spec["input_root"])) as (launch_spec, expected):
+            evidence = {"schema": 1, "token": token, "revision": prepared_inputs, "expected": expected,
+                        "binding_id": binding_id, "workspace": str(Path(tool_context.state.get("workdir") or spec["input_root"]).resolve())}
+            if member is not None:
+                evidence["matpes_frame"] = member
+            if eos_member is not None:
+                evidence["eos_member"] = eos_member
+            persisted = {"requested_spec": spec, "managed_vasp": evidence}
+            return _submit(tool_context, provider="bohr_batchjob", spec=launch_spec,
+                           persisted_specification=persisted, discriminator=discriminator, group_id=group_id,
+                           origin_node_id=origin_node_id)
+    except (AIDBError, OSError, TypeError, ValueError) as exc:
+        return {"status": "error", "message": f"VASP 输入准备失败：{exc}"}
 
 
 def attach_bohr_batchjob(
@@ -601,6 +661,9 @@ def terminate_remote_job(job_id: str, tool_context: ToolContext) -> dict[str, An
     return result
 
 
+_VASP_EXECUTABLE = re.compile(r"\bvasp_(?:std|gam|ncl)\b")
+
+
 def run_remote_job_command(
     job_id: str,
     command: str,
@@ -627,6 +690,8 @@ def run_remote_job_command(
     job = get_remote_job_status(job_id, tool_context)
     if job.get("status") == "error":
         return job
+    if job.get("provider") == "bohr_sandbox" and _VASP_EXECUTABLE.search(command):
+        return {"status": "error", "message": "Use start_managed_vasp_sandbox to execute VASP."}
     try:
         return _service().run_job_command(job_id, command, user=user)
     except Exception as exc:
@@ -663,10 +728,114 @@ def start_remote_job_command(
     job = get_remote_job_status(job_id, tool_context)
     if job.get("status") == "error":
         return job
+    if job.get("provider") == "bohr_sandbox" and _VASP_EXECUTABLE.search(command):
+        return {"status": "error", "message": "Use start_managed_vasp_sandbox to execute VASP."}
+    if job.get("snapshot", {}).get("managed_vasp_command"):
+        return {"status": "error", "message": "This sandbox tracks a VASP run. Poll or collect the original command."}
     try:
         return _service().start_job_command(job_id, command, user=user)
     except Exception as exc:
         return {"status": "error", "message": f"Failed to start remote command: {exc}"}
+
+
+def start_managed_vasp_sandbox(
+    input_path: str,
+    command: str,
+    tool_context: ToolContext,
+    out_files: list[str] | None = None,
+    job_id: str | None = None,
+    project_id: int | None = None,
+    template: str | None = None,
+    timeout: int | None = None,
+    image: str | None = None,
+    upstream_record_id: str | None = None,
+) -> dict[str, Any]:
+    """Check prepared VASP inputs and start a tracked Bohrium sandbox run.
+
+    Provide a template (and project ID if unset on the server) for a fresh
+    run. MatCreator checks AIDB before allocating the sandbox. To use an
+    already tracked sandbox in this session, provide its job_id instead.
+    After launch, poll the returned job_id with poll_remote_job_command and
+    call collect_remote_job_outputs after the command finishes. For NSCF,
+    provide upstream_record_id and stage the retained SCF CHGCAR (and WAVECAR
+    when ISTART requires it) in input_path.
+    """
+    if bool(job_id) == bool(template):
+        return {"status": "error", "message": "Provide a template or an existing sandbox job_id."}
+    if job_id:
+        job = get_remote_job_status(job_id, tool_context)
+        if job.get("status") == "error":
+            return job
+        if job["provider"] != "bohr_sandbox":
+            return {"status": "error", "message": "This VASP launch tool requires a tracked Bohrium sandbox."}
+        if job.get("user_control"):
+            return {"status": "error", "message": "Follow the sandbox's current user control.",
+                    "user_control": job["user_control"]}
+        if job.get("snapshot", {}).get("managed_vasp_command"):
+            return {"job_id": job_id, "status": "running",
+                    "message": "已跟踪原 VASP 命令。请轮询命令或回收其产物。"}
+    elif not (project_id or os.environ.get("BOHRIUM_PROJECT_ID")):
+        return {"status": "error", "message": "An explicit project_id is required for a bohr sandbox."}
+
+    source, workspace, error = _resolve_workspace_child(tool_context, input_path)
+    if error or source == workspace or _workspace_join(tool_context, input_path).is_symlink():
+        return {"status": "error", "message": error or "Use a regular VASP input subdirectory."}
+    outputs, error = _coerce_out_files(out_files)
+    if error or any(not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", name) for name in outputs or []):
+        return {"status": "error", "message": error or "Sandbox output files must be exact filenames."}
+
+    from ...aidb.relaxation import guard_relaxation_submission
+    from ...aidb.sandbox_vasp import start_sandbox_vasp
+    from ...aidb.service import AIDBError
+
+    sandbox_options = {"job_id": job_id} if job_id else {
+        "project_id": project_id, "template": template, "timeout": timeout, "image": image,
+    }
+    spec = {"input_root": str(workspace), "input_path": source.relative_to(workspace).as_posix(),
+            "command": command, "out_files": outputs, "sandbox_options": sandbox_options}
+    if upstream_record_id is not None:
+        spec["upstream_record_id"] = upstream_record_id
+
+    def start(revision_id, revision=None, binding_id=None):
+        if revision is None:
+            return {"status": "error", "message": "无法核实此 VASP 命令和计算输入。请检查输入和启动脚本。"}
+        tracked_id = job_id
+        if not tracked_id:
+            sandbox_spec = {
+                **sandbox_options, "project_id": project_id or os.environ.get("BOHRIUM_PROJECT_ID"),
+            }
+            submitted = _submit(tool_context, provider="bohr_sandbox", spec=sandbox_spec,
+                                discriminator=f"bohr_sandbox:vasp:{_owner_id(tool_context)}:{revision_id}")
+            if submitted["status"] in _FAILED_SUBMISSION_STATUSES | {"error"} or not submitted.get("external_id"):
+                return {"status": "error", "message": submitted.get("error") or submitted.get("message")
+                        or "Sandbox creation is pending. Check the original job before retrying."}
+            tracked_id = submitted["job_id"]
+        try:
+            return start_sandbox_vasp(_service(), tracked_id, spec, revision, binding_id, workspace)
+        except (AIDBError, OSError, RuntimeError, ValueError) as exc:
+            return {"status": "error", "message": f"无法启动 sandbox VASP：{exc}"}
+
+    return guard_relaxation_submission(tool_context, spec, start)
+
+
+async def start_managed_vasp_sandbox_async(
+    input_path: str,
+    command: str,
+    tool_context: ToolContext,
+    out_files: list[str] | None = None,
+    job_id: str | None = None,
+    project_id: int | None = None,
+    template: str | None = None,
+    timeout: int | None = None,
+    image: str | None = None,
+    upstream_record_id: str | None = None,
+) -> dict[str, Any]:
+    return await asyncio.to_thread(start_managed_vasp_sandbox, input_path, command, tool_context, out_files,
+                                   job_id, project_id, template, timeout, image, upstream_record_id)
+
+
+start_managed_vasp_sandbox_async.__name__ = start_managed_vasp_sandbox.__name__
+start_managed_vasp_sandbox_async.__doc__ = start_managed_vasp_sandbox.__doc__
 
 
 def poll_remote_job_command(job_id: str, tool_context: ToolContext) -> dict[str, Any]:
@@ -775,19 +944,38 @@ def download_remote_job_output(
         return {"status": "error", "message": f"Download failed: {exc}"}
 
 
+def _managed_vasp_completion_fields(job, completion, managed):
+    artifact_paths = [str(Path(managed["workspace"]) / path) for path in completion["artifact_paths"]]
+    return {
+        "aidb_result": {"kind": "aidb_completion", "result_id": job["job_id"],
+                        "session_id": job["session_id"], "user_id": job["owner_id"]},
+        "artifact_paths": artifact_paths,
+        "artifacts": [{"source": job["external_id"], "destination": path} for path in artifact_paths],
+        "archive_status": completion["status"],
+        "compute_status": completion["compute_status"],
+        **{key: completion[key] for key in ("artifact_delivery_issue", "summary", "failure_kind", "calculation_type")
+           if key in completion},
+        **({"record_id": completion["record_id"]} if completion.get("record_id") else {}),
+        **({"archive_reason": completion["reason"]} if completion.get("reason") else {}),
+    }
+
+
 def collect_remote_job_outputs(
     job_id: str,
     destination_path: str,
     tool_context: ToolContext,
 ) -> dict[str, Any]:
-    """Pull a finished batch job's declared output files into the local workspace.
+    """Collect outputs of a finished Batch Job or a managed VASP sandbox command.
 
-    Only valid once `get_remote_job_status` reports ``status: succeeded``.
-    ``destination_path`` must resolve inside the current workspace as a
-    new, nonexistent directory for Batch Jobs; do not create it first.
-    A repeated call after outputs are already collected is a
-    durable no-op that returns the same artifact list rather than
-    downloading twice.
+    For a sandbox, first poll the tracked VASP command until it finishes.
+    Collection downloads its outputs and verifies the archive in the original
+    AIDB binding. The sandbox must remain available for any missing files.
+
+    For Batch Jobs, call after `get_remote_job_status` reports succeeded,
+    collecting, or collected. Use a new workspace directory on first collection.
+    A managed VASP collection retains the original destination on retry.
+    After download, repeated calls reuse the original files and can retry
+    verification and archiving in the original session binding.
     """
     job = get_remote_job_status(job_id, tool_context)
     if job.get("status") == "error":
@@ -796,10 +984,22 @@ def collect_remote_job_outputs(
     if error is not None:
         return {"status": "error", "message": f"Output collection failed: {error}"}
     original = _workspace_join(tool_context, destination_path)
-    # An occupied destination is the most common collection mistake; catch it
-    # before any status churn. A replay of an already-collected job skips this
-    # check because its original destination legitimately exists.
-    if job.get("status") != "collected" and (original.exists() or original.is_symlink()):
+    service = _service()
+    tracked = service.store.get_job(job_id)
+    if tracked and tracked.get("snapshot", {}).get("managed_vasp_command"):
+        from ...aidb.sandbox_vasp import collect_sandbox_vasp
+        from ...aidb.service import AIDBError
+
+        try:
+            completion, managed = collect_sandbox_vasp(service, job_id, original.absolute())
+        except (AIDBError, OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
+            return {"status": "error", "job_id": job_id, "message": f"Sandbox VASP collection failed: {exc}"}
+        return {"status": "collected", "job_id": job_id,
+                **_managed_vasp_completion_fields(tracked, completion, managed)}
+    managed = (tracked or {}).get("specification", {}).get("managed_vasp")
+    # Managed downloads validate and persist the original destination while
+    # holding the job's collection lock.
+    if not managed and job.get("status") != "collected" and (original.exists() or original.is_symlink()):
         return {
             "status": "error",
             "message": (
@@ -808,19 +1008,44 @@ def collect_remote_job_outputs(
             ),
         }
     try:
-        collected = _service().collect_job_outputs(job_id, original)
+        if managed:
+            from ...aidb.managed_vasp import collect_batch_vasp
+
+            collected = collect_batch_vasp(service, job_id, original.absolute())
+        else:
+            collected = service.collect_job_outputs(job_id, original)
     except Exception as exc:
         return {"status": "error", "message": f"Output collection failed: {exc}"}
     result = {
         "job_id": collected["job_id"],
         "status": collected["status"],
-        "artifacts": collected.get("artifacts", []),
+        "artifacts": [] if managed else collected.get("artifacts", []),
     }
+    if managed and collected["status"] == "collected" and not collected.get("error"):
+        from ...aidb.managed_vasp import receive_managed_vasp_result
+
+        try:
+            completion = receive_managed_vasp_result(collected, service.store.path.parent)
+        except (OSError, RuntimeError, sqlite3.Error, ValueError):
+            result.update(archive_status="failed", compute_status="unverified",
+                          archive_reason="无法保存 VASP 结果回执，请重试原作业的产物收集")
+            return result
+        result.update(_managed_vasp_completion_fields(collected, completion, managed))
     if collected.get("error"):
         result["error"] = collected["error"]
-        if collected["status"] == "succeeded":
+        if collected["status"] in {"succeeded", "collected"}:
             result["message"] = (
-                "Output collection failed but the remote job itself is still succeeded. "
-                "Retry collect_remote_job_outputs with a new, nonexistent destination directory."
+                "Output collection failed after the remote job succeeded. "
+                + ("Retry collect_remote_job_outputs for this job and its original destination." if managed else
+                   "Retry collect_remote_job_outputs with a new, nonexistent destination directory.")
             )
     return result
+
+
+
+async def collect_remote_job_outputs_async(job_id: str, destination_path: str, tool_context: ToolContext) -> dict[str, Any]:
+    return await asyncio.to_thread(collect_remote_job_outputs, job_id, destination_path, tool_context)
+
+
+collect_remote_job_outputs_async.__name__ = collect_remote_job_outputs.__name__
+collect_remote_job_outputs_async.__doc__ = collect_remote_job_outputs.__doc__

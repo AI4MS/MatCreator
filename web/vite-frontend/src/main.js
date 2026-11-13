@@ -1,3 +1,4 @@
+import "./features/aidb/records.css";
 import { fetchAgentNodeDetail } from "./features/graphs/graphSummary.js";
 import { installWorkspaceLaunchpad } from "./features/workspace/WorkspaceLaunchpad.js";
 import { createChatRenderer } from "./features/chat/rendering.js";

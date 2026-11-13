@@ -54,10 +54,15 @@ timeout 60 bohr sandbox template list --json
 4. Download each output file with `download_remote_job_output`.
 5. Call `terminate_remote_job` to release the sandbox when work is complete.
 
+For managed VASP calculations, follow the VASP skill's
+[remote sandbox reference](../../vasp-pymatgen/references/remote-sandbox-execution.md).
+Its `start_managed_vasp_sandbox` tool handles prepared inputs and command launch,
+and `collect_remote_job_outputs` handles the finished command's results.
+
 ## Background command walkthrough
 
 ```
-start_remote_job_command(job_id, "source /opt/env.sh && mpirun -np 32 vasp_std", user="root")
+start_remote_job_command(job_id, "python train.py", user="root")
 # → returns immediately with a durable handle (log_path, exit_path)
 
 poll_remote_job_command(job_id)

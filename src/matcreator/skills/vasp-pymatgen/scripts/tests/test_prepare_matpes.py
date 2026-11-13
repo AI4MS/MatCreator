@@ -355,3 +355,20 @@ class TestCli:
     def test_potcar_choice_restricted(self):
         with pytest.raises(SystemExit):
             pm.parse_args(["x.cif", "--potcar", "LDA"])
+
+def test_batch_manifest_uses_original_indices_and_reports_unusable_frames(tmp_path, monkeypatch):
+    import hashlib
+    import json
+
+    source = tmp_path / "bad.extxyz"
+    ase_write(source, [bulk("Si", "diamond", a=0.6)] * 5)
+    monkeypatch.setenv("PMG_VASP_PSP_DIR", str(tmp_path))
+    outdir = tmp_path / "batch"
+
+    assert pm.main([str(source), "--frames", "1:5:2", "--batch", "-o", str(outdir)]) == 1
+
+    manifest = json.loads((outdir / "matpes-manifest.json").read_text())
+    assert manifest["source_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert [item["frame_index"] for item in manifest["frames"]] == [1, 3]
+    assert [item["status"] for item in manifest["frames"]] == ["skipped", "skipped"]
+    assert all(item["reason"] for item in manifest["frames"])

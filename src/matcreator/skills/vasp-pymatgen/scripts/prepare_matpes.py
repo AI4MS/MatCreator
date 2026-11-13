@@ -9,6 +9,8 @@ ENCUT=600, LMIXTAU off, LORBIT removed.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -172,6 +174,7 @@ def generate_inputs(
 
     vis = MatPESStaticSet(
         structure,
+        sort_structure=False,
         user_incar_settings=build_incar_overrides(spin, extra),
         user_potcar_functional=potcar_functional,
     )
@@ -198,6 +201,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         "--frames",
         help="frame slice START:STOP:STEP for multi-frame files",
     )
+    parser.add_argument("--batch", action="store_true", help="write a tracked labeling manifest and per-frame inputs")
     parser.add_argument(
         "--incar",
         action="append",
@@ -255,26 +259,60 @@ def main(argv=None) -> int:
         )
         return 1
 
-    structures = load_frames(args.structure_file, args.frames)
+    source = Path(args.structure_file).resolve()
+    digest = hashlib.sha256(source.read_bytes()).hexdigest() if args.batch else None
+    selected = list(enumerate(load_frames(args.structure_file)))
+    if args.frames:
+        selected = selected[parse_frames_slice(args.frames)]
     outdir = Path(args.output_dir)
-    multi = len(structures) > 1
+    multi = args.batch or len(selected) > 1
+    manifest = outdir / "matpes-manifest.json"
+    if args.batch:
+        outdir.mkdir(parents=True, exist_ok=True)
+        if manifest.exists():
+            print(f"error: {manifest} already exists; use a new output directory", file=sys.stderr)
+            return 1
 
-    generated, skipped, failed = [], [], []
-    for i, structure in enumerate(structures):
-        target = outdir / f"frame_{i:04d}" if multi else outdir
+    generated, skipped, failed, frames = [], [], [], []
+    for index, structure in selected:
+        # Keep the legacy layout for preparation-only callers.
+        target_index = index if args.batch else len(frames)
+        target = outdir / f"frame_{target_index:04d}" if multi else outdir
+        row = {"frame_index": index}
+        frames.append(row)
         warning = check_structure(structure)
         if warning:
-            print(f"[SKIP] frame {i}: {warning}")
-            skipped.append(i)
+            print(f"[SKIP] frame {index}: {warning}")
+            skipped.append(index)
+            row.update(status="skipped", reason=warning)
             continue
-        generate_inputs(structure, target, args.spin, extra, args.potcar)
-        errs = validate_dir(target, args.spin, extra)
+        try:
+            if args.batch and (target.exists() or target.is_symlink()):
+                raise ValueError("frame input directory already exists")
+            generate_inputs(structure, target, args.spin, extra, args.potcar)
+            errs = validate_dir(target, args.spin, extra)
+        except (OSError, ValueError, RuntimeError) as exc:
+            if not args.batch:
+                raise
+            errs = [str(exc)]
         if errs:
             for e in errs:
                 print(f"[FAIL] {target}: {e}")
             failed.append(str(target))
+            row.update(status="failed", reason="; ".join(errs))
         else:
             generated.append(str(target))
+            row.update(status="prepared", input_path=target.name)
+
+    if args.batch:
+        if hashlib.sha256(source.read_bytes()).hexdigest() != digest:
+            print("error: source changed during preparation; use a new output directory", file=sys.stderr)
+            return 1
+        payload = {"schema": 1, "source_path": os.path.relpath(source, outdir.resolve()),
+                   "source_sha256": digest, "frames": frames}
+        with manifest.open("x", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2)
+        print(f"Batch manifest: {manifest}")
 
     print(
         f"\nSummary: {len(generated)} generated, "

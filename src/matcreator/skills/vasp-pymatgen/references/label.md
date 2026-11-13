@@ -62,7 +62,7 @@ This writes `INCAR`, `POSCAR`, `POTCAR` into `job_si/`. No `KPOINTS` file — k-
 ### Multi-Frame Trajectory (AIMD / MD)
 
 ```bash
-python scripts/prepare_matpes.py md_trajectory.extxyz -o matpes_jobs --frames 0:100:5
+python scripts/prepare_matpes.py md_trajectory.extxyz -o matpes_jobs --frames 0:100:5 --batch
 ```
 
 Creates one subdirectory per frame: `matpes_jobs/frame_0000/`, `frame_0005/`, `frame_0010/`, … through frame 95. Each contains independent VASP input files.
@@ -134,7 +134,11 @@ For multi-frame trajectories, iterate over all `frame_XXXX/` directories.
 
 ## Submission
 
-Submit via Bohrium exactly like any other VASP job — `prepare_matpes.py` only generates input files. See `references/bohr.md` for the full VASP submission template (image, command, machine types).
+For managed labeling, add `--batch` to `prepare_matpes.py` and use a new output directory. The resulting `matpes-manifest.json` maps prepared and failed inputs to their original trajectory indices. A preparation failure can still leave other prepared inputs in the manifest. For input preparation alone, stop here.
+
+For requested execution, use the image, machine, and authorization in `references/bohr-batchjob.md`. Call `submit_matpes_batch` with the manifest path, authorized execution settings, and the VASP command. The tool checks each frame's actual prepared inputs, starts jobs for frames that need computation, and returns selectable candidates for matching frames. State the source index when showing each candidate. Resolve a specific frame using `resolve_matpes_frame` after the user explicitly selects a record, requests recalculation, or cancels that frame.
+
+On a status request or job notification, call `collect_matpes_batch` with the original batch ID. It uses the original jobs and returns the available verified labels in a single EXTXYZ plus a frame manifest identifying all members, their outcome, and the position of each successful frame in the EXTXYZ. Individual result cards provide fresh detail and export.
 
 No special submission requirements: labeling jobs are standard VASP static runs (`NSW=0`).
 

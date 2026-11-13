@@ -781,10 +781,16 @@ def _load_session_state(session_id: str, user_id: str | None = None) -> tuple[st
     for owner_id, db_path in _iter_session_db_paths(user_id):
         try:
             with sqlite3.connect(db_path) as conn:
-                row = conn.execute(
-                    "SELECT state FROM sessions WHERE app_name = ? AND id = ?",
-                    (APP_NAME, session_id),
-                ).fetchone()
+                if user_id and _MATCREATOR_MODE != "server":
+                    row = conn.execute(
+                        "SELECT state FROM sessions WHERE app_name = ? AND id = ? AND user_id = ?",
+                        (APP_NAME, session_id, user_id),
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        "SELECT state FROM sessions WHERE app_name = ? AND id = ?",
+                        (APP_NAME, session_id),
+                    ).fetchone()
         except sqlite3.Error:
             continue
         if row:
@@ -1331,6 +1337,12 @@ async def _resume_remote_job_session(notification: dict[str, Any]) -> str | None
             "inspect failures or timeouts. Respect user controls and newer session instructions. "
             "Do not resubmit jobs or authorize additional compute automatically."
         )
+        if str(notification.get("group_name")).startswith("matpes:"):
+            batch_id = notification["group_name"].split(":", 1)[1]
+            message += f" This is MatPES batch {batch_id}. Use collect_matpes_batch with that batch ID to collect successful frames and assemble available labels."
+        if str(notification.get("group_name")).startswith("eos:"):
+            eos_id = notification["group_name"].split(":", 1)[1]
+            message += f" This is EOS {eos_id}. Use collect_eos with this ID and advance=false."
     else:
         message = (
             "REMOTE JOB STATUS UPDATE from the harness.\n"
@@ -1348,6 +1360,12 @@ async def _resume_remote_job_session(notification: dict[str, Any]) -> str | None
             "job, repeat the computation, or authorize additional compute automatically. "
             "If this notification has already been handled, do not repeat its side effects."
         )
+        member = (job.get("specification", {}).get("managed_vasp") or {}).get("matpes_frame")
+        if member:
+            message += f" This is MatPES batch {member['batch_id']}. Use collect_matpes_batch with that batch ID to collect successful frames and assemble available labels."
+        eos_member = (job.get("specification", {}).get("managed_vasp") or {}).get("eos_member")
+        if eos_member:
+            message += f" This is EOS {eos_member['eos_id']}. Use collect_eos with this ID and advance=false."
     payload = {
         "app_name": APP_NAME,
         "user_id": owner_id,
@@ -1704,6 +1722,26 @@ def _parse_session_event_cursor(cursor: str) -> tuple[float, int] | None:
 _SESSION_TOOL_DETAIL_THRESHOLD = 96_000
 
 
+def _completion_references(payload: Any, *, user_id: str, session_id: str) -> list[dict[str, str]]:
+    """Keep the small result links even when the surrounding tool output is deferred."""
+    pending = [payload]
+    references = {}
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            job_id = value.get("result_id")
+            if (value.get("kind") == "aidb_completion" and isinstance(job_id, str)
+                    and 0 < len(job_id) <= 128 and value.get("user_id") == user_id
+                    and value.get("session_id") == session_id):
+                references[job_id] = {"kind": "aidb_completion", "result_id": job_id,
+                                      "user_id": user_id, "session_id": session_id}
+            else:
+                pending.extend(reversed(value.values()))
+        elif isinstance(value, list):
+            pending.extend(reversed(value))
+    return list(references.values())
+
+
 def _compact_session_tool_payloads(
     events: list[dict[str, Any]],
     rows: list[sqlite3.Row],
@@ -1735,6 +1773,9 @@ def _compact_session_tool_payloads(
                         preview[key] = value
                     elif isinstance(value, str) and len(value) <= 500:
                         preview[key] = value
+            completions = _completion_references(payload, user_id=user_id, session_id=session_id)
+            if completions:
+                preview["aidb_completions"] = completions
             preview["_matcreator_deferred_detail"] = {
                 "user_id": user_id,
                 "session_id": session_id,
@@ -2197,14 +2238,14 @@ def _map_worker_path_to_control_plane(user_id: str, path_str: str) -> Path | Non
         return candidate.resolve()
 
 
-def _get_workdir_for_session(session_id: str) -> Path:
+def _get_workdir_for_session(session_id: str, user_id: str | None = None) -> Path:
     """Resolve workdir for a session, preferring the value stored in session state.
 
     Priority: state["workdir"] → state["custom_workdir"] → computed default.
     In server mode, worker-container paths are mapped to the user's host-mounted
     .matcreator tree and paths outside that user's workspace are rejected.
     """
-    owner_id, state = _load_session_state(session_id)
+    owner_id, state = _load_session_state(session_id, user_id) if user_id else _load_session_state(session_id)
     path_str = state.get("workdir") or state.get("custom_workdir")
     if path_str:
         if _MATCREATOR_MODE == "server" and owner_id:
@@ -3367,6 +3408,24 @@ async def get_session_event_part_detail(
     return JSONResponse({"response": response.get("response")})
 
 
+def _public_managed_job_status(job: dict[str, Any]) -> dict[str, Any]:
+    snapshot = job.get("snapshot") or {}
+    return {
+        "snapshot": {key: snapshot[key] for key in
+                     ("provider_status", "status_name", "terminal", "termination_origin", "errorCode")
+                     if key in snapshot},
+        "error": "托管 VASP 作业操作失败，请查看会话中的作业状态。" if job.get("error") else None,
+    }
+
+
+def _public_remote_job(job: dict[str, Any]) -> dict[str, Any]:
+    spec = job.get("specification") or {}
+    if "managed_vasp" not in spec:
+        return job
+    return {**job, **_public_managed_job_status(job),
+            "specification": spec.get("requested_spec") or {}, "artifacts": []}
+
+
 @app.get("/api/sessions/{session_id}/remote-jobs")
 async def list_session_remote_jobs(
     session_id: str,
@@ -3374,6 +3433,7 @@ async def list_session_remote_jobs(
 ) -> JSONResponse:
     """Return durable remote-job snapshots owned by one user/session."""
     store = _remote_job_store_for_owner(user_id)
+    jobs = store.list_jobs(owner_id=user_id, session_id=session_id)
     active_run = _run_registry.active_for(user_id, session_id)
     latest_run = _run_registry.latest_for(user_id, session_id)
     notifications = [
@@ -3389,9 +3449,7 @@ async def list_session_remote_jobs(
     return JSONResponse(
         {
             "session_id": session_id,
-            "jobs": store.list_jobs(
-                owner_id=user_id, session_id=session_id
-            ),
+            "jobs": [_public_remote_job(job) for job in jobs],
             "groups": store.list_job_groups(owner_id=user_id, session_id=session_id),
             "active_run": active_run.summary() if active_run else None,
             "activity_revision": hashlib.sha256(activity_revision.encode()).hexdigest()
@@ -3417,8 +3475,12 @@ async def list_session_remote_job_events(
         if notification["job_id"] == job_id
         and notification["owner_id"] == user_id and notification["session_id"] == session_id
     ]
+    if "managed_vasp" in (job.get("specification") or {}):
+        notifications = [{**item, **_public_managed_job_status(item)} for item in notifications]
     return JSONResponse({
-        "job": job, "events": store.list_events(job_id, after=after), "notifications": notifications,
+        "job": _public_remote_job(job),
+        "events": store.list_events(job_id, after=after),
+        "notifications": notifications,
     })
 
 
@@ -3446,7 +3508,7 @@ async def pause_session_remote_job(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except CapabilityError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return JSONResponse(paused)
+    return JSONResponse(_public_remote_job(paused))
 
 
 @app.post("/api/sessions/{session_id}/remote-jobs/{job_id}/terminate")
@@ -3464,7 +3526,7 @@ async def terminate_session_remote_job(
         terminated = await asyncio.to_thread(_remote_job_service_for_owner(user_id).terminate_job, job_id)
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return JSONResponse(terminated)
+    return JSONResponse(_public_remote_job(terminated))
 
 
 @app.post("/api/sessions/{session_id}/remote-jobs/{job_id}/refresh")
@@ -3479,7 +3541,7 @@ async def refresh_session_remote_job(
         refreshed = await asyncio.to_thread(_remote_job_service_for_owner(user_id).reconcile_job, job_id)
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return JSONResponse(refreshed)
+    return JSONResponse(_public_remote_job(refreshed))
 
 
 @app.get("/api/admin/sessions")
@@ -4711,6 +4773,13 @@ async def cancel_session_execution(
         if owners:
             user_id = owners.pop()
     cancellation_root = _cancellation_workspace_root(session_id, user_id)
+    if user_id and _remote_job_session_exists(user_id, session_id):
+        from matcreator.aidb.relaxation import cancel_pending_choice
+
+        choice = await asyncio.to_thread(cancel_pending_choice, _get_workdir_for_session(session_id, user_id), user_id, session_id)
+        if choice and choice.get("step_id"):
+            await asyncio.to_thread(AgentGraphLogger(session_id).log_node_complete, choice["step_id"],
+                                    "cancelled", summary=f"Cancelled by user ({reason})")
     await asyncio.to_thread(
         request_cancellation, session_id, reason, workspace_root=cancellation_root,
     )
@@ -4779,6 +4848,14 @@ async def cancel_individual_step(
     The graph node for that step is updated immediately so the frontend reflects
     the cancellation before the executor polls.
     """
+    if user_id and _remote_job_session_exists(user_id, session_id):
+        from matcreator.aidb.relaxation import cancel_pending_choice
+
+        choice = await asyncio.to_thread(cancel_pending_choice, _get_workdir_for_session(session_id, user_id),
+                                         user_id, session_id, step_number=step_number)
+        if choice and choice.get("step_id"):
+            await asyncio.to_thread(AgentGraphLogger(session_id).log_node_complete, choice["step_id"],
+                                    "cancelled", summary=f"Cancelled by user ({reason})")
     await asyncio.to_thread(
         request_step_cancellation,
         session_id,
@@ -5789,6 +5866,20 @@ async def get_backend_status(user_id: str = Query(default="")) -> JSONResponse:
 # XRD workbench: same execution service for browser and agent tools.
 from web.xrd_api import router as xrd_router
 app.include_router(xrd_router)
+
+from web.aidb_api import create_aidb_router
+
+def _aidb_managed_completion(*, user_id: str, session_id: str, job_id: str):
+    from matcreator.aidb.managed_vasp import get_managed_vasp_completion
+
+    return get_managed_vasp_completion(
+        user_id=user_id, session_id=session_id, job_id=job_id, store=_remote_job_store_for_owner(user_id),
+    )
+
+
+app.include_router(create_aidb_router(
+    _remote_job_session_exists, _get_workdir_for_session, get_completion=_aidb_managed_completion,
+))
 
 # Serve built frontend in production
 _dist = Path(__file__).parent / "vite-frontend" / "dist"
