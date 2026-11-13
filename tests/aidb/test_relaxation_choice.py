@@ -106,7 +106,8 @@ def matching_record(inputs):
     ("Use prepared VASP inputs.", ["stdout.log"], "stdout.log"),
     ("Give me the calculation log.", None, "log"),
     ("请给我原始 CONTCAR。", None, "CONTCAR"),
-    ("Give me the original POSCAR.", ["POSCAR"], "POSCAR"),
+    ("Use prepared VASP inputs.", ["POSCAR"], "POSCAR"),
+    ("Give me the original POSCAR.", None, "POSCAR"),
 ])
 def test_reuse_requires_the_requested_original_artifacts(relaxation, message, out_files, required_file):
     _, inputs, context, operations, records, _ = relaxation

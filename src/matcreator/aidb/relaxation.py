@@ -27,6 +27,10 @@ _OUTPUT_NAMES = re.compile(
     r"(?<![A-Za-z0-9_.])(?:vasprun\.xml|OUTCAR|OSZICAR|CONTCAR|CHGCAR|WAVECAR|DOSCAR|"
     r"EIGENVAL|PROCAR|XDATCAR|stdout\.log|stderr\.log)(?![A-Za-z0-9_.])", re.IGNORECASE,
 )
+_ORIGINAL_POSCAR_REQUEST = re.compile(
+    r"(?:original|input)\s+POSCAR|POSCAR\s+(?:input|original)|(?:原始|输入)(?:的)?\s*POSCAR|POSCAR\s*(?:原件|输入文件)",
+    re.IGNORECASE,
+)
 _LOG_REQUEST = re.compile(r"计算日志|运行日志|标准输出|标准错误|(?:calculation|run|vasp) logs?|stdout|stderr",
                           re.IGNORECASE)
 _CHOICE_MESSAGE = "有可直接复用的 VASP 结果。请按本轮序号选用、查看详情、继续计算、修改条件或取消。"
@@ -298,6 +302,8 @@ def guard_relaxation_submission(context, spec, submit):
     request_text = context.state.get("_vasp_requested_output_text") or current_message(context)
     canonical_names = {"VASPRUN.XML": "vasprun.xml", "STDOUT.LOG": "stdout.log", "STDERR.LOG": "stderr.log"}
     requested_outputs = {canonical_names.get(name.upper(), name.upper()) for name in _OUTPUT_NAMES.findall(request_text)}
+    if _ORIGINAL_POSCAR_REQUEST.search(request_text):
+        requested_outputs.add("POSCAR")
     if inputs.calculation_type == "nscf":
         # The SCF step supplies these files. Explicit NSCF out_files still need delivery.
         requested_outputs.difference_update(revision["upstream_scf"]["sha256"])
