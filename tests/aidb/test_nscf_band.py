@@ -243,7 +243,7 @@ def test_band_chain_submits_and_reuses_each_stage_independently(tmp_path, monkey
     assert reused_scf["delivery"]["artifact_paths"]["CHGCAR"]
     shutil.copyfile(workspace / reused_scf["delivery"]["artifact_paths"]["CHGCAR"], band_input / "CHGCAR")
 
-    turn(5)
+    turn(5, "用 SCF 的 CHGCAR 计算能带，给我数据和图。")
     choice = submit("band", upstream_record_id=scf_id)
     assert choice["status"] == "waiting_choice", choice
     turn(6, "选用第一条。")

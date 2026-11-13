@@ -22,7 +22,7 @@ from matcreator.workspace import get_session_workdir
 logger = logging.getLogger(__name__)
 PASSIVE_QUERY_SECONDS = 8
 FORMATS = ("extxyz", "poscar")
-_INTERNAL_SPEC_FIELDS = {"required_artifacts", "temperature_requested", "requested_outputs"}
+INTERNAL_SPEC_FIELDS = {"required_artifacts", "temperature_requested", "requested_outputs"}
 _OUTPUT_NAMES = re.compile(
     r"(?<![A-Za-z0-9_.])(?:vasprun\.xml|OUTCAR|OSZICAR|CONTCAR|CHGCAR|WAVECAR|DOSCAR|"
     r"EIGENVAL|PROCAR|XDATCAR|stdout\.log|stderr\.log)(?![A-Za-z0-9_.])", re.IGNORECASE,
@@ -205,8 +205,9 @@ def _record_artifacts(inputs, revision, record, required, owner):
 
 def _verify_requested_outputs(spec, artifacts):
     # out_files names are case-sensitive. Natural-language mentions are not.
-    missing = set(spec.get("out_files") or ()) - (artifacts.keys() | {"POSCAR"})
-    missing |= set(spec.get("requested_outputs", ())) - ({name.upper() for name in artifacts} | {"POSCAR"})
+    missing = set(spec.get("out_files") or ()) - artifacts.keys()
+    available = {name.upper() for name in artifacts}
+    missing.update(name for name in spec.get("requested_outputs", ()) if name.upper() not in available)
     if missing:
         raise AIDBError("记录不能交付本次需要的 VASP 产物：" + "、".join(sorted(missing)), "not_ready")
 
@@ -249,7 +250,7 @@ def guard_relaxation_submission(context, spec, submit):
                     inputs = read_spec_inputs(spec)
                 except (AIDBError, OSError, ValueError, TypeError):
                     inputs = None
-                spec.update({key: choice["spec"][key] for key in _INTERNAL_SPEC_FIELDS if key in choice["spec"]})
+                spec.update({key: choice["spec"][key] for key in INTERNAL_SPEC_FIELDS if key in choice["spec"]})
                 try:
                     return _continue_result(context, connection, choice, spec, submit, inputs)
                 except (AIDBError, OSError, ValueError) as exc:
@@ -258,7 +259,7 @@ def guard_relaxation_submission(context, spec, submit):
                 if choice.get("decision_turn") == turn_id(context):
                     return choice["submission"]
                 prior = choice["spec"]
-                if {key: value for key, value in prior.items() if key not in _INTERNAL_SPEC_FIELDS} == spec:
+                if {key: value for key, value in prior.items() if key not in INTERNAL_SPEC_FIELDS} == spec:
                     try:
                         inputs = read_spec_inputs(spec)
                         revision = _prepared_revision(context, spec, inputs) if inputs else None
@@ -295,9 +296,15 @@ def guard_relaxation_submission(context, spec, submit):
     if required:
         spec["required_artifacts"] = required
     request_text = context.state.get("_vasp_requested_output_text") or current_message(context)
-    requested_outputs = {name.upper() for name in _OUTPUT_NAMES.findall(request_text)}
-    if _LOG_REQUEST.search(request_text) and not requested_outputs & {"STDOUT.LOG", "STDERR.LOG"}:
-        requested_outputs.add("LOG")
+    canonical_names = {"VASPRUN.XML": "vasprun.xml", "STDOUT.LOG": "stdout.log", "STDERR.LOG": "stderr.log"}
+    requested_outputs = {canonical_names.get(name.upper(), name.upper()) for name in _OUTPUT_NAMES.findall(request_text)}
+    if inputs.calculation_type == "nscf":
+        # The SCF step supplies these files. Explicit NSCF out_files still need delivery.
+        requested_outputs.difference_update(revision["upstream_scf"]["sha256"])
+    if _LOG_REQUEST.search(request_text) and not requested_outputs & {"stdout.log", "stderr.log"}:
+        explicit_logs = set(spec.get("out_files") or ()) & {"log", "err", "stdout.log", "stderr.log"}
+        if not explicit_logs:
+            requested_outputs.add("log")
     if requested_outputs:
         spec["requested_outputs"] = sorted(requested_outputs)
     if inputs.calculation_type == MD_TYPE:

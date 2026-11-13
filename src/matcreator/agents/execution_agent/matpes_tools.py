@@ -382,6 +382,15 @@ def resolve_matpes_frame(
         return {"status": getattr(exc, "status", "error"), "message": str(exc)}
 
 
+def _computed_member_atoms(context, member, store):
+    frame, _, _ = read_verified_managed_frame(
+        store, jobs._owner_id(context), context.state["session_id"], member["job_id"], calculation_type="matpes",
+    )
+    if frame["source_id"] != member["source_id"]:
+        raise ValueError("已核实计算帧的来源已改变")
+    return verified_vasp_training_atoms(frame)
+
+
 def _dataset(context, batch, store):
     from io import StringIO
     from ase.io import read, write
@@ -404,23 +413,24 @@ def _dataset(context, batch, store):
             continue
         try:
             if member["status"] == "computed_archive_failed":
-                frame, _, _ = read_verified_managed_frame(
-                    store, jobs._owner_id(context), context.state["session_id"], member["job_id"],
-                    calculation_type="matpes",
-                )
-                if frame["source_id"] != member["source_id"]:
-                    raise ValueError("已核实计算帧的来源已改变")
-                atoms = verified_vasp_training_atoms(frame)
+                atoms = _computed_member_atoms(context, member, store)
             else:
-                if service is None:
-                    service = session_service(context)
-                record = service.detail(member["record_id"], binding_id=batch["binding_id"])["record"]
-                if record["source_id"] != member["source_id"]:
-                    raise ValueError("读回记录的来源已改变")
-                files, issues = export_record(record, ("extxyz",))
-                if issues:
-                    raise ValueError(issues["extxyz"])
-                atoms = read(StringIO(files["extxyz"]["content"]), format="extxyz")
+                try:
+                    if service is None:
+                        service = session_service(context)
+                    record = service.detail(member["record_id"], binding_id=batch["binding_id"])["record"]
+                except (AIDBError, OSError, sqlite3.Error) as exc:
+                    if member["status"] != "archived":
+                        raise
+                    atoms = _computed_member_atoms(context, member, store)
+                    member.update(status="computed_archive_unavailable", readback_issue=str(exc))
+                else:
+                    if record["source_id"] != member["source_id"]:
+                        raise ValueError("读回记录的来源已改变")
+                    files, issues = export_record(record, ("extxyz",))
+                    if issues:
+                        raise ValueError(issues["extxyz"])
+                    atoms = read(StringIO(files["extxyz"]["content"]), format="extxyz")
             atoms.info.update(labeling_source_path=batch["source_path"], labeling_source_sha256=batch["source_sha256"],
                               labeling_source_frame_index=member["frame_index"])
             member["output_index"] = len(atoms_list)
@@ -428,8 +438,8 @@ def _dataset(context, batch, store):
         except _BATCH_ERRORS as exc:
             member.update(status="unavailable", reason=str(exc))
 
-    # Files are replaced only once fully written. Return the current snapshot's
-    # downloads and never advertise an older EXTXYZ after a failed readback.
+    # Replace the dataset only once fully written. Advertise only the labels
+    # verified for this snapshot.
     manifest = output / "members.json"
     dataset = output / "training.extxyz"
     artifacts = []

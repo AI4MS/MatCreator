@@ -17,7 +17,7 @@ from google.adk.tools.agent_tool import ForwardingArtifactService
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
-from ...aidb.relaxation import current_choice, choice_receipt, current_message, turn_id, user_id
+from ...aidb.relaxation import INTERNAL_SPEC_FIELDS, current_choice, choice_receipt, current_message, turn_id, user_id
 from ...llm_cards import LLMCard, select_executor_llm_card
 from ...workspace import get_session_workdir
 from .step_executor import (
@@ -763,7 +763,7 @@ async def run_step_executor(
             if vasp_choice["decision_turn"] != turn_id(tool_context):
                 return {"status": "needs_replanning", "message": "请用户明确继续本次弛豫。"}
             spec = {key: value for key, value in vasp_choice["spec"].items()
-                    if key not in {"input_root", "required_artifacts", "temperature_requested"}}
+                    if key not in INTERNAL_SPEC_FIELDS | {"input_root"}}
             tool_name = "submit_bohr_batchjob"
             if "sandbox_options" in spec:
                 tool_name = "start_managed_vasp_sandbox"

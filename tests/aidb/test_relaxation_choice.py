@@ -27,6 +27,7 @@ def relaxation(tmp_path, monkeypatch):
     SessionAIDB(workspace, "test-chat").bind(config)
     operations = []
     records = []
+    retained_outputs = []
 
     def installed_query(*args, **kwargs):
         def query(config, workdir, conditions):
@@ -40,6 +41,7 @@ def relaxation(tmp_path, monkeypatch):
 
         def create(self, spec):
             operations.append(("submit", spec["input_path"]))
+            retained_outputs[:] = spec["out_files"]
             return "isolated-job"
 
         def status(self, external_id):
@@ -51,7 +53,7 @@ def relaxation(tmp_path, monkeypatch):
     monkeypatch.setattr("matcreator.agents.execution_agent.recovery.ADK_DIR", tmp_path / "adk")
     context = SimpleNamespace(
         state={"session_id": "test-chat", "workdir": str(workspace), "workspace_dir": str(workspace),
-               "_graph_exec_node_id": "execution_1__node_relax", "step_number": 1},
+               "_test_retained_outputs": retained_outputs, "_graph_exec_node_id": "execution_1__node_relax", "step_number": 1},
         _invocation_context=SimpleNamespace(user_id="owner", invocation_id="turn-1"),
         user_content=SimpleNamespace(role="user", parts=[SimpleNamespace(text="Use prepared VASP inputs.")]),
     )
@@ -100,12 +102,13 @@ def matching_record(inputs):
     }
 
 
-@pytest.mark.parametrize(("message", "out_files"), [
-    ("Use prepared VASP inputs.", ["stdout.log"]),
-    ("Give me the calculation log.", None),
-    ("请给我原始 CONTCAR。", None),
+@pytest.mark.parametrize(("message", "out_files", "required_file"), [
+    ("Use prepared VASP inputs.", ["stdout.log"], "stdout.log"),
+    ("Give me the calculation log.", None, "log"),
+    ("请给我原始 CONTCAR。", None, "CONTCAR"),
+    ("Give me the original POSCAR.", ["POSCAR"], "POSCAR"),
 ])
-def test_reuse_requires_the_requested_original_artifacts(relaxation, message, out_files):
+def test_reuse_requires_the_requested_original_artifacts(relaxation, message, out_files, required_file):
     _, inputs, context, operations, records, _ = relaxation
     records.append(matching_record(inputs))
     context.user_content.parts[0].text = message
@@ -115,6 +118,7 @@ def test_reuse_requires_the_requested_original_artifacts(relaxation, message, ou
     )
     assert receipt["status"] == "queued", receipt
     assert operations[-1] == ("submit", "si")
+    assert required_file in context.state["_test_retained_outputs"]
 
 
 def test_complete_matches_pause_real_submit_and_publish_in_record_order(relaxation):

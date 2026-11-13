@@ -93,7 +93,7 @@ def test_historical_static_replay_labels_mixed_batch_and_reuses_each_job(tmp_pat
         submit_matpes_batch,
     )
     from matcreator.aidb import managed_vasp
-    from matcreator.aidb.service import SessionAIDB
+    from matcreator.aidb.service import AIDBError, SessionAIDB
 
     if not (Path.home() / ".matcreator/skills/ai-ready-db/scripts/aidb_ops.py").is_file():
         pytest.skip("Install ai-ready-db for isolated AIDB replay")
@@ -218,6 +218,24 @@ def test_historical_static_replay_labels_mixed_batch_and_reuses_each_job(tmp_pat
     assert downloads == ["1", "3"]
     with connect(database) as db:
         assert db.count() == 2
+
+    def unavailable(*args, **kwargs):
+        raise AIDBError("injected later readback outage")
+
+    with monkeypatch.context() as readback_outage:
+        readback_outage.setattr(SessionAIDB, "detail", unavailable)
+        degraded = collect_matpes_batch(context, batch_id)
+    reused, _, computed = degraded["members"]
+    assert reused["status"] == "unavailable" and "output_index" not in reused
+    assert (computed["status"], computed["archive_status"], computed["output_index"]) == (
+        "computed_archive_unavailable", "verified", 0,
+    )
+    assert "later readback outage" in computed["readback_issue"]
+    frame = read(degraded["artifact_paths"][1])
+    assert frame.info["source_id"] == computed["source_id"]
+    assert "record_id" not in frame.info
+    assert frame.get_potential_energy() == parsed.final_energy
+    assert collect_matpes_batch(context, batch_id)["members"] == completed["members"]
 
     outage = prepare("outage", [original, original], ["unarchived", "corrupt"])
     submitted = submit_matpes_batch(context, manifest_path=outage, name="outage", **settings)

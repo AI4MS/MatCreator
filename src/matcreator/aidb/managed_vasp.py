@@ -127,7 +127,7 @@ def staged_relaxation(spec, revision, token, private_root, workspace):
             "potentials": inputs.potentials,
             "lexch": inputs.lexch,
         }, strict=True)
-        requested = [name for name in spec["out_files"] or []
+        requested = [name for name in (*(spec["out_files"] or ()), *spec.get("requested_outputs", ()))
                      if inputs.calculation_type != "nscf" or name not in BAND_FILES]
         outputs = list(dict.fromkeys([*requested, *OUTPUTS, *required, RECEIPT]))
         if any(Path(name).name.startswith("POTCAR") or Path(name).name == LAUNCHER for name in outputs):
