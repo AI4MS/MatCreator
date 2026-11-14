@@ -1,0 +1,23 @@
+/* Record presentation from the verified AIDB prototype, scoped to chat results. */
+.aidb-result { --bg:var(--surface-secondary,#151b25); --muted:var(--text-secondary,#94a3b8); --line:var(--border-color,#334155); overflow-wrap:anywhere; }
+.aidb-result .scroll { overflow:auto; }
+.aidb-result table { width:100%; border-collapse:collapse; }
+.aidb-result th,.aidb-result td { padding:10px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top; }
+.aidb-result .fields { display:grid; grid-template-columns:minmax(95px,125px) minmax(0,1fr); gap:5px 12px; }
+.aidb-result .fields dt { color:var(--muted); }
+.aidb-result .fields dd { margin:0; overflow-wrap:anywhere; }
+.aidb-result details { margin:8px 0; }
+.aidb-result summary { cursor:pointer; }
+.aidb-result .chip { margin:4px 8px 4px 0; display:inline-block; }
+.aidb-result .record-actions button { white-space:nowrap; margin:3px; }
+.aidb-result .record-exports a { display:block; margin:4px 0; }
+.aidb-result .record-inline td { background:var(--bg); padding:12px; }
+.aidb-result .json-tree { margin:0; padding-left:18px; list-style:none; }
+.aidb-result .json-tree details { margin:2px 0; }
+.aidb-result .spacegroup-value { white-space:nowrap; }
+.aidb-result .spacegroup-role,.aidb-result .sample-source { display:block; }
+.aidb-result .sample-source { margin-top:4px; }
+.aidb-result .json-structure iframe { display:block; width:100%; height:290px; border:1px solid var(--line); border-radius:6px; }
+.aidb-result .muted { color:var(--muted); }
+.aidb-result .small { font-size:0.86em; }
+.aidb-result [role=alert] { color:var(--error-color,#fb7185); }

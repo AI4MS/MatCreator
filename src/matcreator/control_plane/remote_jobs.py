@@ -346,6 +346,12 @@ class RemoteJobStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def find_job_by_idempotency_key(self, idempotency_key: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            return self._decode(connection.execute(
+                "SELECT * FROM remote_jobs WHERE idempotency_key = ?", (idempotency_key,)
+            ).fetchone())
+
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM remote_jobs WHERE job_id = ?", (job_id,)).fetchone()
@@ -394,6 +400,7 @@ class RemoteJobStore:
         external_id: str | None | object = _UNSET,
         snapshot: dict[str, Any] | object = _UNSET,
         artifacts: list[dict[str, Any]] | object = _UNSET,
+        output_dir: str | object = _UNSET,
         error: str | None | object = _UNSET,
         expected_revision: int | None = None,
     ) -> dict[str, Any]:
@@ -412,7 +419,7 @@ class RemoteJobStore:
             updated = connection.execute(
                 """
                 UPDATE remote_jobs
-                SET status = ?, external_id = ?, snapshot = ?, artifacts = ?, error = ?,
+                SET status = ?, external_id = ?, snapshot = ?, artifacts = ?, output_dir = ?, error = ?,
                     state_revision = state_revision + 1, updated_at = ?
                 WHERE job_id = ? AND state_revision = ?
                 """,
@@ -421,6 +428,7 @@ class RemoteJobStore:
                     resulting_external_id,
                     json.dumps(merged_snapshot, sort_keys=True),
                     json.dumps(current["artifacts"] if artifacts is _UNSET else artifacts, sort_keys=True),
+                    current["output_dir"] if output_dir is _UNSET else output_dir,
                     current["error"] if error is _UNSET else error,
                     now,
                     job_id,
@@ -837,7 +845,7 @@ class RemoteJobStore:
             return result.rowcount == 1
 
     def record_command_completion(
-        self, job_id: str, *, handle: dict[str, Any], result: dict[str, Any],
+        self, job_id: str, *, handle: dict[str, Any], result: dict[str, Any], launch_rejected: bool = False,
     ) -> dict[str, Any]:
         """Atomically clear this command's handle, record its outcome, and enqueue a wakeup."""
         now = time.time()
@@ -852,6 +860,8 @@ class RemoteJobStore:
             revision = current["state_revision"] + 1
             snapshot = {**current["snapshot"], "background_command": None, "provider_status": "reachable",
                         "last_command_exit_code": result.get("exit_code"), "last_command_result": result}
+            if launch_rejected:
+                snapshot["managed_vasp_command"] = False
             connection.execute(
                 "UPDATE remote_jobs SET snapshot = ?, error = NULL, state_revision = ?, updated_at = ? WHERE job_id = ?",
                 (json.dumps(snapshot, sort_keys=True), revision, now, job_id),

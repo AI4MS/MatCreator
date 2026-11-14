@@ -15,6 +15,7 @@ import json
 import time
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from .providers import (
     CapabilityError,
@@ -118,6 +119,8 @@ class RemoteJobService:
             output_dir=output_dir,
             group_id=group_id,
         )
+        if (persisted_specification or {}).get("managed_vasp") and job["specification"] != persisted_specification:
+            raise ValueError("Tracked VASP submission evidence differs from the original attempt")
         if job["status"] == "failed" and not job["external_id"]:
             # The previous attempt died before the provider handed back an
             # external ID, so nothing external exists to duplicate — retry
@@ -127,7 +130,7 @@ class RemoteJobService:
             return job
 
         adapter = self._adapter(provider)
-        submitting = self.store.transition_job(job["job_id"], "submitting")
+        submitting = self.store.transition_job(job["job_id"], "submitting", expected_revision=job["state_revision"])
         try:
             external_id = adapter.create(spec)
         except RemoteJobSubmissionUncertainError as exc:
@@ -420,7 +423,9 @@ class RemoteJobService:
         )
         return result
 
-    def start_job_command(self, job_id: str, command: str, *, user: str = "root") -> dict[str, Any]:
+    def start_job_command(
+        self, job_id: str, command: str, *, user: str = "root", persist_before_launch: bool = False,
+    ) -> dict[str, Any]:
         """Launch one command in the background inside a tracked interactive job.
 
         Built entirely on the existing ``run_command`` capability — no new
@@ -450,6 +455,9 @@ class RemoteJobService:
             raise CapabilityError(job["provider"], RemoteJobCapability.INTERACTIVE_EXEC)
 
         marker = f"/tmp/matcreator-cmd-{job_id}"
+        if persist_before_launch:
+            # A lost launch response must not let polling read an older command's exit marker.
+            marker += f"-{uuid4().hex}"
         log_path = f"{marker}.log"
         exit_path = f"{marker}.exit"
         payload = base64.b64encode(command.encode("utf-8")).decode("ascii")
@@ -458,14 +466,32 @@ class RemoteJobService:
             f"nohup sh -c 'echo {payload} | base64 -d | sh; echo $? > {exit_path}' "
             f"> {log_path} 2>&1 < /dev/null & echo LAUNCHED"
         )
-        launch_result = adapter.run_command(job["external_id"], launch, user=user)
         handle = {"log_path": log_path, "exit_path": exit_path, "started_at": time.time()}
-        self.store.merge_observation(
-            job_id,
-            snapshot={"provider_status": "reachable", "background_command": handle},
-            error=None,
-        )
-        return {"job_id": job_id, "launch": launch_result, "handle": handle}
+        observation = {"provider_status": "reachable", "background_command": handle}
+        if persist_before_launch:
+            # Recover this exact marker if the provider accepts the command but
+            # the launch response is lost. The caller holds the managed run lock.
+            self.store.merge_observation(job_id, snapshot={
+                **observation, "last_command_result": None, "managed_vasp_command": True,
+            })
+        try:
+            launch_result = adapter.run_command(job["external_id"], launch, user=user)
+        except Exception:
+            if not persist_before_launch:
+                raise
+            return {"job_id": job_id, "launch_status": "uncertain", "handle": handle}
+        if not persist_before_launch:
+            self.store.merge_observation(job_id, snapshot=observation, error=None)
+            return {"job_id": job_id, "launch": launch_result, "handle": handle}
+
+        acknowledged = "LAUNCHED" in str(launch_result.get("stdout", "")).splitlines()
+        exit_code = launch_result.get("exit_code")
+        if exit_code not in {0, None} and not acknowledged:
+            result = {"running": False, "exit_code": exit_code, "output_tail": "", "log_path": log_path}
+            self.store.record_command_completion(job_id, handle=handle, result=result, launch_rejected=True)
+            return {"job_id": job_id, "launch_status": "rejected", "handle": handle}
+        status = "accepted" if exit_code == 0 and acknowledged else "uncertain"
+        return {"job_id": job_id, "launch_status": status, "launch": launch_result, "handle": handle}
 
     def poll_job_command(self, job_id: str, *, tail_bytes: int = 8000) -> dict[str, Any]:
         """Check on the job's most recently started background command.
@@ -556,7 +582,10 @@ class RemoteJobService:
         )
         return {"source": source, "destination": str(dest_path)}
 
-    def collect_job_outputs(self, job_id: str, destination_dir: str | Path) -> dict[str, Any]:
+    def collect_job_outputs(
+        self, job_id: str, destination_dir: str | Path, *, output_dir: str | None = None,
+        validate_artifacts=None, repair_collected: bool = False,
+    ) -> dict[str, Any]:
         """Pull a finished batch job's output files into ``destination_dir``.
 
         Only valid once the job has reached ``succeeded``; transitions the
@@ -564,33 +593,42 @@ class RemoteJobService:
         request is a durable no-op rather than a duplicate download.
         """
         job = self._get_job(job_id)
-        if job["status"] == "collected":
+        repairing = job["status"] == "collected" and repair_collected and validate_artifacts is not None
+        if job["status"] == "collected" and not repairing:
             return job
-        if job["status"] != "succeeded":
+        if job["status"] != "succeeded" and not repairing:
             raise ValueError(f"Job '{job_id}' cannot collect outputs while {job['status']}")
         adapter = self._adapter(job["provider"])
         if RemoteJobCapability.BATCH_COLLECT not in adapter.capabilities:
             raise CapabilityError(job["provider"], RemoteJobCapability.BATCH_COLLECT)
-        collecting = self.store.transition_job(job_id, "collecting")
+        collecting = job if repairing else self.store.transition_job(
+            job_id, "collecting", expected_revision=job["state_revision"],
+        )
         dest_path = Path(destination_dir).expanduser().absolute()
         try:
             artifacts = adapter.collect_outputs(job["external_id"], dest_path)
+            if validate_artifacts is not None:
+                validate_artifacts(artifacts)
         except Exception as exc:
             # A failed collection (occupied destination, transient download
             # error, ...) is a local file-management problem. The provider-side
             # computation is still succeeded, so return there — keeping the
             # outputs collectable with a new destination — rather than durably
             # marking a successful job as failed.
+            error = f"{job['provider']} output collection failed: {exc}"
+            if repairing:
+                return {**job, "error": error}
             return self.store.transition_job(
                 job_id,
                 "succeeded",
-                error=f"{job['provider']} output collection failed: {exc}",
+                error=error,
                 expected_revision=collecting["state_revision"],
             )
         return self.store.transition_job(
             job_id,
             "collected",
             artifacts=artifacts,
+            **({"output_dir": output_dir} if output_dir is not None else {}),
             error=None,
             expected_revision=collecting["state_revision"],
         )

@@ -281,6 +281,11 @@ def validate_graph(graph: dict, tool_context: ToolContext) -> dict:
             "message": "Execution is already approved; hand control back to the orchestrator.",
         }
 
+    from ...aidb.relaxation import current_choice, current_message
+
+    choice = current_choice(tool_context)
+    if choice and choice["status"] in {"waiting", "continue"}:
+        return {"status": "error", "message": "请先处理本轮 VASP 候选，再替换执行计划。"}
     try:
         validated = ExecutionGraph(**graph)
         committed_graph = validated.model_dump()
@@ -288,6 +293,7 @@ def validate_graph(graph: dict, tool_context: ToolContext) -> dict:
         # graph may legitimately reuse a node ID from an earlier failed plan,
         # so give every committed graph its own recovery namespace identity.
         committed_graph["graph_id"] = uuid.uuid4().hex
+        committed_graph["user_request"] = current_message(tool_context)
         set_execution_graph(tool_context.state, committed_graph)
         tool_context.state["plan_exec_id"] = None  # force new execution namespace
         return {

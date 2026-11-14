@@ -104,6 +104,12 @@ class BohrBatchJobAdapter(RemoteJobAdapter):
         # The CLI owns Go-duration parsing and local-tree safety validation.
         # Preflight even without input so invalid durations never create a job.
         run_bohr_json([*args, "--dry-run"], cwd=input_root)
+        if expected := spec.get("_expected_vasp_inputs"):
+            from ...aidb.relaxation_inputs import RelaxationInputs
+
+            inputs = RelaxationInputs.from_batch_spec(spec)
+            if inputs is None or inputs.revision != expected:
+                raise ValueError("VASP inputs changed during Batch Job preflight; prepare and check them again")
         try:
             data = run_bohr_json(args, cwd=input_root)
             job_id = data.get("jobId") if isinstance(data, dict) else None

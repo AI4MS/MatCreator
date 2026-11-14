@@ -5,6 +5,9 @@ metadata:
   tools:
     - run_bash
     - run_python
+    - submit_eos
+    - collect_eos
+    - resolve_eos_member
   dependent_skills:
     - ase
     - deepmd
@@ -34,7 +37,30 @@ finetuned model E(V) curves.
 
 ---
 
-## Workflow
+## Tracked VASP EOS
+
+When the user requests VASP, prepare the initial cell relaxation with
+`MPRelaxSet` and a static template with `MPStaticSet` using the same composition
+and site order. Use the desired shared SCF settings for every volume. Prepare
+both for a fresh start without restart inputs. The static template POSCAR only
+checks site order. The execution tool derives each point's POSCAR by isotropically
+scaling the lattice of the verified relaxation and retaining fractional positions.
+
+Use the image, machine and job submission authorization in the
+`vasp-pymatgen` Batch Job reference. State the maximum job count (one
+relaxation plus the requested static points), machine and estimated core-hours.
+Call `submit_eos` with both prepared directories and remember its EOS ID. Use
+`collect_eos` on status updates and user follow-ups. On a human turn after
+authorization, pass `advance=true` to submit unmatched volume points once the
+relaxation has been verified. A status notification only collects existing jobs.
+
+Report the relaxation or point ID for every exact match. On an explicit later
+choice, use `resolve_eos_member` for that member. When all available results
+have been collected, deliver the CSV, curve and member manifest. Report
+missing points and any archive failure. Fit Birch–Murnaghan only if the
+sampling is complete and the fit can be verified.
+
+## Workflow for model benchmarking
 
 1. **Relaxation** — relax the unit cell to find the ground-state structure.
 
@@ -73,4 +99,4 @@ diagonal parity plots:
 
 - DFT relaxation and single-point calculations can run **in parallel** with the
   main DPA4 dataset DFT labeling to save time.
-- Submit DFT jobs via the `bohrium` skill for the EOS deformed structures.
+- Use the tracked VASP EOS route when the DFT reference uses VASP.

@@ -267,7 +267,8 @@ def test_submit_bohr_batchjob_exposes_the_expected_adk_schema() -> None:
     assert set(parameters["required"]) == {"name", "image", "command"}
     assert set(parameters["properties"]) == {
         "name", "image", "command", "project_id", "machine_type", "sku_id",
-        "input_path", "out_files", "max_run_time", "max_wait_time", "group_id",
+        "input_path", "out_files", "max_run_time", "max_wait_time", "group_id", "upstream_record_id",
+        "upstream_job_id",
     }
 
 

@@ -129,6 +129,7 @@ def start_node_attempt(
     suggested_skills: list[str],
     prior_context: Optional[str],
     graph_id: Optional[str] = None,
+    owner_id: Optional[str] = None,
     recovery_base_dir: Optional[str | Path] = None,
 ) -> dict[str, Any]:
     """Persist a durable running-attempt record for one graph node."""
@@ -140,6 +141,7 @@ def start_node_attempt(
     attempt = {
         "session_id": session_id,
         "graph_id": graph_id,
+        "owner_id": owner_id,
         "node_id": node_id,
         "step_id": step_id,
         "step_number": step_number,
@@ -262,11 +264,7 @@ def _refresh_remote_job_reference(attempt: dict[str, Any]) -> None:
         attempt["remote_job"] = persisted["remote_job"]
 
 
-def _active_remote_job(
-    attempt: dict[str, Any],
-    *,
-    statuses: frozenset[str] = ACTIVE_REMOTE_JOB_STATUSES,
-) -> dict[str, Any] | None:
+def _tracked_remote_job(attempt: dict[str, Any]) -> dict[str, Any] | None:
     reference = attempt.get("remote_job")
     if not isinstance(reference, dict) or not reference.get("job_id"):
         return None
@@ -278,10 +276,24 @@ def _active_remote_job(
         job
         and job.get("session_id") == attempt.get("session_id")
         and job.get("node_id") == attempt.get("node_id")
-        and job.get("status") in statuses
+        and (attempt.get("owner_id") is None or job.get("owner_id") == attempt["owner_id"])
     ):
         return job
     return None
+
+
+def _in_progress(job):
+    snapshot = job["snapshot"]
+    command = snapshot.get("last_command_result") or {}
+    if snapshot.get("managed_vasp_command") and command.get("running") is False:
+        return False
+    return job["status"] in _REMOTE_JOB_IN_PROGRESS_STATUSES
+
+
+def _reattach(node, job, attempt):
+    node.update(status="pending", remote_job=remote_job_reference(job),
+                result="Recovered the tracked remote job; checking its original outputs.")
+    node["recovery"] = {"attempt": attempt.get("attempt"), "status": "remote_job_settled", "recovered_at": _now()}
 
 
 def remote_job_reference(job: dict[str, Any]) -> dict[str, Any]:
@@ -308,7 +320,8 @@ def active_remote_job_for_attempt(attempt: dict[str, Any]) -> dict[str, Any] | N
     if not attempt:
         return None
     _refresh_remote_job_reference(attempt)
-    return _active_remote_job(attempt)
+    job = _tracked_remote_job(attempt)
+    return job if job and job["status"] in ACTIVE_REMOTE_JOB_STATUSES else None
 
 
 def reconcile_recovery_state(
@@ -353,11 +366,37 @@ def reconcile_recovery_state(
         node_status = node.get("status")
         attempt_status = attempt.get("status")
 
+        if attempt_status == "waiting_choice" and node_status in {"pending", "running", "waiting"}:
+            from ...aidb.relaxation import current_choice
+            from types import SimpleNamespace
+
+            choice = current_choice(SimpleNamespace(state={
+                "session_id": session_id, "workdir": str(workspace_dir),
+                "user_id": attempt.get("owner_id") or state.get("user_id"),
+            }))
+            if choice and choice["id"] == (attempt.get("result") or {}).get("choice_id"):
+                if choice["status"] == "waiting":
+                    node.update(status="waiting", result=_attempt_summary(attempt), aidb_choice_id=choice["id"])
+                elif choice["status"] == "reused":
+                    node.update(status="success", result="已交付复用的弛豫末帧和微调数据。",
+                                aidb_delivery=choice["delivery"])
+                elif choice["status"] in {"cancel", "revise"}:
+                    node.update(status="cancelled", result="本次 VASP 候选已失效。")
+                else:
+                    continue
+                actions.append({"node_id": node_id, "action": "recover_vasp_choice", "status": node["status"]})
+            continue
+
         if node_status in ("pending", "running") and attempt_status == "running" and _is_stale_running_attempt(
             attempt,
             stale_after_seconds=stale_after_seconds,
         ):
-            remote_job = _active_remote_job(attempt)
+            remote_job = _tracked_remote_job(attempt)
+            if remote_job is not None and not _in_progress(remote_job):
+                _mark_attempt_stale(latest_path, attempt)
+                _reattach(node, remote_job, attempt)
+                actions.append({"node_id": node_id, "action": "resume_after_remote_job", "status": "pending"})
+                continue
             if remote_job is not None:
                 node["status"] = "waiting"
                 node["result"] = "Recovered active remote job; waiting for provider completion."
@@ -395,10 +434,8 @@ def reconcile_recovery_state(
             and node_status in ("pending", "running", "waiting")
             and not resumed_by_planner
         ):
-            remote_job = _active_remote_job(
-                attempt, statuses=_REMOTE_JOB_IN_PROGRESS_STATUSES
-            )
-            if remote_job is not None:
+            remote_job = _tracked_remote_job(attempt)
+            if remote_job is not None and _in_progress(remote_job):
                 node["status"] = "waiting"
                 node["result"] = _attempt_summary(attempt)
                 node["remote_job"] = remote_job_reference(remote_job)
@@ -408,6 +445,9 @@ def reconcile_recovery_state(
                     "recovered_at": _now(),
                 }
                 actions.append({"node_id": node_id, "action": "wait_for_remote_job", "status": "waiting"})
+            elif remote_job is not None:
+                _reattach(node, remote_job, attempt)
+                actions.append({"node_id": node_id, "action": "resume_after_remote_job", "status": "pending"})
             else:
                 node["status"] = "pending"
                 node["result"] = "Remote job is no longer in progress; re-running node to collect its results."

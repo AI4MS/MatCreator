@@ -1,3 +1,4 @@
+import { aidbResults, createAIDBResult } from "../aidb/records.js";
 import { getPlotPaths, getStructurePaths } from "./timelinePresentation.js";
 import { createPayloadBlock } from "./payloadViews.js";
 
@@ -111,6 +112,7 @@ export function createStepFeedRenderer({
     if (createTimelineImage) {
       getPlotPaths(toolCall.output).forEach((path) => details?.appendChild(createTimelineImage(path)));
     }
+    for (const reference of aidbResults(toolCall.output)) details?.appendChild(createAIDBResult(reference));
     return details;
   }
 

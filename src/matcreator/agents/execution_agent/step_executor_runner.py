@@ -17,6 +17,7 @@ from google.adk.tools.agent_tool import ForwardingArtifactService
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
+from ...aidb.relaxation import INTERNAL_SPEC_FIELDS, current_choice, choice_receipt, current_message, turn_id, user_id
 from ...llm_cards import LLMCard, select_executor_llm_card
 from ...workspace import get_session_workdir
 from .step_executor import (
@@ -100,6 +101,33 @@ def _response_dict(response) -> dict:
 def _append_unique(values: list[str], value) -> None:
     if isinstance(value, str) and value and value not in values:
         values.append(value)
+
+
+def _collect_aidb_completions(
+    completions: dict[str, dict[str, str]],
+    tool_name: str,
+    response: dict,
+    *,
+    owner: str,
+    session_id: str,
+) -> None:
+    if tool_name == "collect_remote_job_outputs":
+        references = [response.get("aidb_result")]
+    elif tool_name in {"run_sub_agent", "collect_matpes_batch", "resolve_matpes_frame", "collect_eos", "resolve_eos_member"}:
+        references = response.get("aidb_completions")
+        if not isinstance(references, list):
+            return
+    else:
+        return
+
+    for reference in references:
+        if not isinstance(reference, dict) or reference.get("kind") != "aidb_completion":
+            continue
+        job_id = reference.get("result_id")
+        if (isinstance(job_id, str) and re.fullmatch("[0-9a-f]{32}", job_id)
+                and reference.get("user_id") == owner and reference.get("session_id") == session_id):
+            completions[job_id] = {"kind": "aidb_completion", "result_id": job_id,
+                                   "session_id": session_id, "user_id": owner}
 
 
 def _image_mime_type(path: Path) -> str | None:
@@ -337,6 +365,22 @@ def _verify_step_result_artifacts(
     return result, missing_artifacts
 
 
+def _apply_nscf_completion(result, completion, allowed_roots):
+    if result.status != "success":
+        return
+    from matcreator.aidb.band_structure import BAND_FILES
+
+    verified, _ = _split_verified_artifacts(completion.get("artifact_paths", ()), allowed_roots=allowed_roots)
+    delivered = {Path(path).name for path in verified if Path(path).is_file()}
+    if completion.get("compute_status") != "succeeded" or not set(BAND_FILES) <= delivered:
+        message = "NSCF 能带数据和图尚未核实交付。"
+        result.status = "needs_replanning"
+        result.replan_reason = result.key_results = result.concise_summary = message
+    elif completion.get("archive_status") != "verified":
+        reason = completion.get("archive_reason") or "尚未读回核实"
+        result.concise_summary = f"{result.concise_summary} AIDB 归档：{reason}。"
+
+
 async def _watch_for_cancellation(
     target: asyncio.Task,
     session_id: str,
@@ -468,6 +512,11 @@ def _remote_job_prior_context(tool_context: ToolContext, node_id: Optional[str])
         if remote_job.get("has_background_command")
         else ""
     )
+    if remote_job.get("provider") == "bohr_sandbox":
+        background_note += (
+            " For tracked managed VASP, inspect the last command result, poll if needed, "
+            "and collect the same job after the command stops."
+        )
     return (
         "REMOTE JOB ALREADY SUBMITTED for this step: "
         f"job_id={remote_job['job_id']} provider={remote_job.get('provider')} "
@@ -554,6 +603,7 @@ async def _stream_step_events(
     step_id: str,
     tool_context: ToolContext,
     graph: AgentGraphLogger,
+    aidb_completions: dict[str, dict[str, str]],
 ) -> tuple[dict, list[str], list[str], dict]:
     """Stream events from the step executor sub-agent and collect results.
 
@@ -565,6 +615,8 @@ async def _stream_step_events(
     plot_paths: list[str] = []
     artifact_paths: list[str] = []
     event_log: dict = {"conversation": [], "tool_calls": []}
+    owner = user_id(tool_context)
+    session_id = tool_context.state.get("session_id", "default")
 
     async with aclosing(
         runner.run_async(
@@ -618,6 +670,19 @@ async def _stream_step_events(
                         await asyncio.to_thread(graph.log_conversation_event, step_id, entry)
                     elif fr:
                         response = _response_dict(fr.response)
+                        _collect_aidb_completions(
+                            aidb_completions, fr.name, response, owner=owner, session_id=session_id,
+                        )
+                        if fr.name in {"submit_matpes_batch", "resolve_matpes_frame", "collect_matpes_batch"}:
+                            if response.get("batch_id"):
+                                step_state_delta["_matpes_batch"] = {
+                                    key: response[key] for key in ("batch_id", "group_id", "members", "status")
+                                }
+                        if fr.name in {"submit_eos", "collect_eos", "resolve_eos_member"} and response.get("eos_id"):
+                            step_state_delta["_eos"] = {
+                                key: response[key] for key in ("eos_id", "group_id", "relaxation", "points", "status",
+                                                              "available_points", "missing_points")
+                            }
                         _append_unique(plot_paths, response.get("plot_path"))
                         for artifact_path in collect_artifact_paths(response):
                             _append_unique(artifact_paths, artifact_path)
@@ -637,6 +702,14 @@ async def _stream_step_events(
                         }
                         event_log["conversation"].append(entry)
                         await asyncio.to_thread(graph.log_conversation_event, step_id, entry)
+                        if (fr.name == "collect_remote_job_outputs" and response.get("calculation_type") == "nscf"):
+                            step_state_delta["_nscf_completion"] = response
+                        if fr.name in {"submit_bohr_batchjob", "start_managed_vasp_sandbox"} and response.get("status") == "closed":
+                            step_state_delta["_vasp_choice_closed"] = response
+                            return step_state_delta, plot_paths, artifact_paths, event_log
+                        if response.get("status") == "waiting_choice" and response.get("choice_id"):
+                            step_state_delta["_vasp_choice_wait"] = response
+                            return step_state_delta, plot_paths, artifact_paths, event_log
 
     return step_state_delta, plot_paths, artifact_paths, event_log
 
@@ -674,6 +747,33 @@ async def run_step_executor(
 
     # Use node_id for label when provided (DAG mode); fall back to step_number.
     effective_id = node_id if node_id else str(step_number)
+
+    execution_graph = get_execution_graph(tool_context.state) or {}
+    graph_id = execution_graph.get("graph_id") if tool_context.state.get("_graph_exec_node_id") != "orchestrator" else None
+    vasp_choice = await asyncio.to_thread(current_choice, tool_context)
+    if vasp_choice and vasp_choice["scope"] == {"graph_id": graph_id, "node_id": effective_id}:
+        if vasp_choice["status"] == "waiting":
+            if graph_id and (node := execution_graph.get("nodes", {}).get(effective_id)):
+                node.update(status="waiting", result=choice_receipt(vasp_choice)["message"],
+                            aidb_choice_id=vasp_choice["id"])
+                set_execution_graph(tool_context.state, execution_graph)
+                tool_context.state["_vasp_waiting_for_choice"] = True
+            return choice_receipt(vasp_choice)
+        if vasp_choice["status"] == "continue":
+            if vasp_choice["decision_turn"] != turn_id(tool_context):
+                return {"status": "needs_replanning", "message": "请用户明确继续本次弛豫。"}
+            spec = {key: value for key, value in vasp_choice["spec"].items()
+                    if key not in INTERNAL_SPEC_FIELDS | {"input_root"}}
+            tool_name = "submit_bohr_batchjob"
+            if "sandbox_options" in spec:
+                tool_name = "start_managed_vasp_sandbox"
+                spec.update(spec.pop("sandbox_options"))
+            context = (
+                "The user continued the existing VASP calculation. Preserve the staged files. "
+                f"Use the original tracked {tool_name} with exactly these prepared arguments, "
+                "following the original authorization: " + str(spec)
+            )
+            prior_context = f"{context}\n\n{prior_context}" if prior_context else context
 
     # Deterministic re-attachment: a node that already owns a tracked remote job
     # must poll it rather than submit a replacement sandbox.
@@ -773,7 +873,8 @@ async def run_step_executor(
         action=action,
         suggested_skills=suggested_skills,
         prior_context=prior_context,
-        graph_id=(get_execution_graph(tool_context.state) or {}).get("graph_id"),
+        graph_id=graph_id,
+        owner_id=user_id(tool_context),
     )
     if node_id:
         graph_state = get_execution_graph(tool_context.state) or {}
@@ -840,6 +941,16 @@ async def run_step_executor(
     state_dict["recursion_depth"] = recursion_depth + 1
     state_dict["_graph_exec_node_id"] = step_id
     state_dict["_step_label_path"] = step_label_path
+    state_dict["_vasp_parent_turn"] = turn_id(tool_context)
+    if recursion_depth == 0:
+        state_dict["_vasp_human_message"] = current_message(tool_context)
+    state_dict["_vasp_graph_id"] = graph_id
+    state_dict["_vasp_step_action"] = action
+    state_dict["_vasp_step_skills"] = suggested_skills
+    state_dict["_vasp_requested_output_text"] = "\n".join(filter(None, (
+        tool_context.state.get("_vasp_requested_output_text"), execution_graph.get("user_request") if graph_id else None,
+        current_message(tool_context) if recursion_depth == 0 else None,
+    )))
 
     session = await runner.session_service.create_session(
         app_name=child_app_name,
@@ -851,8 +962,9 @@ async def run_step_executor(
     # the current await point (including in-flight LLM HTTP calls).  A sibling
     # watcher task polls cancellation flags on a wall-clock interval and cancels
     # the inner task when a flag is detected.
+    aidb_completions: dict[str, dict[str, str]] = {}
     inner_task = asyncio.create_task(
-        _stream_step_events(runner, session, content, step_id, tool_context, graph)
+        _stream_step_events(runner, session, content, step_id, tool_context, graph, aidb_completions)
     )
     watcher = asyncio.create_task(
         _watch_for_cancellation(inner_task, session_id, step_number)
@@ -890,6 +1002,33 @@ async def run_step_executor(
             _schedule_step_runner_cleanup(runner, cleanup_tasks)
         else:
             await _cleanup_step_runner(runner, cleanup_tasks)
+
+    # Collection can finish before the step reports its own outcome.
+    completion_payload = {"aidb_completions": list(aidb_completions.values())} if aidb_completions else {}
+    if matpes_batch := step_state_delta.get("_matpes_batch"):
+        completion_payload["matpes_batch"] = matpes_batch
+    if eos := step_state_delta.get("_eos"):
+        completion_payload["eos"] = eos
+    if not (timed_out or runner_error or cancelled) and (closed := step_state_delta.get("_vasp_choice_closed")):
+        await asyncio.to_thread(graph.log_node_complete, step_id, "cancelled", summary=closed["message"])
+        await asyncio.to_thread(finish_node_attempt, recovery_attempt, status="cancelled", result=closed)
+        return closed
+
+    if not (timed_out or runner_error or cancelled) and (choice_wait := step_state_delta.get("_vasp_choice_wait")):
+        message = choice_wait["message"]
+        current_graph = get_execution_graph(tool_context.state)
+        if graph_id and current_graph and current_graph.get("graph_id") == graph_id:
+            node = (current_graph.get("nodes") or {}).get(effective_id)
+            if node:
+                node.update(status="waiting", result=message, aidb_choice_id=choice_wait["choice_id"])
+                set_execution_graph(tool_context.state, current_graph)
+                tool_context.state["_vasp_waiting_for_choice"] = True
+        await asyncio.to_thread(graph.log_node_complete, step_id, "waiting", summary=message)
+        append_session_log_entry(tool_context, {
+            "kind": "step_result", **step_input_log, "status": "waiting_choice", "result": choice_wait,
+        })
+        await asyncio.to_thread(finish_node_attempt, recovery_attempt, status="waiting_choice", result=choice_wait)
+        return {**choice_wait, **completion_payload}
 
     if timed_out and waiting_remote_job is not None:
         job_summary = (
@@ -929,6 +1068,7 @@ async def run_step_executor(
             "status": "waiting",
             "remote_job": remote_job_reference,
             "message": job_summary,
+            **completion_payload,
         }
 
     if timed_out:
@@ -959,6 +1099,7 @@ async def run_step_executor(
         return {
             "status": "needs_replanning",
             "replan_reason": f"Step {step_number} timed out after {_SUB_STEP_TIMEOUT}s.",
+            **completion_payload,
         }
 
     if cancelled:
@@ -989,6 +1130,7 @@ async def run_step_executor(
         return {
             "status": "cancelled",
             "message": f"Step {step_number} cancelled ({reason}).",
+            **completion_payload,
         }
 
     if runner_error is not None:
@@ -1023,6 +1165,7 @@ async def run_step_executor(
         return {
             "status": "error",
             "message": error_message,
+            **completion_payload,
         }
 
     if step_state_delta:
@@ -1044,6 +1187,9 @@ async def run_step_executor(
             allowed_roots=allowed_artifact_roots,
             additional_artifacts=[*artifact_paths, *plot_paths],
         )
+        nscf = step_state_delta.get("_nscf_completion")
+        if nscf is not None:
+            _apply_nscf_completion(result, nscf, allowed_artifact_roots)
         skill_refresh = None
         if result.status == "success":
             skill_refresh = _refresh_skill_registry_after_creation(suggested_skills)
@@ -1072,11 +1218,15 @@ async def run_step_executor(
             artifacts=result.artifacts,
         )
         payload = result.model_dump(exclude_none=True)
+        payload.update(completion_payload)
         if skill_refresh:
             payload["skill_registry_refresh"] = skill_refresh
         if missing_artifacts:
             payload["missing_artifacts"] = missing_artifacts
             payload["message"] = result.replan_reason
+        if eos := completion_payload.get("eos"):
+            eos_artifacts = [path for path in artifact_paths if Path(path).parent.parent.name == f'eos-{eos["eos_id"]}']
+            payload["artifacts"] = list(dict.fromkeys([*payload.get("artifacts", []), *eos_artifacts]))
         if plot_paths:
             payload["plot_paths"] = plot_paths
             payload["plot_path"] = plot_paths[0]
@@ -1104,12 +1254,13 @@ async def run_step_executor(
         status="needs_replanning",
         replan_reason="step executor did not call submit_step_result — no result captured",
     )
+    payload = {**result.model_dump(), **completion_payload}
     await asyncio.to_thread(graph.log_node_complete, step_id, "needs_replanning")
     append_session_log_entry(tool_context, {
         "kind": "step_complete",
         **step_input_log,
         "status": "needs_replanning",
-        "result": result.model_dump(),
+        "result": payload,
         "state_delta": public_state_delta,
         "events": event_log,
     }, artifacts=artifact_paths)
@@ -1117,8 +1268,8 @@ async def run_step_executor(
         finish_node_attempt,
         recovery_attempt,
         status="needs_replanning",
-        result=result.model_dump(),
+        result=payload,
         artifacts=artifact_paths,
     )
     clear_step_cancellation(session_id, step_number)
-    return result.model_dump()
+    return payload

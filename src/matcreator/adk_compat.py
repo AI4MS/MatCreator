@@ -74,7 +74,9 @@ def install_lenient_tool_argument_parsing() -> None:
     """Wrap ADK's LiteLlm tool-argument parser with JSON repair fallbacks.
 
     Idempotent: repeated calls keep exactly one wrapper around the original
-    parser. The wrapper only acts when the original parser raises
+    parser. Extra parser arguments are preserved for normal and repaired
+    payloads, which both pass through the original parser. The wrapper only
+    acts when the original parser raises
     ``json.JSONDecodeError``; valid payloads pass through untouched. Repair
     chain: escape unescaped inner quotes, then the ``json_repair`` library
     (a litellm dependency, handles missing commas, truncation, mixed
@@ -100,16 +102,16 @@ def install_lenient_tool_argument_parsing() -> None:
             preview,
         )
 
-    def lenient_parse_tool_call_arguments(arguments):
+    def lenient_parse_tool_call_arguments(arguments, *args, **kwargs):
         try:
-            return original(arguments)
+            return original(arguments, *args, **kwargs)
         except json.JSONDecodeError:
             if not isinstance(arguments, str) or not arguments:
                 raise
             repaired = repair_unescaped_string_quotes(arguments)
             if repaired != arguments:
                 try:
-                    result = json.loads(repaired)
+                    result = original(repaired, *args, **kwargs)
                     _log_rescued(arguments, "inner-quote escaping")
                     return result
                 except json.JSONDecodeError:
@@ -121,8 +123,13 @@ def install_lenient_tool_argument_parsing() -> None:
             if json_repair is not None:
                 result = json_repair.loads(arguments)
                 if isinstance(result, dict) and result:
-                    _log_rescued(arguments, "json_repair")
-                    return result
+                    try:
+                        result = original(json.dumps(result), *args, **kwargs)
+                    except json.JSONDecodeError:
+                        pass
+                    else:
+                        _log_rescued(arguments, "json_repair")
+                        return result
             raise
 
     setattr(lenient_parse_tool_call_arguments, _PARSED_ATTR, True)

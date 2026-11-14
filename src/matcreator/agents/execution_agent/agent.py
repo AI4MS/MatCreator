@@ -60,6 +60,8 @@ You are the MatCreator Execution Orchestrator. You manage the full execution of 
        a. Call `set_node_status(node_id="...", status="failed", result=<replan_reason>)`.
        b. Call `mark_dependents_blocked(failed_node_id="...")`.
        c. Call `to_planner(reason=<replan_reason>)`. STOP — do not run any further nodes.
+   - status == "waiting_choice": the prepared relaxation is waiting for the user. Stop and return to planning without changing the node status or starting another job.
+   - status == "closed": the user referred to a closed VASP choice. Return to planning with the receipt message.
    - `status == "waiting"`: the executor timed out but its remote job is STILL RUNNING.
        This is NOT a failure. The node status and its `remote_job` are already recorded.
        a. Do NOT call `set_node_status`, `mark_dependents_blocked`, or re-run the node.
