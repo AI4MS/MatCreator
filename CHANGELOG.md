@@ -2,6 +2,17 @@
 
 <!-- version list -->
 
+## v2.27.1 (2026-11-25)
+
+### Bug Fixes
+
+- **ui**: Center the composer send arrow
+  ([`b00b351`](https://github.com/AI4MS/MatCreator/commit/b00b351f91843ce95a26b52f26a12a4fb30f1a58))
+
+- **ui**: Improve logo contrast in dark themes
+  ([`90b1788`](https://github.com/AI4MS/MatCreator/commit/90b1788bc0208e136d3fceafa66a1fe673a62217))
+
+
 ## v2.27.0 (2026-10-23)
 
 ### Features
