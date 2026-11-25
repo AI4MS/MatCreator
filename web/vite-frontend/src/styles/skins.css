@@ -425,6 +425,7 @@ body[data-style-recipe="rack-lab"][data-style-recipe-version="1"][data-theme="li
 
 body[data-style-recipe="rack-lab"][data-style-recipe-version="1"] .composer-toolbar #send-btn {
   --rack-send-surface: var(--skin-control-background);
+  --composer-send-arrow-offset: 0.03em;
   width: 32px;
   height: 32px;
   flex-basis: 32px;

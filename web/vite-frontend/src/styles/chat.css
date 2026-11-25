@@ -2310,6 +2310,19 @@ body[data-theme="light"] .composer-icon-btn:hover {
   color: var(--bg-elevated);
   font-weight: 700;
 }
+.send-btn .send-icon-send {
+  /* The glyph's ink sits below the center of the Default font's line box. */
+  translate: 0 var(--composer-send-arrow-offset, -0.125em);
+}
+.send-icon-stop,
+.send-icon-queued,
+.send-btn:is(.is-stopping, .is-finalizing) .send-icon-send {
+  display: none;
+}
+.send-btn.is-stopping:not(.is-finalizing) .send-icon-stop,
+.send-btn.is-finalizing .send-icon-queued {
+  display: inline;
+}
 .send-btn:hover,
 .tool-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-primary-soft, var(--subtle-surface)); }
 .composer-toolbar .send-btn:hover { background: var(--accent-2); border-color: var(--accent-2); color: var(--bg-elevated); }

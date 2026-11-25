@@ -74,7 +74,6 @@ export function createAgentStatusController({
     if (!sendButton) return;
     const queued = Boolean(request?.followupQueued);
     sendButton.disabled = queued;
-    sendButton.textContent = queued ? "…" : running ? "■" : "➜";
     sendButton.title = queued ? "Sending after message sync…" : running ? "Stop" : "Send";
     sendButton.setAttribute("aria-label", sendButton.title);
     sendButton.classList.toggle("is-stopping", running);
