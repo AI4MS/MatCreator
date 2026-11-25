@@ -29,6 +29,7 @@ dependencies = [
     "pymatgen-analysis-diffusion",
     "mp-api",
     "bcrypt>=4.0.0",
+    "argon2-cffi>=25.1.0",
     "docker>=7.0.0",
     "e2b<=2.20.0",
     "e2b-code-interpreter",
@@ -37,7 +38,8 @@ dependencies = [
     "pymatgen",
     "mat-bench @ git+https://github.com/AI4MS/mat_agent_bench.git@main",
     "mat-know-base[materials] @ git+https://github.com/theAfish/mat_know_base.git@a367f73a5c4ab0e6a459fed796d855548da33155",
-    "paramiko>=4.0.0"
+    "paramiko>=4.0.0",
+    "PySocks>=1.7.1"
 ]
 
 [build-system]

@@ -60,13 +60,16 @@ import json
 import logging
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
 import uuid
 import warnings
 from pathlib import Path
+from contextlib import contextmanager, nullcontext
 from typing import Union
+from urllib.parse import quote, urlsplit, urlunsplit
 import yaml
 
 import click
@@ -76,10 +79,74 @@ from matcreator.config import apply_config_env_overrides
 
 
 _PRE_CONFIG_ENV = frozenset(os.environ.keys())
-_MATCREATOR_HOME = Path(os.environ.get("MATCREATOR_HOME", "~/.matcreator")).expanduser()
+_MATCREATOR_HOME = Path(os.environ.get("MATCREATOR_HOME", "~/.matcreator")).expanduser().resolve()
 _CONFIG_PATH = _MATCREATOR_HOME / "config.yaml"
 _DEFAULT_ADK_DIR = _MATCREATOR_HOME / ".adk"
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+@contextmanager
+def _local_adk_lock(home: Path):
+    """Keep exactly one local ADK writer attached to a private instance home.
+
+    The operating system releases this lock when the process exits, including
+    crashes. A leftover file is not treated as proof that a server is alive.
+    """
+    lock_path = home / ".adk" / "server.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(lock_path, flags, 0o600)
+    with os.fdopen(descriptor, "r+b") as lock_file:
+        if os.name == "nt":
+            import msvcrt
+            if os.fstat(lock_file.fileno()).st_size == 0:
+                lock_file.write(b" ")
+                lock_file.flush()
+            lock_file.seek(0)
+            try:
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError as exc:
+                raise click.ClickException(
+                    f"An ADK server already owns this MATCREATOR_HOME: {home}. "
+                    "Use a different home for another instance."
+                ) from exc
+        else:
+            import fcntl
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raise click.ClickException(
+                    f"An ADK server already owns this MATCREATOR_HOME: {home}. "
+                    "Use a different home for another instance."
+                ) from exc
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _reserve_adk_socket(host: str, port: int) -> socket.socket:
+    """Reserve the exact endpoint before startup; never attach to another server."""
+    address = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0]
+    listener = socket.socket(address[0], address[1], address[2])
+    try:
+        if os.name == "nt":
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(address[4])
+        listener.listen(128)
+        return listener
+    except OSError as exc:
+        listener.close()
+        raise click.ClickException(
+            f"Cannot reserve ADK endpoint {host}:{port}: {exc}. "
+            "Choose an unused port; the existing service was not reused."
+        ) from exc
 
 
 def _apply_harness_config_env() -> None:
@@ -140,31 +207,48 @@ def _start_adk_server(
 
     _configure_logging(log_level)
 
-    session_db = _DEFAULT_ADK_DIR / "session.db"
-    session_db.parent.mkdir(parents=True, exist_ok=True)
+    is_local = os.environ.get("MATCREATOR_MODE", "local") != "server"
+    if is_local:
+        from matcreator.local_access import ensure_local_access
+        access = ensure_local_access(_MATCREATOR_HOME)
+        click.echo(f"Local instance: {access.instance_id}")
+        click.echo(f"Data directory: {_MATCREATOR_HOME}")
+        click.echo(f"Internal backend credential file: {access.token_path}")
+        click.echo("The local account application manages backend credentials; users sign in with their account password.")
 
-    fast_api = get_fast_api_app(
-        agents_dir=str(_DEFAULT_ADK_DIR),   # unused for discovery; loader overrides it
-        agent_loader=_make_agent_loader(),
-        session_service_uri=f"sqlite:///{session_db}",
-        web=web_ui,
-        host=host,
-        port=port,
-        reload_agents=reload_agents,
-    )
+    with _local_adk_lock(_MATCREATOR_HOME) if is_local else nullcontext():
+        listener = _reserve_adk_socket(host, port)
+        try:
+            session_db = _DEFAULT_ADK_DIR / "session.db"
+            session_db.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
 
-    config = uvicorn.Config(
-        fast_api,
-        host=host,
-        port=port,
-        log_level=log_level,
-        reload=reload,
-    )
-    server = uvicorn.Server(config)
-    try:
-        server.run()
-    except KeyboardInterrupt:
-        pass
+            fast_api = get_fast_api_app(
+                agents_dir=str(_DEFAULT_ADK_DIR),  # loader overrides discovery
+                agent_loader=_make_agent_loader(),
+                session_service_uri=f"sqlite:///{session_db}",
+                web=web_ui,
+                host=host,
+                port=port,
+                reload_agents=reload_agents,
+            )
+            if is_local:
+                from matcreator.local_access import install_local_access
+                install_local_access(fast_api, home=_MATCREATOR_HOME, audience="adk")
+
+            config = uvicorn.Config(
+                fast_api,
+                host=host,
+                port=port,
+                log_level=log_level,
+                reload=reload,
+            )
+            server = uvicorn.Server(config)
+            try:
+                server.run(sockets=[listener])
+            except KeyboardInterrupt:
+                pass
+        finally:
+            listener.close()
 
 
 # Shared options applied to web/api-server subcommands
@@ -212,7 +296,9 @@ def _setup_workspace(workspace: str | None) -> Path:
         os.environ["MATCLAW_WORKSPACE"] = str(ws_root)
     else:
         ws_root = _default_workspace()
-    ws_root.mkdir(parents=True, exist_ok=True)
+    ws_root = ws_root.resolve()
+    os.environ["MATCLAW_WORKSPACE"] = str(ws_root)
+    ws_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     click.echo(f"Workspace: {ws_root}")
     return ws_root
 
@@ -262,6 +348,37 @@ def _matcreator_kdg_env() -> dict[str, str]:
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 def main():
     """MatCreator CLI — launch, run, and manage the MatCreator agent."""
+
+
+@main.command("access")
+@click.option("--url", default=None, help="Frontend URL, including the local SSH forwarding port when applicable.")
+def access_link(url: str | None):
+    """Print a private token launch link for this local instance.
+
+    This is the only launcher command that deliberately prints the access
+    token. Treat its output as a password and do not put it in shared logs.
+    """
+    if os.environ.get("MATCREATOR_MODE", "local") == "server":
+        raise click.ClickException("`matcreator access` is only available for a private local instance.")
+    from matcreator.local_access import ensure_local_access
+    from matcreator.ports import get_frontend_port
+    access = ensure_local_access(_MATCREATOR_HOME)
+    if url is None:
+        url = f"http://{access.browser_host}:{get_frontend_port()}/"
+    parts = urlsplit(url)
+    if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username or parts.password:
+        raise click.ClickException("--url must be an HTTP(S) frontend URL without embedded credentials.")
+    # Cookie scope includes hostname, not TCP port. Each local instance needs
+    # a distinct hostname even when SSH forwarding reuses the same local port.
+    if parts.hostname.lower() not in {"localhost", "127.0.0.1", "::1", access.browser_host}:
+        raise click.ClickException("--url must point to this instance's localhost browser host. Use SSH forwarding for a remote instance.")
+    try:
+        port = parts.port
+    except ValueError as exc:
+        raise click.ClickException("--url contains an invalid frontend port.") from exc
+    authority = access.browser_host + (f":{port}" if port is not None else "")
+    click.echo(urlunsplit((parts.scheme, authority, parts.path or "/", parts.query,
+                          "token=" + quote(access.token, safe=""))))
 
 
 @main.command("web")

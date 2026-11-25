@@ -75,6 +75,7 @@ function createBanner(documentRef) {
 
 export function createKnowledgeReviewController({
   getSessionId,
+  canAccess = () => true,
   fetchImpl = globalThis.fetch,
   documentRef = globalThis.document,
   windowRef = globalThis.window,
@@ -107,6 +108,7 @@ export function createKnowledgeReviewController({
   }
 
   async function refresh() {
+    if (!canAccess()) { stopPolling(); return null; }
     if (refreshRequest) return refreshRequest.promise;
     const controller = new AbortController();
     const request = { controller, promise: null };
@@ -116,7 +118,7 @@ export function createKnowledgeReviewController({
         const response = await fetchImpl("/api/knowledge-review/status", {
           signal: controller.signal,
         });
-        if (!response.ok) return null;
+        if (!response.ok || !canAccess()) return null;
         const review = await response.json();
         render(review);
         if (review.status === "running") startPolling();
@@ -131,7 +133,7 @@ export function createKnowledgeReviewController({
   }
 
   async function start() {
-    if (element.disabled) return false;
+    if (!canAccess() || element.disabled) return false;
     stopPolling();
     refreshRequest?.controller.abort();
     refreshRequest = null;

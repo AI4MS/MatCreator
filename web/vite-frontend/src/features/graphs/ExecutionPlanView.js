@@ -29,6 +29,7 @@ const PLAN_GRAPH_MAX_SCALE = 4;
 
 export class ExecutionPlanView {
   constructor(containerId, options = {}) {
+    this._getAccountId = options.getAccountId || (() => "");
     this._container = document.getElementById(containerId);
     this._toggleButton = options.toggleButton || null;
     this._thumbnailElement = options.thumbnailElement || null;
@@ -577,7 +578,9 @@ export class ExecutionPlanView {
     this.stopPolling();
     this._currentSessionId = sessionId;
     void this._poll(sessionId);
-    const eventStream = new EventSource(`/api/execution-graph/${encodeURIComponent(sessionId)}/events`);
+    const accountId = this._getAccountId();
+    const query = accountId ? `?expected_account_id=${encodeURIComponent(accountId)}` : "";
+    const eventStream = new EventSource(`/api/execution-graph/${encodeURIComponent(sessionId)}/events${query}`);
     this._eventStream = eventStream;
     eventStream.onmessage = (event) => {
       try {

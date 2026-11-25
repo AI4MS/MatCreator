@@ -27,6 +27,44 @@ _PROTECTED_USER_ENV_KEYS = frozenset({
     "MATCREATOR_HOME",
     "MATCREATOR_MODE",
     "MATCREATOR_USER_ID",
+    "MATCREATOR_LOCAL_PROFILE_WORKER",
+    "MATCREATOR_LOCAL_RUNTIME",
+    "MATCREATOR_LOCAL_SRT_WORKER",
+    "MATCREATOR_LOCAL_SRT_COMMAND",
+    "MATCREATOR_LOCAL_SRT_RUNTIME_ROOT",
+    "MATCREATOR_LOCAL_SRT_STATE_ROOT",
+    "MATCREATOR_LOCAL_SRT_MEMORY_MB",
+    "MATCREATOR_LOCAL_SRT_CPUS",
+    "MATCREATOR_LOCAL_SRT_CPUSETS",
+    "MATCREATOR_LOCAL_SRT_PIDS",
+    "MATCREATOR_LOCAL_SRT_ALLOWED_DOMAINS",
+    "MATCREATOR_LOCAL_SRT_DENIED_DOMAINS",
+    "MATCREATOR_LOCAL_SRT_PARENT_PROXY",
+    "MATCREATOR_SRT_BOOT_ACCOUNT_ID",
+    "MATCREATOR_SRT_BOOT_INSTANCE_ID",
+    "MATCREATOR_SRT_BOOT_ACCESS_TOKEN",
+    "MATCREATOR_LOCAL_CONTAINER_COMMAND",
+    "MATCREATOR_LOCAL_CONTAINER_IMAGE",
+    "MATCREATOR_LOCAL_CONTAINER_MEMORY_MB",
+    "MATCREATOR_LOCAL_CONTAINER_CPUS",
+    "MATCREATOR_LOCAL_CONTAINER_CPUSETS",
+    "MATCREATOR_LOCAL_CONTAINER_PIDS",
+    "MATCREATOR_CONTAINER_BOOT_ACCOUNT_ID",
+    "MATCREATOR_CONTAINER_BOOT_INSTANCE_ID",
+    "MATCREATOR_CONTAINER_BOOT_ACCESS_TOKEN",
+    "MATCREATOR_LOCAL_ACCOUNT_ROOT",
+    "MATCREATOR_LOCAL_ACCOUNT_ID",
+    "MATCREATOR_CONFIG_PATH",
+    "MATCREATOR_USERS_DB",
+    "MATCREATOR_CONTROL_PLANE_HOME",
+    "MATCREATOR_DATA_ROOT",
+    "MATCREATOR_HOST_DATA_ROOT",
+    "KDG_DB_PATH",
+    "OAW_XRD_RUN_ROOT",
+    "MATCREATOR_XRD_HOME",
+    "MATCREATOR_LOCAL_ALLOWED_HOSTS",
+    "MATCLAW_WORKSPACE",
+    "MATCLAW_SESSION_DIR",
 })
 
 # Priority: explicit env vars (highest) > config.yaml.
@@ -133,12 +171,15 @@ if _kdg_db_path.suffix != ".db":
 KNOW_DO_GRAPH_DB = _kdg_db_path
 KNOW_DO_MEMORY_DIR = KNOW_DO_GRAPH_DB.parent / "memory"
 
-# Read-only migration sources from previous storage layouts. New code must not
-# write here unless the caller explicitly points KDG_DB_PATH at them.
+# Read-only migration sources from previous storage layouts. An explicitly
+# selected instance home must never import history from the shared source tree.
+# The default home retains the old repository source for the explicit migration
+# command; normal runtime initialization does not import these sources.
 _LEGACY_REPO_ADK_DIR = _PROJECT_ROOT / "agents" / "MatCreator" / ".adk"
 _LEGACY_ADK_DIR = _ADK_DIR
-LEGACY_UNIFIED_GRAPH_DB = _LEGACY_REPO_ADK_DIR / "know_do_graph.db"
-LEGACY_UNIFIED_MEMORY_DIR = _LEGACY_REPO_ADK_DIR / "memory"
+_LEGACY_UNIFIED_DIR = _ADK_DIR if os.environ.get("MATCREATOR_HOME", "").strip() else _LEGACY_REPO_ADK_DIR
+LEGACY_UNIFIED_GRAPH_DB = _LEGACY_UNIFIED_DIR / "know_do_graph.db"
+LEGACY_UNIFIED_MEMORY_DIR = _LEGACY_UNIFIED_DIR / "memory"
 # Older split-graph releases stored separate skill/memory DBs under ~/.matcreator/.adk.
 LEGACY_SKILL_GRAPH_DB = _LEGACY_ADK_DIR / "skill_graph.db"
 LEGACY_MEMORY_GRAPH_DB = _LEGACY_ADK_DIR / "memory_graph.db"

@@ -7,16 +7,9 @@ const webTarget =
   process.env.MATCREATOR_WEB_TARGET || `http://localhost:${webPort}`;
 const frontendPort = Number(process.env.MATCREATOR_FRONTEND_PORT || "5173");
 
-// ADK's _OriginCheckMiddleware blocks non-safe HTTP methods (POST/DELETE/…)
-// when the Origin header doesn't match the server's own host. Vite forwards
-// the browser's Origin (e.g. http://localhost:5173) unchanged, which ADK
-// rejects. Stripping the header makes the proxy behave like Python requests
-// (no Origin → ADK skips the check entirely).
-function stripOrigin(proxy) {
-  proxy.on("proxyReq", (proxyReq) => {
-    proxyReq.removeHeader("origin");
-  });
-}
+// Preserve the browser's Host, Origin and credentials. Authentication and origin
+// validation belong to the Web backend; injecting a launcher token here would
+// grant every browser request access to the private instance.
 
 export default defineConfig({
   plugins: [svelte()],
@@ -31,18 +24,12 @@ export default defineConfig({
       },
       "/run_sse": {
         target: webTarget,
-        changeOrigin: true,
-        configure: stripOrigin,
       },
       "/apps": {
         target: webTarget,
-        changeOrigin: true,
-        configure: stripOrigin,
       },
       "/list-apps": {
         target: webTarget,
-        changeOrigin: true,
-        configure: stripOrigin,
       },
     },
   },

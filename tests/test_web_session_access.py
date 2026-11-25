@@ -39,10 +39,15 @@ class _FakeDockerClient:
 def _load_web_main(monkeypatch, matcreator_home: Path | None = None):
     root = Path(__file__).resolve().parents[1]
     monkeypatch.setenv("MATCREATOR_MODE", "local")
+    # Existing tests exercise a single personal worker, not the account broker.
+    monkeypatch.setenv("MATCREATOR_LOCAL_PROFILE_WORKER", "1")
     if matcreator_home is not None:
         monkeypatch.setenv("MATCREATOR_HOME", str(matcreator_home))
     else:
         monkeypatch.delenv("MATCREATOR_HOME", raising=False)
+    profile_home = matcreator_home or Path.home() / ".matcreator"
+    monkeypatch.setenv("MATCREATOR_LOCAL_ACCOUNT_ROOT", str(profile_home))
+    monkeypatch.setenv("MATCREATOR_LOCAL_ACCOUNT_ID", "11111111-1111-4111-8111-111111111111")
     for path in (root / "web", root / "src"):
         if str(path) not in sys.path:
             sys.path.insert(0, str(path))

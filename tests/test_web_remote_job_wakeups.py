@@ -262,7 +262,28 @@ def test_empty_or_control_only_stream_does_not_acknowledge_notification(harness,
     async def exercise():
         web = harness.web
         client_type = httpx.AsyncClient
-        transport = httpx.MockTransport(lambda request: httpx.Response(200, text=stream))
+        requests = []
+
+        def upstream(request):
+            requests.append(request)
+            if request.url.path == "/api/local-auth/status":
+                # Prove this synthetic listener owns the instance before the
+                # relay sends its token. The payload test must reach the SSE
+                # acceptance gate rather than fail the new identity handshake.
+                assert "authorization" not in request.headers
+                nonce = request.url.params["nonce"]
+                pid = 42424
+                access = web._local_access
+                return httpx.Response(200, json={
+                    "instance_id": access.instance_id,
+                    "audience": "adk", "pid": pid,
+                    "proof": access.server_proof(nonce, "adk", pid),
+                })
+            assert request.url.path == "/run_sse"
+            assert request.headers["authorization"] == "Bearer " + web._local_access.token
+            return httpx.Response(200, text=stream)
+
+        transport = httpx.MockTransport(upstream)
         monkeypatch.setattr(web.httpx, "AsyncClient", lambda **kwargs: client_type(transport=transport, **kwargs))
         monkeypatch.setattr(web, "_target_url_for_user", _target)
         monitor = RemoteJobMonitor(
@@ -273,6 +294,7 @@ def test_empty_or_control_only_stream_does_not_acknowledge_notification(harness,
         assert notification["delivery_status"] == "pending"
         assert notification["failures"] == 1
         assert "before accepting" in notification["last_error"]
+        assert [request.url.path for request in requests] == ["/api/local-auth/status", "/run_sse"]
         await web._run_registry.shutdown()
 
     asyncio.run(exercise())

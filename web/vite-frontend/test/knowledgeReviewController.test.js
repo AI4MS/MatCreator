@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { knowledgeReviewPresentation } from "../src/features/skills/KnowledgeReviewController.js";
+import { createKnowledgeReviewController, knowledgeReviewPresentation } from "../src/features/skills/KnowledgeReviewController.js";
 
 test("knowledge review presentation normalizes unknown status", () => {
   assert.deepEqual(knowledgeReviewPresentation({ status: "unexpected" }), {
@@ -10,6 +10,27 @@ test("knowledge review presentation normalizes unknown status", () => {
     title: "Click to review memory and graph nodes",
     text: "Review memory and graph · click to start",
   });
+});
+
+test("knowledge review does not fetch or execute while the local instance is locked", async () => {
+  let unlocked = false;
+  let requests = 0;
+  const node = () => ({ setAttribute() {}, append() {}, addEventListener() {}, removeEventListener() {}, classList: { toggle() {} } });
+  const controller = createKnowledgeReviewController({
+    getSessionId: () => "session-a",
+    canAccess: () => unlocked,
+    documentRef: { createElement: node },
+    windowRef: { clearInterval() {}, setInterval() {} },
+    fetchImpl: async () => { requests++; return { ok: true, json: async () => ({ status: "idle" }) }; },
+  });
+  controller.init();
+  await controller.refresh();
+  assert.equal(await controller.start(), false);
+  assert.equal(requests, 0);
+  unlocked = true;
+  await controller.refresh();
+  assert.equal(requests, 1);
+  controller.destroy();
 });
 
 test("knowledge review presentation reports progress and partial failures", () => {

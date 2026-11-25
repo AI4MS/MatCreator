@@ -8,16 +8,17 @@ const icons = {
 function icon(name) {
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name]}</svg>`;
 }
-export function installWorkspaceLaunchpad({ controller, newTabButton, newSession, openGraph, openSettings, openJobs }) {
+export function installWorkspaceLaunchpad({ controller, newTabButton, newSession, openGraph, openSettings, openJobs, getAccountUrl = () => (url) => url }) {
   let sequence = 0;
   let xrdSequence = 0;
   function openXrd() {
     const number = ++xrdSequence;
+    const bindAccountUrl = getAccountUrl();
     controller.openToolTab(`xrd-${number}`, `XRD ${number}`, (panel) => {
       let dispose; let closed = false;
       panel.innerHTML = '<div class="viewer-loading-message">正在载入 XRD 工作台…</div>';
       import('../xrd/mount.jsx').then(({ mountXrd }) => {
-        if (!closed) { panel.replaceChildren(); dispose = mountXrd(panel, { createNew: true, openChat: () => controller.activate('chat') }); }
+        if (!closed) { panel.replaceChildren(); dispose = mountXrd(panel, { createNew: true, bindAccountUrl, openChat: () => controller.activate('chat') }); }
       }).catch(error => { panel.textContent = `XRD 加载失败：${error.message}`; });
       return () => { closed = true; dispose?.(); };
     });

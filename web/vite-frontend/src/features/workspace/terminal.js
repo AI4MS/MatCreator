@@ -30,6 +30,7 @@ export function createWorkspaceTerminalController({ state, container, panel, tog
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const params = new URLSearchParams();
     if (state.deploymentMode === "server" && state.userId) params.set("user_id", state.userId);
+    if (state.localAccountMode && state.userId) params.set("expected_account_id", state.userId);
     const query = params.toString();
     return `${protocol}//${window.location.host}/api/workspace/terminal${query ? `?${query}` : ""}`;
   }

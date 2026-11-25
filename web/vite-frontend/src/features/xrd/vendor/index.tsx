@@ -6,6 +6,7 @@ import "./style.css";
 import { MatchControls, Glyph } from "./MatchControls";
 import { PipelineWorkflow } from "./PipelineView";
 import { FrameCanvas, SpectrumCanvas, useCursor, selectedFrame, selectFrameCandidate } from './FrameCanvas';
+import { archiveDownloadUrl } from '../hostCommands';
 type Peak = { two_theta: number; intensity: number; hkl?: number[] };
 type Match = { observed_index:number; observed: number; reference: number; delta: number; hkl: number[] };
 type Candidate = { node_id: string; filename: string; metadata: Record<string,string>; peaks: Peak[]; matches: Match[]; reference_count: number; mean_abs_delta: number|null; score?:number; cifs: {filename:string}[] };
@@ -96,7 +97,7 @@ function InputView({card,host,level}:PluginViewProps){
     {doc?.filename&&<><strong className="xrd-source-filename">{doc.filename}</strong>
       <div className="xrd-source-row">
         <small>{doc.kind==='pattern'?`${doc.points.length} 个点 · ${doc.metadata.format} · Kα₁ ${doc.metadata.HW_XG_WAVE_LENGTH_ALPHA1||'未提供'} Å`:doc.kind==='reference'?`${doc.metadata.name} · ${doc.metadata.formula} · ${doc.peaks.length} 条标准峰`:'CIF 结构文件'}</small>
-        <a className="xrd-source-download" href={host.documentDownloadUrl('source')} download aria-label="下载原始输入" title="下载原始输入">
+        <a className="xrd-source-download" href={host.accountUrl ? host.accountUrl(host.documentDownloadUrl('source')) : host.documentDownloadUrl('source')} download aria-label="下载原始输入" title="下载原始输入">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
         </a>
       </div>
@@ -208,7 +209,7 @@ function LegacySettings({card,host,level,definition}:PluginViewProps){
     {result&&<RunParameters result={result}/>}
     </fieldset></>}</>}
     {outputFirst&&!configOpen&&!result&&<p role="status">尚无检索结果，请通过设置确认参数后运行检索。</p>}
-    {(!outputFirst||!configOpen)&&result&&<>{result.mode==='match'?<MatchResult result={result} host={host}/>:<pre>{JSON.stringify(result.solver,null,2)}{result.converged?'\n达到收敛判据':'\n尚未达到收敛判据'}</pre>}{archive?<a download="xrd-results.zip" href={archive.startsWith('/api/')?archive:`data:application/zip;base64,${archive}`}>下载结果及输入快照</a>:<small>请从运行日志中的本地目录读取结果。</small>}</>}
+    {(!outputFirst||!configOpen)&&result&&<>{result.mode==='match'?<MatchResult result={result} host={host}/>:<pre>{JSON.stringify(result.solver,null,2)}{result.converged?'\n达到收敛判据':'\n尚未达到收敛判据'}</pre>}{archive?<a download="xrd-results.zip" href={archiveDownloadUrl(archive,host.accountUrl)}>下载结果及输入快照</a>:<small>请从运行日志中的本地目录读取结果。</small>}</>}
     {invalidMessage&&<p role="alert">{invalidMessage}</p>}
     {error&&<p role="alert">{error}</p>}
     {!running&&lastStatus==='failed'&&<p role="alert">上次检索失败。请检查参数及输入后重试；详情保留在 OAW 运行记录中。</p>}

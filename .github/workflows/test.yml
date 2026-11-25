@@ -36,6 +36,9 @@ jobs:
             tests/test_vite_config_ports.py \
             -v
 
+      - name: Run local account and SRT isolation regressions
+        run: python script/check_local_accounts.py -q --tb=short
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest

@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 from .config import load_config
 from .constants import _AGENT_PATH
+from .local_account_paths import assert_local_account_path
 
 
 
@@ -27,14 +28,14 @@ def get_workspace_root() -> Path:
     """Return the resolved workspace root path (not guaranteed to exist)."""
     env_val = os.environ.get("MATCLAW_WORKSPACE", "")
     if env_val:
-        return Path(env_val).expanduser().resolve()
+        return assert_local_account_path(env_val)
     cfg_workdir = (load_config().get("workspace") or {}).get("default_workdir") or ""
     if cfg_workdir:
-        return Path(cfg_workdir).expanduser().resolve()
+        return assert_local_account_path(cfg_workdir)
     matcreator_home = Path(
         os.environ.get("MATCREATOR_HOME", str(Path.home() / ".matcreator"))
     ).expanduser()
-    return (matcreator_home / "workspace").resolve()
+    return assert_local_account_path(matcreator_home / "workspace")
 
 
 WORKSPACE_ROOT = get_workspace_root()  # Backward-compatible startup snapshot; prefer get_workspace_root().
@@ -59,10 +60,10 @@ def workspace_memory_path() -> Path:
 
 def get_session_workdir(session_id: str, custom_workdir: str | None = None) -> Path:
     if custom_workdir:
-        return Path(custom_workdir).expanduser().resolve()
+        return assert_local_account_path(custom_workdir)
     env_val = os.environ.get("MATCLAW_SESSION_DIR", "")
     if env_val:
-        return Path(env_val).expanduser().resolve()
+        return assert_local_account_path(env_val)
     return get_workspace_root()
 
 

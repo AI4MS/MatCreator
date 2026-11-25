@@ -1,4 +1,10 @@
 # Byte-compiled / optimized / DLL files
+# Private local instance/account data and Windows launcher cache spill.
+.local-runtime/
+.local-access/
+.local-accounts/
+%SystemDrive%/
+
 __pycache__/
 *.py[codz]
 *$py.class

@@ -7,6 +7,7 @@ to a temporary directory, avoiding any real home-directory reads or writes.
 from __future__ import annotations
 
 import os
+import importlib
 import sys
 from pathlib import Path
 
@@ -37,6 +38,10 @@ import matcreator.config as matconfig
 
 def _redirect_config_home(monkeypatch, tmp_path: Path) -> None:
     """Point both config.py and ports.py at *tmp_path* for the config file."""
+    # Other integration tests deliberately reload this module for each
+    # instance. Resolve the current object, not a stale collection-time import.
+    global matconfig
+    matconfig = importlib.import_module("matcreator.config")
     monkeypatch.setenv("MATCREATOR_HOME", str(tmp_path))
     monkeypatch.setattr(matconfig, "_MATCREATOR_HOME", tmp_path)
     monkeypatch.setattr(matconfig, "_CONFIG_PATH", tmp_path / "config.yaml")
