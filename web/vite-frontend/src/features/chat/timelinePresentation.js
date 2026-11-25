@@ -10,10 +10,14 @@ export function getFunctionResponse(part) {
   return part?.functionResponse || part?.function_response || null;
 }
 
+function isWorkspacePreviewPath(path) {
+  return typeof path === "string" && path && !path.split(/[\\/]/).includes(".aidb-sessions");
+}
+
 export function getPlotPaths(response) {
   const paths = [];
   const add = (path) => {
-    if (typeof path === "string" && path && !paths.includes(path)) paths.push(path);
+    if (isWorkspacePreviewPath(path) && !paths.includes(path)) paths.push(path);
   };
   const visit = (value, key = "") => {
     if (!value) return;
@@ -35,7 +39,7 @@ export function getPlotPaths(response) {
 export function getStructurePaths(payload) {
   const paths = [];
   const add = (path) => {
-    if (typeof path === "string" && path && !paths.includes(path)) paths.push(path);
+    if (isWorkspacePreviewPath(path) && !paths.includes(path)) paths.push(path);
   };
   const visit = (value, key = "") => {
     if (!value) return;

@@ -49,6 +49,7 @@ This writes `INCAR`, `POSCAR`, `KPOINTS`, and `POTCAR` into the job directory.
 
 ## Notes
 
-- Include `CHGCAR` in `backward_files` to retrieve it after the job
-- For SOC calculations, also include `WAVECAR` in both `forward_files` and `backward_files`
+- Run the prepared directory through the tracked VASP submission entry point. Include `CHGCAR` in `out_files` when the user wants charge density or the next step uses that file.
+- If the current step uses restart inputs, place its actual upstream files in the prepared directory and set the corresponding `ISTART` and `ICHARG`. Set `LWAVE=True` and include `WAVECAR` in `out_files` when it is needed after this step.
+- On AIDB reuse, use the returned `artifact_paths` to prepare a downstream step. The same paths are offered as downloads in chat.
 

@@ -97,3 +97,55 @@ def test_lenient_parser_repairs_shapes_the_quote_heuristic_cannot():
     truncated = '{"query": "Au surface reconstruction potential'
     result = wrapped(truncated)
     assert isinstance(result, dict) and result.get("query")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        '{"query": "silicon"}',
+        '{"query": "find "silicon" skills"}',
+        '{"query": "silicon" "top_k": 5}',
+    ],
+)
+def test_parser_accepts_adk_function_name(arguments):
+    from google.adk.models import lite_llm as adk_lite_llm
+
+    install_lenient_tool_argument_parsing()
+
+    result = adk_lite_llm._parse_tool_call_arguments(
+        arguments, function_name="query_aidb"
+    )
+
+    assert "silicon" in result["query"]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        ('{"query": "silicon"}', {"query": "silicon"}),
+        ('{"query": "find "silicon" skills"}', {"query": 'find "silicon" skills'}),
+        ('{"query": "silicon" "top_k": 5}', {"query": "silicon", "top_k": 5}),
+    ],
+)
+def test_parser_retains_upstream_context_after_repairs(monkeypatch, arguments, expected):
+    from google.adk.models import lite_llm as adk_lite_llm
+
+    # External parser boundary: a provider may interpret the arguments using
+    # positional context and keyword metadata, including after JSON repair.
+    def contextual_parser(arguments, context, *, function_name):
+        return {
+            "arguments": json.loads(arguments),
+            "context": context,
+            "function_name": function_name,
+        }
+
+    monkeypatch.setattr(adk_lite_llm, "_parse_tool_call_arguments", contextual_parser)
+    install_lenient_tool_argument_parsing()
+
+    assert adk_lite_llm._parse_tool_call_arguments(
+        arguments, "model-tool-call", function_name="query_aidb"
+    ) == {
+        "arguments": expected,
+        "context": "model-tool-call",
+        "function_name": "query_aidb",
+    }

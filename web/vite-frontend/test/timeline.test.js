@@ -43,6 +43,27 @@ test("delegated plot artifacts survive nested executor results and deduplicate",
   assert.deepEqual(getPlotPaths({ error: "missing plot.png" }), []);
 });
 
+test("AIDB exports use their session links while public artifacts still preview inline", () => {
+  const delivery = {
+    kind: "aidb_export",
+    export_id: "export-1",
+    artifact_paths: {
+      "bands.svg": ".aidb-sessions/chat/exports/export-1/bands.svg",
+    },
+  };
+  const reuse = {
+    delivery,
+    artifact_paths: [
+      delivery.artifact_paths["bands.svg"],
+      "C:\\workspace\\.aidb-sessions\\chat\\exports\\export-1\\CONTCAR",
+      "band-results/bands.svg",
+      "band-results/CONTCAR",
+    ],
+  };
+  assert.deepEqual(getPlotPaths(reuse), ["band-results/bands.svg"]);
+  assert.deepEqual(getStructurePaths(reuse), ["band-results/CONTCAR"]);
+});
+
 test("assistant message lifecycle has one deterministic completion owner", () => {
   const message = createAssistantMessage({ id: "assistant:test", startedAt: 10 });
   assert.equal(message.lifecycle, "created");

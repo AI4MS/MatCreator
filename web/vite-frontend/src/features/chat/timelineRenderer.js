@@ -1,3 +1,4 @@
+import { aidbResults, createAIDBResult } from "../aidb/records.js";
 import {
   formatAgentDuration,
   getPlotPaths,
@@ -44,6 +45,33 @@ export function createTimelineRenderer({
     reconcileDelegationGroup,
   } = activityRenderer;
 
+  function reconcileAIDBResults(wrapper, anchor, outputs, previous = wrapper._aidbResultPanels || new Map()) {
+    const next = new Map();
+    for (const reference of aidbResults(outputs)) {
+      const key = JSON.stringify([reference.user_id, reference.session_id, reference.binding_id,
+        reference.kind, reference.result_id || reference.export_id]);
+      let panel = previous.get(key);
+      if (reference.kind === 'aidb_completion') {
+        const original = panel || [...chatArea.querySelectorAll('[data-aidb-completion]')]
+          .find(candidate => candidate.dataset.aidbCompletion === key);
+        original?.observeCompletion(reference);
+        if (!panel && original) continue;
+      }
+      if (!panel) {
+        panel = createAIDBResult(reference);
+        if (reference.kind === 'aidb_completion') panel.dataset.aidbCompletion = key;
+      }
+      if (!anchor) wrapper.prepend(panel);
+      else if (anchor.nextElementSibling !== panel) anchor.after(panel);
+      anchor = panel;
+      next.set(key, panel);
+    }
+    for (const [key, panel] of previous) {
+      if (!next.has(key)) panel.remove();
+    }
+    wrapper._aidbResultPanels = next;
+  }
+
   function renderTimelineSegment(segment, context) {
     const wrapper = document.createElement("div");
     wrapper.className = "timeline-segment";
@@ -69,6 +97,7 @@ export function createTimelineRenderer({
       });
       reconcileDelegationGroup(group, segment.calls, { live: !context.completed });
       wrapper.appendChild(group);
+      reconcileAIDBResults(wrapper, group, segment.calls.map(call => call.output));
       context.artifacts.plotPaths.forEach((path) => wrapper.appendChild(createTimelineImage(path)));
       if (context.artifacts.structurePaths.length) {
         wrapper.appendChild(createStructureViewButtonGroup(context.artifacts.structurePaths));
@@ -84,6 +113,10 @@ export function createTimelineRenderer({
       completed: context.completed,
     });
     if (activity) wrapper.appendChild(activity);
+    // Timeline calls point back to their action; only response payloads are data.
+    const outputs = segment.items.flatMap(item => (item.toolCalls || []).map(call => call.output));
+    // Rebuilding activity chrome must not reload results or discard open details.
+    reconcileAIDBResults(wrapper, activity, outputs, context.previousAIDBResultPanels);
     context.artifacts.plotPaths.forEach((path) => wrapper.appendChild(createTimelineImage(path)));
     if (context.artifacts.structurePaths.length) {
       wrapper.appendChild(createStructureViewButtonGroup(context.artifacts.structurePaths));
@@ -148,7 +181,10 @@ export function createTimelineRenderer({
         if (!element && previous?.element && segment.type === "delegation") {
           element = previous.element;
           const group = element.querySelector(".delegation-group");
-          if (group) reconcileDelegationGroup(group, segment.calls, { live: !completed });
+          if (group) {
+            reconcileDelegationGroup(group, segment.calls, { live: !completed });
+            reconcileAIDBResults(element, group, segment.calls.map(call => call.output));
+          }
         }
         if (!element) {
           if (previous?.element) disclosureController.capture(previous.element);
@@ -157,6 +193,7 @@ export function createTimelineRenderer({
             cacheMarkdown: completed || !isLastSegment,
             disclosurePrefix,
             previousActivityItemIds,
+            previousAIDBResultPanels: previous?.element?._aidbResultPanels,
             wireTimelineDetails,
             completed,
             deferMarkdown: completed && !view.live,

@@ -1,81 +1,39 @@
-# VASP Execution on Remote Sandboxes
+# VASP execution on Bohrium sandboxes
 
-When running VASP inside a Bohrium cloud sandbox via the `remote-job` skill
-tools, follow this reference for environment setup and execution.
+Use this route when the user chooses a Bohrium interactive sandbox. Prepare the
+calculation's input directory with the corresponding VASP input reference.
 
-## Sandbox lifecycle
+1. Call `start_managed_vasp_sandbox` with the prepared workspace-relative
+   `input_path`, the VASP `command` or its prepared `run.sh`, and the sandbox
+   `template`. Supply `project_id` if needed and list the exact output filenames
+   the user needs in `out_files`. If the session already tracks a suitable
+   sandbox, pass its `job_id` instead of the template.
+2. If MatCreator presents reusable records, wait for the user's choice. If it
+   returns a running command, record the `job_id` and call
+   `poll_remote_job_command`. Keep the same ID when resuming this step.
+3. When the command ends, call `collect_remote_job_outputs` with the same
+   `job_id` and the workspace output directory. The collector transfers files
+   directly, checks the run receipt and VASP result, and archives verified data.
+   Report the calculation, collection and archive outcomes independently.
+   If a required transfer failed, retry collection on the same job while the
+   sandbox is still reachable. A failed command can still have useful artifacts.
+4. Release the sandbox with `terminate_remote_job` after collection. A database
+   failure can be retried from previously transferred files.
 
-1. **Submit**: Call `submit_bohr_sandbox` with `template` and project info.
-   It is idempotent for the current session, node, and template — safe to
-   retry. Record the returned `job_id`.
-2. **Upload**: Use `upload_remote_job_input` (requires `job_id`) for each VASP
-   input file.
-3. **Run**: VASP runs long enough to need the background path — use
-   `start_remote_job_command` (requires `job_id`) to launch it, then
-   `poll_remote_job_command` to check progress. Do not use the blocking
-   `run_remote_job_command` for the VASP run itself.
-4. **Download**: Use `download_remote_job_output` (requires `job_id`) to pull
-   output files into the local workspace. This streams file bytes and is the
-   only reliable way to retrieve large outputs (CHGCAR, WAVECAR, vasprun.xml,
-   PNG). Do **not** use a command with `cat`/`cp` for large files — command
-   output is truncated (~4000 chars) and binary content will be corrupted.
-5. **Terminate**: Call `terminate_remote_job` to release the sandbox when
-   work is complete.
+## Preparing the command
 
-## Environment setup (critical)
-
-Before running `vasp_std`, source the Intel oneAPI environment:
+For the `vasp-544-vtst` template, the Intel oneAPI environment supplies MPI, MKL
+and the VASP executable. Use the allocated core count. A typical `run.sh` for
+a 32-core sandbox contains the following:
 
 ```bash
+#!/bin/bash
 source /opt/intel/oneapi/setvars.sh
+mpirun -np 32 vasp_std > log 2> err
 ```
 
-This sets up:
-- Intel MPI runtime (so `mpirun` works)
-- MKL libraries (so VASP can load BLAS/LAPACK)
-- **PATH** to include the VASP binary directory (so `vasp_std` is directly
-  callable — no need to locate or hardcode the binary path)
-
-## Running VASP
-
-```bash
-source /opt/intel/oneapi/setvars.sh && mpirun -np 32 vasp_std
-```
-
-- Use **`-np 32`** (all 32 CPUs) on the `vasp-544-vtst` template.
-- Pass this as a single string to `start_remote_job_command`, then poll with
-  `poll_remote_job_command` until it reports finished.
-
-## Completion verification
-
-Do not rely on exit code alone — Intel MPI may return exit code 255 even on
-success. Instead, check OUTCAR for the "General timing and account" marker:
-
-```bash
-grep "General timing" OUTCAR
-```
-
-If the marker is present, VASP completed successfully.
-
-## Files
-
-### Upload (via `upload_remote_job_input`)
-
-| Calculation | Files to upload |
-|-------------|----------------|
-| Relaxation | `INCAR`, `POSCAR`, `KPOINTS`, `POTCAR` |
-| SCF | `INCAR`, `POSCAR`, `KPOINTS`, `POTCAR` |
-| NSCF/BAND | `INCAR`, `POSCAR`, `KPOINTS`, `POTCAR`, `CHGCAR` (+ `WAVECAR` if available) |
-
-### Download (via `download_remote_job_output`)
-
-| Calculation | Files to download |
-|-------------|-------------------|
-| Relaxation | `CONTCAR`, `OUTCAR`, `vasprun.xml`, `OSZICAR` |
-| SCF | `CHGCAR`, `WAVECAR`, `OUTCAR`, `vasprun.xml` |
-| NSCF/BAND | `vasprun.xml`, `OUTCAR`, `EIGENVAL`, `DOSCAR`, `PROCAR` |
-
-`source_path` is the absolute path inside the sandbox (e.g.
-`/home/user/CHGCAR`); `destination_path` must resolve inside the current
-workspace (relative paths are resolved against it). Each call streams one
-file to disk, so call it once per file.
+Keep the script with the prepared input files and pass `command="bash run.sh"`.
+The tool snapshots the prepared inputs and transfers the files needed by the
+calculation. It automatically requests `vasprun.xml`, `OUTCAR` and the private
+run receipt. Include other deliverables such as `CONTCAR`, `OSZICAR`, `log` or
+`err` in `out_files` when needed.

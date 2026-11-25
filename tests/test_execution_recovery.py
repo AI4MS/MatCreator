@@ -8,6 +8,8 @@ import sqlite3
 from types import SimpleNamespace
 from unittest import mock
 
+import pytest
+
 from matcreator.agents.execution_agent.recovery import (
     active_remote_job_for_attempt,
     finish_node_attempt,
@@ -597,6 +599,50 @@ def test_waiting_node_becomes_pending_once_its_remote_job_settles(tmp_path, monk
         {"node_id": "node-a", "action": "resume_after_remote_job", "status": "pending"}
     ]
     assert get_execution_graph(state)["nodes"]["node-a"]["status"] == "pending"
+
+
+@pytest.mark.parametrize("provider, job_status, snapshot", [
+    ("bohr_batchjob", "succeeded", {}),
+    ("bohr_batchjob", "collecting", {}),
+    ("bohr_batchjob", "collected", {}),
+    ("bohr_sandbox", "running", {"managed_vasp_command": True, "last_command_result": {"running": False, "exit_code": 0}}),
+])
+def test_restart_reattaches_the_original_job_when_outputs_can_be_collected(
+    tmp_path, monkeypatch, provider, job_status, snapshot,
+):
+    recovery_dir = tmp_path / "recovery"
+    adk_dir = tmp_path / "adk"
+    monkeypatch.setattr("matcreator.agents.execution_agent.recovery.ADK_DIR", adk_dir)
+    store = RemoteJobStore(adk_dir / "remote-jobs.db")
+    job = store.create_job(owner_id="alice", session_id="session-1", node_id="node-a",
+                           provider=provider, idempotency_key="original")
+    job_id = job["job_id"]
+    store.transition_job(job_id, "submitting")
+    job = store.transition_job(job_id, "running", external_id="remote-1", snapshot=snapshot)
+    if job_status != "running":
+        job = store.transition_job(job_id, "succeeded")
+    if job_status in {"collecting", "collected"}:
+        job = store.transition_job(job_id, "collecting")
+    if job_status == "collected":
+        job = store.transition_job(job_id, "collected")
+
+    attempt = start_node_attempt(
+        workspace_dir=tmp_path, session_id="session-1", node_id="node-a", step_id="step-one",
+        step_number=1, action="Collect VASP outputs", suggested_skills=[], prior_context=None,
+        owner_id="alice", recovery_base_dir=recovery_dir,
+    )
+    record_remote_job_reference(session_id="session-1", node_id="node-a", job_id=job_id, provider=provider,
+                                external_id="remote-1", recovery_base_dir=recovery_dir)
+    attempt["pid"] = -1
+    heartbeat_node_attempt(attempt)
+    state = {"session_id": "session-1", "execution_graph": {"nodes": {"node-a": {"status": "running"}}, "edges": []}}
+
+    reconcile_recovery_state(state, tmp_path, recovery_base_dir=recovery_dir)
+
+    node = get_execution_graph(state)["nodes"]["node-a"]
+    assert node["status"] == "pending"
+    assert node["remote_job"]["job_id"] == job_id
+    assert node["remote_job"]["status"] == job_status
 
 
 def test_reconcile_does_not_undo_a_planner_resume_of_a_waiting_node(tmp_path, monkeypatch):

@@ -149,6 +149,34 @@ def test_success_accepts_existing_file_and_directory_artifacts(tmp_path):
     assert missing_artifacts == []
 
 
+def test_nscf_step_success_depends_on_band_files_and_compute_not_archive(tmp_path):
+    paths = [tmp_path / name for name in ("bands.json", "bands.svg")]
+    for path in paths:
+        path.write_text("verified output")
+    completion = {
+        "compute_status": "succeeded", "archive_status": "failed",
+        "archive_reason": "database unavailable", "artifact_paths": list(map(str, paths)),
+    }
+
+    def step_result():
+        return StepExecutorResult(status="success", concise_summary="Bands ready",
+                                  key_results="Two band files", artifacts=list(map(str, paths)))
+
+    result = step_result()
+    step_executor_runner._apply_nscf_completion(result, completion, [tmp_path])
+    assert result.status == "success"
+    assert "database unavailable" in result.concise_summary
+
+    failed = step_result()
+    step_executor_runner._apply_nscf_completion(failed, {**completion, "compute_status": "unverified"}, [tmp_path])
+    assert failed.status == "needs_replanning"
+
+    paths[1].unlink()
+    missing = step_result()
+    step_executor_runner._apply_nscf_completion(missing, completion, [tmp_path])
+    assert missing.status == "needs_replanning"
+
+
 def test_skill_creation_success_refreshes_the_skill_registry(monkeypatch):
     expected = {"count": 42, "skills": ["new-skill"]}
     monkeypatch.setattr(

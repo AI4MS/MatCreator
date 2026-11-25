@@ -515,3 +515,29 @@ def test_execution_graph_endpoint_reads_atomic_graph_snapshot(monkeypatch, tmp_p
     response = asyncio.run(web_main.get_execution_graph("session-1"))
 
     assert json.loads(response.body) == graph
+
+
+def test_compact_history_preserves_completion_row_reference(monkeypatch, tmp_path):
+    web_main = _load_web_main(monkeypatch)
+    db_path = tmp_path / 'session.db'
+    _create_session_db(db_path, web_main.APP_NAME)
+    monkeypatch.setattr(web_main, 'SESSION_DB_PATH', db_path)
+    monkeypatch.setattr(web_main, '_MATCREATOR_MODE', 'local')
+    reference = {
+        'kind': 'aidb_completion', 'result_id': 'job-1',
+        'user_id': 'legacy-display-name', 'session_id': 'session-1',
+    }
+    payload = {'result': {'aidb_result': reference, 'log': 'x' * 100_000}}
+    event = {'content': {'parts': [{'functionResponse': {'id': 'collect', 'response': payload}}]}}
+    with sqlite3.connect(db_path) as conn:
+        conn.execute('INSERT INTO events VALUES (?, ?, ?, ?, ?)', (
+            web_main.APP_NAME, 'legacy-display-name', 'session-1', json.dumps(event), 2.0,
+        ))
+
+    response = asyncio.run(web_main.get_user_session('legacy-display-name', 'session-1', compact=True))
+    event = json.loads(response.body)['events'][-1]
+    preview = event['content']['parts'][0]['functionResponse']['response']
+
+    assert preview['aidb_completions'] == [reference]
+    assert '_matcreator_deferred_detail' in preview
+    assert 'log' not in json.dumps(preview)

@@ -440,3 +440,34 @@ def test_server_owner_monitors_start_independently_and_join_on_stop(harness, mon
         assert set(started) == set(stopped) == {"alice", "bob"}
 
     asyncio.run(exercise())
+
+
+def test_managed_job_responses_hide_private_provenance(harness, monkeypatch):
+    web, store = harness.web, harness.store
+    job = store.create_job(
+        owner_id='alice', session_id='session-1', provider='bohrium', idempotency_key='managed',
+        specification={'requested_spec': {'job_name': 'Silicon'},
+                       'managed_vasp': {'token': 'private-token', 'root': '/private/stage'}},
+    )
+    job_id = job['job_id']
+    store.transition_job(job_id, 'submitting')
+    store.transition_job(job_id, 'queued', external_id='provider-2')
+    store.transition_job(job_id, 'succeeded')
+    store.transition_job(job_id, 'collecting')
+    collected = store.transition_job(job_id, 'collected', artifacts=[
+        {'destination': '/private/stage/.matcreator-vasp-receipt'},
+    ], snapshot={'provider_status': 'Succeeded'})
+    monkeypatch.setattr(web._remote_job_service, 'reconcile_job', lambda requested_id: collected)
+    responses = [
+        asyncio.run(web.list_session_remote_jobs('session-1', user_id='alice')),
+        asyncio.run(web.list_session_remote_job_events('session-1', job_id, user_id='alice', after=0)),
+        asyncio.run(web.refresh_session_remote_job('session-1', job_id, user_id='alice')),
+    ]
+    listed, events, refreshed = [json.loads(response.body) for response in responses]
+    listed_job = next(item for item in listed['jobs'] if item['job_id'] == job_id)
+    for response, item in zip(responses, (listed_job, events['job'], refreshed), strict=True):
+        assert item['specification'] == {'job_name': 'Silicon'}
+        assert item['artifacts'] == []
+        assert item['snapshot']['provider_status'] == 'Succeeded'
+        assert b'private-token' not in response.body
+        assert b'/private/stage' not in response.body

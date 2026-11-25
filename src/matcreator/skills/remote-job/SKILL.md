@@ -10,6 +10,7 @@ metadata:
     - get_remote_job_status
     - run_remote_job_command
     - start_remote_job_command
+    - start_managed_vasp_sandbox
     - poll_remote_job_command
     - upload_remote_job_input
     - download_remote_job_output
@@ -111,7 +112,7 @@ not interactive execution, per-file transfer, or pause/resume.
 - `run_remote_job_command` BLOCKS until the command finishes, with no timeout.
   Only use it for commands expected to finish well under a minute (`ls`,
   `grep`, `mkdir`, checking a file).
-- For any real computation (training, `vasp_std`/`mpirun`, anything that might
+- For any real computation (training or anything that might
   take more than a minute), use `start_remote_job_command` and then
   `poll_remote_job_command`. The background command is tracked durably on the
   job: after a step timeout, crash, or lost connection, poll the same

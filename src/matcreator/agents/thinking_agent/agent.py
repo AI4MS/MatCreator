@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -9,6 +10,11 @@ from typing import Optional
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.function_tool import FunctionTool
+from matcreator.tools.aidb_archive_tools import aidb_archive_vasp
+from matcreator.tools.aidb_tools import aidb_query, aidb_detail, aidb_bind
+from matcreator.tools.aidb_tools import aidb_export
+from matcreator.tools.relaxation_tools import vasp_relaxation_choice
+from matcreator.aidb.relaxation import choice_receipt, current_choice, turn_id
 from matcreator.tools.xrd_tools import xrd_list_workspaces, xrd_get_results, xrd_action
 from google.adk.tools.tool_context import ToolContext
 from google.adk.agents.callback_context import CallbackContext
@@ -143,6 +149,9 @@ def confirm_plan_and_start_execution(tool_context: ToolContext) -> dict:
     """
     from ..cancellation import clear_cancellation
 
+    choice = current_choice(tool_context)
+    if choice and choice["status"] in {"waiting", "continue"}:
+        return {"status": "error", "message": "请先处理本轮 VASP 候选。继续现有步骤应使用 resume_execution。"}
     sid = tool_context.state.get("session_id") or tool_context._invocation_context.session.id
     clear_cancellation(sid)
 
@@ -181,6 +190,12 @@ def resume_execution(tool_context: ToolContext) -> dict:
             "status": "ok",
             "message": "Execution resume was already approved; hand control back to the orchestrator.",
         }
+
+    choice = current_choice(tool_context)
+    if choice and (choice["status"] == "waiting" or (
+        choice["status"] == "continue" and choice["decision_turn"] != turn_id(tool_context)
+    )):
+        return {"status": "error", "message": "请先处理本轮 VASP 候选。"}
 
     graph = get_execution_graph(tool_context.state)
     if not graph or not graph.get("nodes"):
@@ -258,6 +273,16 @@ async def run_flash_step(
     else:
         node_id = f"flash_{hashlib.sha256(action.encode()).hexdigest()[:12]}"
 
+    choice = await asyncio.to_thread(current_choice, tool_context)
+    if choice and choice["status"] == "waiting":
+        return {"node_id": choice["scope"]["node_id"], **choice_receipt(choice)}
+    if choice and choice["status"] == "continue":
+        if choice["decision_turn"] != turn_id(tool_context):
+            return {"status": "error", "message": "请用户明确继续本次 VASP 计算。"}
+        node_id = choice["scope"]["node_id"]
+        action = choice["action"] or action
+        suggested_skills = choice["skills"] or suggested_skills
+
     result = await run_step_executor(
         step_number=counter,
         action=action,
@@ -287,9 +312,15 @@ You are MatCreator, an AI assistant for computational materials science.
 ## How to work
 - Call `run_flash_step` for computation, or skill execution.
   Multiple independent calls in one response turn run concurrently.
+- For MatPES labeling, delegate to `vasp-pymatgen`. Keep its returned batch ID for collection and status updates. Refer to candidates by source frame and delegate a selection, recalculation, or cancellation only when the user explicitly decides for that frame.
 - Use `query_knowledge_graph` to discover clipped L1/L2 skills, knowledge, and memory candidates.
 - Set `skills_only=true` and `include_memory=false` only when you specifically need skill-only discovery.
+- An explicit request to save existing VASP relaxation, static SCF or MD outputs can call `aidb_archive_vasp` directly once the workspace directories are clear. Report each receipt and use its clickable result after verified readback.
+- For a request to calculate VASP AIMD, plan the `vasp-pymatgen` workflow with the requested ensemble, temperature or program, time step, integration count and deliverables. Use its AIMD reference for input preparation and the managed VASP tools for submission and collection.
+- For AIDB queries/details, discover and load `ai-ready-db`, then call `aidb_query`/`aidb_detail` so results use this chat's bound database and clickable presentation. Clarify ambiguous filters. Record editing/deletion is unavailable.
+- `aidb_detail` directly fresh-reads the referenced record and opens its full presenter. Answer from returned facts; do not delegate a raw JSONL read or request approval for this supported read. Omitted arrays remain in the UI snapshot. Preserve unknown, false, not-applicable and truncation states. Label presence does not establish alignment, convergence, compatibility or training admission; never infer that records differ only in functional from this bounded summary. Distinguish native match counts, visible rows and verified frames.
 - Call `load_skill` for a selected installed skill's full instructions.
+- For all AIDB reads, omission from model facts is not evidence that a field is missing or not applicable. Never claim fields were not saved/extracted just because they are unlisted. Use optional_results availability and evidence; not_provided refers to the returned record, not raw-output capability. PAW projected electron populations are not oxidation states. Null magnetic moments or spin settings do not establish material magnetism; preserve not_assessed.
 - Inspect `load_skill`'s `attached_context`; call `read_knowledge_node` only when its L3/L4 count is nonzero.
 - Inspect `load_skill`'s `bundled_files` (references/, assets/, scripts/ paths plus the
   on-disk skill folder) whenever the skill bundles sidecar files; read them from disk when needed.
@@ -312,7 +343,7 @@ You are MatCreator, an AI assistant for computational materials science.
 
 _NORMAL_INSTRUCTION = """
 You are MatCreator, an AI assistant for computational materials science workflows.
-Your role here is **PLANNING ONLY**: you are responsible only for planning; all concrete execution steps must be delegated to the execution agent.
+Your role here is **PLANNING ONLY** for computation and changes: concrete execution steps must be delegated to the execution agent. The scoped AIDB operations below are direct-tool exceptions.
 
 ## Context
 - Goal: {goal}
@@ -320,6 +351,14 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
 - Summarize: {summarize}
 
 ## Default workflow
+When the user explicitly asks to save existing VASP relaxation, static SCF or MD results, discover/load the installed `ai-ready-db` skill and call `aidb_archive_vasp` directly with the specified workspace directories. The explicit save request authorizes this archive; it requires no calculation plan or submission. The installed skill's stock insert cannot verify the paired outputs for this workflow. Use the archive receipt for new, existing, or incomplete status per directory and leave details to the shared result presenter.
+
+For a read-only AIDB query/detail request, discover and load `ai-ready-db`, then directly call `aidb_query`/`aidb_detail` using this chat's binding. This exception does not require an execution graph or approval. `aidb_detail` freshly reads the referenced ID and opens the full presenter; answer from its returned cell, method, label and source facts instead of planning raw JSONL inspection. Omitted arrays remain in the UI snapshot. Preserve unknown, false, not-applicable and truncation states. Label presence does not establish alignment, convergence, compatibility or training admission; never infer that records differ only in functional from the bounded summary. Distinguish native match counts, visible rows and verified frames. Clarify ambiguous references/filters. Record editing/deletion is unavailable.
+For a natural-language AIDB export, call aidb_export directly after skill discovery. Use the actual record ID and, for a prior result row, its result ID. Return only the download formats confirmed in the receipt and explain any missing labels.
+
+For all AIDB reads, omission from model facts is not evidence that a field is missing or not applicable. Never claim fields were not saved/extracted just because they are unlisted. Use optional_results availability and evidence; not_provided refers to the returned record, not raw-output capability. PAW projected electron populations are not oxidation states. Null magnetic moments or spin settings do not establish material magnetism; preserve not_assessed.
+
+For other requests:
 1. Determine the user's goal, then call `validate_intent` with your interpretation.
    Call `query_knowledge_graph` once with the user's goal to discover relevant skills, knowledge, and lessons.
    Load selected installed skills with `load_skill`. Inspect its `attached_context` and call
@@ -332,6 +371,7 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
    **Node ID | Label | Action | Depends On**
    (where "Depends On" lists predecessor node IDs, or "—" for root nodes).
 {confirmation_instruction}
+
 4. If the user asks to create or test a skill:
    a. Call `query_knowledge_graph(skills_only=true, include_memory=false)` and `load_skill` for the `skill-creation` guide.
    b. Create a normal execution graph node with `suggested_skills=["skill-creation"]`.
@@ -406,6 +446,30 @@ Your role here is **PLANNING ONLY**: you are responsible only for planning; all 
     or `node_id="..."` for one executor of interest; do not request bulk detail by default.
 """
 
+_VASP_CHOICE_INSTRUCTION = """
+If a VASP step reports waiting_choice, a result card has the verified candidates.
+Tell the user they can view Details, reply with an ordinal to reuse, continue calculation,
+revise inputs or cancel. Stop for their response. Do not submit, archive, export,
+or finish that step while waiting. This is a user decision, not a running remote job.
+If a pending choice is provided below, route the user's latest response with
+vasp_relaxation_choice and that choice_id. For detail, call action=detail and keep waiting.
+For reuse, call action=select with the exact ordinal or record ID. If several candidates
+fit their reference, ask which one; never guess. A reused receipt already contains
+downloadable EXTXYZ and POSCAR, energy, and any verified required raw artifacts.
+Use the returned artifact_paths for downstream VASP inputs. In a band-structure
+chain, keep SCF and NSCF as distinct dependent steps. After reusing SCF, use its
+record ID and delivered restart paths to resume the NSCF node when authorized.
+Report completion only after NSCF delivers both the band data and plot. Present those results
+directly and do not call aidb_export again for the same request.
+For changed conditions call revise before preparing new inputs. For cancellation or a
+new task call cancel first. For unrelated discussion that replaces the task, close the choice
+before answering. Never reuse a closed choice even if old cards appear in chat.
+For an explicit decision to recalculate, call continue, then follow the original approval
+rules. In Flash invoke run_flash_step once for the same step. In graph mode call
+resume_execution when the original authorization is satisfied. Honor stale-input errors
+by preparing changed inputs and checking again. Opening a record never authorizes reuse.
+"""
+
 _MATCREATOR_INSTRUCTION = "{instruction_body}"
 
 # ---------------------------------------------------------------------------
@@ -451,6 +515,16 @@ def before_agent_callback(callback_context: CallbackContext) -> None:
             confirmation_instruction=confirmation_instruction,
         )
 
+    choice = current_choice(callback_context)
+    choice_context = ""
+    if choice and choice["status"] in {"waiting", "continue"}:
+        ids = [item["record_id"] for item in choice["candidates"]["records"]]
+        choice_context = f"\nCurrent VASP result choice: {choice['id']}; ordered record IDs: {ids}.\n"
+    elif choice:
+        choice_context = ("\nThe previous VASP result choice is closed. A reference to one of its "
+                          "rows alone is not a new calculation or query request. Tell the user the "
+                          "previous choice is closed, and do not start a new step for that reference.\n")
+    callback_context.state["instruction_body"] += _VASP_CHOICE_INSTRUCTION + choice_context
     return None
 
 # ---------------------------------------------------------------------------
@@ -497,6 +571,12 @@ thinking_agent = LlmAgent(
         FunctionTool(get_user_skills_root),
         FunctionTool(run_python),
         FunctionTool(run_bash),
+        FunctionTool(aidb_query),
+        FunctionTool(aidb_detail),
+        FunctionTool(aidb_export),
+        FunctionTool(vasp_relaxation_choice),
+        FunctionTool(aidb_bind),
+        FunctionTool(aidb_archive_vasp),
         FunctionTool(xrd_list_workspaces),
         FunctionTool(xrd_get_results),
         FunctionTool(xrd_action),
